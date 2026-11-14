@@ -9,11 +9,8 @@ use std::time::{Duration, Instant};
 
 use crate::collect::{self, Collector, SystemInfo};
 use crate::net::{self, Conn};
-use crate::proto::{
-    self, AgentMessage, AgentSession, Hello, Identity, PROTOCOL_VERSION, Plan, StatusReport,
-    Welcome,
-};
-use crate::sessions::{Board, Sessions};
+use crate::proto::{self, AgentMessage, Hello, Identity, PROTOCOL_VERSION, StatusReport, Welcome};
+use crate::sessions::{Board, Sessions, Snapshot};
 use crate::{log, tailscale};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -102,7 +99,7 @@ struct Agent {
     connections: AtomicUsize,
     notices: log::Throttle,
     board: Board,
-    sessions: Mutex<(Vec<AgentSession>, Option<Plan>)>,
+    sessions: Mutex<Snapshot>,
 }
 
 impl Agent {
@@ -114,7 +111,7 @@ impl Agent {
             connections: AtomicUsize::new(0),
             notices: log::Throttle::default(),
             board: Board::default(),
-            sessions: Mutex::new((Vec::new(), None)),
+            sessions: Mutex::new(Snapshot::default()),
         }
     }
 
@@ -145,7 +142,7 @@ fn spawn_sessions(mut sessions: Sessions, agent: Arc<Agent>) -> io::Result<()> {
                     store(Default::default());
                     agent.hub.wait_for_subscribers();
                 }
-                store(sessions.poll(&agent.board).unwrap_or_default());
+                store(sessions.poll(&agent.board));
                 thread::sleep(SESSIONS_EVERY);
             }
         })?;
@@ -178,11 +175,15 @@ fn stream_samples(collector: &mut Collector, agent: &Agent) {
             now + agent.interval
         };
         let frame = collector.sample().and_then(|mut sample| {
-            (sample.sessions, sample.plan) = agent
-                .sessions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone();
+            {
+                let snapshot = agent
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                sample.sessions = snapshot.sessions.clone();
+                sample.plans = snapshot.plans.clone();
+                sample.notices = snapshot.notices.clone();
+            }
             proto::encode_frame(&AgentMessage::Sample(sample))
         });
         let watched = match frame {
@@ -673,7 +674,7 @@ mod tests {
         let report = StatusReport {
             session_id: "s".into(),
             context_used: Some(4_200),
-            plan: crate::proto::Plan::default(),
+            windows: Vec::new(),
         };
         proto::write_frame(&mut UnixStream::connect(&path).unwrap(), &report).unwrap();
         let oversized = StatusReport {

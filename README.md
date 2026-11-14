@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Every machine you own, and every coding agent on them, in one Rex pane.</b><br>
-  A tiny agent on each Mac and Linux box streams live metrics over Tailscale, and one <code>magi</code> pane in <a href="https://www.superlogical.com/rex">Rex</a> shows the whole fleet: CPU, memory, disks, network, and which Claude Code sessions are working, waiting on you, or burning money.
+  A tiny agent on each Mac and Linux box streams live metrics over Tailscale, and one <code>magi</code> pane in <a href="https://www.superlogical.com/rex">Rex</a> shows the whole fleet: CPU, memory, disks, network, and which Claude Code and Codex sessions are working, waiting on you, or burning money.
 </p>
 
 <p align="center">
@@ -10,6 +10,7 @@
   <a href="#why-rex">Why Rex</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#what-it-shows">What it shows</a> ·
+  <a href="#alerts">Alerts</a> ·
   <a href="#configure">Configure</a> ·
   <a href="#questions">Questions</a>
 </p>
@@ -17,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/rust-2024-CE422B" alt="Rust 2024">
   <img src="https://img.shields.io/badge/Rex-pane-111111" alt="Rex pane">
-  <img src="https://img.shields.io/badge/Claude%20Code-sessions-D97757" alt="Claude Code sessions">
+  <img src="https://img.shields.io/badge/Claude%20Code%20·%20Codex-sessions-D97757" alt="Claude Code and Codex sessions">
   <img src="https://img.shields.io/badge/macOS%20·%20Linux-black" alt="macOS and Linux">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
@@ -31,22 +32,26 @@ magi puts all of it on one screen, and [Rex](https://www.superlogical.com/rex)
 puts that screen on every device you own. Keep a `magi` pane in a Rex session
 on a machine that's always on, then open it from your Mac, your phone or the
 web: it shows every machine of yours that runs an agent, live, and every
-Claude Code session on them, with the ones that need you at the top.
+Claude Code and Codex session on them, with the ones that need you at the top.
 
 ## What you get
 
 1. **The whole fleet, from anywhere.** One viewer finds every machine of yours
    on Tailscale that runs a magi agent. No hub, no database, no config file.
-2. **Agents that need you, first.** Sessions waiting on a permission prompt or
-   your input sort to the top, with the tool they want to run.
+2. **Agents that need you, first.** Claude Code sessions waiting on a
+   permission prompt or your input sort to the top, with the tool they want to
+   run.
 3. **What it costs, as it happens.** Tokens and cost per session, subagents
-   included, priced at Anthropic's list prices and counted once even when a
-   session is forked or resumed.
-4. **Context and plan limits.** An optional status line reports each session's
-   context use and your 5-hour and weekly plan windows.
-5. **Light enough to forget about.** The agent idles at 0% CPU and about 6 MiB,
+   included, priced at Anthropic's and OpenAI's list prices and counted once
+   even when a session is forked or resumed.
+4. **Context and plan limits.** Each session's context use, and your 5-hour and
+   weekly plan windows for Claude and for Codex.
+5. **Alerts that reach you in Rex.** An agent that needs you, a machine that
+   stops answering or stays critical, or a plan past 90% shows up in Rex's
+   session picker and tab headers, and in magi's alert history.
+6. **Light enough to forget about.** The agent idles at 0% CPU and about 6 MiB,
    and samples only while someone is looking.
-6. **Private by default.** The agent listens only on your Tailscale address and
+7. **Private by default.** The agent listens only on your Tailscale address and
    asks Tailscale who each peer is before reading a byte. Only your own
    devices get in; tagged machines are refused.
 
@@ -65,16 +70,17 @@ glance at it from wherever you are. That's what
   in a window. Close the app and the `magi` pane keeps running; reconnect from
   the Mac app, the iOS app or the web and it's the same screen, already up to
   date. There is no dashboard to host and nothing to sign in to.
-- **Next to the agents it watches.** Your Claude Code sessions already live in
-  Rex tabs. When magi says one needs you, its tab is a switch away in the same
-  app.
-- **Phone-sized.** The layout is built to stay readable in the iOS app's
-  narrower panes, not only on a desktop.
-- **Where it's going.** Pixel charts drawn with the kitty graphics protocol
-  inside the Rex pane, and alerts that reach whichever Rex client you're using.
+- **Alerts where you already look.** magi reports each alert with Rex's
+  [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status),
+  so the session holding magi gets an indicator in Rex's session picker and
+  tab header, whichever device you're on.
+- **Next to the agents it watches.** Your agent sessions already live in Rex
+  tabs. When magi says one needs you, its tab is a switch away in the same app.
+- **Phone-sized.** The layout stays readable in the iOS app's narrower panes,
+  not only on a desktop.
 
 magi works in any terminal too; without Rex you see it only where you started
-it.
+it, and alerts appear only inside magi.
 
 ## How it works
 
@@ -86,40 +92,63 @@ systemd user service on Linux). The viewer:
    private Unix socket.
 3. Receives a compact binary sample every second from each agent, sampled once
    and shared between all viewers.
-4. Redraws only what changed, at most 30 times a second.
+4. Redraws only what changed, at most 30 times a second, and checks the alert
+   rules on each redraw.
 
-On each machine the agent reads Claude Code's own files:
+On each machine the agent reads the agents' own files and never changes them:
 
 | Source | What magi takes from it |
 |---|---|
-| `~/.claude/sessions/` | Which sessions are running, and whether each is working, waiting or idle. A session counts only while its process is alive with the same start time. |
+| `~/.claude/sessions/` | Which Claude Code sessions are running, and whether each is working, waiting or idle. A session counts only while its process is alive with the same start time. |
 | `~/.claude/projects/` | Model, tokens and cost, read from the end of each transcript and its subagents, in bounded chunks. |
-| The magi status line | Context use and plan windows, which only a status line receives. |
+| The magi status line | Claude's context use and plan windows, which only a status line receives. |
+| `~/.codex/sessions/` | Codex sessions that are running (the session file each `codex` process holds open), with model, tokens, cost, context and plan windows. |
 
 | Part | What it does here |
 |---|---|
-| **[Rex](https://www.superlogical.com/rex)** | Keeps the viewer running in a session you can open from any device. |
+| **[Rex](https://www.superlogical.com/rex)** | Keeps the viewer running in a session you can open from any device, and shows its alerts. |
 | **Tailscale** | Finds your machines, carries the samples, and says who is connecting. |
-| **Claude Code** | Its session registry, transcripts and status line are the source for everything agent-related. |
+| **Claude Code, Codex** | Their session files and transcripts are the source for everything agent-related. |
 
 ## What it shows
 
 | | |
 |---|---|
 | **Machines** | CPU (per core in the detail view), memory and swap, storage, disk I/O, network, uptime and a recent-load chart. Lost machines stay listed and say so. |
-| **Agents** | Each Claude Code session: title, project, state (`working · Edit`, `needs you · Bash`, `idle 4m`), model, context, tokens and cost. |
-| **Plan** | Your 5-hour and weekly usage with when each resets, once the status line is installed. |
+| **Agents** | Each Claude Code and Codex session: title, project, state (`working · Edit`, `needs you · Bash`, `idle 4m`), model, context, tokens and cost. |
+| **Plans** | Your 5-hour and weekly usage for each agent, with when each resets. |
 
 Use `↑`/`↓` (or `j`/`k`) to move between machines and agents, `g`/`G` for the
-first and last, and `q` to quit.
+first and last, `a` for alerts, and `q` to quit.
+
+## Alerts
+
+| Alert | Raised when | In Rex |
+|---|---|---|
+| An agent needs you | A Claude Code session waits on a permission prompt or your answer | Blocked, with the tool or the question |
+| A machine stopped answering | Its agent has been unreachable for 30 seconds | Error |
+| A machine is critical | CPU stays above 90%, memory above 92% or the fullest disk above 95% for a minute | Error |
+| A plan is nearly used | A 5-hour or weekly window passes 90% | Error |
+
+An alert clears itself in Rex as soon as its condition ends. Press `a` in magi
+for the history: when each alert was raised and resolved, newest first. It is
+kept in `~/.local/state/magi/alerts.jsonl` (the last 200, readable only by
+you), so it survives restarts.
 
 ## Install
 
 On every machine you want to see:
 
 ```bash
-cargo install --locked --git https://github.com/felitrejos/magi magi-monitor
+curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh
 magi agent install
+```
+
+The script downloads the build for your system, checks its SHA-256 checksum
+and installs `magi` to `~/.local/bin`. To build from source instead:
+
+```bash
+cargo install --locked --git https://github.com/felitrejos/magi magi-monitor
 ```
 
 Then, on the machines where you use Claude Code:
@@ -136,6 +165,7 @@ magi
 ```
 
 Every machine needs [Tailscale](https://tailscale.com) and the `tailscale` CLI.
+Builds exist for macOS (Apple silicon and Intel) and Linux (x86_64 and ARM64).
 
 ## Configure
 
@@ -150,7 +180,8 @@ There is no config file. The few settings are flags:
 
 `magi statusline install` changes only `statusLine` in
 `~/.claude/settings.json`. It never replaces a status line you already have,
-keeps a backup with the same permissions, and writes atomically.
+keeps a backup with the same permissions, and writes atomically. Codex needs no
+setup; set `CODEX_HOME` for the agent if yours isn't `~/.codex`.
 
 ## Questions
 
@@ -160,13 +191,17 @@ machine, and every viewer asks them directly.
 
 **Which machine should run the viewer?**
 One that's always on, like a home server. Its Rex session keeps `magi` running,
-and every Rex client you open shows that same pane.
+checking alerts, and every Rex client you open shows that same pane.
 
 **What does the cost number mean?**
-What the session's tokens would cost at Anthropic's API list prices, which is
-also what Claude Code's own `/cost` shows. On a Pro or Max plan you pay your
-subscription, not this; use it to compare sessions. A `≥` means some of a
-session's usage was on a model magi doesn't have a price for.
+What the session's tokens would cost at the API list prices, which is also what
+Claude Code's own `/cost` shows. On a subscription you pay your plan, not this;
+use it to compare sessions. A `≥` means some usage was on a model, or a pricing
+tier, magi doesn't know the price of.
+
+**Does magi know when Codex needs approval?**
+No. Codex doesn't write approval prompts to its session files, so Codex
+sessions show as working or idle. Claude Code sessions show "needs you".
 
 **Does the status line slow Claude Code down?**
 No. It prints first, then hands the numbers to the agent and waits at most
@@ -178,15 +213,17 @@ in as you.
 
 **Where does the data go?**
 Nowhere. Samples go from the agent straight to your viewer and are never
-stored, and no transcript text leaves the machine.
+stored, and no transcript text leaves the machine. The only file magi writes is
+its alert history.
 
 ## Limits
 
-- Live data only; there is no history.
-- Claude Code only for now. Codex sessions come next.
-- `~/.claude/sessions/` is not a documented Claude Code format, so a Claude
-  Code update can change it. magi keeps working without it, but loses session
-  state until it's updated.
+- Live data only, apart from the alert history.
+- `~/.claude/sessions/` is not a documented Claude Code format. If an update
+  changes it, magi says so, falls back to transcript activity for working and
+  idle, and can't tell when a session needs you until magi is updated.
+- Codex sessions can't show "needs you" (see above).
+- Pixel charts drawn with the kitty graphics protocol are planned.
 - macOS and Linux only. Windows later.
 
 ## License

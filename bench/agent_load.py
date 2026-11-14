@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 HELLO = struct.pack("<I", 1) + bytes([PROTOCOL_VERSION])
 
 

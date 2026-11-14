@@ -6,6 +6,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use super::alerts::{Alerts, Event, Severity};
 use super::chart;
 use super::model::{
     self, AgentRow, Level, LinkState, Machine, Model, Presence, Row, Strain, Subsystem,
@@ -15,7 +16,7 @@ use super::units;
 use crate::log;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::proto::{AgentSession, FULL, Plan, Sample, SessionState, Waiting, Window};
+use crate::proto::{Agent, AgentSession, FULL, Plan, Sample, SessionState, Waiting};
 
 const WIDE: u16 = 100;
 const PHONE: u16 = 60;
@@ -63,16 +64,29 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant) {
         )),
         rule,
     );
+    let plans = model.plans(now);
     match rows.get(model.selected) {
+        _ if model.showing_alerts => render_alerts(frame, detail, &model.alerts),
         Some(row) => render_detail(frame, detail, Some(row), model.port, now),
         None => render_agent_detail(
             frame,
             detail,
             agents.get(model.selected - rows.len()),
-            model.plan(now),
+            &plans,
         ),
     }
-    render_footer(frame, footer, model.topology.problem.as_deref());
+    let problem = model
+        .topology
+        .problem
+        .clone()
+        .or_else(|| model.alerts.problem().map(str::to_string))
+        .or_else(|| model.notices(now).into_iter().next());
+    render_footer(
+        frame,
+        footer,
+        model.alerts.active().count(),
+        problem.as_deref(),
+    );
 }
 
 fn render_header(
@@ -179,21 +193,13 @@ fn health(strains: &[Strain; 3], rows: &[Row<'_>]) -> Vec<Span<'static>> {
             vec![Span::styled(
                 format!(
                     "{culprit} {} {word} · {}",
-                    subsystem_name(strain.subsystem),
+                    strain.subsystem.name(),
                     units::percent(strain.worst).trim()
                 ),
                 style::fg(style::level(strain.level)),
             )]
         }
         None => vec![Span::styled("all normal", style::fg(GOOD))],
-    }
-}
-
-fn subsystem_name(subsystem: Subsystem) -> &'static str {
-    match subsystem {
-        Subsystem::Cpu => "cpu",
-        Subsystem::Memory => "memory",
-        Subsystem::Storage => "storage",
     }
 }
 
@@ -818,16 +824,18 @@ fn render_agents(
 ) {
     let width = area.width as usize;
     let mut title = vec![Span::styled("  agents", style::fg(FAINT))];
-    if let Some(plan) = model.plan(now) {
+    let plans = model.plans(now);
+    let named = plans.len() > 1;
+    for plan in plans {
         title.push(Span::styled(
-            format!("   {}", plan_text(plan, width < WIDE as usize)),
+            format!("   {}", plan_text(plan, width < WIDE as usize, named)),
             style::fg(DIM),
         ));
     }
     let mut lines = vec![Line::from(clip(title, width))];
     if agents.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  no coding agents running · Claude Code sessions show up here",
+            "  no coding agents running · Claude Code and Codex sessions show up here",
             style::fg(DIM),
         )));
         frame.render_widget(Paragraph::new(lines), area);
@@ -952,30 +960,38 @@ fn context_text(session: &AgentSession) -> String {
     }
 }
 
-fn plan_text(plan: &Plan, compact: bool) -> String {
-    let window = |label: &str, window: &Window| {
-        let used = units::percent(f32::from(window.used) / f32::from(FULL))
-            .trim()
-            .to_string();
-        if compact {
-            format!("{label} {used}")
-        } else {
-            format!("{label} {used} · resets in {}", until(window.resets_at))
-        }
-    };
-    let (five_hour, week) = if compact {
-        ("5h", "wk")
+fn plan_text(plan: &Plan, compact: bool, named: bool) -> String {
+    let windows = plan
+        .windows
+        .iter()
+        .map(|window| {
+            let used = units::percent(f32::from(window.used) / f32::from(FULL))
+                .trim()
+                .to_string();
+            if compact {
+                format!("{} {used}", window.label())
+            } else {
+                format!(
+                    "{} {used} · resets in {}",
+                    window.long_label(),
+                    until(window.resets_at)
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(if compact { " · " } else { "   " });
+    if named {
+        format!("{} {windows}", short_name(plan.agent))
     } else {
-        ("5-hour plan", "week")
-    };
-    [
-        plan.five_hour.as_ref().map(|w| window(five_hour, w)),
-        plan.seven_day.as_ref().map(|w| window(week, w)),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(if compact { " · " } else { "   " })
+        windows
+    }
+}
+
+fn short_name(agent: Agent) -> &'static str {
+    match agent {
+        Agent::ClaudeCode => "Claude",
+        Agent::Codex => "Codex",
+    }
 }
 
 fn until(epoch_secs: u64) -> String {
@@ -989,7 +1005,7 @@ fn render_agent_detail(
     frame: &mut Frame,
     area: Rect,
     agent: Option<&AgentRow<'_>>,
-    plan: Option<&Plan>,
+    plans: &[&Plan],
 ) {
     let Some(agent) = agent else { return };
     let session = agent.session;
@@ -999,7 +1015,12 @@ fn render_agent_detail(
     let title = vec![
         Span::styled(session.title.clone(), style::bold(TEXT)),
         Span::styled(
-            format!("   {} · on {}", session.project, agent.machine),
+            format!(
+                "   {} · {} on {}",
+                session.project,
+                session.agent.name(),
+                agent.machine
+            ),
             style::fg(DIM),
         ),
     ];
@@ -1079,17 +1100,14 @@ fn render_agent_detail(
             style::fg(TEXT),
         )],
     ));
-    if let Some(plan) = plan {
+    if let Some(plan) = plans.iter().find(|plan| plan.agent == session.agent) {
         lines.push(Line::default());
-        for (label, window) in [
-            ("5-hour", plan.five_hour.as_ref()),
-            ("week", plan.seven_day.as_ref()),
-        ] {
-            let Some(window) = window else { continue };
+        for window in &plan.windows {
+            let label = window.long_label();
             let fraction = f32::from(window.used) / f32::from(FULL);
             let (filled, track) = chart::meter(fraction, 20);
             lines.push(labelled(
-                label,
+                &label,
                 vec![
                     Span::styled(filled, style::fg(style::load(fraction))),
                     Span::styled(track, style::fg(FAINT)),
@@ -1122,18 +1140,92 @@ fn labelled(label: &str, mut value: Vec<Span<'static>>) -> Line<'static> {
     Line::from(value)
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, problem: Option<&str>) {
-    frame.render_widget(
-        Paragraph::new(Span::styled("↑↓ select   q quit", style::fg(FAINT))),
-        area,
-    );
+fn render_footer(frame: &mut Frame, area: Rect, active_alerts: usize, problem: Option<&str>) {
+    let mut keys = vec![Span::styled("↑↓ select   a alerts", style::fg(FAINT))];
+    if active_alerts > 0 {
+        keys.push(Span::styled(
+            format!(" ({active_alerts})"),
+            style::bold(WARN),
+        ));
+    }
+    keys.push(Span::styled("   q quit", style::fg(FAINT)));
+    let used = keys
+        .iter()
+        .map(|span| span.content.chars().count())
+        .sum::<usize>();
+    frame.render_widget(Paragraph::new(Line::from(keys)), area);
     if let Some(problem) = problem {
-        let room = (area.width as usize).saturating_sub(22);
+        let room = (area.width as usize).saturating_sub(used + 2);
         frame.render_widget(
             Paragraph::new(Span::styled(truncate(problem, room), style::fg(WARN)))
                 .alignment(Alignment::Right),
             area,
         );
+    }
+}
+
+fn render_alerts(frame: &mut Frame, area: Rect, alerts: &Alerts) {
+    let width = area.width as usize;
+    let active = alerts.active().count();
+    let mut title = vec![
+        Span::styled("alerts", style::bold(TEXT)),
+        Span::styled(
+            format!("   {active} active"),
+            if active > 0 {
+                style::bold(WARN)
+            } else {
+                style::fg(DIM)
+            },
+        ),
+    ];
+    if let Some(path) = alerts.path() {
+        title.push(Span::styled(
+            format!("   history in {}", home_relative(path)),
+            style::fg(FAINT),
+        ));
+    }
+    let mut lines = vec![Line::from(clip(title, width))];
+    let today = log::local_time(log::now_secs(), c"%Y-%m-%d");
+    let mut history = alerts.history().peekable();
+    if history.peek().is_none() {
+        lines.push(Line::from(Span::styled(
+            "no alerts yet · one is raised when an agent needs you, a machine stops answering or stays critical, or a plan passes 90%",
+            style::fg(DIM),
+        )));
+    }
+    for entry in history.take((area.height as usize).saturating_sub(1)) {
+        let when = if log::local_time(entry.at, c"%Y-%m-%d") == today {
+            log::local_time(entry.at, c"%H:%M")
+        } else {
+            log::local_time(entry.at, c"%b %d %H:%M")
+        };
+        let (text, color) = match entry.event {
+            Event::Raised => (
+                entry.text.clone(),
+                match entry.severity {
+                    Severity::Error => CRIT,
+                    Severity::Permission | Severity::Question => WARN,
+                },
+            ),
+            Event::Resolved => (format!("resolved · {}", entry.text), DIM),
+        };
+        lines.push(Line::from(clip(
+            vec![
+                Span::styled(pad_left(&when, 12), style::fg(FAINT)),
+                Span::raw("  "),
+                Span::styled(text, style::fg(color)),
+            ],
+            width,
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn home_relative(path: &std::path::Path) -> String {
+    let shown = path.display().to_string();
+    match std::env::var("HOME") {
+        Ok(home) if shown.starts_with(&home) => format!("~{}", &shown[home.len()..]),
+        _ => shown,
     }
 }
 
@@ -1200,8 +1292,8 @@ mod tests {
 
     use super::*;
     use crate::proto::{
-        AgentSession, DiskIo, Filesystem, Identity, Memory, NetIo, Plan, SessionState, Tokens,
-        Waiting, Welcome, Window,
+        AgentSession, DiskIo, FIVE_HOURS, Filesystem, Identity, Memory, NetIo, ONE_WEEK, Plan,
+        SessionState, Tokens, Waiting, Welcome, Window,
     };
     use crate::viewer::model::{Endpoint, Link, LinkUpdate};
 
@@ -1222,6 +1314,7 @@ mod tests {
 
     fn agent(title: &str, state: SessionState, context_used: Option<u16>) -> AgentSession {
         AgentSession {
+            agent: Agent::ClaudeCode,
             id: format!("{title}-0b7a3c1e-6d2f-4e1a-9c55-2f8e1d0a7b44"),
             title: title.into(),
             project: "magi".into(),
@@ -1290,21 +1383,37 @@ mod tests {
                 tx_per_sec: 0,
             },
             sessions: agents(),
-            plan: Some(Plan {
-                five_hour: Some(Window {
-                    used: 1_200,
-                    resets_at: 4_000_000_000,
-                }),
-                seven_day: Some(Window {
-                    used: 4_025,
-                    resets_at: 4_000_000_000,
-                }),
-            }),
+            plans: vec![
+                Plan {
+                    agent: Agent::ClaudeCode,
+                    windows: vec![
+                        Window {
+                            minutes: FIVE_HOURS,
+                            used: 1_200,
+                            resets_at: 4_000_000_000,
+                        },
+                        Window {
+                            minutes: ONE_WEEK,
+                            used: 4_025,
+                            resets_at: 4_000_000_000,
+                        },
+                    ],
+                },
+                Plan {
+                    agent: Agent::Codex,
+                    windows: vec![Window {
+                        minutes: FIVE_HOURS,
+                        used: 300,
+                        resets_at: 4_000_000_000,
+                    }],
+                },
+            ],
+            notices: Vec::new(),
         }
     }
 
     fn fleet(machines: usize, now: Instant) -> Model {
-        let mut model = Model::new(2015, now - Duration::from_secs(60));
+        let mut model = Model::new(2015, now - Duration::from_secs(60), Alerts::in_memory(now));
         for index in 0..machines {
             let endpoint = if index == 0 {
                 Endpoint::Local
@@ -1475,7 +1584,8 @@ mod tests {
             agent_lines.last().unwrap().contains("idle 12m"),
             "{agent_lines:?}"
         );
-        assert!(screen.contains("5-hour plan 12%"));
+        assert!(screen.contains("Claude 5-hour 12%"), "{screen}");
+        assert!(screen.contains("Codex 5-hour 3%"), "{screen}");
     }
 
     #[test]

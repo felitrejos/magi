@@ -38,7 +38,7 @@ struct RegistryJson {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
-    status: String,
+    status: Option<String>,
     #[serde(rename = "waitingFor", default)]
     waiting_for: Option<String>,
     #[serde(rename = "statusUpdatedAt", default)]
@@ -56,23 +56,51 @@ pub struct Registry {
     known: HashMap<PathBuf, Registered>,
 }
 
+pub struct Scan {
+    pub sessions: Vec<Registered>,
+    pub unknown: Vec<Option<String>>,
+}
+
+#[derive(Debug, PartialEq)]
+enum Parsed {
+    Session(Registered),
+    Spare,
+    UnknownShape {
+        pid: Option<i32>,
+        session_id: Option<String>,
+    },
+    Unreadable,
+}
+
 impl Registry {
-    pub fn scan(&mut self, dir: &Path) -> io::Result<Vec<Registered>> {
+    pub fn scan(&mut self, dir: &Path) -> io::Result<Scan> {
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Scan {
+                    sessions: Vec::new(),
+                    unknown: Vec::new(),
+                });
+            }
             Err(error) => return Err(error),
         };
         let mut seen = HashMap::new();
+        let mut unknown = Vec::new();
         for path in entries.flatten().map(|entry| entry.path()).filter(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "json")
         }) {
-            let fresh = fs::read(&path).ok().and_then(|text| parse(&text));
-            let entry = match fresh {
-                Some(Some(session)) => Some(session),
-                Some(None) => None,
-                None => self.known.get(&path).cloned(),
+            let parsed = fs::read(&path).map_or(Parsed::Unreadable, |text| parse(&text));
+            let entry = match parsed {
+                Parsed::Session(session) => Some(session),
+                Parsed::Spare => None,
+                Parsed::UnknownShape { pid, session_id } => {
+                    if pid.is_none_or(is_alive) {
+                        unknown.push(session_id);
+                    }
+                    None
+                }
+                Parsed::Unreadable => self.known.get(&path).cloned(),
             };
             if let Some(session) = entry.filter(is_running) {
                 seen.insert(path, session);
@@ -81,21 +109,33 @@ impl Registry {
         self.known = seen;
         let mut sessions: Vec<Registered> = self.known.values().cloned().collect();
         sessions.sort_by_key(|session| session.started_ms);
-        Ok(sessions)
+        Ok(Scan { sessions, unknown })
     }
 }
 
-fn parse(text: &[u8]) -> Option<Option<Registered>> {
-    let json: RegistryJson = serde_json::from_slice(text).ok()?;
+fn parse(text: &[u8]) -> Parsed {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(text) else {
+        return Parsed::Unreadable;
+    };
+    let unknown = |value: &serde_json::Value| Parsed::UnknownShape {
+        pid: value["pid"]
+            .as_i64()
+            .and_then(|pid| i32::try_from(pid).ok()),
+        session_id: value["sessionId"].as_str().map(str::to_string),
+    };
+    let Ok(json) = serde_json::from_value::<RegistryJson>(value.clone()) else {
+        return unknown(&value);
+    };
     if json.spare {
-        return Some(None);
+        return Parsed::Spare;
     }
-    let status = match json.status.as_str() {
+    let status = match json.status.as_deref().unwrap_or_default() {
         "busy" => Status::Busy,
         "waiting" => Status::Waiting(json.waiting_for.unwrap_or_default()),
-        _ => Status::Idle,
+        "idle" => Status::Idle,
+        _ => return unknown(&value),
     };
-    Some(Some(Registered {
+    Parsed::Session(Registered {
         pid: json.pid,
         session_id: json.session_id,
         cwd: json.cwd,
@@ -104,7 +144,7 @@ fn parse(text: &[u8]) -> Option<Option<Registered>> {
         status_since_ms: json.status_updated_at,
         started_ms: json.started_at,
         proc_start: json.proc_start,
-    }))
+    })
 }
 
 pub fn transcript(projects: &Path, session_id: &str) -> Option<PathBuf> {
@@ -116,8 +156,12 @@ pub fn transcript(projects: &Path, session_id: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+fn is_alive(pid: i32) -> bool {
+    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
+}
+
 fn is_running(session: &Registered) -> bool {
-    if session.pid <= 0 || unsafe { libc::kill(session.pid, 0) } != 0 {
+    if !is_alive(session.pid) {
         return false;
     }
     match session.proc_start.as_deref().and_then(parse_utc_ctime) {
@@ -192,27 +236,46 @@ mod tests {
         format!(r#"{{"pid":18278,"sessionId":"4749","cwd":"/Users/me/magi","startedAt":1794619474650,"procStart":"Sat Nov 14 01:24:34 2026","kind":"interactive","name":"fix login","status":"{status}","statusUpdatedAt":1794619480000{extra}}}"#).into_bytes()
     }
 
+    fn session(parsed: Parsed) -> Registered {
+        match parsed {
+            Parsed::Session(session) => session,
+            other => panic!("not a session: {other:?}"),
+        }
+    }
+
     #[test]
     fn parses_busy_waiting_and_idle() {
-        let busy = parse(&entry("busy", "")).unwrap().unwrap();
+        let busy = session(parse(&entry("busy", "")));
         assert_eq!(
             (busy.status, busy.status_since_ms, busy.name.as_deref()),
             (Status::Busy, 1794619480000, Some("fix login"))
         );
-        let waiting = parse(&entry("waiting", r#","waitingFor":"permission prompt""#))
-            .unwrap()
-            .unwrap();
+        let waiting = session(parse(&entry(
+            "waiting",
+            r#","waitingFor":"permission prompt""#,
+        )));
         assert_eq!(waiting.status, Status::Waiting("permission prompt".into()));
-        assert_eq!(
-            parse(&entry("idle", "")).unwrap().unwrap().status,
-            Status::Idle
-        );
+        assert_eq!(session(parse(&entry("idle", ""))).status, Status::Idle);
     }
 
     #[test]
-    fn spare_sessions_and_garbage_are_skipped() {
-        assert_eq!(parse(&entry("idle", r#","spare":true"#)), Some(None));
-        assert_eq!(parse(b"not json"), None);
+    fn spare_sessions_are_skipped_and_a_new_shape_is_told_apart_from_a_half_written_file() {
+        assert_eq!(parse(&entry("idle", r#","spare":true"#)), Parsed::Spare);
+        assert_eq!(parse(b"{\"pid\":"), Parsed::Unreadable);
+        assert_eq!(
+            parse(&entry("thinking", "")),
+            Parsed::UnknownShape {
+                pid: Some(18278),
+                session_id: Some("4749".into())
+            }
+        );
+        assert_eq!(
+            parse(br#"{"processId":1,"session":"a","state":"busy"}"#),
+            Parsed::UnknownShape {
+                pid: None,
+                session_id: None
+            }
+        );
     }
 
     #[test]
@@ -275,16 +338,33 @@ mod tests {
         let file = dir.join(format!("{me}.json"));
         fs::write(&file, format!(r#"{{"pid":{me},"sessionId":"live","status":"busy","statusUpdatedAt":1,"startedAt":2}}"#)).unwrap();
         let mut registry = Registry::default();
-        assert_eq!(registry.scan(&dir).unwrap().len(), 1);
+        assert_eq!(registry.scan(&dir).unwrap().sessions.len(), 1);
         fs::write(&file, r#"{"pid":"#).unwrap();
-        assert_eq!(registry.scan(&dir).unwrap()[0].session_id, "live");
+        let half_written = registry.scan(&dir).unwrap();
+        assert_eq!(half_written.sessions[0].session_id, "live");
+        assert!(half_written.unknown.is_empty());
+        fs::write(
+            &file,
+            format!(r#"{{"pid":{me},"sessionId":"live","status":"compacting"}}"#),
+        )
+        .unwrap();
+        let changed = registry.scan(&dir).unwrap();
+        assert!(changed.sessions.is_empty());
+        assert_eq!(changed.unknown, vec![Some("live".to_string())]);
+        fs::write(
+            &file,
+            r#"{"pid":2147483000,"sessionId":"gone","status":"compacting"}"#,
+        )
+        .unwrap();
+        assert!(registry.scan(&dir).unwrap().unknown.is_empty());
         fs::remove_file(&file).unwrap();
-        assert!(registry.scan(&dir).unwrap().is_empty());
+        assert!(registry.scan(&dir).unwrap().sessions.is_empty());
         fs::remove_dir_all(&dir).unwrap();
         assert!(
             Registry::default()
                 .scan(Path::new("/nonexistent/magi"))
                 .unwrap()
+                .sessions
                 .is_empty()
         );
     }

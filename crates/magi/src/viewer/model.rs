@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
+use super::alerts::Alerts;
 use crate::proto::{AgentSession, FULL, Identity, Plan, Sample, SessionState, Welcome};
 use crate::tailscale::Peer;
 
@@ -204,6 +205,16 @@ pub enum Subsystem {
     Storage,
 }
 
+impl Subsystem {
+    pub fn name(self) -> &'static str {
+        match self {
+            Subsystem::Cpu => "cpu",
+            Subsystem::Memory => "memory",
+            Subsystem::Storage => "storage",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Strain {
     pub subsystem: Subsystem,
@@ -250,17 +261,21 @@ pub struct Model {
     pub links: HashMap<Endpoint, Link>,
     pub selected: usize,
     pub port: u16,
+    pub alerts: Alerts,
+    pub showing_alerts: bool,
     focus: Option<Focus>,
     started: Instant,
 }
 
 impl Model {
-    pub fn new(port: u16, now: Instant) -> Self {
+    pub fn new(port: u16, now: Instant, alerts: Alerts) -> Self {
         Self {
             topology: Topology::default(),
             links: HashMap::new(),
             selected: 0,
             port,
+            alerts,
+            showing_alerts: false,
             focus: None,
             started: now,
         }
@@ -412,11 +427,37 @@ impl Model {
         agents
     }
 
-    pub fn plan(&self, now: Instant) -> Option<&Plan> {
+    pub fn plans(&self, now: Instant) -> Vec<&Plan> {
+        let mut plans: Vec<&Plan> = Vec::new();
+        for plan in self
+            .rows(now)
+            .into_iter()
+            .filter(|row| row.state() == Some(&LinkState::Live))
+            .filter_map(|row| row.machine()?.latest.as_ref())
+            .flat_map(|sample| &sample.plans)
+        {
+            if !plans.iter().any(|known| known.agent == plan.agent) {
+                plans.push(plan);
+            }
+        }
+        plans.sort_by_key(|plan| plan.agent);
+        plans
+    }
+
+    pub fn notices(&self, now: Instant) -> Vec<String> {
         self.rows(now)
             .into_iter()
             .filter(|row| row.state() == Some(&LinkState::Live))
-            .find_map(|row| row.machine()?.latest.as_ref()?.plan.as_ref())
+            .flat_map(|row| {
+                let notices = row
+                    .machine()
+                    .and_then(|machine| machine.latest.as_ref())
+                    .map_or(&[][..], |sample| &sample.notices[..]);
+                notices
+                    .iter()
+                    .map(move |notice| format!("{}: {notice}", row.name))
+            })
+            .collect()
     }
 
     pub fn selection(&self, now: Instant) -> Option<Focus> {
@@ -492,7 +533,7 @@ mod tests {
     }
 
     fn model_with(agents: &[(Endpoint, &str)], silent: &[Endpoint], now: Instant) -> Model {
-        let mut model = Model::new(2015, now - SEARCH_GRACE * 2);
+        let mut model = Model::new(2015, now - SEARCH_GRACE * 2, Alerts::in_memory(now));
         for (endpoint, node) in agents {
             model.links.insert(*endpoint, Link::connecting());
             model.apply(*endpoint, welcome(node), now);
@@ -579,7 +620,7 @@ mod tests {
     #[test]
     fn this_machine_is_searching_during_startup() {
         let now = Instant::now();
-        let mut model = Model::new(2015, now);
+        let mut model = Model::new(2015, now, Alerts::in_memory(now));
         model.links.insert(LOCAL, Link::connecting());
         assert!(matches!(model.rows(now)[0].presence, Presence::Searching));
     }
@@ -643,10 +684,11 @@ mod tests {
 
     #[test]
     fn agents_sort_by_who_needs_you_and_lost_machines_go_last() {
-        use crate::proto::{AgentSession, Tokens, Waiting};
+        use crate::proto::{Agent, AgentSession, Tokens, Waiting};
         let now = Instant::now();
         let mut model = model_with(&[(LOCAL, "mac"), (HOMELAB, "homelab")], &[], now);
         let session = |title: &str, state: SessionState, state_secs: u32| AgentSession {
+            agent: Agent::ClaudeCode,
             id: title.into(),
             title: title.into(),
             project: "p".into(),
@@ -691,7 +733,8 @@ mod tests {
 
     #[test]
     fn selection_stays_in_range() {
-        let mut model = Model::new(2015, Instant::now());
+        let now = Instant::now();
+        let mut model = Model::new(2015, now, Alerts::in_memory(now));
         model.select(5, 3);
         assert_eq!(model.selected, 2);
         model.select(-9, 3);

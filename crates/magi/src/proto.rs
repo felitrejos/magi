@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 
@@ -19,23 +19,63 @@ pub struct Hello {
 pub struct StatusReport {
     pub session_id: String,
     pub context_used: Option<BasisPoints>,
-    pub plan: Plan,
+    pub windows: Vec<Window>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Agent {
+    ClaudeCode,
+    Codex,
+}
+
+impl Agent {
+    pub fn name(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => "Claude Code",
+            Agent::Codex => "Codex",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Plan {
-    pub five_hour: Option<Window>,
-    pub seven_day: Option<Window>,
+    pub agent: Agent,
+    pub windows: Vec<Window>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub struct Window {
+    pub minutes: u32,
     pub used: BasisPoints,
     pub resets_at: u64,
 }
 
+pub const FIVE_HOURS: u32 = 5 * 60;
+pub const ONE_WEEK: u32 = 7 * 24 * 60;
+
+impl Window {
+    pub fn label(&self) -> String {
+        match self.minutes {
+            ONE_WEEK => "wk".into(),
+            minutes if minutes % (24 * 60) == 0 => format!("{}d", minutes / (24 * 60)),
+            minutes if minutes % 60 == 0 => format!("{}h", minutes / 60),
+            minutes => format!("{minutes}m"),
+        }
+    }
+
+    pub fn long_label(&self) -> String {
+        match self.minutes {
+            ONE_WEEK => "week".into(),
+            minutes if minutes % (24 * 60) == 0 => format!("{}-day", minutes / (24 * 60)),
+            minutes if minutes % 60 == 0 => format!("{}-hour", minutes / 60),
+            minutes => format!("{minutes}-minute"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct AgentSession {
+    pub agent: Agent,
     pub id: String,
     pub title: String,
     pub project: String,
@@ -119,7 +159,8 @@ pub struct Sample {
     pub disk: DiskIo,
     pub network: NetIo,
     pub sessions: Vec<AgentSession>,
-    pub plan: Option<Plan>,
+    pub plans: Vec<Plan>,
+    pub notices: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -226,7 +267,8 @@ mod tests {
                 tx_per_sec: 678,
             },
             sessions: Vec::new(),
-            plan: None,
+            plans: Vec::new(),
+            notices: Vec::new(),
         }
     }
 
@@ -264,6 +306,39 @@ mod tests {
         wire.extend_from_slice(&[0; 8]);
         let error = read_frame::<Hello, _>(&mut wire.as_slice(), &mut Vec::new()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn windows_are_labelled_by_their_length() {
+        let label = |minutes| {
+            Window {
+                minutes,
+                used: 0,
+                resets_at: 0,
+            }
+            .label()
+        };
+        assert_eq!(
+            [
+                label(FIVE_HOURS),
+                label(ONE_WEEK),
+                label(2 * 24 * 60),
+                label(90)
+            ],
+            ["5h", "wk", "2d", "90m"]
+        );
+        let long = |minutes| {
+            Window {
+                minutes,
+                used: 0,
+                resets_at: 0,
+            }
+            .long_label()
+        };
+        assert_eq!(
+            [long(FIVE_HOURS), long(ONE_WEEK), long(2 * 24 * 60)],
+            ["5-hour", "week", "2-day"]
+        );
     }
 
     #[test]

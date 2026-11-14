@@ -1,3 +1,4 @@
+use std::ffi::CStr;
 use std::mem::MaybeUninit;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -28,16 +29,24 @@ impl Throttle {
 }
 
 pub fn clock() -> String {
-    let secs = SystemTime::now()
+    local_time(now_secs(), c"%H:%M:%S")
+}
+
+pub fn now_secs() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |now| now.as_secs()) as libc::time_t;
+        .map_or(0, |now| now.as_secs())
+}
+
+pub fn local_time(secs: u64, format: &CStr) -> String {
+    let secs = secs as libc::time_t;
     let mut local = MaybeUninit::<libc::tm>::zeroed();
     if unsafe { libc::localtime_r(&secs, local.as_mut_ptr()) }.is_null() {
-        return String::from("--:--:--");
+        return String::from("--:--");
     }
     let local = unsafe { local.assume_init() };
-    format!(
-        "{:02}:{:02}:{:02}",
-        local.tm_hour, local.tm_min, local.tm_sec
-    )
+    let mut buf = [0u8; 64];
+    let len =
+        unsafe { libc::strftime(buf.as_mut_ptr().cast(), buf.len(), format.as_ptr(), &local) };
+    String::from_utf8_lossy(&buf[..len]).into_owned()
 }

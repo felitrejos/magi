@@ -79,7 +79,7 @@ pub fn status_socket() -> io::Result<PathBuf> {
     Ok(state_dir()?.join("status.sock"))
 }
 
-fn state_dir() -> io::Result<PathBuf> {
+pub fn state_dir() -> io::Result<PathBuf> {
     let home = env::var_os("HOME").ok_or_else(|| io::Error::other("HOME is not set"))?;
     Ok(Path::new(&home).join(".local/state/magi"))
 }

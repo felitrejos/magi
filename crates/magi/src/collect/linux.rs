@@ -101,7 +101,8 @@ impl Collector {
                 tx_per_sec: self.net_tx.per_sec(now, tx),
             },
             sessions: Vec::new(),
-            plan: None,
+            plans: Vec::new(),
+            notices: Vec::new(),
         })
     }
 }

@@ -91,6 +91,64 @@ pub fn cost_micros(model: &str, usage: &Usage) -> Option<u64> {
     Some((dollars * fast * 1_000_000.0).round() as u64)
 }
 
+pub struct OpenAiUsage {
+    pub input: u64,
+    pub cached: u64,
+    pub cache_write: u64,
+    pub output: u64,
+}
+
+struct OpenAiPrice {
+    id: &'static str,
+    rates: Rates,
+    long_prompt: Option<Rates>,
+}
+
+const OPENAI_LONG_PROMPT: u64 = 272_000;
+
+const fn openai(id: &'static str, rates: Rates) -> OpenAiPrice {
+    OpenAiPrice {
+        id,
+        rates,
+        long_prompt: None,
+    }
+}
+
+const OPENAI_PRICES: [OpenAiPrice; 10] = [
+    OpenAiPrice {
+        id: "gpt-6.1-sol",
+        rates: rates(2.0, 10.0, 0.10),
+        long_prompt: Some(rates(4.0, 15.0, 0.20)),
+    },
+    openai("gpt-6.1-terra", rates(1.0, 5.0, 0.05)),
+    openai("gpt-6-astra", rates(10.0, 50.0, 1.0)),
+    openai("gpt-6-sol", rates(2.0, 10.0, 0.20)),
+    openai("gpt-6-luna", rates(0.10, 0.50, 0.01)),
+    openai("gpt-5.6-sol", rates(4.0, 20.0, 0.40)),
+    openai("gpt-5.6-terra", rates(2.0, 12.0, 0.20)),
+    openai("gpt-5.6-luna", rates(0.20, 1.20, 0.02)),
+    openai("gpt-5.5", rates(5.0, 30.0, 0.50)),
+    openai("gpt-5.3-codex", rates(1.75, 14.0, 0.175)),
+];
+
+pub fn openai_cost_micros(model: &str, usage: &OpenAiUsage) -> Option<u64> {
+    if usage.cache_write > 0 {
+        return None;
+    }
+    let price = OPENAI_PRICES.iter().find(|price| price.id == model)?;
+    let rates = if usage.input > OPENAI_LONG_PROMPT {
+        price.long_prompt.as_ref()?
+    } else {
+        &price.rates
+    };
+    let fresh = usage.input.saturating_sub(usage.cached);
+    let dollars = (fresh as f64 * rates.input
+        + usage.cached as f64 * rates.cache_read
+        + usage.output as f64 * rates.output)
+        / 1_000_000.0;
+    Some((dollars * 1_000_000.0).round() as u64)
+}
+
 fn normalize(model: &str) -> &str {
     let model = model.split_once('[').map_or(model, |(id, _)| id);
     match model.rsplit_once('-') {
@@ -170,6 +228,33 @@ mod tests {
             cost_micros("claude-haiku-5-5", &usage(100_001, 0)),
             Some(50_001)
         );
+    }
+
+    #[test]
+    fn openai_input_includes_cached_tokens_and_unknown_tiers_stay_unpriced() {
+        let usage = |input, cached, cache_write, output| OpenAiUsage {
+            input,
+            cached,
+            cache_write,
+            output,
+        };
+        assert_eq!(
+            openai_cost_micros("gpt-5.6-terra", &usage(200_000, 80_000, 0, 100_000)),
+            Some(240_000 + 16_000 + 1_200_000)
+        );
+        assert_eq!(
+            openai_cost_micros("gpt-6.1-sol", &usage(300_000, 0, 0, 0)),
+            Some(1_200_000)
+        );
+        assert_eq!(
+            openai_cost_micros("gpt-5.6-terra", &usage(300_000, 0, 0, 0)),
+            None
+        );
+        assert_eq!(
+            openai_cost_micros("gpt-5.6-terra", &usage(10, 0, 5, 0)),
+            None
+        );
+        assert_eq!(openai_cost_micros("gpt-9", &usage(10, 0, 0, 0)), None);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::net;
-use crate::proto::{self, BasisPoints, FULL, Plan, StatusReport, Window};
+use crate::proto::{self, BasisPoints, FIVE_HOURS, FULL, ONE_WEEK, StatusReport, Window};
 
 const SEND_WAIT: Duration = Duration::from_millis(300);
 const NEW_FILE_MODE: u32 = 0o600;
@@ -68,20 +68,23 @@ fn read(input: StatusInput) -> (String, Option<StatusReport>) {
         .context_window
         .and_then(|window| window.used_percentage)
         .map(basis_points);
-    let limits = input.rate_limits;
-    let plan = Plan {
-        five_hour: limits
-            .as_ref()
-            .and_then(|limits| window(limits.five_hour.as_ref())),
-        seven_day: limits
-            .as_ref()
-            .and_then(|limits| window(limits.seven_day.as_ref())),
-    };
-    let text = status_text(context_used, &plan);
+    let windows: Vec<Window> = input
+        .rate_limits
+        .map(|limits| {
+            [
+                window(FIVE_HOURS, limits.five_hour.as_ref()),
+                window(ONE_WEEK, limits.seven_day.as_ref()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect()
+        })
+        .unwrap_or_default();
+    let text = status_text(context_used, &windows);
     let status = input.session_id.map(|session_id| StatusReport {
         session_id,
         context_used,
-        plan,
+        windows,
     });
     (text, status)
 }
@@ -100,25 +103,27 @@ fn basis_points(percent: f64) -> BasisPoints {
     (percent.clamp(0.0, 100.0) * f64::from(FULL) / 100.0).round() as BasisPoints
 }
 
-fn window(json: Option<&WindowJson>) -> Option<Window> {
+fn window(minutes: u32, json: Option<&WindowJson>) -> Option<Window> {
     let json = json?;
     Some(Window {
+        minutes,
         used: basis_points(json.used_percentage?),
         resets_at: json.resets_at?,
     })
 }
 
-fn status_text(context_used: Option<BasisPoints>, plan: &Plan) -> String {
+fn status_text(context_used: Option<BasisPoints>, windows: &[Window]) -> String {
     let shown = |label: &str, used: BasisPoints| format!("{label} {}%", used / 100);
-    [
-        context_used.map(|used| shown("ctx", used)),
-        plan.five_hour.map(|window| shown("5h", window.used)),
-        plan.seven_day.map(|window| shown("wk", window.used)),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" · ")
+    context_used
+        .map(|used| shown("ctx", used))
+        .into_iter()
+        .chain(
+            windows
+                .iter()
+                .map(|window| shown(&window.label(), window.used)),
+        )
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 pub fn install() -> io::Result<()> {
@@ -313,13 +318,11 @@ mod tests {
             Some(StatusReport {
                 session_id: "s".into(),
                 context_used: Some(3_440),
-                plan: Plan {
-                    five_hour: Some(Window {
-                        used: 1_200,
-                        resets_at: 1_800_000_000
-                    }),
-                    seven_day: None,
-                },
+                windows: vec![Window {
+                    minutes: FIVE_HOURS,
+                    used: 1_200,
+                    resets_at: 1_800_000_000
+                }],
             })
         );
         assert_eq!(read(StatusInput::default()), (String::new(), None));

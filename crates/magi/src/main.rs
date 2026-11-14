@@ -15,10 +15,10 @@ use std::time::Duration;
 
 use lexopt::prelude::*;
 
-const USAGE: &str = "magi: live monitoring for your Rex hosts
+const USAGE: &str = "magi: live monitoring for your machines and coding agents, in one Rex pane
 
 Usage:
-  magi [--port PORT]                                   open the viewer
+  magi [--port PORT]                                   open the viewer (press a for alerts)
   magi agent install [--port PORT] [--interval MS]     run the agent in the background, now and at login
   magi agent uninstall                                 stop it and remove the background service
   magi agent [--port PORT] [--interval MS]             run the agent in this terminal

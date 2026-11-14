@@ -1,46 +1,44 @@
-use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
-use std::os::unix::fs::MetadataExt;
+use std::collections::HashSet;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
+use super::ledger::{Counted, Ledger};
 use super::pricing::{self, Usage};
+use super::tail::{self, Lines, Tail};
 use crate::proto::Tokens;
 
-const CHUNK_BYTES: usize = 256 * 1024;
-const MAX_LINE_BYTES: usize = 16 << 20;
 const ASSISTANT_MARK: &[u8] = b"\"type\":\"assistant\"";
 const RESULT_MARK: &[u8] = b"\"tool_result\"";
 
 pub struct Transcript {
-    path: PathBuf,
-    file_id: Option<(u64, u64)>,
-    offset: u64,
-    pending: Vec<u8>,
-    skipping_line: bool,
-    counted: HashMap<String, Counted>,
-    copied: HashMap<String, Counted>,
+    tail: Tail,
+    pub state: Summary,
+}
+
+#[derive(Default)]
+pub struct Summary {
+    pub ledger: Ledger,
     pub model: Option<String>,
-    pub tokens: Tokens,
-    pub cost_micros: u64,
-    pub unpriced: bool,
     pub context_tokens: u64,
+    pub ended_turn: bool,
+    pub cwd: Option<String>,
     open_tools: Vec<(String, String)>,
 }
 
-struct Counted {
-    tokens: Tokens,
-    cost: u64,
-    priced: bool,
+struct Feed<'a> {
+    state: &'a mut Summary,
+    claims: &'a mut HashSet<String>,
 }
 
 #[derive(Deserialize)]
 struct Line {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default)]
+    cwd: Option<String>,
     #[serde(default)]
     message: Option<Message>,
 }
@@ -133,113 +131,46 @@ impl<'de> Visitor<'de> for BlocksOrNone {
 impl Transcript {
     pub fn new(path: PathBuf) -> Self {
         Self {
-            path,
-            file_id: None,
-            offset: 0,
-            pending: Vec::new(),
-            skipping_line: false,
-            counted: HashMap::new(),
-            copied: HashMap::new(),
-            model: None,
-            tokens: Tokens::default(),
-            cost_micros: 0,
-            unpriced: false,
-            context_tokens: 0,
-            open_tools: Vec::new(),
+            tail: Tail::new(path),
+            state: Summary::default(),
         }
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        self.tail.path()
     }
 
     pub fn running_tool(&self) -> Option<&str> {
-        self.open_tools.last().map(|(_, name)| name.as_str())
+        self.state.open_tools.last().map(|(_, name)| name.as_str())
     }
 
     pub fn release(&self, claims: &mut HashSet<String>) {
-        for id in self.counted.keys() {
-            claims.remove(id);
-        }
+        self.state.ledger.release(claims);
     }
 
     pub fn adopt(&mut self, claims: &mut HashSet<String>) {
-        for (id, counted) in std::mem::take(&mut self.copied) {
-            if claims.insert(id.clone()) {
-                self.add(&counted);
-                self.counted.insert(id, counted);
-            } else {
-                self.copied.insert(id, counted);
-            }
-        }
-    }
-
-    fn add(&mut self, counted: &Counted) {
-        self.tokens = self.tokens + counted.tokens;
-        self.cost_micros += counted.cost;
-        self.unpriced |= !counted.priced;
+        self.state.ledger.adopt(claims);
     }
 
     pub fn advance(&mut self, budget: &mut u64, claims: &mut HashSet<String>) -> io::Result<()> {
-        let metadata = fs::metadata(&self.path)?;
-        let file_id = Some((metadata.dev(), metadata.ino()));
-        if metadata.len() < self.offset || (self.file_id.is_some() && self.file_id != file_id) {
-            self.release(claims);
-            *self = Transcript::new(self.path.clone());
-        }
-        self.file_id = file_id;
-        if metadata.len() == self.offset || *budget == 0 {
-            return Ok(());
-        }
-        let mut file = File::open(&self.path)?;
-        file.seek(SeekFrom::Start(self.offset))?;
-        let mut chunk = vec![0; CHUNK_BYTES];
-        let mut remaining = (metadata.len() - self.offset).min(*budget);
-        while remaining > 0 {
-            let wanted = remaining.min(CHUNK_BYTES as u64) as usize;
-            let read = file.read(&mut chunk[..wanted])?;
-            if read == 0 {
-                break;
-            }
-            self.offset += read as u64;
-            remaining -= read as u64;
-            *budget -= read as u64;
-            self.take(&chunk[..read], claims);
-        }
-        Ok(())
+        self.tail.advance(
+            budget,
+            &mut Feed {
+                state: &mut self.state,
+                claims,
+            },
+        )
+    }
+}
+
+impl Lines for Feed<'_> {
+    fn restart(&mut self) {
+        self.state.ledger.release(self.claims);
+        *self.state = Summary::default();
     }
 
-    fn take(&mut self, bytes: &[u8], claims: &mut HashSet<String>) {
-        let Some(end) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-            self.hold(bytes);
-            return;
-        };
-        let mut complete = std::mem::take(&mut self.pending);
-        complete.extend_from_slice(&bytes[..end]);
-        let mut lines = complete.split(|byte| *byte == b'\n');
-        if std::mem::take(&mut self.skipping_line) {
-            lines.next();
-        }
-        for line in lines {
-            self.read_line(line, claims);
-        }
-        self.hold(&bytes[end + 1..]);
-    }
-
-    fn hold(&mut self, bytes: &[u8]) {
-        if self.skipping_line {
-            return;
-        }
-        if self.pending.len() + bytes.len() > MAX_LINE_BYTES {
-            self.pending = Vec::new();
-            self.skipping_line = true;
-            return;
-        }
-        self.pending.extend_from_slice(bytes);
-    }
-
-    fn read_line(&mut self, line: &[u8], claims: &mut HashSet<String>) {
-        if !contains(line, ASSISTANT_MARK) && !contains(line, RESULT_MARK) {
+    fn line(&mut self, line: &[u8]) {
+        if !tail::contains(line, ASSISTANT_MARK) && !tail::contains(line, RESULT_MARK) {
             return;
         }
         let Ok(parsed) = serde_json::from_slice::<Line>(line) else {
@@ -248,6 +179,10 @@ impl Transcript {
         let Some(message) = parsed.message else {
             return;
         };
+        let state = &mut *self.state;
+        if parsed.cwd.is_some() {
+            state.cwd = parsed.cwd;
+        }
         match parsed.kind.as_str() {
             "assistant" => {
                 for block in message
@@ -256,28 +191,32 @@ impl Transcript {
                     .filter(|block| block.kind == "tool_use")
                 {
                     if let (Some(id), Some(name)) = (&block.id, &block.name) {
-                        self.open_tools.push((id.clone(), name.clone()));
+                        state.open_tools.push((id.clone(), name.clone()));
                     }
                 }
-                if message.stop_reason.as_deref() == Some("end_turn") {
-                    self.open_tools.clear();
+                state.ended_turn = message.stop_reason.as_deref() == Some("end_turn");
+                if state.ended_turn {
+                    state.open_tools.clear();
                 }
-                self.count(&message, claims);
+                state.count(&message, self.claims);
             }
             "user" => {
+                state.ended_turn = false;
                 for id in message
                     .content
                     .iter()
                     .filter(|block| block.kind == "tool_result")
                     .filter_map(|block| block.tool_use_id.as_ref())
                 {
-                    self.open_tools.retain(|(open, _)| open != id);
+                    state.open_tools.retain(|(open, _)| open != id);
                 }
             }
             _ => {}
         }
     }
+}
 
+impl Summary {
     fn count(&mut self, message: &Message, claims: &mut HashSet<String>) {
         let (Some(id), Some(usage), Some(model)) = (&message.id, &message.usage, &message.model)
         else {
@@ -309,60 +248,28 @@ impl Transcript {
             + usage.cache_creation_input_tokens
             + usage.output_tokens;
         self.model = Some(model.clone());
-        let seen = Counted {
-            tokens: Tokens {
-                input: usage.input_tokens,
-                output: usage.output_tokens,
-                cache_read: usage.cache_read_input_tokens,
-                cache_write: usage.cache_creation_input_tokens,
+        self.ledger.count(
+            id,
+            Counted {
+                tokens: Tokens {
+                    input: usage.input_tokens,
+                    output: usage.output_tokens,
+                    cache_read: usage.cache_read_input_tokens,
+                    cache_write: usage.cache_creation_input_tokens,
+                },
+                cost: price.unwrap_or(0),
+                priced: price.is_some(),
             },
-            cost: price.unwrap_or(0),
-            priced: price.is_some(),
-        };
-        if let Some(copy) = self.copied.get_mut(id) {
-            copy.keep_larger(seen);
-            return;
-        }
-        match self.counted.get_mut(id) {
-            Some(counted) => {
-                let before = (counted.tokens.output, counted.cost);
-                counted.keep_larger(seen);
-                self.tokens.output += counted.tokens.output - before.0;
-                self.cost_micros += counted.cost - before.1;
-                self.unpriced |= !counted.priced;
-            }
-            None if claims.insert(id.clone()) => {
-                self.add(&seen);
-                self.counted.insert(id.clone(), seen);
-            }
-            None => {
-                self.copied.insert(id.clone(), seen);
-            }
-        }
+            claims,
+        );
     }
-}
-
-impl Counted {
-    fn keep_larger(&mut self, seen: Counted) {
-        if seen.tokens.output > self.tokens.output {
-            self.tokens.output = seen.tokens.output;
-            self.cost = self.cost.max(seen.cost);
-            self.priced &= seen.priced;
-        }
-    }
-}
-
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs::OpenOptions;
-    use std::io::Write;
+    use std::fs;
 
+    use super::super::tail::tests::{append, temp};
     use super::*;
 
     const NOW: &str = "2026-11-14T01:00:00.000Z";
@@ -378,25 +285,6 @@ mod tests {
         format!(
             r#"{{"type":"user","timestamp":"{NOW}","message":{{"role":"user","content":[{{"tool_use_id":"{tool_use_id}","type":"tool_result","content":"ok"}}]}}}}"#
         )
-    }
-
-    fn temp(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "magi-transcript-{}-{name}.jsonl",
-            std::process::id()
-        ));
-        let _ = fs::remove_file(&path);
-        path
-    }
-
-    fn append(path: &Path, text: &str) {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .unwrap()
-            .write_all(text.as_bytes())
-            .unwrap();
     }
 
     fn read(transcript: &mut Transcript) {
@@ -422,7 +310,7 @@ mod tests {
         read(&mut transcript);
 
         assert_eq!(
-            transcript.tokens,
+            transcript.state.ledger.tokens,
             Tokens {
                 input: 10,
                 output: 140,
@@ -430,8 +318,8 @@ mod tests {
                 cache_write: 0
             }
         );
-        assert_eq!(transcript.cost_micros, 40 + 2_800 + 200);
-        assert_eq!(transcript.context_tokens, 1_150);
+        assert_eq!(transcript.state.ledger.cost_micros, 40 + 2_800 + 200);
+        assert_eq!(transcript.state.context_tokens, 1_150);
         assert_eq!(transcript.running_tool(), Some("Bash"));
 
         append(&path, &format!("{}\n", result("toolu_1")));
@@ -461,19 +349,28 @@ mod tests {
         let mut second = Transcript::new(fork.clone());
         first.advance(&mut u64::MAX.clone(), &mut claims).unwrap();
         second.advance(&mut u64::MAX.clone(), &mut claims).unwrap();
-        assert_eq!((first.tokens.output, second.tokens.output), (500, 7));
+        assert_eq!(
+            (
+                first.state.ledger.tokens.output,
+                second.state.ledger.tokens.output
+            ),
+            (500, 7)
+        );
         second.adopt(&mut claims);
-        assert_eq!(second.tokens.output, 7);
+        assert_eq!(second.state.ledger.tokens.output, 7);
         first.release(&mut claims);
         assert!(!claims.contains("shared") && claims.contains("own"));
         second.adopt(&mut claims);
-        assert_eq!(second.tokens.output, 507);
+        assert_eq!(second.state.ledger.tokens.output, 507);
         assert!(claims.contains("shared"));
         let mut after_restart = Transcript::new(fork.clone());
         after_restart
             .advance(&mut u64::MAX.clone(), &mut HashSet::new())
             .unwrap();
-        assert_eq!(after_restart.tokens.output, second.tokens.output);
+        assert_eq!(
+            after_restart.state.ledger.tokens.output,
+            second.state.ledger.tokens.output
+        );
         fs::remove_file(original).unwrap();
         fs::remove_file(fork).unwrap();
     }
@@ -492,27 +389,6 @@ mod tests {
         let mut transcript = Transcript::new(path.clone());
         read(&mut transcript);
         assert_eq!(transcript.running_tool(), None);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn a_half_written_line_waits_for_its_end() {
-        let path = temp("partial");
-        let line = assistant(
-            "msg_2",
-            r#"{"type":"text","text":"hi"}"#,
-            2,
-            "end_turn",
-            NOW,
-        );
-        let (head, tail) = line.split_at(line.len() / 2);
-        append(&path, head);
-        let mut transcript = Transcript::new(path.clone());
-        read(&mut transcript);
-        assert_eq!(transcript.tokens.output, 0);
-        append(&path, &format!("{tail}\n"));
-        read(&mut transcript);
-        assert_eq!(transcript.tokens.output, 2);
         fs::remove_file(path).unwrap();
     }
 
@@ -536,56 +412,7 @@ mod tests {
         );
         fs::rename(&replacement, &path).unwrap();
         read(&mut transcript);
-        assert_eq!(transcript.tokens.output, 10);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn the_byte_budget_spreads_a_long_catch_up_over_several_polls() {
-        let path = temp("budget");
-        let line = assistant("x", "", 1, "end_turn", NOW);
-        for index in 0..100 {
-            append(
-                &path,
-                &format!(
-                    "{}\n",
-                    line.replace("\"id\":\"x\"", &format!("\"id\":\"m{index}\""))
-                ),
-            );
-        }
-        let mut transcript = Transcript::new(path.clone());
-        let mut budget = (line.len() as u64 + 2) * 10;
-        transcript
-            .advance(&mut budget, &mut HashSet::new())
-            .unwrap();
-        assert!(
-            transcript.tokens.output >= 9 && transcript.tokens.output <= 10,
-            "{}",
-            transcript.tokens.output
-        );
-        assert_eq!(budget, 0);
-        read(&mut transcript);
-        assert_eq!(transcript.tokens.output, 100);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn a_line_too_long_to_hold_is_skipped_and_reading_resumes_after_it() {
-        let path = temp("huge");
-        let huge =
-            result("toolu_1").replace("\"ok\"", &format!("\"{}\"", "x".repeat(MAX_LINE_BYTES)));
-        append(
-            &path,
-            &format!(
-                "{}\n{huge}\n{}\n",
-                assistant("before", "", 3, "end_turn", NOW),
-                assistant("after", "", 4, "end_turn", NOW)
-            ),
-        );
-        let mut transcript = Transcript::new(path.clone());
-        read(&mut transcript);
-        assert_eq!(transcript.tokens.output, 7);
-        assert!(transcript.pending.is_empty() && !transcript.skipping_line);
+        assert_eq!(transcript.state.ledger.tokens.output, 10);
         fs::remove_file(path).unwrap();
     }
 
@@ -618,8 +445,8 @@ mod tests {
         );
         let mut transcript = Transcript::new(path.clone());
         read(&mut transcript);
-        assert!(transcript.unpriced);
-        assert_eq!(transcript.tokens.output, 1);
+        assert!(transcript.state.ledger.unpriced);
+        assert_eq!(transcript.state.ledger.tokens.output, 1);
         fs::remove_file(path).unwrap();
     }
 }

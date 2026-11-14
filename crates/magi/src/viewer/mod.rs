@@ -1,3 +1,4 @@
+mod alerts;
 mod chart;
 mod link;
 mod model;
@@ -7,7 +8,7 @@ mod units;
 mod view;
 
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -17,7 +18,7 @@ use std::time::{Duration, Instant};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
-use crate::net;
+use crate::{log, net};
 use link::{Dial, LinkHandle};
 use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
@@ -46,10 +47,13 @@ pub fn run(config: Config) -> io::Result<()> {
     };
     topology::spawn(sender.clone())?;
     spawn_input(sender)?;
+    let alerts = alerts::Alerts::open(net::state_dir()?.join("alerts.jsonl"), Instant::now())?;
     let mut terminal = ratatui::try_init()?;
-    let result = event_loop(&mut terminal, &events, &mut links, config.port);
+    let result = write_status(alerts::CLEAR_ALL)
+        .and_then(|()| event_loop(&mut terminal, &events, &mut links, config.port, alerts));
+    let cleared = write_status(alerts::CLEAR_ALL);
     ratatui::restore();
-    result
+    result.and(cleared)
 }
 
 fn spawn_input(events: SyncSender<Event>) -> io::Result<()> {
@@ -110,14 +114,19 @@ fn event_loop(
     events: &Receiver<Event>,
     links: &mut Links,
     port: u16,
+    alerts: alerts::Alerts,
 ) -> io::Result<()> {
-    let mut model = Model::new(port, Instant::now());
+    let mut model = Model::new(port, Instant::now(), alerts);
     links.reconcile(&mut model, &[Endpoint::Local])?;
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME;
     loop {
         if dirty && last_draw.elapsed() >= FRAME {
             let now = Instant::now();
+            let now_secs = log::now_secs();
+            let conditions = alerts::conditions(&model, now, now_secs);
+            let changes = model.alerts.update(conditions, now, now_secs);
+            write_status(&alerts::report(&changes))?;
             terminal.draw(|frame| view::render(frame, &model, now))?;
             last_draw = now;
             dirty = false;
@@ -141,6 +150,15 @@ fn event_loop(
         }
         dirty = true;
     }
+}
+
+fn write_status(sequence: &str) -> io::Result<()> {
+    if sequence.is_empty() {
+        return Ok(());
+    }
+    let mut out = io::stdout().lock();
+    out.write_all(sequence.as_bytes())?;
+    out.flush()
 }
 
 fn handle_batch(
@@ -169,6 +187,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             KeyCode::Down | KeyCode::Char('j') => model.move_selection(1, now),
             KeyCode::Home | KeyCode::Char('g') => model.move_selection(isize::MIN, now),
             KeyCode::End | KeyCode::Char('G') => model.move_selection(isize::MAX, now),
+            KeyCode::Char('a') => model.showing_alerts = !model.showing_alerts,
             _ => {}
         },
         Event::Input(_) => {}
@@ -248,7 +267,8 @@ mod tests {
             socket: PathBuf::new(),
             sender,
         };
-        let mut model = Model::new(2015, Instant::now());
+        let now = Instant::now();
+        let mut model = Model::new(2015, now, alerts::Alerts::in_memory(now));
         agent(&mut model, Endpoint::Local, "mac");
         agent(
             &mut model,
