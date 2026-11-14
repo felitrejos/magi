@@ -175,7 +175,7 @@ case $command in
     trap 'rm -rf "$t"' EXIT
     now=$(git rev-parse -q --verify HEAD || :)
     parent=$base
-    if [ "$now" != "$head" ]; then parent=$now; fi
+    if [ "$now" != "$head" ] && ! git merge-base --is-ancestor "$now" "$base" 2>/dev/null; then parent=$now; fi
     GIT_INDEX_FILE="$t/index" git read-tree "$parent" || exit
     GIT_INDEX_FILE="$t/index" git add -A >/dev/null || exit
     tree=$(GIT_INDEX_FILE="$t/index" git write-tree) || exit
@@ -188,24 +188,26 @@ case $command in
     git update-ref refs/cielago/result "$result"
     printf '%s\n' "$result"
     ;;
-  reserve)
+  reserve | room)
     kind=$1 max=$2 min=$3
     lock=$HOME/.cielago/tasks/.lock
     mkdir -p "$HOME/.cielago/tasks"
     i=0
     until mkdir "$lock" 2>/dev/null; do
+      holder=$(cat "$lock/pid" 2>/dev/null)
       i=$((i + 1))
-      if [ "$i" -gt 100 ]; then
-        rmdir "$lock" 2>/dev/null
+      if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } || { [ -z "$holder" ] && [ "$i" -gt 50 ]; }; then
+        rm -rf "$lock"
         i=0
       fi
-      sleep 0.1
+      sleep 0.1 2>/dev/null || sleep 1
     done
-    trap 'rmdir "$lock"' EXIT
+    echo "$$" > "$lock/pid"
+    trap 'rm -rf "$lock"' EXIT
     if [ "$max" -gt 0 ] && { [ "$kind" = delegate ] || [ "$kind" = session ]; }; then
       n=$(working)
       if [ "$n" -ge "$max" ]; then
-        echo "$n agents are working there, its budget is $max" >&2
+        echo "$n agents are already running there (Claude sessions in a turn, and cielago's delegates and sessions), its budget is $max" >&2
         exit 11
       fi
     fi
@@ -216,13 +218,16 @@ case $command in
         exit 11
       fi
     fi
-    mkdir -m 700 -- "$dir" || exit
-    printf '%s\n' "$kind" > "$dir/kind"
+    if [ "$command" = reserve ]; then
+      mkdir -m 700 -- "$dir" || exit
+      printf '%s\n' "$kind" > "$dir/kind"
+    fi
     ;;
   remove)
     slug=$1
     rm -rf -- "$dir"
     case $slug in
+      */* | *..*) ;;
       *-cielago-tasks-"${dir##*/}"-*) rm -rf -- "$HOME/.claude/projects/$slug" ;;
     esac
     ;;

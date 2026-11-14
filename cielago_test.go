@@ -1703,7 +1703,17 @@ func (f *fixture) isolatedTmux() {
 	f.t.Cleanup(func() { os.RemoveAll(sockets) })
 	f.t.Setenv("TMUX_TMPDIR", sockets)
 	f.t.Setenv("TMUX", "")
-	f.t.Cleanup(func() { exec.Command("tmux", "kill-server").Run() })
+	f.t.Cleanup(func() {
+		out, _ := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_pid}").Output()
+		exec.Command("tmux", "kill-server").Run()
+		deadline := time.Now().Add(5 * time.Second)
+		for _, field := range strings.Fields(string(out)) {
+			pid, _ := strconv.Atoi(field)
+			for pid > 0 && syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+	})
 }
 
 func TestAFailedHandoffLeavesNoTabAndARetryPicksUpFromIt(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -203,5 +204,51 @@ func TestTheStopHookReportsAFailedMoveToTheWaitingCommand(t *testing.T) {
 	var r moveReport
 	if err := json.Unmarshal(data, &r); err != nil || r.OK || !strings.Contains(r.Message, "keeps running here") {
 		t.Errorf("result = %+v, %v", r, err)
+	}
+}
+
+func TestASecondMoveOfTheSameSessionIsRefused(t *testing.T) {
+	f := newFixture(t)
+	f.moveHost()
+	id := "0f0f0f0f-1111-2222-3333-cccccccccccc"
+	f.localSession(id, "busy")
+	unlock, err := lockMove(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	moveCommand([]string{"--json", id, "server"}, &out)
+	if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, "already being moved") {
+		t.Errorf("events = %+v", events)
+	}
+	unlock()
+	path, _ := armedPath(id)
+	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"other","pid":1}`)
+	out.Reset()
+	moveCommand([]string{id, "server", "--json"}, &out)
+	if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, "already armed") {
+		t.Errorf("events = %+v", events)
+	}
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "other") {
+		t.Errorf("the earlier arming was overwritten: %s", data)
+	}
+}
+
+func TestAReusedPidIsNotTakenForTheSession(t *testing.T) {
+	f := newFixture(t)
+	proc, _ := f.localSession("0f0f0f0f-1111-2222-3333-dddddddddddd", "idle")
+	s := liveSession{PID: proc.Process.Pid}
+	if alive, err := isClaudeProcess(f.machine(), s); err != nil || !alive {
+		t.Fatalf("the session's own process: %v, %v", alive, err)
+	}
+	s.ProcStart = "Mon Jan  1 00:00:00 2001"
+	if alive, err := isClaudeProcess(f.machine(), s); err != nil || alive {
+		t.Errorf("a process that started at another time counted: %v, %v", alive, err)
+	}
+	if _, err := sh(f.machine(), sessionScript, "stop", strconv.Itoa(s.PID), "0f0f0f0f-1111-2222-3333-dddddddddddd", s.since()); err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Error("stop killed a process that only had the session's pid")
 	}
 }

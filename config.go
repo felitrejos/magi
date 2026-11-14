@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -105,8 +104,13 @@ func loadConfig() (Config, string, error) {
 		return Config{}, path, fmt.Errorf("read %s: %w", path, err)
 	}
 	for _, key := range md.Keys() {
-		if len(key) == 2 && key[0] == "hosts" {
+		if len(key) >= 2 && key[0] == "hosts" && !slices.Contains(cfg.Order, key[1]) {
 			cfg.Order = append(cfg.Order, key[1])
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.Hosts)) {
+		if !slices.Contains(cfg.Order, name) {
+			cfg.Order = append(cfg.Order, name)
 		}
 	}
 	return cfg, path, nil
@@ -118,7 +122,21 @@ func tomlKey(name string) string {
 	if bareKey.MatchString(name) {
 		return name
 	}
-	return strconv.Quote(name)
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range name {
+		switch {
+		case r == '"' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, "\\u%04X", r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func writeConfig(path string, cfg Config) error {

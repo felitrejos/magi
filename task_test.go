@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -398,7 +399,7 @@ func TestTheTargetRechecksItsBudgetWhenATaskStarts(t *testing.T) {
 	}
 	_, err = startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "y"})
 	var full *noRoomError
-	if !errors.As(err, &full) || full.Reason != "1 agents are working there, its budget is 1" {
+	if !errors.As(err, &full) || !strings.HasPrefix(full.Reason, "1 agents are already running there") {
 		t.Fatalf("second delegate = %v", err)
 	}
 	if _, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "true"}); err != nil {
@@ -761,5 +762,62 @@ func TestDelegateRefusesWhenMagiSaysThePlanIsNearlyUsedUp(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("machines lacks %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestHostsWrittenWithDottedKeysKeepTheirPlace(t *testing.T) {
+	f := newFixture(t)
+	f.config(`[hosts]
+lab.ssh = "lab"
+lab.claude = "claude"
+lab.roots = ["~/d"]
+lab.launcher = "tmux"
+`)
+	if cfg, _, err := loadConfig(); err != nil || strings.Join(cfg.Order, " ") != "lab" {
+		t.Errorf("[hosts] with dotted keys: %v, %v", cfg.Order, err)
+	}
+	f.config(`hosts.box.ssh = "box"
+hosts.box.claude = "claude"
+hosts.box.roots = ["~/d"]
+hosts.box.launcher = "tmux"
+
+[hosts.lab]
+ssh = "lab"
+claude = "claude"
+roots = ["~/d"]
+launcher = "tmux"
+
+[hosts."odd \"name\""]
+ssh = "odd"
+claude = "claude"
+roots = ["~/d"]
+launcher = "tmux"
+`)
+	cfg, path, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Order, "|"); got != `box|lab|odd "name"` {
+		t.Fatalf("order = %s", got)
+	}
+	if err := writeConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	again, _, err := loadConfig()
+	if err != nil {
+		t.Fatalf("rewritten config doesn't load: %v\n%s", err, f.read(filepath.Dir(path), "config.toml"))
+	}
+	if got := strings.Join(again.Order, "|"); got != `box|lab|odd "name"` || again.Hosts["lab"].SSH != "lab" {
+		t.Errorf("after rewriting: order %s, hosts %+v", got, again.Hosts)
+	}
+}
+
+func TestMagiSessionsWithoutNumbersYetAreRead(t *testing.T) {
+	var data fleetData
+	if err := json.Unmarshal([]byte(`{"plans":[],"machines":[{"name":"m","sessions":[{"id":"a","agent":"claude","cpu":null,"memory":null},{"id":"b","agent":"claude","cpu":1.5,"memory":1073741824}]}]}`), &data); err != nil {
+		t.Fatal(err)
+	}
+	if got := data.Machines[0].sessionLoad(); got != "its 2 agent sessions use 1.5 cores and 1.0 GB" {
+		t.Errorf("load = %q", got)
 	}
 }

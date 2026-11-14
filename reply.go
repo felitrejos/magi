@@ -40,14 +40,36 @@ func (t *Task) delegateCommand(host Host, setup string, resume bool) []string {
 }
 
 func (t *Task) removeCopy(r *Remote) error {
-	slug, err := projectSlug(t.RunDir)
-	if err != nil {
-		return err
+	slug := ""
+	if t.Kind == kindDelegate {
+		slug, _ = projectSlug(t.RunDir)
 	}
 	if _, err := sh(r, taskScript, "remove", t.Dir, slug); err != nil {
 		return fmt.Errorf("removing its copy at %s on %s failed: %w", t.Dir, t.Host, err)
 	}
 	return nil
+}
+
+func closeIdleCopy(id string, idle time.Duration) (bool, error) {
+	unlock, err := lockTask(id)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	t, err := loadTask(id)
+	if err != nil || t.Outcome == nil || !t.Outcome.Kept || time.Since(t.Outcome.Ended) < idle {
+		return false, err
+	}
+	return true, t.closeCopy()
+}
+
+func sweepIdleCopies() {
+	tasks, _ := listTasks()
+	for _, t := range tasks {
+		if t.Outcome != nil && t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies {
+			closeIdleCopy(t.ID, keepCopies)
+		}
+	}
 }
 
 func (t *Task) closeCopy() error {
@@ -86,20 +108,28 @@ func replyTask(ctx context.Context, id, message string) (*started, error) {
 		if r.State.State == "running" || r.State.State == "starting" {
 			return nil, fmt.Errorf("task %s is still working on its last turn; wait for it to finish", id)
 		}
-		t = r.Task
-	}
-	if !t.Outcome.Kept {
-		return nil, fmt.Errorf("task %s's copy on %s is gone, so it can't continue; start a new delegate", id, t.Host)
 	}
 	unlock, err := lockTask(id)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+	if t, err = loadTask(id); err != nil {
+		return nil, err
+	}
+	if t.Outcome == nil {
+		return nil, fmt.Errorf("task %s is already working on another follow-up; wait for it to finish", id)
+	}
+	if !t.Outcome.Kept {
+		return nil, fmt.Errorf("task %s's copy on %s is gone, so it can't continue; start a new delegate", id, t.Host)
+	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	r, host, err := t.remote(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkRoom(r, t.Host, host, t); err != nil {
 		return nil, err
 	}
 	if _, err := shIn(r, `cd -- "$1" && rm -f exit status pid log view && cat > prompt`, []byte(message), t.Dir); err != nil {

@@ -85,15 +85,3 @@ func describePlans(plans []plan, now time.Time) string {
 	}
 	return strings.Join(lines, "\n")
 }
-
-func (m fleetMachine) sessionLoad() string {
-	if len(m.Sessions) == 0 {
-		return ""
-	}
-	var cpu, memory float64
-	for _, s := range m.Sessions {
-		cpu += s.CPU
-		memory += s.Memory
-	}
-	return fmt.Sprintf("its %d agent sessions use %.1f cores and %s", len(m.Sessions), cpu, formatMemory(memory))
-}

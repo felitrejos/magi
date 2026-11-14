@@ -210,7 +210,7 @@ func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
 	pid := strconv.Itoa(s.Live.PID)
 	told := false
 	for {
-		_, err := sh(r, sessionScript, "stop", pid, s.ID)
+		_, err := sh(r, sessionScript, "stop", pid, s.ID, s.Live.since())
 		if exitCode(err) != exitBusy {
 			return err
 		}

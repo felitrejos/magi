@@ -68,7 +68,7 @@ func moveCommand(args []string, out io.Writer) error {
 		}
 	}
 	if len(rest) != 2 {
-		return errors.New("usage: cielago move <claude-session-id> <host> [--json]")
+		return m.fail(errors.New("usage: cielago move <claude-session-id> <host> [--json]"))
 	}
 	m.session, m.host = rest[0], rest[1]
 	return m.run()
@@ -82,6 +82,11 @@ func (m mover) run() error {
 	if err != nil {
 		return m.fail(err)
 	}
+	unlock, err := lockMove(m.session)
+	if err != nil {
+		return m.fail(err)
+	}
+	defer unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	local, err := newLocal(ctx)
@@ -93,7 +98,7 @@ func (m mover) run() error {
 		return m.fail(err)
 	}
 	if s.Live != nil {
-		running, err := isClaudeProcess(local, s.Live.PID)
+		running, err := isClaudeProcess(local, *s.Live)
 		if err != nil {
 			return m.fail(err)
 		}
@@ -101,12 +106,12 @@ func (m mover) run() error {
 			s.Live = nil
 		}
 	}
-	if s.Live != nil && s.Live.Status != "idle" {
+	if s.Live != nil && (s.Live.Status == "busy" || s.Live.Status == "waiting") {
 		return m.whenTurnEnds(s)
 	}
 	stopped := false
 	if s.Live != nil {
-		_, err := sh(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID)
+		_, err := sh(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since())
 		if exitCode(err) == exitBusy {
 			return m.whenTurnEnds(s)
 		}
@@ -118,10 +123,29 @@ func (m mover) run() error {
 	return m.now(local, host, s, stopped)
 }
 
+func lockMove(sessionID string) (func(), error) {
+	path, err := armedPath(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(strings.TrimSuffix(path, ".json")+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("session %s is already being moved", shortID(sessionID))
+	}
+	return func() { f.Close() }, nil
+}
+
 func findLocalSession(local *Local, id string) (remoteSession, error) {
 	s, err := findSession(local, id)
-	if err == nil {
-		return s, nil
+	if err == nil || !strings.HasPrefix(err.Error(), "no session ") {
+		return s, err
 	}
 	if out, codexErr := sh(local, `find "$HOME/.codex/sessions" -name "rollout-*-$1.jsonl" -print 2>/dev/null | head -n 1`, id); codexErr == nil && len(out) > 0 {
 		return s, fmt.Errorf("%s is a Codex session; cielago moves Claude Code sessions only", id)
@@ -129,8 +153,8 @@ func findLocalSession(local *Local, id string) (remoteSession, error) {
 	return s, fmt.Errorf("no Claude Code session %s on %s", id, local.Name())
 }
 
-func isClaudeProcess(m Machine, pid int) (bool, error) {
-	_, err := sh(m, sessionScript, "alive", strconv.Itoa(pid))
+func isClaudeProcess(m Machine, s liveSession) (bool, error) {
+	_, err := sh(m, sessionScript, "alive", strconv.Itoa(s.PID), s.since())
 	if exitCode(err) == 1 {
 		return false, nil
 	}
@@ -207,8 +231,16 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 	if err != nil {
 		return m.fail(err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return m.fail(errors.New("the session is already armed to move when its turn ends"))
+	}
+	if err != nil {
 		return m.fail(err)
+	}
+	if _, err := f.Write(data); err != nil || f.Close() != nil {
+		os.Remove(path)
+		return m.fail(fmt.Errorf("arming the session failed: %v", err))
 	}
 	m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", shortID(s.ID), m.host)})
 
@@ -243,7 +275,7 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 			return m.fail(errors.New("the Stop hook took the handoff but never reported back; check cielago status"))
 		}
 		if armedStill {
-			alive, err := isClaudeProcess(local, s.Live.PID)
+			alive, err := isClaudeProcess(local, *s.Live)
 			if err == nil && !alive {
 				os.Remove(path)
 				return m.fail(errors.New("the session ended before its turn did, so it didn't move"))

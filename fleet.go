@@ -57,13 +57,6 @@ func (m fleetMachine) busy() float64 {
 	return busy
 }
 
-func (m fleetMachine) memory() float64 {
-	if m.MemoryTotal <= 0 {
-		return 0
-	}
-	return m.MemoryUsed / m.MemoryTotal
-}
-
 func (m fleetMachine) describe() string {
 	if !m.Live {
 		reason := "no answer"
@@ -254,4 +247,16 @@ func chooseHosts(ctx context.Context, requested string, agents bool) ([]choice, 
 	view := surveyFleet(ctx, cfg, false, agents)
 	picks, skipped := view.candidates()
 	return picks, skipped, view.Plans, nil
+}
+
+func (m fleetMachine) sessionLoad() string {
+	if len(m.Sessions) == 0 {
+		return ""
+	}
+	var cpu, memory float64
+	for _, s := range m.Sessions {
+		cpu += s.CPU
+		memory += s.Memory
+	}
+	return fmt.Sprintf("its %d agent sessions use %.1f cores and %s", len(m.Sessions), cpu, formatMemory(memory))
 }

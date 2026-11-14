@@ -213,14 +213,14 @@ func stopHook(in io.Reader, out io.Writer) error {
 			"reason":   fmt.Sprintf("cielago could not hand this session off to %s, so it is still running here: %v. Tell the user what failed in plain words.", a.Host, err),
 		})
 	}
+	if a.Notify {
+		res.ParkNote = errors.Join(res.ParkNote, writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary()}))
+	}
 	if err := retire(a, input.SessionID, input.TranscriptPath); err != nil {
 		return err
 	}
 	if logErr := appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}); logErr != nil {
 		res.ParkNote = errors.Join(res.ParkNote, logErr)
-	}
-	if a.Notify {
-		res.ParkNote = errors.Join(res.ParkNote, writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary()}))
 	}
 	return json.NewEncoder(out).Encode(handedOff(a, res))
 }

@@ -59,6 +59,17 @@ type liveSession struct {
 	BridgeSessionID *string `json:"bridgeSessionId"`
 	Status          string  `json:"status"`
 	Entrypoint      string  `json:"entrypoint"`
+	ProcStart       any     `json:"procStart"`
+}
+
+func (s liveSession) since() string {
+	switch v := s.ProcStart.(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	}
+	return ""
 }
 
 func liveSessions(m Machine) ([]liveSession, error) {

@@ -1,6 +1,19 @@
 #!/bin/sh
 command=$1
 shift
+
+started() {
+  if [ -r "/proc/$1/stat" ]; then
+    sed 's/.*) //' "/proc/$1/stat" | cut -d ' ' -f 20
+  else
+    TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//'
+  fi
+}
+
+same() {
+  [ -z "$2" ] || [ "$(started "$1")" = "$(printf '%s' "$2" | tr -s ' ')" ]
+}
+
 case $command in
   sessions)
     for f in "$HOME"/.claude/sessions/*.json; do
@@ -27,11 +40,11 @@ case $command in
     tail -n 400 "$1" | grep -oE '"cwd":"([^"\\]|\\.)*"' | tail -n 1
     ;;
   stop)
-    pid=$1 id=$2
+    pid=$1 id=$2 since=$3
     args() {
       if [ -r "/proc/$pid/cmdline" ]; then tr '\0' ' ' < "/proc/$pid/cmdline"; else ps -o args= -p "$pid"; fi
     }
-    if ! kill -0 "$pid" 2>/dev/null || ! args | grep -q claude; then exit 0; fi
+    if ! kill -0 "$pid" 2>/dev/null || ! args | grep -q claude || ! same "$pid" "$since"; then exit 0; fi
     if grep -q '"status": *"busy"' "$HOME/.claude/sessions/$pid.json" 2>/dev/null; then exit 10; fi
     kill -TERM "$pid"
     i=0
@@ -46,10 +59,10 @@ case $command in
     fi
     ;;
   alive)
-    pid=$1
+    pid=$1 since=$2
     if [ -r "/proc/$pid/cmdline" ]; then args=$(tr '\0' ' ' < "/proc/$pid/cmdline"); else args=$(ps -o args= -p "$pid" 2>/dev/null); fi
     case $args in
-      *claude*) exit 0 ;;
+      *claude*) same "$pid" "$since" && exit 0 ;;
     esac
     exit 1
     ;;

@@ -16,7 +16,7 @@ import (
 
 const serverInstructions = `cielago sends work from this session to the user's other machines over SSH: a shell command (run_elsewhere), a self-contained task for a background Claude (delegate), or a new interactive session (start_session). Each runs in its own copy of this project's working tree, in a Rex or tmux tab the user can watch, and never touches this session, this checkout or the user's checkouts there.
 
-Starting work on another machine is the user's call. Before run_elsewhere, delegate or start_session: call machines, propose one machine (the least loaded unless the user named one), say exactly what will run there, and let the user choose: run it there, run it here instead, or don't run it. Wait for the user's clear answer. Then start it, carry on with other work, and check back with task_status; collect it with task_result once it's done. Don't poll in a tight loop.`
+Starting work on another machine is the user's call. Before run_elsewhere, delegate or start_session: call machines, propose one machine (the one machines suggests, the first in the user's list with room, unless the user named one), say exactly what will run there, and let the user choose: run it there, run it here instead, or don't run it. Wait for the user's clear answer. Then start it, carry on with other work, and check back with task_status; collect it with task_result once it's done. Don't poll in a tight loop.`
 
 const delegateSystemPrompt = `You are a delegated task started by cielago from another machine. You work in a throwaway copy of the project on this machine; nobody is watching to answer questions or approve permission prompts. Tools that would need approval are denied: work around them, and say what you couldn't do. Work only inside this folder. Don't commit, push, open pull requests or change git configuration: leave your changes in the working tree, and cielago brings them back to the caller as a branch. Finish with a short report: what you did, which files you changed, how you checked it, and anything left undone.`
 
@@ -28,14 +28,14 @@ type noInput struct{}
 
 type runInput struct {
 	Command string `json:"command" jsonschema:"the shell command to run from the project's folder, for example go test ./..."`
-	Host    string `json:"host,omitempty" jsonschema:"the cielago host the user agreed to, as listed by machines; left out, the least loaded machine at this moment is used, which may not be the one you proposed"`
+	Host    string `json:"host,omitempty" jsonschema:"the cielago host the user agreed to, as listed by machines; left out, cielago takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
 	Dir     string `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
 	Setup   *bool  `json:"setup,omitempty" jsonschema:"run the project's approved .cielago.toml setup first, such as installing dependencies (default true)"`
 }
 
 type delegateInput struct {
 	Task           string   `json:"task" jsonschema:"a self-contained brief, since the remote Claude doesn't see this conversation and can't ask questions: the goal, the relevant files and what you already know about them, constraints, how to check the work, and what done looks like"`
-	Host           string   `json:"host,omitempty" jsonschema:"the cielago host the user agreed to, as listed by machines; left out, the least loaded machine at this moment is used, which may not be the one you proposed"`
+	Host           string   `json:"host,omitempty" jsonschema:"the cielago host the user agreed to, as listed by machines; left out, cielago takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
 	Dir            string   `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
 	AllowedTools   []string `json:"allowed_tools,omitempty" jsonschema:"extra permission rules the remote Claude may use without asking, for example Bash(go test:*) or Bash(npm run lint); only what the user agreed to"`
 	PermissionMode string   `json:"permission_mode,omitempty" jsonschema:"acceptEdits (default: read and edit files in its copy), dontAsk (only what allowed_tools and that machine's settings allow) or auto (Claude Code's auto mode, which reviews each action)"`
@@ -45,7 +45,7 @@ type delegateInput struct {
 }
 
 type sessionInput struct {
-	Host        string `json:"host,omitempty" jsonschema:"the cielago host the user agreed to, as listed by machines; left out, the least loaded machine at this moment is used, which may not be the one you proposed"`
+	Host        string `json:"host,omitempty" jsonschema:"the cielago host the user agreed to, as listed by machines; left out, cielago takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
 	Dir         string `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
 	Prompt      string `json:"prompt,omitempty" jsonschema:"an optional first message for the new session"`
 	DespitePlan bool   `json:"despite_plan,omitempty" jsonschema:"open it even though the Claude plan is nearly used up; only when the user said to go ahead anyway"`
@@ -130,6 +130,7 @@ func planGate(plans []plan, despite bool) (string, error) {
 }
 
 func startElsewhere(ctx context.Context, host string, spec TaskSpec, despite bool) (string, error) {
+	sweepIdleCopies()
 	agents := spec.Kind != kindRun
 	picks, skipped, plans, err := chooseHosts(ctx, host, agents)
 	if err != nil {
@@ -180,7 +181,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "machines",
 		Annotations: readOnly,
-		Description: "List the machines cielago can send work to, each with its live load from magi (CPU, load average, memory, and Claude or Codex agents working there), whether it answers over SSH, and cielago tasks running on it, plus this machine's own load for comparison and the machine cielago suggests. Read-only. Call it before proposing where to run something, and tell the user which machine you'd pick and why.",
+		Description: "List the machines cielago can send work to, each with its live load from magi (CPU, load average, memory, and Claude or Codex agents working there), whether it answers over SSH, and cielago tasks running on it, each host's budget and whether it has room, the Claude plan's usage, this machine's own load for comparison, and the machine cielago suggests: the first in the user's list with room. Read-only. Call it before proposing where to run something, and tell the user which machine you'd pick and why.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, any, error) {
 		cfg, path, err := loadConfig()
 		if err != nil {
@@ -195,7 +196,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "run_elsewhere",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Run a shell command, such as a slow test suite or a build, on another machine, in a copy of this project's exact working tree (commits, staged and unstaged changes, untracked and secret files). It copies the working tree first, usually in seconds, then returns a task id; the command runs in the background in a tab the user can watch, so long runs never block or time out. The copy is separate from any checkout on that machine and is removed when the result is collected; this session and this checkout are untouched. Dependencies such as node_modules aren't copied, but the project's approved .cielago.toml setup runs first. Before calling: call machines, tell the user which machine you propose (the least loaded unless they named one) and the exact command, and wait for their OK. Afterwards use task_status, then task_result for the exit code and output.",
+		Description: "Run a shell command, such as a slow test suite or a build, on another machine, in a copy of this project's exact working tree (commits, staged and unstaged changes, untracked and secret files). It copies the working tree first, usually in seconds, then returns a task id; the command runs in the background in a tab the user can watch, so long runs never block or time out. The copy is separate from any checkout on that machine and is removed when the result is collected; this session and this checkout are untouched. Dependencies such as node_modules aren't copied, but the project's approved .cielago.toml setup runs first. Before calling: call machines, tell the user which machine you propose (the one machines suggests unless they named one) and the exact command, and wait for their OK. Afterwards use task_status, then task_result for the exit code and output.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, any, error) {
 		if strings.TrimSpace(in.Command) == "" {
 			return nil, nil, fmt.Errorf("command is empty")
@@ -237,7 +238,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "start_session",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Open a new interactive Claude session for this project on another machine, in its own copy of this project's working tree, in a Rex or tmux tab the user switches to, with Remote Control so it's also in every Claude app on their account. For when the user wants to work on something in parallel on a lighter machine. This session keeps running. Only with the user's clear yes: first call machines, then say which machine and what the new session will start with, and wait. When the user quits that session, task_result brings its changes back as a branch.",
+		Description: "Open a new interactive Claude session for this project on another machine, in its own copy of this project's working tree, in a Rex or tmux tab the user switches to, with Remote Control so it's also in every Claude app on their account. For when the user wants to work on something in parallel on a lighter machine. This session keeps running. It isn't opened when the user's Claude plan window is 90% used or more, since every machine shares that plan. Only with the user's clear yes: first call machines, then say which machine and what the new session will start with, and wait. When the user quits that session, task_result brings its changes back as a branch.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in sessionInput) (*mcp.CallToolResult, any, error) {
 		dir, err := projectDir(in.Dir)
 		if err != nil {
@@ -278,13 +279,14 @@ func newMCPServer() *mcp.Server {
 		if err != nil {
 			return nil, nil, err
 		}
+		sweepIdleCopies()
 		return textResult(describeReport(r)), nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "task_reply",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; check it with task_status and collect it with task_result, which returns its new message and moves the branch cielago/task-<id> forward. Tell the user what you're asking it before you send it.",
+		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; check it with task_status and collect it with task_result, which returns its new message and moves the branch cielago/task-<id> forward. It isn't sent when the user's Claude plan window is 90% used or more, or when that machine's budget has no room. Tell the user what you're asking it before you send it.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in replyInput) (*mcp.CallToolResult, any, error) {
 		data, _ := readFleet(ctx)
 		heads, err := planGate(data.Plans, in.DespitePlan)

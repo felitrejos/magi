@@ -401,6 +401,22 @@ func reserve(remote *Remote, name string, host Host, t *Task) error {
 		return &noRoomError{Host: name, Reason: reason}
 	}
 	_, err = sh(remote, taskScript, "reserve", t.Dir, t.Kind, strconv.Itoa(b.MaxAgents), fmt.Sprintf("%.0f", b.MinFree))
+	return roomOrReason(name, err)
+}
+
+func checkRoom(remote *Remote, name string, host Host, t *Task) error {
+	b, err := host.budget()
+	if err != nil {
+		return err
+	}
+	if reason := b.noRoom(time.Now(), nil, false); reason != "" {
+		return &noRoomError{Host: name, Reason: reason}
+	}
+	_, err = sh(remote, taskScript, "room", t.Dir, t.Kind, strconv.Itoa(b.MaxAgents), fmt.Sprintf("%.0f", b.MinFree))
+	return roomOrReason(name, err)
+}
+
+func roomOrReason(name string, err error) error {
 	var ce *commandError
 	if exitCode(err) == exitNoRoom && errors.As(err, &ce) {
 		return &noRoomError{Host: name, Reason: ce.stderr}

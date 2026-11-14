@@ -138,7 +138,7 @@ func describeReport(r *taskReport) string {
 		fmt.Fprintf(&b, "Its copy on %s has been removed, so it takes no more follow-ups.\n", t.Host)
 	}
 	if o.Kept {
-		fmt.Fprintf(&b, "Its copy stays on %s so you can send a follow-up with task_reply, which keeps its context. When you're done with it, cancel_task removes the copy; cielago tasks clean removes copies idle for a day.\n", t.Host)
+		fmt.Fprintf(&b, "Its copy stays on %s so you can send a follow-up with task_reply, which keeps its context. When you're done with it, cancel_task removes the copy; otherwise it's removed once it has been idle for a day.\n", t.Host)
 	}
 	if t.Subs && t.Kind != kindRun {
 		b.WriteString("Changes made inside submodules aren't brought back.\n")
@@ -301,11 +301,15 @@ func cleanTasks(w io.Writer) error {
 	pruned, closed := 0, 0
 	for _, t := range tasks {
 		if t.Outcome != nil && t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies {
-			if err := t.closeCopy(); err != nil {
+			done, err := closeIdleCopy(t.ID, keepCopies)
+			if err != nil {
 				fmt.Fprintf(w, "%s: %v\n", t.ID, err)
 				continue
 			}
-			closed++
+			if done {
+				closed++
+			}
+			continue
 		}
 		if t.Outcome != nil && !t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCollected {
 			if err := t.forget(); err != nil {
