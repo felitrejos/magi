@@ -129,15 +129,26 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "helper: finds_a_named_process_and_the_files_it_holds_open runs it as magiprobe"]
+    fn probe_holds_its_output_open() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+
+    #[test]
     fn finds_a_named_process_and_the_files_it_holds_open() {
-        let dir = std::env::temp_dir().join(format!("magi-process-{}", std::process::id()));
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.with_file_name(format!("magi-process-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let program = dir.join("magiprobe");
-        std::fs::copy("/bin/sh", &program).unwrap();
+        std::fs::hard_link(&exe, &program).unwrap();
         let held = dir.join("held.jsonl");
         let mut child = std::process::Command::new(&program)
-            .args(["-c", "sleep 30; :"])
+            .args([
+                "sessions::process::tests::probe_holds_its_output_open",
+                "--exact",
+                "--ignored",
+            ])
             .stdout(File::create(&held).unwrap())
             .spawn()
             .unwrap();
