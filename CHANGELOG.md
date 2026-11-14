@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Send work to another machine without moving the session. The plugin now
   ships a tool server with `machines`, `run_elsewhere`, `delegate`,

@@ -1,6 +1,6 @@
 {
   "name": "cielago",
-  "description": "Hand a running Claude Code session off to another machine",
+  "description": "Hand a running Claude Code session off to another machine, or send it work there",
   "owner": {
     "name": "felitrejos",
     "url": "https://github.com/felitrejos"
@@ -8,11 +8,11 @@
   "plugins": [
     {
       "name": "cielago",
-      "description": "Say \"hand this off to <host>\" and the session continues there with Remote Control",
+      "description": "Say \"hand this off to <host>\" and the session continues there with Remote Control, or send tests and tasks to your lightest machine",
       "source": "./plugin",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "category": "productivity",
-      "tags": ["remote", "handoff", "sessions"]
+      "tags": ["remote", "handoff", "sessions", "tasks", "mcp"]
     }
   ]
 }
