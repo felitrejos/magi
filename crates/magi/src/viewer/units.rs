@@ -38,6 +38,12 @@ pub fn dollars(micros: u64) -> String {
 }
 
 pub fn model(id: &str) -> String {
+    if let Some(rest) = id.strip_prefix("gpt-") {
+        return match rest.split_once('-') {
+            Some((version, name)) => format!("{name} {version}"),
+            None => format!("gpt {rest}"),
+        };
+    }
     let id = id
         .split('[')
         .next()
@@ -104,6 +110,9 @@ mod tests {
         assert_eq!(model("claude-opus-5-5[1m]"), "opus 5.5");
         assert_eq!(model("claude-haiku-4-5-20251001"), "haiku 4.5");
         assert_eq!(model("claude-fable-5"), "fable 5");
+        assert_eq!(model("gpt-6.1-sol"), "sol 6.1");
+        assert_eq!(model("gpt-5.3-codex"), "codex 5.3");
+        assert_eq!(model("gpt-5.5"), "gpt 5.5");
         assert_eq!(model(""), "");
     }
 
