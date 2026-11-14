@@ -186,15 +186,39 @@ fn draw(model: &Model, width: u16, height: u16, now: Instant) -> String {
 }
 
 #[test]
-fn the_chart_span_counts_the_samples_drawn_at_the_real_interval() {
+fn the_chart_span_is_the_time_between_the_first_and_last_sample() {
     assert_eq!(
-        machines::span(240, Duration::from_millis(500)),
+        machines::span(241, Duration::from_millis(500)),
         Duration::from_secs(120)
     );
     assert_eq!(
-        machines::span(10, Duration::from_millis(1500)),
+        machines::span(11, Duration::from_millis(1500)),
         Duration::from_secs(15)
     );
+    assert_eq!(machines::span(1, Duration::from_secs(1)), Duration::ZERO);
+}
+
+#[test]
+fn every_chart_says_its_scale_its_time_span_and_what_its_lines_are() {
+    let now = Instant::now();
+    let screen = draw(&fleet(2, now), 160, 50, now);
+    let lines: Vec<&str> = screen.lines().collect();
+    let gutter = |label: &str| {
+        let label = format!("{label:>8} ");
+        lines.iter().filter(|line| line.contains(&label)).count()
+    };
+    assert_eq!(gutter("100%"), 3, "{screen}");
+    assert_eq!(gutter("0%"), 3, "{screen}");
+    assert!(gutter("0") >= 1, "{screen}");
+    let axes = lines
+        .iter()
+        .filter(|line| line.contains("ago") && line.trim_end_matches(['│', ' ']).ends_with("now"))
+        .count();
+    assert_eq!(axes, 3, "{screen}");
+    for text in ["cores, now", "↓ download", "↑ upload"] {
+        assert!(screen.contains(text), "missing {text:?}\n{screen}");
+    }
+    assert!(!screen.contains("charts show"), "{screen}");
 }
 
 #[test]

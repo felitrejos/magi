@@ -10,7 +10,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
-use super::graphics::{Chart, Graphics};
+use super::graphics::Graphics;
 use super::model::{AgentRow, Level, LinkState, Model, Row, Strain};
 use super::style::{self, ACCENT, BORDER, CRIT, DIM, FAINT, GOOD, TEXT, WARN, WARN_TINT};
 use super::units;
@@ -204,27 +204,6 @@ impl Cursor {
         }
         composed.draw(frame, graphics, self.row(), Style::new());
         self.y += 1;
-    }
-
-    fn chart(
-        &mut self,
-        frame: &mut Frame,
-        graphics: &mut Graphics,
-        rows: u16,
-        slot: &str,
-        chart: &Chart,
-    ) {
-        let rows = rows.min(self.left());
-        if rows == 0 {
-            return;
-        }
-        graphics.chart(
-            frame.buffer_mut(),
-            Rect::new(self.area.x, self.y, self.area.width, rows),
-            slot.to_string(),
-            chart,
-        );
-        self.y += rows;
     }
 }
 

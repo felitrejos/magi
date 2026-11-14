@@ -4,6 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 
 use super::{Composed, Cursor, clip, pad, panel, selected_style, spans_width, truncate};
 use crate::proto::FULL;
@@ -14,7 +15,7 @@ use crate::viewer::model::{
 use crate::viewer::style::{self, ACCENT, CRIT, DIM, FAINT, GOOD, TEAL, TEXT};
 use crate::viewer::units;
 
-const CPU_CEILINGS: [f32; 4] = [0.1, 0.25, 0.5, 1.0];
+const GUTTER: u16 = 9;
 
 pub fn render_list(
     frame: &mut Frame,
@@ -226,22 +227,19 @@ pub fn render_detail(
     };
     cursor.skip();
     let disks: Vec<_> = sample.filesystems.iter().take(3).collect();
-    let fixed_lines = 3 + 1 + disks.len() as u16 + 1;
+    let fixed_lines = 3 + 3 + 1 + disks.len() as u16;
     let room = cursor.left().saturating_sub(fixed_lines);
     let with_cores = room >= 12 && !sample.cores.is_empty();
     let chart_room = room.saturating_sub(if with_cores { 3 } else { 0 });
     let cpu_rows = (chart_room * 40 / 100).max(2);
     let memory_rows = (chart_room * 25 / 100).max(2);
     let network_rows = chart_room.saturating_sub(cpu_rows + memory_rows).max(2);
-    let window = (width * graphics.samples_per_cell()).min(HISTORY);
+    let plot_width = (width.saturating_sub(GUTTER as usize)).max(1);
+    let window = (plot_width * graphics.samples_per_cell()).min(HISTORY);
+    let stretches = graphics.stretches_history();
+    let drawn = |samples: usize| if stretches { samples } else { plot_width };
 
     let cpu = machine.smoothed_cpu();
-    let cpu_history = machine.cpu.tail(window);
-    let peak = cpu_history.iter().copied().fold(cpu, f32::max);
-    let ceiling = CPU_CEILINGS
-        .into_iter()
-        .find(|ceiling| peak * 1.1 <= *ceiling)
-        .unwrap_or(1.0);
     cursor.line(
         frame,
         section(
@@ -251,30 +249,29 @@ pub fn render_detail(
                     units::percent(cpu).trim().to_string(),
                     style::bold(level_text(cpu, Subsystem::Cpu)),
                 ),
-                Span::styled(
-                    format!(
-                        "  load {:.2} · chart to {}",
-                        sample.load[0],
-                        units::percent(ceiling).trim()
-                    ),
-                    style::fg(DIM),
-                ),
+                Span::styled(format!("  load {:.2}", sample.load[0]), style::fg(DIM)),
             ],
             width,
         ),
     );
-    cursor.chart(
+    let cpu_history = machine.cpu.tail(window);
+    plot(
+        &mut cursor,
         frame,
         graphics,
-        cpu_rows,
-        "cpu",
-        &Chart {
-            kind: Kind::Area,
-            max: ceiling,
-            series: vec![Series {
-                values: &cpu_history,
-                color: ACCENT,
-            }],
+        Plot {
+            rows: cpu_rows,
+            slot: "cpu",
+            chart: Chart {
+                kind: Kind::Area,
+                max: 1.0,
+                series: vec![Series {
+                    values: &cpu_history,
+                    color: ACCENT,
+                }],
+            },
+            scale: percent_scale(),
+            shown: Some(span(drawn(cpu_history.len()), machine.interval)),
         },
     );
     if with_cores {
@@ -286,7 +283,7 @@ pub fn render_detail(
         cursor.line(
             frame,
             section(
-                &format!("{} cores", cores.len()),
+                &format!("{} cores, now", cores.len()),
                 vec![Span::styled(
                     format!(
                         "busiest {}",
@@ -297,18 +294,27 @@ pub fn render_detail(
                 width,
             ),
         );
-        cursor.chart(
+        plot(
+            &mut cursor,
             frame,
             graphics,
-            2,
-            "cores",
-            &Chart {
-                kind: Kind::Bars,
-                max: 1.0,
-                series: vec![Series {
-                    values: &cores,
-                    color: ACCENT,
-                }],
+            Plot {
+                rows: 2,
+                slot: "cores",
+                chart: Chart {
+                    kind: Kind::Bars,
+                    max: 1.0,
+                    series: vec![Series {
+                        values: &cores,
+                        color: ACCENT,
+                    }],
+                },
+                scale: Scale {
+                    top: "100%".into(),
+                    middle: None,
+                    bottom: "0%".into(),
+                },
+                shown: None,
             },
         );
     }
@@ -343,18 +349,23 @@ pub fn render_detail(
     }
     cursor.line(frame, section("Memory", memory_facts, width));
     let memory_history = machine.memory.tail(window);
-    cursor.chart(
+    plot(
+        &mut cursor,
         frame,
         graphics,
-        memory_rows,
-        "memory",
-        &Chart {
-            kind: Kind::Area,
-            max: 1.0,
-            series: vec![Series {
-                values: &memory_history,
-                color: TEAL,
-            }],
+        Plot {
+            rows: memory_rows,
+            slot: "memory",
+            chart: Chart {
+                kind: Kind::Area,
+                max: 1.0,
+                series: vec![Series {
+                    values: &memory_history,
+                    color: TEAL,
+                }],
+            },
+            scale: percent_scale(),
+            shown: Some(span(drawn(memory_history.len()), machine.interval)),
         },
     );
 
@@ -364,11 +375,11 @@ pub fn render_detail(
             "Network",
             vec![
                 Span::styled(
-                    format!("↓ {}", units::rate(sample.network.rx_per_sec)),
+                    format!("↓ download {}", units::rate(sample.network.rx_per_sec)),
                     style::fg(ACCENT),
                 ),
                 Span::styled(
-                    format!("  ↑ {}", units::rate(sample.network.tx_per_sec)),
+                    format!("   ↑ upload {}", units::rate(sample.network.tx_per_sec)),
                     style::fg(GOOD),
                 ),
             ],
@@ -377,25 +388,34 @@ pub fn render_detail(
     );
     let rx = machine.rx.tail(window);
     let tx = machine.tx.tail(window);
-    let network_peak = rx.iter().chain(&tx).copied().fold(1.0, f32::max);
-    cursor.chart(
+    let peak = rx.iter().chain(&tx).copied().fold(1.0, f32::max) * 1.1;
+    plot(
+        &mut cursor,
         frame,
         graphics,
-        network_rows,
-        "network",
-        &Chart {
-            kind: Kind::Area,
-            max: network_peak * 1.1,
-            series: vec![
-                Series {
-                    values: &rx,
-                    color: ACCENT,
-                },
-                Series {
-                    values: &tx,
-                    color: GOOD,
-                },
-            ],
+        Plot {
+            rows: network_rows,
+            slot: "network",
+            chart: Chart {
+                kind: Kind::Area,
+                max: peak,
+                series: vec![
+                    Series {
+                        values: &rx,
+                        color: ACCENT,
+                    },
+                    Series {
+                        values: &tx,
+                        color: GOOD,
+                    },
+                ],
+            },
+            scale: Scale {
+                top: units::rate(peak as u64),
+                middle: Some(units::rate((peak / 2.0) as u64)),
+                bottom: "0".into(),
+            },
+            shown: Some(span(drawn(rx.len()), machine.interval)),
         },
     );
 
@@ -439,20 +459,97 @@ pub fn render_detail(
         line.push(Span::styled(size, style::fg(TEXT)));
         cursor.composed(frame, graphics, line);
     }
-    cursor.line(
-        frame,
+}
+
+struct Scale {
+    top: String,
+    middle: Option<String>,
+    bottom: String,
+}
+
+struct Plot<'a> {
+    rows: u16,
+    slot: &'static str,
+    chart: Chart<'a>,
+    scale: Scale,
+    shown: Option<Duration>,
+}
+
+fn plot(cursor: &mut Cursor, frame: &mut Frame, graphics: &mut Graphics, plot: Plot) {
+    let Plot {
+        rows,
+        slot,
+        chart,
+        scale,
+        shown,
+    } = plot;
+    let rows = rows.min(cursor.left());
+    if rows == 0 {
+        return;
+    }
+    let gutter = GUTTER.min(cursor.area.width.saturating_sub(1));
+    let label = |text: &str| {
         Line::from(Span::styled(
-            format!(
-                "charts show the last {}",
-                units::duration(span(cpu_history.len(), machine.interval))
-            ),
+            format!("{text:>width$} ", width = gutter.saturating_sub(1) as usize),
             style::fg(FAINT),
-        )),
+        ))
+    };
+    let top = cursor.y;
+    let bottom = top + rows - 1;
+    let mut place = |y: u16, text: &str| {
+        frame.render_widget(
+            Paragraph::new(label(text)),
+            Rect::new(cursor.area.x, y, gutter, 1),
+        );
+    };
+    place(top, &scale.top);
+    if let Some(middle) = scale.middle.filter(|_| rows >= 5 && rows % 2 == 1) {
+        place(top + rows / 2, &middle);
+    }
+    if bottom > top {
+        place(bottom, &scale.bottom);
+    }
+    graphics.chart(
+        frame.buffer_mut(),
+        Rect::new(
+            cursor.area.x + gutter,
+            top,
+            cursor.area.width - gutter,
+            rows,
+        ),
+        slot.to_string(),
+        &chart,
     );
+    cursor.y += rows;
+    if let Some(shown) = shown {
+        let width = (cursor.area.width - gutter) as usize;
+        cursor.line(
+            frame,
+            Line::from(vec![
+                Span::raw(" ".repeat(gutter as usize)),
+                Span::styled(
+                    pad(
+                        &format!("{} ago", units::duration(shown)),
+                        width.saturating_sub(3),
+                    ),
+                    style::fg(FAINT),
+                ),
+                Span::styled("now", style::fg(FAINT)),
+            ]),
+        );
+    }
+}
+
+fn percent_scale() -> Scale {
+    Scale {
+        top: "100%".into(),
+        middle: Some("50%".into()),
+        bottom: "0%".into(),
+    }
 }
 
 pub fn span(samples: usize, interval: Duration) -> Duration {
-    interval * samples as u32
+    interval * samples.saturating_sub(1) as u32
 }
 
 fn facts(machine: &Machine) -> Vec<Span<'static>> {

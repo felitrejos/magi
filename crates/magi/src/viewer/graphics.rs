@@ -15,7 +15,7 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use super::base64;
 use super::chart;
 use super::diacritics::DIACRITICS;
-use super::style::TRACK;
+use super::style::{GUIDE, TRACK};
 
 const PLACEHOLDER: char = '\u{10EEEE}';
 const CHUNK: usize = 4096;
@@ -181,6 +181,10 @@ impl Graphics {
         out.flush()
     }
 
+    pub fn stretches_history(&self) -> bool {
+        self.cell.is_some()
+    }
+
     pub fn samples_per_cell(&self) -> usize {
         if self.cell.is_some() { 2 } else { 1 }
     }
@@ -287,6 +291,9 @@ fn render(chart: &Chart, width: u32, height: u32, density: f32) -> Option<Vec<u8
     let mut pixmap = Pixmap::new(width, height)?;
     let (w, h) = (width as f32, height as f32);
     let scale = |value: f32| h - (finite(value) / chart.max).clamp(0.0, 1.0) * (h - 2.0) - 1.0;
+    if matches!(chart.kind, Kind::Area) {
+        guide(&mut pixmap, scale(chart.max / 2.0), w, density);
+    }
     for series in &chart.series {
         let values = series.values;
         if values.is_empty() {
@@ -319,14 +326,16 @@ fn render(chart: &Chart, width: u32, height: u32, density: f32) -> Option<Vec<u8
             Kind::Bars => {
                 let slot = w / values.len() as f32;
                 let gap = (slot * 0.25).clamp(1.0, 6.0);
+                let (tr, tg, tb) = rgb(TRACK);
+                let mut track = Paint::default();
+                track.set_color_rgba8(tr, tg, tb, 255);
                 for (index, value) in values.iter().enumerate() {
+                    let left = index as f32 * slot + gap / 2.0;
+                    let right = (index + 1) as f32 * slot - gap / 2.0;
+                    let full = tiny_skia::Rect::from_ltrb(left, 1.0, right, h)?;
+                    pixmap.fill_rect(full, &track, Transform::identity(), None);
                     let top = scale(*value).min(h - 2.0);
-                    let rect = tiny_skia::Rect::from_ltrb(
-                        index as f32 * slot + gap / 2.0,
-                        top,
-                        (index + 1) as f32 * slot - gap / 2.0,
-                        h,
-                    )?;
+                    let rect = tiny_skia::Rect::from_ltrb(left, top, right, h)?;
                     pixmap.fill_rect(rect, &solid, Transform::identity(), None);
                 }
             }
@@ -367,6 +376,20 @@ fn render(chart: &Chart, width: u32, height: u32, density: f32) -> Option<Vec<u8
         }
     }
     Some(pixmap.take_demultiplied())
+}
+
+fn guide(pixmap: &mut Pixmap, y: f32, width: f32, density: f32) {
+    let (r, g, b) = rgb(GUIDE);
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(r, g, b, 255);
+    let dash = 4.0 * density;
+    let mut x = 0.0;
+    while x < width {
+        if let Some(rect) = tiny_skia::Rect::from_xywh(x, y.round(), dash, density.max(1.0)) {
+            pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+        }
+        x += dash * 2.0;
+    }
 }
 
 fn pill(top: f32, right: f32, thickness: f32) -> Option<tiny_skia::Path> {
@@ -456,6 +479,9 @@ fn place(buf: &mut Buffer, area: Rect, id: u32) {
 fn draw_cells(buf: &mut Buffer, area: Rect, chart: &Chart) {
     let width = area.width as usize;
     let height = area.height as usize;
+    if matches!(chart.kind, Kind::Area) && height % 2 == 1 {
+        draw_guide_cells(buf, area);
+    }
     for series in chart.series.iter().rev() {
         let scaled: Vec<f32> = series
             .values
@@ -479,6 +505,13 @@ fn draw_cells(buf: &mut Buffer, area: Rect, chart: &Chart) {
                 }
             }
         }
+    }
+}
+
+fn draw_guide_cells(buf: &mut Buffer, area: Rect) {
+    let y = area.y + area.height / 2;
+    for x in area.x..area.x + area.width {
+        buf[(x, y)].set_char('┈').set_fg(GUIDE);
     }
 }
 
@@ -662,13 +695,63 @@ mod tests {
     }
 
     #[test]
+    fn the_cell_guide_sits_on_the_true_middle_and_never_covers_a_line() {
+        let two = |values: &'static [f32]| Chart {
+            kind: Kind::Area,
+            max: 1.0,
+            series: vec![
+                Series {
+                    values,
+                    color: BLUE,
+                },
+                Series {
+                    values: &[0.0, 0.0],
+                    color: TRACK,
+                },
+            ],
+        };
+        let mut graphics = Graphics::cells_only();
+        let mut odd = Buffer::empty(Rect::new(0, 0, 2, 3));
+        let area = odd.area;
+        graphics.chart(&mut odd, area, "n".into(), &two(&[1.0, 0.0]));
+        assert_eq!(odd[(0, 1)].symbol(), "█");
+        assert_eq!(odd[(1, 1)].symbol(), "┈");
+        let mut even = Buffer::empty(Rect::new(0, 0, 2, 4));
+        let area = even.area;
+        graphics.chart(&mut even, area, "n".into(), &two(&[0.0, 0.0]));
+        assert!((0..4).all(|y| even[(1, y)].symbol() != "┈"));
+    }
+
+    #[test]
     fn rendered_pixels_follow_the_values() {
         let pixels = render(&chart(&[1.0, 1.0]), 20, 10, 2.0).unwrap();
         let alpha = |x: usize, y: usize| pixels[(y * 20 + x) * 4 + 3];
         assert_eq!(alpha(10, 1), 255);
         assert!(alpha(10, 8) > 0 && alpha(10, 8) < 255);
         let empty = render(&chart(&[0.0, 0.0]), 20, 10, 1.0).unwrap();
-        assert_eq!(empty[(5 * 20 + 10) * 4 + 3], 0);
+        assert_eq!(empty[(2 * 20 + 10) * 4 + 3], 0);
+        let middle = (1..9)
+            .find(|y| empty[(y * 20) * 4 + 3] == 255)
+            .expect("a dashed 50% guide");
+        assert!((4..=6).contains(&middle), "{middle}");
+        let cores = Chart {
+            kind: Kind::Bars,
+            max: 1.0,
+            series: vec![Series {
+                values: &[0.0, 1.0],
+                color: BLUE,
+            }],
+        };
+        let bars = render(&cores, 20, 10, 1.0).unwrap();
+        let (tr, tg, tb) = rgb(TRACK);
+        assert_eq!(
+            &bars[(5 * 20 + 5) * 4..(5 * 20 + 5) * 4 + 4],
+            &[tr, tg, tb, 255]
+        );
+        assert_eq!(
+            &bars[(5 * 20 + 15) * 4..(5 * 20 + 15) * 4 + 4],
+            &[108, 164, 255, 255]
+        );
         let meter = Chart {
             kind: Kind::Meter,
             max: 1.0,

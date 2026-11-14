@@ -8,6 +8,7 @@ pub const DIM: Color = Color::Rgb(139, 147, 162);
 pub const FAINT: Color = Color::Rgb(92, 99, 114);
 pub const BORDER: Color = Color::Rgb(78, 86, 104);
 pub const TRACK: Color = Color::Rgb(40, 45, 56);
+pub const GUIDE: Color = Color::Rgb(58, 64, 78);
 pub const SELECTED: Color = Color::Rgb(33, 39, 52);
 pub const ACCENT: Color = Color::Rgb(108, 164, 255);
 pub const TEAL: Color = Color::Rgb(86, 196, 186);
