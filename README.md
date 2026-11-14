@@ -22,8 +22,7 @@
   <img src="https://img.shields.io/badge/rust-2024-CE422B" alt="Rust 2024">
   <img src="https://img.shields.io/badge/Rex-pane-111111" alt="Rex pane">
   <img src="https://img.shields.io/badge/Claude%20Code%20·%20Codex-sessions-D97757" alt="Claude Code and Codex sessions">
-  <img src="https://img.shields.io/badge/macOS%20·%20Linux-black" alt="macOS and Linux">
-  <img src="https://img.shields.io/badge/Windows-soon-lightgrey" alt="Windows soon">
+  <img src="https://img.shields.io/badge/macOS%20·%20Linux%20·%20Windows%20soon-black" alt="macOS and Linux, Windows soon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
@@ -60,7 +59,20 @@ app, the iOS app or the web, already up to date. Alerts use Rex's
 so they show on Rex's session picker and tab headers on whichever device you
 have open, right beside the tabs your agents run in.
 
-Any terminal works too; you just lose the "open it from anywhere" part.
+magi runs in other terminals too. Charts and meters are drawn with the
+[kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/),
+placed through its Unicode placeholders, so they stay pixel-sharp wherever that
+part is supported. magi asks the terminal when it starts and uses block
+characters if not. iTerm2 and WezTerm show kitty images but not placeholders,
+so they get blocks.
+
+| | Rex | Ghostty, kitty 0.28+ | Other terminals |
+|---|---|---|---|
+| Pixel charts | ✓ | ✓ | Block characters |
+| Alerts in the terminal's own UI | ✓ | – | – |
+| Same pane on Mac, iOS and web | ✓ | – | – |
+
+Every terminal keeps the alert history (`a`).
 
 ## How it works
 
