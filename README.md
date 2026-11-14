@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/magi.png" alt="magi" width="80">
+</p>
+
 <h1 align="center">magi</h1>
 
 <p align="center">
