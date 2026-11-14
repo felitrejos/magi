@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Your session, on another machine, in seconds.</b><br>
-  Tell Claude Code "hand this off to my homelab" and the conversation keeps going there, with your branch, your changes and your <code>.env</code>.
+  Tell Claude Code "hand this off to my homelab" and a new session there picks up the same conversation, with your branch, your changes and your <code>.env</code>.
 </p>
 
 <p align="center">
@@ -25,10 +25,10 @@
 </p>
 
 <p align="center">
-  <img src="assets/handoff.gif" alt="A Claude Code session on a MacBook explains what the cielago repository does, is told to hand itself off to the homelab, and closes. The same session then shows up on claude.ai under Remote Control, running on the homelab, and answers a follow-up from what it said on the Mac." width="820">
+  <img src="assets/handoff.gif" alt="Split terminal. Top, the MacBook: Claude says what the project does, is asked to hand itself off to the homelab, and exits. Bottom, the homelab's Rex tab: a new session appears with Remote Control on, says it is on the homelab now, and answers a follow-up from the conversation that started on the Mac. A caption bar walks through the four steps." width="820">
 </p>
 <p align="center">
-  <i>A real handoff: the session leaves the MacBook and picks up on the homelab, in Remote Control.</i>
+  <i>A real handoff. Top: the MacBook. Bottom: the homelab, where a new session picks up the same conversation.</i>
 </p>
 
 You start something on your laptop, and then you want it running on the
@@ -38,8 +38,11 @@ meant starting over and explaining everything again.
 
 cielago moves the session itself. Ask for it in plain words and, as soon as the
 current turn ends, your branch, your uncommitted work, your secret files and the
-whole conversation land on the other machine. Claude picks up exactly where it
-was, with Remote Control on, and the copy on your laptop closes.
+whole conversation land on the other machine. A new session starts there and
+picks up exactly where Claude was, and the copy on your laptop closes. The new
+session has Remote Control on, so you can keep going from the server's terminal
+or from any Claude app signed in to your account, on your laptop, phone or the
+web.
 
 ## What you get
 
@@ -53,10 +56,10 @@ was, with Remote Control on, and the copy on your laptop closes.
    even when it lives at a different path.
 4. **Your secrets too.** `.env` files and anything else you list travel over
    SSH, straight from disk to disk, never through the conversation.
-5. **Pick it up anywhere.** The session starts with Remote Control, so it
-   shows up in the Claude app, on your phone and on claude.ai, and it opens as
-   a pane beside the repository's tab in [Rex](https://superlogical.com), where
-   you can watch it work.
+5. **Continue from wherever you are.** The new session runs in a pane beside
+   the repository's tab in [Rex](https://superlogical.com) on the server, and
+   starts with Remote Control on, so it also shows up in every Claude app on
+   your account: desktop, phone and web.
 6. **Nothing in the middle.** Plain SSH between your own machines. No relay, no
    extra account, no daemon.
 7. **One place at a time.** It refuses to clobber work on the other machine,
@@ -79,10 +82,11 @@ When the turn is over, the plugin's Stop hook does the move:
   uncommitted work or commits you don't have;
 - copies changed, new and deleted files, plus files matching `secrets`;
 - copies the transcript into the server's `~/.claude/projects`;
-- opens the session in a pane beside the repository's tab in Rex, with a
-  first message telling Claude where it is now;
-- waits for Remote Control, then closes the laptop's copy and renames its
-  transcript so it can't be resumed twice.
+- starts a new session that resumes the conversation, in a pane beside the
+  repository's Rex tab, with Remote Control on and a first message telling
+  Claude where it is now;
+- waits until that session is up, then closes the laptop's copy and renames
+  its transcript so it can't be resumed twice.
 
 ## Install
 
