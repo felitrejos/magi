@@ -25,10 +25,10 @@
 </p>
 
 <p align="center">
-  <img src="assets/handoff.gif" alt="A Claude Code session on a MacBook explains a small weather API, is told to hand itself off to the homelab, and closes. Over SSH, the same session is already running on the homelab with Remote Control on, and it repeats what it said on the Mac." width="820">
+  <img src="assets/handoff.gif" alt="A Claude Code session on a MacBook explains what the cielago repository does, is told to hand itself off to the homelab, and closes. The same session then shows up on claude.ai under Remote Control, running on the homelab, and answers a follow-up from what it said on the Mac." width="820">
 </p>
 <p align="center">
-  <i>A real handoff from a MacBook to a home server, recorded with <a href="https://github.com/charmbracelet/vhs">VHS</a> (<a href="assets/handoff.tape">source</a>).</i>
+  <i>A real handoff: the session leaves the MacBook and picks up on the homelab, in Remote Control.</i>
 </p>
 
 You start something on your laptop, and then you want it running on the
