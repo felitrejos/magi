@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Repositories without any commits can be handed off.
 - Folders that aren't git repositories are mirrored, deletions included, and a
