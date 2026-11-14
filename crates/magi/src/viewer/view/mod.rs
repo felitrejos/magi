@@ -50,7 +50,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         let left_width = (u32::from(body.width) * 42 / 100).clamp(46, 70) as u16;
         let [left, right] =
             Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(body);
-        let machines_height = (rows.len() as u16 * 2 + 2).min(left.height / 2);
+        let machines_height = (rows.len() as u16 + 2).min(left.height / 2);
         let [machines, agents_area] =
             Layout::vertical([Constraint::Length(machines_height), Constraint::Min(0)]).areas(left);
         (machines, agents_area, right, true)

@@ -19,6 +19,9 @@ use unicode_width::UnicodeWidthStr;
 
 const GUTTER: u16 = 9;
 
+const GAUGE_TEXT: usize = 31;
+const MIN_BAR: usize = 4;
+
 pub fn render_list(
     frame: &mut Frame,
     area: Rect,
@@ -38,20 +41,25 @@ pub fn render_list(
         return;
     }
     let width = inner.width as usize;
-    let per_row = if wide { 2 } else { 1 };
-    let visible = (inner.height as usize / per_row).max(1);
+    let visible = (inner.height as usize).max(1);
     let first = if model.selected < rows.len() {
         model.selected.saturating_sub(visible - 1)
     } else {
         0
     };
+    let longest = rows.iter().map(|row| row.name.width()).max().unwrap_or(0);
+    let name_room = if wide {
+        width.saturating_sub(3 + GAUGE_TEXT + 2 * MIN_BAR)
+    } else {
+        width / 2
+    };
+    let name_width = longest.clamp(6, name_room.clamp(6, 22));
     let mut cursor = Cursor::new(inner);
     for (index, row) in rows.iter().enumerate().skip(first).take(visible) {
         if cursor.left() == 0 {
             break;
         }
         let selected = index == model.selected;
-        let marker = Span::styled(if selected { "▎" } else { " " }, style::fg(theme().accent));
         let name_style = if selected {
             style::bold(theme().text)
         } else {
@@ -60,58 +68,31 @@ pub fn render_list(
         let live = row
             .machine()
             .filter(|_| row.state() == Some(&LinkState::Live))
-            .and_then(|machine| machine.latest.as_ref().map(|sample| (machine, sample)));
-        if wide {
-            let facts = live.map_or_else(Vec::new, |(machine, sample)| {
-                vec![Span::styled(
-                    format!(
-                        "{} · up {}",
-                        short_os(&machine.identity.os),
-                        units::duration(Duration::from_secs(sample.uptime_secs))
-                    ),
-                    style::fg(theme().faint),
-                )]
-            });
-            Composed::of(vec![
-                marker.clone(),
-                Span::styled(row.name.clone(), name_style),
-            ])
-            .spread(Composed::of(facts), width)
-            .draw(frame, graphics, cursor.row(), selected_style(selected));
-            cursor.skip();
-            if cursor.left() == 0 {
-                break;
+            .and_then(|machine| machine.latest.as_ref().map(|_| machine));
+        let mut line = Composed::of(vec![
+            Span::styled(if selected { "▎" } else { " " }, style::fg(theme().accent)),
+            Span::styled(
+                pad(&truncate(&row.name, name_width), name_width + 2),
+                name_style,
+            ),
+        ]);
+        let room = width.saturating_sub(name_width + 3);
+        match live {
+            Some(machine) if wide => gauges(&mut line, machine, index, room),
+            Some(machine) => {
+                for span in compact_gauges(machine, room) {
+                    line.push(span);
+                }
             }
-            let mut second = Composed::of(vec![Span::raw(" ")]);
-            match live {
-                Some((machine, _)) => gauges(&mut second, machine, index, width - 1),
-                None => second.push(status_span(row, model.port, now, width - 1)),
-            }
-            second.draw(frame, graphics, cursor.row(), selected_style(selected));
-            cursor.skip();
-        } else {
-            let name_width = (width / 2).clamp(6, 24);
-            let mut spans = vec![
-                marker,
-                Span::raw(" "),
-                Span::styled(
-                    pad(&truncate(&row.name, name_width), name_width + 1),
-                    name_style,
-                ),
-            ];
-            let room = width.saturating_sub(spans_width(&spans));
-            match live {
-                Some((machine, _)) => spans.extend(compact_gauges(machine, room)),
-                None => spans.push(status_span(row, model.port, now, room)),
-            }
-            Composed::of(spans).draw(frame, graphics, cursor.row(), selected_style(selected));
-            cursor.skip();
+            None => line.push(status_span(row, model.port, now, room)),
         }
+        line.draw(frame, graphics, cursor.row(), selected_style(selected));
+        cursor.skip();
     }
 }
 
 fn gauges(line: &mut Composed, machine: &Machine, index: usize, width: usize) {
-    let bar = (width.saturating_sub(31) / 2).clamp(3, 14);
+    let bar = (width.saturating_sub(GAUGE_TEXT) / 2).clamp(MIN_BAR, 10);
     for (label, value, subsystem) in [
         ("cpu", machine.smoothed_cpu(), Subsystem::Cpu),
         ("mem", machine.memory_fraction(), Subsystem::Memory),

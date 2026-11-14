@@ -429,7 +429,16 @@ fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width
             .iter()
             .map(|row| Line::from(clip(row.iter().map(run_span).collect(), width)))
             .collect(),
-        Source::Conversation => rows.iter().flat_map(|row| wrap(row, width)).collect(),
+        Source::Conversation => rows
+            .iter()
+            .flat_map(|row| {
+                if row.iter().all(|run| run.flags & DIM != 0) {
+                    vec![Line::from(clip(row.iter().map(run_span).collect(), width))]
+                } else {
+                    wrap(row, width)
+                }
+            })
+            .collect(),
     };
     let room = cursor.left() as usize;
     for line in lines

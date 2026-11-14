@@ -559,3 +559,18 @@ fn a_session_shows_what_it_and_everything_it_started_use() {
     let screen = draw(&model, 160, 50, now);
     assert!(screen.contains("measuring · 1.0M"), "{screen}");
 }
+
+#[test]
+fn each_machine_is_one_line_and_its_details_stay_in_the_detail() {
+    let now = Instant::now();
+    let mut model = fleet(3, now);
+    model.selected = model.rows(now).len();
+    let screen = draw(&model, 160, 40, now);
+    let machine_lines = screen
+        .lines()
+        .filter(|line| line.contains(" cpu ") && line.contains(" mem "))
+        .count();
+    assert_eq!(machine_lines, 3, "{screen}");
+    assert!(!screen.contains("up 3d 2h"), "{screen}");
+    assert!(screen.contains("disk 75%"), "{screen}");
+}

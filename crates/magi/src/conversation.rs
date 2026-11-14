@@ -70,16 +70,48 @@ fn tail(path: &Path, len: u64) -> std::io::Result<String> {
 }
 
 fn said(text: &str, agent: Agent) -> Vec<Said> {
-    let mut said: Vec<Said> = text
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut cwd = String::new();
+    let mut said = Vec::new();
+    for value in text
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .flat_map(|value| match agent {
+    {
+        if let Some(seen) = value["cwd"]
+            .as_str()
+            .or_else(|| value["payload"]["cwd"].as_str())
+        {
+            cwd = seen.to_string();
+        }
+        let found = match agent {
             Agent::ClaudeCode => claude(&value),
             Agent::Codex => codex(&value),
-        })
-        .collect();
+        };
+        said.extend(found.into_iter().map(|entry| match entry {
+            Said::Tool { name, detail } => Said::Tool {
+                name,
+                detail: shorten(&detail, &cwd, &home),
+            },
+            other => other,
+        }));
+    }
     said.drain(..said.len().saturating_sub(MAX_ENTRIES));
     said
+}
+
+fn shorten(detail: &str, cwd: &str, home: &str) -> String {
+    let inside = |root: &str| {
+        (!root.is_empty())
+            .then(|| detail.strip_prefix(root)?.strip_prefix('/'))
+            .flatten()
+    };
+    if let Some(relative) = inside(cwd) {
+        return relative.to_string();
+    }
+    match inside(home) {
+        Some(relative) => format!("~/{relative}"),
+        None => detail.replace(&format!("{home}/"), "~/"),
+    }
 }
 
 fn claude(value: &Value) -> Vec<Said> {
@@ -209,8 +241,8 @@ fn rows(said: &[Said]) -> Vec<Vec<Run>> {
             Said::Reply(reply) => {
                 rows.extend(
                     capped(reply, MAX_REPLY_LINES)
-                        .into_iter()
-                        .map(|line| vec![plain(line, 0)]),
+                        .iter()
+                        .map(|line| emphasis(line)),
                 );
             }
             Said::Tool { name, detail } => {
@@ -223,6 +255,19 @@ fn rows(said: &[Said]) -> Vec<Vec<Run>> {
         }
     }
     rows
+}
+
+fn emphasis(line: &str) -> Vec<Run> {
+    line.split("**")
+        .enumerate()
+        .filter(|(_, part)| !part.is_empty())
+        .map(|(index, part)| Run {
+            text: part.to_string(),
+            fg: Shade::Default,
+            bg: Shade::Default,
+            flags: if index % 2 == 1 { BOLD } else { 0 },
+        })
+        .collect()
 }
 
 fn capped(text: &str, max: usize) -> Vec<String> {
@@ -338,5 +383,31 @@ mod tests {
         assert!(rows.len() <= MAX_ENTRIES * 2 + 4);
         assert_eq!(reader.read(&path, Agent::ClaudeCode).unwrap(), rows);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn paths_read_relative_to_the_project_or_home_and_bold_is_bold() {
+        assert_eq!(
+            shorten("/home/me/web/src/a.rs", "/home/me/web", "/home/me"),
+            "src/a.rs"
+        );
+        assert_eq!(
+            shorten("/home/me/other/b.rs", "/home/me/web", "/home/me"),
+            "~/other/b.rs"
+        );
+        assert_eq!(
+            shorten("cd /home/me/web && cargo test", "/home/me/web", "/home/me"),
+            "cd ~/web && cargo test"
+        );
+        assert_eq!(shorten("/etc/hosts", "", "/home/me"), "/etc/hosts");
+        let runs = emphasis("- **Benchmarks:** report delays");
+        let parts: Vec<(&str, u8)> = runs
+            .iter()
+            .map(|run| (run.text.as_str(), run.flags))
+            .collect();
+        assert_eq!(
+            parts,
+            [("- ", 0), ("Benchmarks:", BOLD), (" report delays", 0)]
+        );
     }
 }
