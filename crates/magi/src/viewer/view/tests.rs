@@ -327,6 +327,7 @@ fn selecting_an_agent_shows_its_detail_and_keeps_the_machines_visible() {
         "149M",
         "5-hour",
         "Claude Code",
+        "cache write 1.6M",
     ] {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");
     }

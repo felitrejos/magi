@@ -13,7 +13,7 @@ use crate::viewer::model::{AgentRow, Model};
 use crate::viewer::style::{self, ACCENT, DIM, FAINT, GOOD, TEXT, WARN, WARN_TINT};
 use crate::viewer::units;
 
-const LABEL: usize = 13;
+const LABEL: usize = 14;
 
 pub fn render_list(
     frame: &mut Frame,
