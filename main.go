@@ -143,6 +143,9 @@ func handedOff(a armed, res Result) map[string]string {
 	if res.NewClone != "" {
 		where += fmt.Sprintf(". %s didn't have this project yet, so it now lives at %s", a.Host, res.NewClone)
 	}
+	if res.TabNote != nil {
+		where += fmt.Sprintf(". The new tab's command didn't start: %v", res.TabNote)
+	}
 	took := res.Summary()
 	if a.Desktop {
 		return map[string]string{

@@ -69,5 +69,10 @@ func (h Host) validate(name string) error {
 	case h.RexServer == "":
 		return missing("rex_server")
 	}
+	for _, root := range h.Roots {
+		if !strings.HasPrefix(root, "/") && !strings.HasPrefix(root, "~/") {
+			return fmt.Errorf("host %q: roots must start with / or ~/, got %q", name, root)
+		}
+	}
 	return nil
 }

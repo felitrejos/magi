@@ -487,3 +487,57 @@ func TestStopRemoteSessionStopsTheSessionWithoutKillingItself(t *testing.T) {
 		t.Fatal("the session process was not stopped")
 	}
 }
+
+func TestHostRejectsRelativeRoots(t *testing.T) {
+	h := Host{SSH: "s", Claude: "c", RexServer: "r", Roots: []string{"developer"}}
+	if err := h.validate("homelab"); err == nil {
+		t.Fatal("a relative root was accepted")
+	}
+	h.Roots = []string{"~/developer", "/srv/code"}
+	if err := h.validate("homelab"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadWorkspaceNamesAWorktreeAfterItsMainCheckout(t *testing.T) {
+	f := newFixture(t)
+	tree := filepath.Join(f.local, ".claude", "worktrees", "feat")
+	f.git(f.local, "worktree", "add", "-q", "-b", "feat", tree)
+	ws, err := readWorkspace(context.Background(), tree, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Name != "app" || ws.MainRoot != f.local {
+		t.Errorf("Name = %q, MainRoot = %q; want app, %q", ws.Name, ws.MainRoot, f.local)
+	}
+}
+
+func TestServerGroupKeepsTheServersLayout(t *testing.T) {
+	for clone, want := range map[string]string{
+		"/home/me/developer/quorum/quorum-trader": "quorum",
+		"/home/me/developer/kodo":                 "kodo",
+		"/srv/other/thing":                        "other",
+	} {
+		if got := serverGroup(clone, []string{"~/developer"}, "/home/me"); got != want {
+			t.Errorf("serverGroup(%s) = %q, want %q", clone, got, want)
+		}
+	}
+}
+
+func TestLocalGroupSkipsMissingRootsAndTheRootItself(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "Personal", "kodo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roots := []string{"~/Missing", "~/Personal"}
+	if got, err := localGroup(filepath.Join(home, "Personal", "kodo"), roots); err != nil || got != "kodo" {
+		t.Errorf("localGroup = %q, %v; want kodo", got, err)
+	}
+	if got, err := localGroup(filepath.Join(home, "Personal"), roots); err != nil || got != "Personal" {
+		t.Errorf("localGroup(root itself) = %q, %v; want Personal", got, err)
+	}
+}

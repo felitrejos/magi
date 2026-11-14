@@ -11,6 +11,8 @@ import (
 
 type Workspace struct {
 	Root       string
+	MainRoot   string
+	Name       string
 	Subdir     string
 	Origin     string
 	RootCommit string
@@ -45,7 +47,15 @@ func readWorkspace(ctx context.Context, cwd string, secretPatterns []string) (Wo
 	if err != nil {
 		return Workspace{}, fmt.Errorf("%s has no commits yet; make a first commit so it can be handed off", ws.Root)
 	}
-	ws.RootCommit = firstSorted(strings.Fields(string(roots)))
+	ws.RootCommit = slices.Min(strings.Fields(string(roots)))
+	common, err := git("rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return Workspace{}, err
+	}
+	if ws.MainRoot, err = filepath.EvalSymlinks(filepath.Dir(strings.TrimSpace(string(common)))); err != nil {
+		return Workspace{}, err
+	}
+	ws.Name = filepath.Base(ws.MainRoot)
 	branch, err := git("symbolic-ref", "--short", "-q", "HEAD")
 	if err != nil && exitCode(err) != 1 {
 		return Workspace{}, err
@@ -78,11 +88,6 @@ func readWorkspace(ctx context.Context, cwd string, secretPatterns []string) (Wo
 	ignored, err := list(args...)
 	ws.Secrets = withoutDirs(ignored)
 	return ws, err
-}
-
-func firstSorted(items []string) string {
-	slices.Sort(items)
-	return items[0]
 }
 
 func withoutDirs(paths []string) []string {

@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"slices"
 	"strings"
 )
 
@@ -25,6 +25,11 @@ type RexTab struct {
 	Pane           string
 }
 
+type rexSession struct {
+	ID    string `json:"session_id"`
+	Label string `json:"label"`
+}
+
 func (l Launch) rex(args ...string) ([]byte, error) {
 	return run(l.Remote.ctx, "", nil, "rex", append([]string{"-S", l.Host.RexServer}, args...)...)
 }
@@ -40,7 +45,7 @@ func (l Launch) rexJSON(into any, args ...string) error {
 	return nil
 }
 
-func (l Launch) shellIn(dir string, command ...string) []string {
+func shellIn(dir string, command ...string) []string {
 	if len(command) == 0 {
 		return []string{"sh", "-c", "cd " + quote(dir) + ` && exec "$SHELL" -l`}
 	}
@@ -52,8 +57,8 @@ func (l Launch) start(repoDir string) (RexTab, error) {
 	if err != nil {
 		return tab, err
 	}
-	if tab.Session == "" {
-		if tab, err = l.createTab(repoDir); err != nil {
+	if tab.Window == "" {
+		if tab, err = l.createTab(tab.Session, repoDir); err != nil {
 			return tab, err
 		}
 	}
@@ -61,9 +66,12 @@ func (l Launch) start(repoDir string) (RexTab, error) {
 		BlockIDs []string `json:"block_ids"`
 	}
 	err = l.rexJSON(&split, append([]string{"split", "-s", tab.Session, "-b", tab.Shell,
-		"--label", "claude: " + l.Name, "--json", "--"}, l.shellIn(l.Dir, l.Command...)...)...)
+		"--label", "claude: " + l.Name, "--json", "--"}, shellIn(l.Dir, l.Command...)...)...)
 	if err != nil {
 		return tab, err
+	}
+	if len(split.BlockIDs) == 0 {
+		return tab, errors.New("rex split returned no pane")
 	}
 	tab.Pane = split.BlockIDs[0]
 	return tab, nil
@@ -71,21 +79,15 @@ func (l Launch) start(repoDir string) (RexTab, error) {
 
 func (l Launch) findTab() (RexTab, error) {
 	var listing struct {
-		Sessions []struct {
-			ID    string `json:"session_id"`
-			Label string `json:"label"`
-		} `json:"sessions"`
+		Sessions []rexSession `json:"sessions"`
 	}
 	if err := l.rexJSON(&listing, "ls", "--json"); err != nil {
 		return RexTab{}, err
 	}
-	slices.SortStableFunc(listing.Sessions, func(a, b struct {
-		ID    string `json:"session_id"`
-		Label string `json:"label"`
-	}) int {
-		return boolOrder(b.Label == l.Group) - boolOrder(a.Label == l.Group)
-	})
 	for _, s := range listing.Sessions {
+		if s.Label != l.Group {
+			continue
+		}
 		var windows struct {
 			Windows []struct {
 				ID      string `json:"window_id"`
@@ -101,16 +103,13 @@ func (l Launch) findTab() (RexTab, error) {
 				return RexTab{Session: s.ID, Window: w.ID, Shell: w.Focused}, nil
 			}
 		}
+		return RexTab{Session: s.ID}, nil
 	}
 	return RexTab{}, nil
 }
 
-func (l Launch) createTab(repoDir string) (RexTab, error) {
-	session, err := l.groupSession()
-	if err != nil {
-		return RexTab{}, err
-	}
-	shell := l.shellIn(repoDir)
+func (l Launch) createTab(session, repoDir string) (RexTab, error) {
+	shell := shellIn(repoDir)
 	if session == "" {
 		var created struct {
 			ID      string `json:"session_id"`
@@ -123,7 +122,12 @@ func (l Launch) createTab(repoDir string) (RexTab, error) {
 		if err := l.rexJSON(&created, args...); err != nil {
 			return RexTab{}, err
 		}
-		return RexTab{Session: created.ID, Window: created.Windows[0].ID, Shell: created.Windows[0].BlockIDs[0], Created: true, SessionCreated: true}, nil
+		tab := RexTab{Session: created.ID, Created: true, SessionCreated: true}
+		if len(created.Windows) == 0 || len(created.Windows[0].BlockIDs) == 0 {
+			return tab, errors.New("rex session new returned no tab")
+		}
+		tab.Window, tab.Shell = created.Windows[0].ID, created.Windows[0].BlockIDs[0]
+		return tab, nil
 	}
 	var created struct {
 		ID       string   `json:"window_id"`
@@ -133,25 +137,12 @@ func (l Launch) createTab(repoDir string) (RexTab, error) {
 	if err := l.rexJSON(&created, args...); err != nil {
 		return RexTab{}, err
 	}
-	return RexTab{Session: session, Window: created.ID, Shell: created.BlockIDs[0], Created: true}, nil
-}
-
-func (l Launch) groupSession() (string, error) {
-	var listing struct {
-		Sessions []struct {
-			ID    string `json:"session_id"`
-			Label string `json:"label"`
-		} `json:"sessions"`
+	tab := RexTab{Session: session, Window: created.ID, Created: true}
+	if len(created.BlockIDs) == 0 {
+		return tab, errors.New("rex window new returned no pane")
 	}
-	if err := l.rexJSON(&listing, "ls", "--json"); err != nil {
-		return "", err
-	}
-	for _, s := range listing.Sessions {
-		if s.Label == l.Group {
-			return s.ID, nil
-		}
-	}
-	return "", nil
+	tab.Shell = created.BlockIDs[0]
+	return tab, nil
 }
 
 func (l Launch) show(tab RexTab) ([]string, error) {
@@ -171,8 +162,7 @@ func (l Launch) show(tab RexTab) ([]string, error) {
 	if _, err := l.rex("focus", "-s", tab.Session, tab.Pane); err != nil {
 		return nil, err
 	}
-	var shownOn []string
-	var refused []string
+	var shownOn, refused []string
 	for _, c := range listing.Clients {
 		if c.Info.Kind != "app" || c.State != "connected" {
 			continue
@@ -190,15 +180,16 @@ func (l Launch) show(tab RexTab) ([]string, error) {
 }
 
 func (l Launch) discard(tab RexTab) error {
+	var err error
 	switch {
 	case tab.SessionCreated:
-		_, err := l.rex("kill", tab.Session)
-		return err
+		_, err = l.rex("kill", tab.Session)
 	case tab.Created:
-		_, err := l.rex("window", "close", "-s", tab.Session, tab.Window)
-		return err
+		_, err = l.rex("window", "close", "-s", tab.Session, tab.Window)
+	case tab.Pane != "":
+		_, err = l.rex("block", "close", "-s", tab.Session, tab.Pane)
 	}
-	return nil
+	return err
 }
 
 func (l Launch) runInShell(tab RexTab, command string) error {
@@ -207,11 +198,4 @@ func (l Launch) runInShell(tab RexTab, command string) error {
 	}
 	_, err := l.rex("send-key", "-s", tab.Session, "-b", tab.Shell, "enter")
 	return err
-}
-
-func boolOrder(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

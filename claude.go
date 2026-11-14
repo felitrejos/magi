@@ -90,7 +90,7 @@ func isTrusted(r *Remote, dir string) (bool, error) {
 		if state.Projects[d].Trusted {
 			return true, nil
 		}
-		if d == "/" {
+		if d == filepath.Dir(d) {
 			return false, nil
 		}
 	}

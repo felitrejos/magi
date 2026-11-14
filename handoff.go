@@ -28,6 +28,7 @@ type Result struct {
 	Steps    []Step
 	ShownOn  []string
 	RexNote  error
+	TabNote  error
 	NewClone string
 }
 
@@ -59,12 +60,8 @@ func (h Handoff) Run() (Result, error) {
 	var ws Workspace
 	var remote *Remote
 	var remoteHome, remoteRepo, remoteDir, group string
-	var trusted bool
 	err := step("inspect", func() (err error) {
 		if ws, err = readWorkspace(ctx, h.Cwd, h.Host.Secrets); err != nil {
-			return err
-		}
-		if group, err = localGroup(ws.Root, h.Host.LocalRoots); err != nil {
 			return err
 		}
 		if remote, err = newRemote(ctx, h.Host.SSH); err != nil {
@@ -77,13 +74,17 @@ func (h Handoff) Run() (Result, error) {
 		if remoteRepo, err = matchClone(clones, ws, remote.host); err != nil {
 			return err
 		}
-		if remoteRepo == "" {
-			res.NewClone = expandHome(h.Host.Roots[0], remoteHome) + "/" + group + "/" + filepath.Base(ws.Root)
+		if remoteRepo != "" {
+			group = serverGroup(remoteRepo, h.Host.Roots, remoteHome)
+		} else {
+			if group, err = localGroup(ws.MainRoot, h.Host.LocalRoots); err != nil {
+				return err
+			}
+			res.NewClone = expandHome(h.Host.Roots[0], remoteHome) + "/" + group + "/" + ws.Name
 			remoteRepo = res.NewClone
 		}
 		remoteDir = filepath.Join(remoteRepo, ws.Subdir)
-		trusted, err = isTrusted(remote, remoteDir)
-		return err
+		return nil
 	})
 	if err != nil {
 		return res, err
@@ -157,18 +158,19 @@ func (h Handoff) Run() (Result, error) {
 	}
 
 	if err := step("start", func() error { return waitForRemoteControl(remote, h.SessionID, launchedAt) }); err != nil {
-		if !trusted {
+		if trusted, trustErr := isTrusted(remote, remoteDir); trustErr == nil && !trusted {
 			err = fmt.Errorf("%w: the new session was waiting for you to trust %s; accept that in Rex and hand off again", err, remoteDir)
 		}
 		return res, undo(err)
 	}
 
 	if tab.Created && h.Host.NewTabCommand != "" {
-		if err := step("tab", func() error {
-			return launch.runInShell(tab, strings.ReplaceAll(h.Host.NewTabCommand, "{repo}", name))
-		}); err != nil {
-			return res, err
-		}
+		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		remote.ctx = cleanup
+		res.TabNote = step("tab", func() error {
+			return launch.runInShell(tab, strings.ReplaceAll(h.Host.NewTabCommand, "{repo}", quote(name)))
+		})
 	}
 	return res, nil
 }
@@ -190,16 +192,29 @@ func localGroup(repoRoot string, localRoots []string) (string, error) {
 	}
 	for _, root := range localRoots {
 		real, err := filepath.EvalSymlinks(expandHome(root, home))
+		if os.IsNotExist(err) {
+			continue
+		}
 		if err != nil {
 			return "", fmt.Errorf("local_roots: %w", err)
 		}
 		rel, err := filepath.Rel(real, repoRoot)
-		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
 			continue
 		}
 		return strings.Split(rel, string(filepath.Separator))[0], nil
 	}
 	return filepath.Base(repoRoot), nil
+}
+
+func serverGroup(clone string, roots []string, home string) string {
+	for _, root := range roots {
+		rel, err := filepath.Rel(expandHome(root, home), clone)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return strings.Split(rel, string(filepath.Separator))[0]
+		}
+	}
+	return filepath.Base(filepath.Dir(clone))
 }
 
 type Clone struct {
@@ -259,10 +274,11 @@ func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
 
 func createClone(r *Remote, dir, origin string) error {
 	script := "set -e; if [ -e " + quote(dir) + " ]; then echo " + quote(dir+" already exists but isn't a clone of this repository") + " >&2; exit 5; fi; " +
-		"mkdir -p " + quote(dir) + "; git -C " + quote(dir) + " init --quiet; "
+		"trap " + quote("rm -rf -- "+quote(dir)) + " EXIT; git init --quiet " + quote(dir) + "; "
 	if origin != "" {
 		script += "git -C " + quote(dir) + " remote add origin " + quote(origin) + "; "
 	}
+	script += "trap - EXIT"
 	_, err := r.sh(script)
 	return err
 }
