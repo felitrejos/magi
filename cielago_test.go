@@ -1642,23 +1642,34 @@ func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
 	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nlauncher = \"tmux\"\n")
 	t.Setenv("CLAUDE_PID", "")
-	if err := arm("server", id, ""); err == nil || !strings.Contains(err.Error(), "CLAUDE_PID") {
+	if err := arm("server", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "CLAUDE_PID") {
 		t.Errorf("arm outside Claude Code gave %v", err)
 	}
 	t.Setenv("CLAUDE_PID", "4242")
-	if err := arm("nowhere", id, ""); err == nil || !strings.Contains(err.Error(), "server") {
+	if err := arm("nowhere", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "server") {
 		t.Errorf("arm to an unknown host gave %v", err)
 	}
-	if err := arm("server", "not-an-id", ""); err == nil {
+	if err := arm("server", "not-an-id", "", io.Discard); err == nil {
 		t.Error("arm accepted a malformed session id")
 	}
-	if err := arm("server", id, "dev server on :3000"); err != nil {
+	if err := arm("server", id, "dev server on :3000", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	path, _ := armedPath(id)
 	var a armed
 	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &a); err != nil || a.Host != "server" || a.PID != 4242 || a.Note != "dev server on :3000" {
 		t.Errorf("armed = %+v, %v", a, err)
+	}
+}
+
+func TestParentOfFindsThisProcesssParent(t *testing.T) {
+	child := exec.Command("sleep", "5")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { child.Process.Kill(); child.Wait() })
+	if got, err := parentOf(child.Process.Pid); err != nil || got != os.Getpid() {
+		t.Errorf("parentOf(child) = %d, %v; want %d", got, err, os.Getpid())
 	}
 }
 

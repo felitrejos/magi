@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -49,11 +50,11 @@ func main() {
 	var err error
 	switch {
 	case len(args) == 3 && args[0] == "arm":
-		err = arm(args[1], args[2], "")
+		err = arm(args[1], args[2], "", os.Stdout)
 	case len(args) == 4 && args[0] == "arm" && args[3] == "-":
 		var note []byte
 		if note, err = io.ReadAll(os.Stdin); err == nil {
-			err = arm(args[1], args[2], strings.TrimSpace(string(note)))
+			err = arm(args[1], args[2], strings.TrimSpace(string(note)), os.Stdout)
 		}
 	case len(args) == 2 && args[0] == "hook" && args[1] == "stop":
 		err = stopHook(os.Stdin, os.Stdout)
@@ -106,7 +107,7 @@ func armedPath(sessionID string) (string, error) {
 	return filepath.Join(home, ".cielago", "armed", sessionID+".json"), nil
 }
 
-func arm(hostName, sessionID, note string) error {
+func arm(hostName, sessionID, note string, out io.Writer) error {
 	if _, err := loadHost(hostName); err != nil {
 		return err
 	}
@@ -128,7 +129,7 @@ func arm(hostName, sessionID, note string) error {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return err
 	}
-	fmt.Printf("Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
+	fmt.Fprintf(out, "Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
 	return nil
 }
 
@@ -219,15 +220,28 @@ func isAncestor(pid int) (bool, error) {
 		if p == pid {
 			return true, nil
 		}
-		out, err := run(context.Background(), "ps", "-o", "ppid=", "-p", strconv.Itoa(p))
+		parent, err := parentOf(p)
 		if err != nil {
 			return false, err
 		}
-		if p, err = strconv.Atoi(strings.TrimSpace(string(out))); err != nil {
-			return false, err
-		}
+		p = parent
 	}
 	return false, nil
+}
+
+func parentOf(pid int) (int, error) {
+	if stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil {
+		fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+		if len(fields) < 2 {
+			return 0, fmt.Errorf("unexpected /proc/%d/stat", pid)
+		}
+		return strconv.Atoi(fields[1])
+	}
+	out, err := run(context.Background(), "ps", "-o", "ppid=", "-p", strconv.Itoa(pid))
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(out)))
 }
 
 func handoff(a armed, input stopInput) (Result, error) {
