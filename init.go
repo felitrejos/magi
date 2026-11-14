@@ -8,11 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/BurntSushi/toml"
 )
 
 type prompter struct {
@@ -188,23 +185,11 @@ func initConfig(in io.Reader, out io.Writer) error {
 	if err := h.validate(name); err != nil {
 		return err
 	}
+	if _, ok := cfg.Hosts[name]; !ok {
+		cfg.Order = append(cfg.Order, name)
+	}
 	cfg.Hosts[name] = h
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), "config-*.toml")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(f.Name(), path); err != nil {
+	if err := writeConfig(path, cfg); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "\nSaved %s. Checking everything:\n\n", path)

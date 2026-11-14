@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -15,6 +18,7 @@ type Config struct {
 	LocalRoots []string        `toml:"local_roots"`
 	Exclude    []string        `toml:"exclude"`
 	Hosts      map[string]Host `toml:"hosts"`
+	Order      []string        `toml:"-"`
 }
 
 type Host struct {
@@ -25,6 +29,9 @@ type Host struct {
 	Launcher      string   `toml:"launcher"`
 	RexServer     string   `toml:"rex_server"`
 	NewTabCommand string   `toml:"new_tab_command"`
+	MaxAgents     int      `toml:"max_agents,omitempty"`
+	MinFreeMemory string   `toml:"min_free_memory,omitempty"`
+	QuietHours    string   `toml:"quiet_hours,omitempty"`
 	LocalRoots    []string `toml:"-"`
 	Exclude       []string `toml:"-"`
 }
@@ -76,6 +83,9 @@ func (h Host) validate(name string) error {
 			return fmt.Errorf("host %q: roots must start with / or ~/, got %q", name, root)
 		}
 	}
+	if _, err := h.budget(); err != nil {
+		return fmt.Errorf("host %q: %w", name, err)
+	}
 	for _, e := range h.Exclude {
 		if e == "" || strings.Contains(e, "/") {
 			return fmt.Errorf("exclude: %q isn't a file or folder name; list names such as \"node_modules\", without slashes", e)
@@ -90,8 +100,51 @@ func loadConfig() (Config, string, error) {
 		return Config{}, "", err
 	}
 	var cfg Config
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+	md, err := toml.DecodeFile(path, &cfg)
+	if err != nil {
 		return Config{}, path, fmt.Errorf("read %s: %w", path, err)
 	}
+	for _, key := range md.Keys() {
+		if len(key) == 2 && key[0] == "hosts" {
+			cfg.Order = append(cfg.Order, key[1])
+		}
+	}
 	return cfg, path, nil
+}
+
+var bareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+func tomlKey(name string) string {
+	if bareKey.MatchString(name) {
+		return name
+	}
+	return strconv.Quote(name)
+}
+
+func writeConfig(path string, cfg Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), "config-*.toml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	enc := toml.NewEncoder(f)
+	err = enc.Encode(struct {
+		LocalRoots []string `toml:"local_roots"`
+		Exclude    []string `toml:"exclude"`
+	}{cfg.LocalRoots, cfg.Exclude})
+	for _, name := range cfg.Order {
+		if err == nil {
+			_, err = fmt.Fprintf(f, "\n[hosts.%s]\n", tomlKey(name))
+		}
+		if err == nil {
+			err = enc.Encode(cfg.Hosts[name])
+		}
+	}
+	if err := errors.Join(err, f.Close()); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }

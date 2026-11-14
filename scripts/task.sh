@@ -32,6 +32,38 @@ render() {
   fi
 }
 
+working() {
+  n=0
+  for d in "$HOME"/.cielago/tasks/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]; do
+    if [ ! -d "$d" ] || [ -f "$d/exit" ]; then continue; fi
+    case $(cat "$d/kind" 2>/dev/null) in
+      delegate | session) ;;
+      *) continue ;;
+    esac
+    if [ -f "$d/pid" ]; then
+      read -r p < "$d/pid"
+      if ! kill -0 "$p" 2>/dev/null; then continue; fi
+    elif [ -z "$(find "$d" -prune -mmin -10)" ]; then
+      continue
+    fi
+    n=$((n + 1))
+  done
+  for f in "$HOME"/.claude/sessions/*.json; do
+    if [ ! -f "$f" ] || ! grep -q '"status": *"busy"' "$f" || grep -qF '/.cielago/tasks/' "$f"; then continue; fi
+    p=${f##*/}
+    if kill -0 "${p%.json}" 2>/dev/null; then n=$((n + 1)); fi
+  done
+  echo "$n"
+}
+
+available() {
+  if [ -r /proc/meminfo ]; then
+    awk '/^MemAvailable:/ {printf "%.0f\n", $2 * 1024}' /proc/meminfo
+  elif command -v vm_stat >/dev/null 2>&1; then
+    vm_stat | awk '/page size of/ {size = $8} /^Pages (free|inactive|speculative):/ {sub(/\.$/, "", $NF); pages += $NF} END {printf "%.0f\n", pages * size}'
+  fi
+}
+
 started() {
   if [ -r "/proc/$1/stat" ]; then
     sed 's/.*) //' "/proc/$1/stat" | cut -d ' ' -f 20
@@ -155,6 +187,37 @@ case $command in
     fi
     git update-ref refs/cielago/result "$result"
     printf '%s\n' "$result"
+    ;;
+  reserve)
+    kind=$1 max=$2 min=$3
+    lock=$HOME/.cielago/tasks/.lock
+    mkdir -p "$HOME/.cielago/tasks"
+    i=0
+    until mkdir "$lock" 2>/dev/null; do
+      i=$((i + 1))
+      if [ "$i" -gt 100 ]; then
+        rmdir "$lock" 2>/dev/null
+        i=0
+      fi
+      sleep 0.1
+    done
+    trap 'rmdir "$lock"' EXIT
+    if [ "$max" -gt 0 ] && { [ "$kind" = delegate ] || [ "$kind" = session ]; }; then
+      n=$(working)
+      if [ "$n" -ge "$max" ]; then
+        echo "$n agents are working there, its budget is $max" >&2
+        exit 11
+      fi
+    fi
+    if [ "$min" -gt 0 ]; then
+      free=$(available)
+      if [ -n "$free" ] && [ "$free" -lt "$min" ]; then
+        echo "$((free / 1048576)) MB of memory is free there, its budget needs $((min / 1048576)) MB" >&2
+        exit 11
+      fi
+    fi
+    mkdir -m 700 -- "$dir" || exit
+    printf '%s\n' "$kind" > "$dir/kind"
     ;;
   remove)
     rm -rf -- "$dir"

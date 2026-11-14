@@ -193,10 +193,17 @@ Every task is a copy, never a move:
 - **Dependencies.** `node_modules` and the like aren't copied; the project's
   approved [`.cielago.toml`](#set-up-the-project-on-arrival) setup runs first.
 
-**Which machine.** Without a machine named, cielago picks the least loaded of
-your configured hosts, by CPU and load average from `magi fleet`. It matches
-magi's machine names to your hosts by name or by their `ssh` destination.
-Without magi it takes the first host that answers, and says so.
+**Which machine.** Your hosts are tried in the order they appear in the
+config, and the first one with room gets the work. A host has room when it's
+outside its quiet hours, its budget allows another agent and enough memory is
+free, and it isn't over 90% busy, judged from magi's live numbers when
+`magi fleet` reports it. When the task starts, the host checks its own budget
+once more, so two tasks started together can't both take its last slot; a
+host that turns out to be full is skipped for the next, and the result says
+why. cielago matches magi's machine names to your hosts by name or by their
+`ssh` destination. Without magi, it takes the first host that answers, and
+says so. `machines` and `cielago doctor` show each host's budget and whether
+it has room.
 
 **What a delegated Claude may do.** It runs headless with
 `claude -p --permission-mode acceptEdits --permission-prompts none`: it reads
@@ -271,10 +278,19 @@ secrets = [".env", ".env.*"]                    # gitignored files to bring alon
 launcher = "rex"                                # "rex" or "tmux"
 rex_server = "homelab"                          # its Rex host, with launcher = "rex"
 new_tab_command = "claude rc --name {repo} --spawn same-dir"  # optional: runs in a new project tab
+max_agents = 3                                  # optional: no new delegated Claude or session past 3 working agents
+min_free_memory = "4G"                          # optional: no new task with less memory free than this
+quiet_hours = "22:00-07:00"                     # optional: no new tasks in this window, in this machine's time
 ```
 
+The budget fields only limit tasks sent there; handoffs ignore them.
+`max_agents` counts Claude Code sessions in the middle of a turn there, and
+cielago's delegated Claudes and sessions; a `run_elsewhere` command isn't an
+agent, so only memory and quiet hours apply to it.
+
 The name of the table is what you call the machine: "hand this off to my
-homelab" finds `[hosts.homelab]`.
+homelab" finds `[hosts.homelab]`. The order of the tables is your preference
+when cielago picks a machine for a task.
 
 ## Questions
 

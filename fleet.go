@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"os/exec"
 	"slices"
@@ -118,8 +117,10 @@ func fleetIndex(name string, h Host, fleet []fleetMachine) int {
 type machineInfo struct {
 	Name      string
 	Host      Host
+	Budget    Budget
 	Fleet     *fleetMachine
 	Reachable error
+	NoRoom    string
 	Tasks     []*Task
 }
 
@@ -141,18 +142,25 @@ func reachable(ctx context.Context, h Host) error {
 	return err
 }
 
-func surveyFleet(ctx context.Context, cfg Config, probe bool) fleetView {
+func surveyFleet(ctx context.Context, cfg Config, probe, agents bool) fleetView {
 	var view fleetView
 	fleet, err := readFleet(ctx)
 	view.FleetErr = err
 	used := map[int]bool{}
 	tasks, _ := listTasks()
-	for _, name := range slices.Sorted(maps.Keys(cfg.Hosts)) {
+	now := time.Now()
+	for _, name := range cfg.Order {
 		h := cfg.Hosts[name]
 		m := machineInfo{Name: name, Host: h}
 		if i := fleetIndex(name, h, fleet); i >= 0 {
 			m.Fleet = &fleet[i]
 			used[i] = true
+		}
+		var err error
+		if m.Budget, err = h.budget(); err != nil {
+			m.NoRoom = err.Error()
+		} else {
+			m.NoRoom = m.Budget.noRoom(now, m.Fleet, agents)
 		}
 		for _, t := range tasks {
 			if t.Host == name && t.Outcome == nil {
@@ -180,69 +188,51 @@ func surveyFleet(ctx context.Context, cfg Config, probe bool) fleetView {
 }
 
 type choice struct {
-	Host string
-	Why  string
+	Host  string
+	Why   string
+	Probe bool
 }
 
-func chooseHost(ctx context.Context, requested string) (choice, error) {
+func (view fleetView) candidates() (picks []choice, skipped []string) {
+	unknown := "load unknown"
+	if view.FleetErr != nil {
+		unknown += " (" + view.FleetErr.Error() + ")"
+	} else {
+		unknown += " (magi doesn't report it)"
+	}
+	for _, m := range view.Machines {
+		switch {
+		case m.Reachable != nil:
+			skipped = append(skipped, fmt.Sprintf("%s isn't reachable (%v)", m.Name, m.Reachable))
+		case m.NoRoom != "":
+			skipped = append(skipped, fmt.Sprintf("%s has no room: %s", m.Name, m.NoRoom))
+		case m.Fleet != nil && m.Fleet.Live:
+			why := "the first machine in your list with room (" + m.Fleet.describe() + ")"
+			if view.Here != nil && view.Here.busy() < m.Fleet.busy() {
+				why += fmt.Sprintf("; this machine is lighter right now (%s)", view.Here.describe())
+			}
+			picks = append(picks, choice{Host: m.Name, Why: why})
+		default:
+			picks = append(picks, choice{Host: m.Name, Why: "the first machine in your list that answers; " + unknown, Probe: true})
+		}
+	}
+	return picks, skipped
+}
+
+func chooseHosts(ctx context.Context, requested string, agents bool) ([]choice, []string, error) {
 	cfg, path, err := loadConfig()
 	if err != nil {
-		return choice{}, err
+		return nil, nil, err
 	}
 	if len(cfg.Hosts) == 0 {
-		return choice{}, fmt.Errorf("no hosts in %s; run cielago init", path)
+		return nil, nil, fmt.Errorf("no hosts in %s; run cielago init", path)
 	}
 	if requested != "" {
 		if _, err := loadHost(requested); err != nil {
-			return choice{}, err
+			return nil, nil, err
 		}
-		return choice{Host: requested, Why: "the machine you asked for"}, nil
+		return []choice{{Host: requested, Why: "the machine you asked for"}}, nil, nil
 	}
-	view := surveyFleet(ctx, cfg, false)
-	if c, ok := leastLoaded(view); ok {
-		return c, nil
-	}
-	reason := "magi knows none of the configured machines"
-	if view.FleetErr != nil {
-		reason = view.FleetErr.Error()
-	}
-	var failures []string
-	for _, m := range view.Machines {
-		if err := reachable(ctx, m.Host); err != nil {
-			failures = append(failures, fmt.Sprintf("%s (%v)", m.Name, err))
-			continue
-		}
-		return choice{Host: m.Name, Why: fmt.Sprintf("load unknown (%s), so the first configured machine that answers", reason)}, nil
-	}
-	return choice{}, fmt.Errorf("no configured machine answers: %s", strings.Join(failures, "; "))
-}
-
-func leastLoaded(view fleetView) (choice, bool) {
-	var best *machineInfo
-	for i := range view.Machines {
-		m := &view.Machines[i]
-		if m.Fleet == nil || !m.Fleet.Live || m.Reachable != nil {
-			continue
-		}
-		if best == nil || m.Fleet.busy() < best.Fleet.busy() || m.Fleet.busy() == best.Fleet.busy() && m.Fleet.memory() < best.Fleet.memory() {
-			best = m
-		}
-	}
-	if best != nil {
-		why := fmt.Sprintf("the least loaded configured machine (%s)", best.Fleet.describe())
-		var unknown []string
-		for _, m := range view.Machines {
-			if m.Fleet == nil || !m.Fleet.Live {
-				unknown = append(unknown, m.Name)
-			}
-		}
-		if len(unknown) > 0 {
-			why += fmt.Sprintf("; magi doesn't report the load of %s", strings.Join(unknown, ", "))
-		}
-		if view.Here != nil && view.Here.busy() < best.Fleet.busy() {
-			why += fmt.Sprintf("; note this machine is lighter right now (%s)", view.Here.describe())
-		}
-		return choice{Host: best.Name, Why: why}, true
-	}
-	return choice{}, false
+	picks, skipped := surveyFleet(ctx, cfg, false, agents).candidates()
+	return picks, skipped, nil
 }

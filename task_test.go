@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -286,46 +287,154 @@ roots = ["~/developer"]
 launcher = "tmux"
 `
 
-func TestTheLeastLoadedMachineIsChosenByNameOrSSHDestination(t *testing.T) {
+func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
 	f.tool("magi", fakeMagi)
-	c, err := chooseHost(context.Background(), "")
+	picks, skipped, err := chooseHosts(context.Background(), "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Host != "small" || !strings.Contains(c.Why, "cpu 5%") {
-		t.Errorf("chose %+v, want small", c)
+	if len(picks) != 3 || picks[0].Host != "homelab" || picks[1].Host != "small" || picks[2].Host != "gpu" || len(skipped) != 0 {
+		t.Fatalf("picks = %+v, skipped %v", picks, skipped)
 	}
-	if c, err := chooseHost(context.Background(), "homelab"); err != nil || c.Host != "homelab" {
-		t.Errorf("asking for homelab gave %+v, %v", c, err)
+	if !strings.Contains(picks[0].Why, "first machine in your list with room") || !picks[2].Probe || !strings.Contains(picks[2].Why, "load unknown") {
+		t.Errorf("reasons = %+v", picks)
 	}
-	if _, err := chooseHost(context.Background(), "nowhere"); err == nil || !strings.Contains(err.Error(), "configured hosts: gpu, homelab, small") {
+	if picks, _, err := chooseHosts(context.Background(), "gpu", true); err != nil || len(picks) != 1 || picks[0].Host != "gpu" {
+		t.Errorf("asking for gpu gave %+v, %v", picks, err)
+	}
+	if _, _, err := chooseHosts(context.Background(), "nowhere", true); err == nil || !strings.Contains(err.Error(), "configured hosts: gpu, homelab, small") {
 		t.Errorf("asking for an unknown host: %v", err)
 	}
+
+	f.config(strings.Replace(threeHosts, "[hosts.homelab]\n", "[hosts.homelab]\nmax_agents = 1\n", 1))
+	picks, skipped, _ = chooseHosts(context.Background(), "", true)
+	if picks[0].Host != "small" || len(skipped) != 1 || !strings.Contains(skipped[0], "homelab has no room: 1 agents are working there, its budget is 1") {
+		t.Errorf("with homelab full: picks %+v, skipped %v", picks, skipped)
+	}
+	if picks, _, _ := chooseHosts(context.Background(), "", false); picks[0].Host != "homelab" {
+		t.Errorf("a command isn't an agent, so homelab still has room: %+v", picks)
+	}
+
 	cfg, _, _ := loadConfig()
-	text := describeMachines(surveyFleet(context.Background(), cfg, true))
-	for _, want := range []string{"This machine (laptop): cpu 90%", "- gpu (ssh gpu): reachable; magi: not answering (connection refused)", "- small (ssh me@box): reachable; Ubuntu cpu 5%", "magi also sees stranger"} {
+	text := describeMachines(surveyFleet(context.Background(), cfg, true, true))
+	for _, want := range []string{
+		"This machine (laptop): cpu 90%",
+		"- homelab (ssh homelab): reachable; budget: at most 1 working agents; NO ROOM now: 1 agents are working there",
+		"- gpu (ssh gpu): reachable; budget: no budget; magi: not answering (connection refused)",
+		"- small (ssh me@box): reachable; budget: no budget; Ubuntu cpu 5%",
+		"Suggested: small,",
+		"magi also sees stranger",
+	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("machines lacks %q:\n%s", want, text)
 		}
 	}
+	if strings.Index(text, "- homelab") > strings.Index(text, "- small") || strings.Index(text, "- small") > strings.Index(text, "- gpu") {
+		t.Errorf("machines aren't in config order:\n%s", text)
+	}
 }
 
-func TestWithoutMagiTheFirstReachableHostIsChosenAndTheReasonGiven(t *testing.T) {
+func TestWithoutMagiMachinesAreTriedInConfigOrderAndTheReasonGiven(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
 	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
-	c, err := chooseHost(context.Background(), "")
+	picks, _, err := chooseHosts(context.Background(), "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Host != "gpu" || !strings.Contains(c.Why, "magi isn't installed") {
-		t.Errorf("chose %+v", c)
+	if picks[0].Host != "homelab" || !picks[0].Probe || !strings.Contains(picks[0].Why, "magi isn't installed") {
+		t.Errorf("picks = %+v", picks)
 	}
 	f.tool("magi", "#!/bin/sh\necho '{\"machines\":[]}'\n")
-	if c, err := chooseHost(context.Background(), ""); err != nil || !strings.Contains(c.Why, "listed no machines") {
-		t.Errorf("with an empty fleet: %+v, %v", c, err)
+	if picks, _, err := chooseHosts(context.Background(), "", true); err != nil || !strings.Contains(picks[0].Why, "listed no machines") {
+		t.Errorf("with an empty fleet: %+v, %v", picks, err)
+	}
+}
+
+func TestBudgetsParseMemoryAndQuietHours(t *testing.T) {
+	for text, want := range map[string]float64{"4G": 4 << 30, "512M": 512 << 20, "1.5GB": 1.5 * (1 << 30), "2 GiB": 2 << 30, "100": 100} {
+		if got, err := parseMemory(text); err != nil || got != want {
+			t.Errorf("parseMemory(%q) = %v, %v; want %v", text, got, err, want)
+		}
+	}
+	if _, err := parseMemory("lots"); err == nil {
+		t.Error("parseMemory accepted lots")
+	}
+	b, err := Host{MaxAgents: 2, MinFreeMemory: "4G", QuietHours: "22:00-07:00"}.budget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(clock string) time.Time {
+		c, _ := time.Parse("15:04", clock)
+		return time.Date(2026, 11, 15, c.Hour(), c.Minute(), 0, 0, time.Local)
+	}
+	for clock, quiet := range map[string]bool{"21:59": false, "22:00": true, "03:00": true, "06:59": true, "07:00": false, "12:00": false} {
+		if got := b.quietAt(at(clock)); got != quiet {
+			t.Errorf("quiet at %s = %v", clock, got)
+		}
+	}
+	if got := b.String(); got != "at most 2 working agents, at least 4.0 GB free memory, nothing new 22:00-07:00" {
+		t.Errorf("budget = %q", got)
+	}
+	tight := &fleetMachine{Live: true, MemoryTotal: 8 << 30, MemoryUsed: 6 << 30, Cores: 4, Load: []float64{0}}
+	if got := b.noRoom(at("12:00"), tight, true); !strings.Contains(got, "2.0 GB of memory is free there, its budget needs 4.0 GB") {
+		t.Errorf("noRoom = %q", got)
+	}
+	if err := (Host{SSH: "x", Claude: "c", Roots: []string{"~/d"}, Launcher: "tmux", QuietHours: "late"}).validate("x"); err == nil {
+		t.Error("a bad quiet_hours was accepted")
+	}
+}
+
+func TestTheTargetRechecksItsBudgetWhenATaskStarts(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nsleep 30\n")
+	f.config(strings.Replace(f.read(filepath.Join(f.home, ".config", "cielago"), "config.toml"), "launcher = \"tmux\"", "launcher = \"tmux\"\nmax_agents = 1", 1))
+	first, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "y"})
+	var full *noRoomError
+	if !errors.As(err, &full) || full.Reason != "1 agents are working there, its budget is 1" {
+		t.Fatalf("second delegate = %v", err)
+	}
+	if _, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "true"}); err != nil {
+		t.Errorf("a command was refused: %v", err)
+	}
+	tasks, _ := listTasks()
+	if len(tasks) != 2 {
+		t.Errorf("%d task records, want the delegate and the command", len(tasks))
+	}
+	collectTask(first.Task.ID, true)
+	if _, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "z"}); err != nil {
+		t.Errorf("after cancelling, a delegate was refused: %v", err)
+	}
+}
+
+func TestConfigKeepsTheHostOrderWhenRewritten(t *testing.T) {
+	f := newFixture(t)
+	f.config(threeHosts)
+	cfg, path, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Order = append(cfg.Order, "new")
+	cfg.Hosts["new"] = Host{SSH: "new", Claude: "claude", Roots: []string{"~/d"}, Launcher: "tmux", MinFreeMemory: "2G"}
+	if err := writeConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	again, _, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(again.Order, " "); got != "homelab small gpu new" {
+		t.Errorf("order = %s", got)
+	}
+	if again.Hosts["new"].MinFreeMemory != "2G" || again.Hosts["small"].SSH != "me@box" {
+		t.Errorf("hosts = %+v", again.Hosts)
 	}
 }
 

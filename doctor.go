@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -174,13 +172,19 @@ func doctor(names []string, out io.Writer) error {
 		c.check(err, "local root "+root+" exists", "fix local_roots in "+path)
 	}
 	if len(names) == 0 {
-		names = slices.Sorted(maps.Keys(cfg.Hosts))
+		names = cfg.Order
 	}
 	for _, name := range names {
 		fmt.Fprintf(out, "\n%s\n", name)
 		h, err := loadHost(name)
 		if !c.check(err, "config for "+name, "edit "+path) {
 			continue
+		}
+		if b, err := h.budget(); err == nil {
+			fmt.Fprintf(out, "  · budget for tasks: %s\n", b)
+			if reason := b.noRoom(time.Now(), nil, true); reason != "" {
+				fmt.Fprintf(out, "  · no new tasks now: %s\n", reason)
+			}
 		}
 		hostCtx, cancelHost := context.WithTimeout(context.Background(), 60*time.Second)
 		doctorHost(hostCtx, c, name, h)

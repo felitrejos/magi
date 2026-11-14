@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -267,7 +268,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		}
 		return errors.Join(err, t.forget())
 	}
-	if _, err := sh(remote, `mkdir -p -- "$(dirname -- "$1")" && mkdir -m 700 -- "$1"`, t.Dir); err != nil {
+	if err := reserve(remote, spec.Host, host, t); err != nil {
 		return nil, errors.Join(err, t.forget())
 	}
 	if err := copyProject(local, remote, ws, host, clone, t.Checkout); err != nil {
@@ -376,6 +377,24 @@ func (t *Task) forget() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+const exitNoRoom = 11
+
+func reserve(remote *Remote, name string, host Host, t *Task) error {
+	b, err := host.budget()
+	if err != nil {
+		return err
+	}
+	if reason := b.noRoom(time.Now(), nil, false); reason != "" {
+		return &noRoomError{Host: name, Reason: reason}
+	}
+	_, err = sh(remote, taskScript, "reserve", t.Dir, t.Kind, strconv.Itoa(b.MaxAgents), fmt.Sprintf("%.0f", b.MinFree))
+	var ce *commandError
+	if exitCode(err) == exitNoRoom && errors.As(err, &ce) {
+		return &noRoomError{Host: name, Reason: ce.stderr}
+	}
+	return err
 }
 
 func excludeLine(path string) string {

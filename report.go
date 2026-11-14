@@ -175,6 +175,10 @@ func describeMachines(view fleetView) string {
 		} else {
 			b.WriteString(": reachable")
 		}
+		fmt.Fprintf(&b, "; budget: %s", m.Budget)
+		if m.NoRoom != "" {
+			fmt.Fprintf(&b, "; NO ROOM now: %s", m.NoRoom)
+		}
 		if m.Fleet != nil {
 			fmt.Fprintf(&b, "; %s", strings.TrimSpace(m.Fleet.OS+" "+m.Fleet.describe()))
 		} else if view.FleetErr == nil {
@@ -185,8 +189,10 @@ func describeMachines(view fleetView) string {
 			fmt.Fprintf(&b, "    task %s (%s, started %s): %s\n", t.ID, t.Kind, ago(t.Created), t.summary())
 		}
 	}
-	if c, ok := leastLoaded(view); ok {
-		fmt.Fprintf(&b, "\nSuggested: %s, %s.\n", c.Host, c.Why)
+	if picks, _ := view.candidates(); len(picks) > 0 {
+		fmt.Fprintf(&b, "\nSuggested: %s, %s.\n", picks[0].Host, picks[0].Why)
+	} else {
+		b.WriteString("\nNo machine has room right now.\n")
 	}
 	if len(view.Unmatched) > 0 {
 		var names []string

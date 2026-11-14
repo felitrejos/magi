@@ -7,6 +7,14 @@
   stopped and handed off at once; a session in the middle of a turn moves
   when the turn ends, through its own Stop hook. Each step and the outcome
   come out as JSON lines with `--json`. Codex sessions are refused.
+- Hosts can have a budget for tasks: `max_agents`, `min_free_memory` (such as
+  `"4G"`) and `quiet_hours` (such as `"22:00-07:00"`).
+- Tasks go to the first host in the config, in order, that has room, judged
+  by its budget and magi's live numbers, instead of the least loaded one. The
+  host checks its budget again as the task starts, so two tasks can't take
+  its last slot, and a full host is skipped for the next with the reason.
+- `machines` and `cielago doctor` show each host's budget and why a host has
+  no room; `cielago init` keeps the order of the hosts in the config.
 
 ## 0.4.0
 

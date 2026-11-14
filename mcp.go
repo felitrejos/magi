@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,16 +108,39 @@ func delegateArgs(in delegateInput) ([]string, error) {
 }
 
 func startElsewhere(ctx context.Context, host string, spec TaskSpec) (string, error) {
-	c, err := chooseHost(ctx, host)
+	picks, skipped, err := chooseHosts(ctx, host, spec.Kind != kindRun)
 	if err != nil {
 		return "", err
 	}
-	spec.Host = c.Host
-	s, err := startTask(ctx, spec)
-	if err != nil {
-		return "", fmt.Errorf("starting it on %s failed: %w", c.Host, err)
+	for _, c := range picks {
+		if c.Probe {
+			if err := reachable(ctx, mustHost(c.Host)); err != nil {
+				skipped = append(skipped, fmt.Sprintf("%s isn't reachable (%v)", c.Host, err))
+				continue
+			}
+		}
+		spec.Host = c.Host
+		s, err := startTask(ctx, spec)
+		var full *noRoomError
+		if errors.As(err, &full) {
+			skipped = append(skipped, full.Error())
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("starting it on %s failed: %w", c.Host, err)
+		}
+		why := c.Why
+		if len(skipped) > 0 {
+			why += "; skipped " + strings.Join(skipped, "; ")
+		}
+		return describeStarted(s, why), nil
 	}
-	return describeStarted(s, c.Why), nil
+	return "", fmt.Errorf("no machine has room for it: %s", strings.Join(skipped, "; "))
+}
+
+func mustHost(name string) Host {
+	h, _ := loadHost(name)
+	return h
 }
 
 func newMCPServer() *mcp.Server {
@@ -136,7 +160,7 @@ func newMCPServer() *mcp.Server {
 		if len(cfg.Hosts) == 0 {
 			return nil, nil, fmt.Errorf("no hosts in %s; the user can add one with cielago init", path)
 		}
-		return textResult(describeMachines(surveyFleet(ctx, cfg, true))), nil, nil
+		return textResult(describeMachines(surveyFleet(ctx, cfg, true, true))), nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
