@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Send work to another machine without moving the session. The plugin now
+  ships a tool server with `machines`, `run_elsewhere`, `delegate`,
+  `start_session`, `task_status`, `task_result` and `cancel_task`, available
+  in every Claude Code session.
+- Each task runs in a copy of your exact working tree, in a checkout of its
+  own on the other machine, in a Rex or tmux tab you can watch. Your checkout
+  there and the session that asked are never touched.
+- Tasks start at once and run in the background: `run_elsewhere` returns the
+  exit code, the end of the output and the full log; `delegate` returns the
+  remote Claude's final message and its changes as the branch
+  `cielago/task-<id>`.
+- A delegated Claude edits only its own copy and runs anything else only
+  through rules you approve; it never runs with permission checks bypassed.
+- cielago picks the least loaded machine from `magi fleet`, or the first that
+  answers when magi isn't there.
+- `cielago tasks` lists tasks; `show`, `cancel` and `clean` collect or stop
+  them. `cielago doctor` says whether magi reports machine load.
 - A project's `.cielago.toml` says what to run when it arrives: `setup` runs
   in a pane below Claude, then each of `services` in its own pane. Claude is
   told they're running. `cielago pull` runs the setup before Claude continues.

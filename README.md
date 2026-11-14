@@ -6,13 +6,15 @@
 
 <p align="center">
   <b>Your session, on another machine, in seconds.</b><br>
-  Tell Claude Code "hand this off to my homelab" and a new session there picks up the same conversation, with your branch, your changes and your <code>.env</code>.
+  Tell Claude Code "hand this off to my homelab" and a new session there picks up the same conversation, with your branch, your changes and your <code>.env</code>.<br>
+  Or keep the session here and send it work there: a slow test suite, a task for a background Claude, a second session.
 </p>
 
 <p align="center">
   <a href="#install"><b>Install</b></a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#what-moves">What moves</a> ·
+  <a href="#send-work-to-another-machine">Send work elsewhere</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#configure">Configure</a> ·
   <a href="#questions">Questions</a>
@@ -149,6 +151,66 @@ Because these commands come from the repository, cielago runs them only after
 you approve that file, in that project, with `cielago allow`. If the file
 changes, the next handoff skips it and says so until you allow it again.
 
+## Send work to another machine
+
+A handoff moves the whole session. Often you only want to send one piece of
+work: run the test suite on the homelab while you keep going, or give a side
+task to a Claude there. The plugin gives every Claude Code session, in the
+terminal, in Rex and in the desktop app, tools for that:
+
+| Tool | What it does |
+|---|---|
+| `machines` | Lists your machines with their live load from [magi](https://github.com/felitrejos/magi), whether they answer over SSH, and what's running there. |
+| `run_elsewhere` | Runs a shell command there, such as `go test ./...`, and returns its exit code and the end of its output. |
+| `delegate` | Gives a self-contained task to a background Claude there, like a subagent on another machine. You get its final message, and its changes as a branch. |
+| `start_session` | Opens a new interactive session for the project there, in a tab of its own with Remote Control. |
+| `task_status` · `task_result` · `cancel_task` | Checks on a task, collects it, or stops it. |
+
+Ask in plain words, "run the tests on whichever machine is lighter", and
+Claude checks `machines`, proposes a machine and what it will run there, and
+lets you choose: there, here instead, or not at all. Claude Code then asks you to approve the tool call itself,
+as for any tool.
+
+Every task is a copy, never a move:
+
+- **Your exact working tree.** Commits, staged and unstaged changes, untracked
+  files and secret files go to a checkout of the task's own under
+  `~/.cielago/tasks` on the other machine, filled from your clone there when
+  it has one. Your checkout there is never touched, and the session you asked
+  from keeps running.
+- **Out of your way.** The start tool copies the project, usually in a few
+  seconds, and returns a task id; the work runs in the background, so a long
+  test run never blocks Claude or times out. Claude checks back with
+  `task_status`.
+- **In plain sight.** Each task runs in its own tab in the project's Rex
+  session, or tmux window, without taking focus, so you can watch it.
+- **Results come back.** `task_result` returns a command's exit code with the
+  last 80 lines of output, and copies the full log to `~/.cielago/tasks` here.
+  For a delegated Claude it returns its final message, and fetches its changes
+  into your repository as the branch `cielago/task-<id>`, next to your working
+  tree rather than into it. Collecting a task closes its tab and removes its
+  copy.
+- **Dependencies.** `node_modules` and the like aren't copied; the project's
+  approved [`.cielago.toml`](#set-up-the-project-on-arrival) setup runs first.
+
+**Which machine.** Without a machine named, cielago picks the least loaded of
+your configured hosts, by CPU and load average from `magi fleet`. It matches
+magi's machine names to your hosts by name or by their `ssh` destination.
+Without magi it takes the first host that answers, and says so.
+
+**What a delegated Claude may do.** It runs headless with
+`claude -p --permission-mode acceptEdits --permission-prompts none`: it reads
+and edits files in its own copy, and anything else that would ask for
+permission, such as shell commands, network access or files outside its copy,
+is denied, because nobody is there to answer. To let it run your tests, Claude
+passes rules such as `Bash(go test:*)` in `allowed_tools`, which you see
+before you approve. Rules in that machine's Claude Code settings apply too.
+`permission_mode` can also be `dontAsk`, for only what's allowed, or `auto`,
+Claude Code's auto mode. It never runs with permission checks bypassed.
+
+`cielago tasks` lists tasks from the terminal; `cielago tasks show <id>`,
+`cancel <id>` and `clean` do what the tools do.
+
 ## Install
 
 ```bash
@@ -186,6 +248,11 @@ you hand off from; to bring a session back to a laptop that doesn't, use
 | `cielago status` | Recent handoffs, and checkouts here that a session left. |
 | `cielago unpark [dir]` | Stops treating a checkout as one a session left. |
 | `cielago allow [dir]` | Lets the project's `.cielago.toml` run after handoffs, until the file changes. |
+| *"run the tests on the homelab"* | Said to Claude: runs them there in a copy of your working tree; see [Send work elsewhere](#send-work-to-another-machine). |
+| `cielago tasks` | Work sent to other machines and its state. |
+| `cielago tasks show <id>` | A task's output; collects it if it's finished. |
+| `cielago tasks cancel <id>` | Stops a task, closes its tab and removes its copy. |
+| `cielago tasks clean` | Collects every finished task. |
 
 ## Configure
 
@@ -244,6 +311,11 @@ again picks up from where it stopped.
 **Where do my secrets go?**
 From one machine's disk to the other's, over SSH, never through the
 conversation. See [SECURITY.md](SECURITY.md).
+
+**Will a delegated Claude ask me to trust its folder?**
+No: headless Claude skips that. A session opened with `start_session` does ask,
+since every task gets a new folder. Run `claude` once in `~/.cielago/tasks` on
+that machine and trust it, and later sessions there don't ask.
 
 **Which Claude Code versions work?**
 cielago reads some Claude Code internals, such as the transcript format.

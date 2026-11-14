@@ -32,6 +32,26 @@ it touches and how.
   session in a new Rex or tmux tab, and adds a `refs/cielago/...` ref while a
   handoff is in flight.
 
+## Tasks sent to another machine
+
+- `run_elsewhere`, `delegate` and `start_session` copy your working tree,
+  secret files included, into a new checkout under `~/.cielago/tasks` on the
+  other machine, the same way a handoff does. They never write to your
+  checkout there; a clone of it is used only as a source of git objects, and
+  the copy's `origin` points at your real remote, not at that checkout.
+- Collecting or cancelling a task removes its copy. Its log is copied to
+  `~/.cielago/tasks` on your machine, and a delegated Claude's changes arrive
+  as the branch `cielago/task-<id>`; your working tree is never changed.
+- Claude proposes the machine and the work, and you approve both in the chat
+  and in Claude Code's tool approval.
+- A delegated Claude runs in `acceptEdits` mode with permission prompts
+  answered "no": it can edit files in its copy, and runs shell commands or
+  reaches the network only through rules you approve in `allowed_tools` or
+  that machine's own Claude Code settings. cielago refuses
+  `bypassPermissions`.
+- A task's command runs in your login shell on that machine, with your
+  permissions there, like any command you'd type in that tab.
+
 ## Trust
 
 The first time Claude runs in a new folder on a machine, Claude Code asks you
