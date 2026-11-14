@@ -41,9 +41,9 @@ type remoteSession struct {
 	Live       *liveSession
 }
 
-func (p Pull) Run() (Pulled, error) {
-	var res Pulled
+func (p Pull) Run() (res Pulled, err error) {
 	var st stepper
+	defer func() { res.Steps = st.steps }()
 	if len(p.Host.LocalRoots) == 0 {
 		return res, errors.New("set local_roots in the config so cielago knows where projects go on this machine")
 	}
@@ -65,15 +65,15 @@ func (p Pull) Run() (Pulled, error) {
 		if session, err = findRemoteSession(remote, p.HostName, p.SessionID); err != nil {
 			return err
 		}
+		if ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude); err != nil {
+			return err
+		}
 		remoteHome, err := homeDir(remote)
 		if err != nil {
 			return err
 		}
-		if ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets); err != nil {
+		if err := refuseHome(ws, remoteHome, p.HostName); err != nil {
 			return err
-		}
-		if ws.Git == nil && (ws.Root == remoteHome || ws.Root == "/") {
-			return fmt.Errorf("%s is a whole home folder on %s, not a project", ws.Root, p.HostName)
 		}
 		if where, err = place(local, ws, p.Host.LocalRoots, serverGroup(ws.MainRoot, p.Host.Roots, remoteHome), p.Host.Exclude); err != nil {
 			return err
@@ -83,13 +83,11 @@ func (p Pull) Run() (Pulled, error) {
 		}
 		return checkoutAccepts(local, where.Root, ws)
 	}); err != nil {
-		res.Steps = st.steps
 		return res, err
 	}
 	res.Session, res.Name = session.ID, baseName(where.Root)
 
 	if err := st.run("stop", func() error { return stopAtTurnEnd(remote, session, p.Out) }); err != nil {
-		res.Steps = st.steps
 		return res, err
 	}
 
@@ -101,10 +99,9 @@ func (p Pull) Run() (Pulled, error) {
 		return fmt.Errorf("%w. The session is stopped on %s; to carry on there instead, run claude --resume %s in %s on %s", err, p.HostName, session.ID, session.Cwd, p.HostName)
 	}
 	if err := st.run("inspect", func() (err error) {
-		ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets)
+		ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude)
 		return err
 	}); err != nil {
-		res.Steps = st.steps
 		return res, stopped(err)
 	}
 	res.NewFolder = where.NewFolder
@@ -115,43 +112,17 @@ func (p Pull) Run() (Pulled, error) {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		local.SetContext(cleanup)
-		switch {
-		case where.NewFolder != "":
-			err = withFolderUndo(err, local, where, local.Name())
-		case synced && ws.Git != nil:
-			if parkErr := park(local, where.Root, ws); parkErr != nil {
-				err = fmt.Errorf("%w; marking %s as handed off also failed: %v", err, where.Root, parkErr)
-			}
-		}
-		return stopped(err)
+		return stopped(undoSync(err, local, ws, where, synced))
 	}
 
 	if err := st.run("sync", func() error {
-		if ws.Git == nil {
-			if where.NewFolder == "" {
-				f, err := folderState(local, where.Root)
-				if err != nil {
-					return err
-				}
-				if err := folderUnchanged(local, where.Root, f.Recorded, p.Host.Exclude); err != nil {
-					return err
-				}
-			}
-			if err := mirrorFolder(remote, ws.Root, local, where.Root, p.Host.Exclude); err != nil {
+		if ws.Git == nil && where.NewFolder == "" {
+			if err := ourFolderUnchanged(local, where.Root, p.Host.Exclude); err != nil {
 				return err
 			}
-			return registerFolder(local, where.Root, p.Host.Exclude)
 		}
-		if where.NewFolder != "" {
-			if err := createClone(local, where.NewFolder, ws.Git.Origin); err != nil {
-				return err
-			}
-		} else if err := checkoutAccepts(local, where.Root, ws); err != nil {
-			return err
-		}
-		return pullGit(remote, local, ws, where.Root)
+		return syncProject(remote, local, ws, where, p.Host.Exclude, func() error { return pullGit(remote, local, ws, where.Root) })
 	}); err != nil {
-		res.Steps = st.steps
 		return res, undo(err)
 	}
 	synced = true
@@ -160,14 +131,12 @@ func (p Pull) Run() (Pulled, error) {
 		sidecar, err = moveTranscript(remote, session.Transcript, ws, local, where, localDir)
 		return err
 	}); err != nil {
-		res.Steps = st.steps
 		return res, undo(err)
 	}
 	res.ParkNote = settle(remote, ws, p.Host.Exclude)
-	if _, err := sh(remote, "mv -- "+quote(session.Transcript)+" "+quote(session.Transcript+".handed-off-to-"+local.Name())); err != nil {
+	if _, err := sh(remote, `mv -- "$1" "$2"`, session.Transcript, session.Transcript+".handed-off-to-"+local.Name()); err != nil {
 		res.ParkNote = errors.Join(res.ParkNote, err)
 	}
-	res.Steps = st.steps
 	res.Prompt = handoffPrompt(Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Sidecar: sidecar})
 	return res, nil
 }
@@ -184,7 +153,7 @@ func findRemoteSession(r *Remote, hostName, id string) (remoteSession, error) {
 		return remoteSession{}, fmt.Errorf("%q is not a Claude session id", id)
 	}
 	s := remoteSession{ID: id}
-	out, err := sh(r, `ls -t "$HOME"/.claude/projects/*/`+quote(id+".jsonl")+` 2>/dev/null | head -n 1`)
+	out, err := sh(r, sessionScript, "find", id)
 	if err != nil {
 		return s, err
 	}
@@ -204,7 +173,7 @@ func findRemoteSession(r *Remote, hostName, id string) (remoteSession, error) {
 		s.Cwd = s.Live.Cwd
 		return s, nil
 	}
-	cwd, err := sh(r, "tail -n 400 "+quote(s.Transcript)+` | grep -o '"cwd":"[^"]*"' | tail -n 1`)
+	cwd, err := sh(r, sessionScript, "cwd", s.Transcript)
 	if err != nil {
 		return s, err
 	}
@@ -225,15 +194,9 @@ func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
 		return nil
 	}
 	pid := strconv.Itoa(s.Live.PID)
-	file := `"$HOME"/.claude/sessions/` + pid + ".json"
-	stop := `if ! kill -0 ` + pid + ` 2>/dev/null || ! ps -o args= -p ` + pid + ` | grep -q claude; then exit 0; fi; ` +
-		`if [ -f ` + file + ` ] && grep -q '"status": *"busy"' ` + file + `; then exit ` + strconv.Itoa(exitBusy) + `; fi; ` +
-		`kill -TERM ` + pid + `; for i in $(seq 1 50); do kill -0 ` + pid + ` 2>/dev/null || break; sleep 0.2; done; ` +
-		`if kill -0 ` + pid + ` 2>/dev/null; then echo "the session on this machine didn't stop" >&2; exit 1; fi; ` +
-		`if pgrep -f -- ` + quote("[-]-resume "+s.ID) + ` >/dev/null; then echo "another process is still running this session" >&2; exit 1; fi`
 	told := false
 	for {
-		_, err := sh(r, stop)
+		_, err := sh(r, sessionScript, "stop", pid, s.ID)
 		if exitCode(err) != exitBusy {
 			return err
 		}

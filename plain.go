@@ -7,31 +7,30 @@ import (
 	"strings"
 )
 
-const folderRegistry = `"$HOME"/.cielago/folders`
-
-func prune(exclude []string) string {
+func pruneArgs(exclude []string) []string {
 	if len(exclude) == 0 {
-		return ""
+		return nil
 	}
-	names := make([]string, len(exclude))
+	args := []string{"("}
 	for i, e := range exclude {
-		names[i] = "-name " + quote(e)
+		if i > 0 {
+			args = append(args, "-o")
+		}
+		args = append(args, "-name", e)
 	}
-	return `\( ` + strings.Join(names, " -o ") + ` \) -prune -o `
+	return append(args, ")", "-prune", "-o")
+}
+
+func folder(m Machine, command, dir string, args ...string) ([]byte, error) {
+	return sh(m, folderScript, append([]string{command, dir}, args...)...)
 }
 
 func listFolder(m Machine, dir string, exclude []string) ([]string, error) {
-	out, err := sh(m, "cd "+quote(dir)+" && find . "+prune(exclude)+"! -name . -print0")
+	out, err := folder(m, "list", dir, pruneArgs(exclude)...)
 	if err != nil {
 		return nil, err
 	}
-	var paths []string
-	for _, p := range strings.Split(string(out), "\x00") {
-		if p != "" {
-			paths = append(paths, p)
-		}
-	}
-	return paths, nil
+	return splitNull(out), nil
 }
 
 func stale(keep, have []string) []string {
@@ -78,15 +77,12 @@ func mirrorFolder(from Machine, fromDir string, to Machine, toDir string, exclud
 	if len(remove) == 0 {
 		return nil
 	}
-	_, err = shIn(to, "cd "+quote(toDir)+" && xargs -0 rm -rf --", []byte(strings.Join(remove, "\x00")+"\x00"))
+	_, err = shIn(to, folderScript, []byte(strings.Join(remove, "\x00")+"\x00"), "remove", toDir)
 	return err
 }
 
 func fingerprint(m Machine, dir string, exclude []string) (string, error) {
-	p := prune(exclude)
-	out, err := sh(m, "set -e; cd "+quote(dir)+`; t=$(mktemp); trap 'rm -f "$t"' EXIT; `+
-		`if stat -c %s . >/dev/null 2>&1; then d='-c %F:%a:%n'; f='-c %F:%a:%s:%Y:%n'; else d='-f %HT:%Lp:%N'; f='-f %HT:%Lp:%z:%m:%N'; fi; `+
-		"find . "+p+`-type d ! -name . -exec stat $d {} + > "$t"; find . `+p+`! -type d -exec stat $f {} + >> "$t"; LC_ALL=C sort "$t" | cksum`)
+	out, err := folder(m, "fingerprint", dir, pruneArgs(exclude)...)
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -97,13 +93,8 @@ type Folder struct {
 	RootCommit string
 }
 
-const legacyEntry = "-"
-
 func folderState(m Machine, dir string) (Folder, error) {
-	out, err := sh(m, "p="+quote(dir)+`; if [ ! -e "$p" ]; then echo new; exit 0; fi; p=$(cd "$p" && pwd -P); `+
-		`if [ -e "$p/.git" ]; then printf 'git\t%s\t%s\n' "$(git -C "$p" remote get-url origin 2>/dev/null || :)" "$(git -C "$p" rev-list --max-parents=0 HEAD 2>/dev/null | LC_ALL=C sort | head -n 1)"; exit 0; fi; `+
-		`r=; if [ -f `+folderRegistry+` ]; then r=$(p="$p" awk -F '\t' '$NF == ENVIRON["p"] {f = (NF == 1 ? "`+legacyEntry+`" : $1)} END {print f}' `+folderRegistry+`); fi; `+
-		`if [ -n "$r" ]; then printf 'ours\t%s\n' "$r"; else echo foreign; fi`)
+	out, err := folder(m, "state", dir)
 	if err != nil {
 		return Folder{}, err
 	}
@@ -119,19 +110,15 @@ func folderState(m Machine, dir string) (Folder, error) {
 }
 
 func registerFolder(m Machine, dir string, exclude []string) error {
-	print, err := fingerprint(m, dir, exclude)
+	recorded, err := fingerprint(m, dir, exclude)
 	if err != nil {
 		return err
 	}
-	_, err = sh(m, `set -e; p=$(cd `+quote(dir)+` && pwd -P); mkdir -p "$HOME"/.cielago; touch `+folderRegistry+`; t=$(mktemp); `+
-		`p="$p" awk -F '\t' '$NF != ENVIRON["p"]' `+folderRegistry+` > "$t"; printf '%s\t%s\n' `+quote(print)+` "$p" >> "$t"; mv "$t" `+folderRegistry)
+	_, err = folder(m, "register", dir, recorded)
 	return err
 }
 
 func folderUnchanged(m Machine, dir, recorded string, exclude []string) error {
-	if recorded == legacyEntry {
-		return fmt.Errorf("%s on %s was left by an older cielago that didn't record what was in it; check it, then move it away or delete its line in ~/.cielago/folders", dir, m.Name())
-	}
 	now, err := fingerprint(m, dir, exclude)
 	if err != nil {
 		return err

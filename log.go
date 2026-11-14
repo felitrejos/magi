@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -76,8 +77,14 @@ func lastHandoffTo(host string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	pulledBack := map[string]bool{}
 	for _, e := range slices.Backward(entries) {
-		if e.Kind == "push" && e.To == host {
+		switch {
+		case e.Kind == "pull" && e.From == host:
+			pulledBack[e.Session] = true
+		case e.Kind == "push" && e.To == host && pulledBack[e.Session]:
+			return "", fmt.Errorf("the last session handed off to %s (%s) was already brought back; pass the session id: cielago pull %s <session-id>", host, shortID(e.Session), host)
+		case e.Kind == "push" && e.To == host:
 			return e.Session, nil
 		}
 	}
@@ -112,7 +119,7 @@ func status(w io.Writer) error {
 			continue
 		}
 		checked[e.FromDir] = true
-		if ref, err := sh(local, "git -C "+quote(e.FromDir)+" rev-parse -q --verify "+parkedRef+" 2>/dev/null || :"); err == nil && len(ref) > 0 {
+		if ref, err := sh(local, `git -C "$1" rev-parse -q --verify "$2" 2>/dev/null || :`, e.FromDir, parkedRef); err == nil && len(ref) > 0 {
 			parked = append(parked, e.FromDir)
 		}
 	}
@@ -126,12 +133,32 @@ func status(w io.Writer) error {
 	return nil
 }
 
+func unparkRepo(m Machine, repo string) error {
+	if err := deleteRefs(m, repo, parkedRef); err != nil {
+		return err
+	}
+	links, err := gitlinks(m, repo)
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
+		if err := unparkRepo(m, repo+"/"+link); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func unpark(dir string, out io.Writer) error {
 	local, err := newLocal(context.Background())
 	if err != nil {
 		return err
 	}
-	if _, err := sh(local, "cd "+quote(dir)+" && git update-ref -d "+parkedRef); err != nil {
+	top, err := sh(local, `git -C "$1" rev-parse --show-toplevel`, dir)
+	if err != nil {
+		return fmt.Errorf("%s isn't a git checkout, and only git checkouts are parked: %w", dir, err)
+	}
+	if err := unparkRepo(local, strings.TrimSpace(string(top))); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "%s is no longer parked.\n", dir)

@@ -139,11 +139,17 @@ cielago init
 ```
 
 Prebuilt binaries for macOS and Linux are on the
-[releases page](https://github.com/felitrejos/cielago/releases).
+[releases page](https://github.com/felitrejos/cielago/releases). On macOS, a
+binary downloaded with a browser is quarantined; clear that once with
+`xattr -d com.apple.quarantine cielago`. Claude Code runs `cielago` by name,
+so put it in a folder on your `PATH` (`go install` uses `~/go/bin`).
 
-Do this on every machine you hand off from. Each machine needs `git`, `tar`,
-and Claude Code logged in with `claude auth login` (Remote Control doesn't work
-with `setup-token` tokens), plus [Rex](https://superlogical.com/rex) or tmux.
+Do this on every machine you hand off from. Each machine needs git 2.31 or
+newer, `tar`, and Claude Code logged in with `claude auth login` (Remote
+Control doesn't work with `setup-token` tokens), plus
+[Rex](https://superlogical.com/rex) or tmux. The other machine's login shell
+doesn't matter (bash, zsh, fish and csh all work), and BusyBox systems such as
+Alpine work too.
 With [Rex](https://superlogical.com/rex), turn on **Remote Control** in its settings so cielago can switch it
 to the new session. The machine you hand off to must accept SSH from the one
 you hand off from; to bring a session back to a laptop that doesn't, use
@@ -166,13 +172,13 @@ you hand off from; to bring a session back to a laptop that doesn't, use
 
 ```toml
 local_roots = ["~/Projects"]                    # where your projects live on this machine
-exclude = ["node_modules", ".venv", "dist"]     # names skipped when copying folders that aren't git repos
+exclude = ["node_modules", ".venv", "dist"]     # folder names skipped when copying and when looking for secrets
 
 [hosts.homelab]
 ssh = "homelab"                                 # ssh destination
 claude = "~/.local/bin/claude"                  # claude binary there
 roots = ["~/developer"]                         # where projects live there; new ones go in the first
-secrets = [".env", ".env.*"]                    # gitignored files to bring along
+secrets = [".env", ".env.*"]                    # gitignored files to bring along, from any folder
 launcher = "rex"                                # "rex" or "tmux"
 rex_server = "homelab"                          # its Rex host, with launcher = "rex"
 new_tab_command = "claude rc --name {repo} --spawn same-dir"  # optional: runs in a new project tab

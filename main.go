@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -60,8 +61,10 @@ func main() {
 		err = initConfig(os.Stdin, os.Stdout)
 	case len(args) >= 1 && args[0] == "doctor":
 		err = doctor(args[1:], os.Stdout)
-	case (len(args) == 2 || len(args) == 3) && args[0] == "pull":
-		err = pullCommand(args[1], strings.Join(args[2:], ""))
+	case len(args) == 2 && args[0] == "pull":
+		err = pullCommand(args[1], "")
+	case len(args) == 3 && args[0] == "pull":
+		err = pullCommand(args[1], args[2])
 	case len(args) == 1 && args[0] == "status":
 		err = status(os.Stdout)
 	case len(args) <= 2 && len(args) >= 1 && args[0] == "unpark":
@@ -71,7 +74,7 @@ func main() {
 		}
 		err = unpark(dir, os.Stdout)
 	case len(args) == 1 && (args[0] == "version" || args[0] == "--version"):
-		fmt.Println("cielago", version)
+		fmt.Println("cielago", currentVersion())
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -80,6 +83,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, "cielago:", err)
 		os.Exit(1)
 	}
+}
+
+func currentVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && strings.HasPrefix(info.Main.Version, "v") {
+		return strings.TrimPrefix(info.Main.Version, "v")
+	}
+	return version
 }
 
 func armedPath(sessionID string) (string, error) {
@@ -233,17 +246,11 @@ func handoff(a armed, input stopInput) (Result, error) {
 }
 
 func retire(a armed, transcriptPath string) error {
-	p := strconv.Itoa(a.PID)
-	stop := "sleep 1; kill -TERM " + p + " && "
+	desktop := "0"
 	if a.Desktop {
-		stop = ""
+		desktop = "1"
 	}
-	script := stop + "while kill -0 " + p + " 2>/dev/null; do sleep 0.2; done && mv -- " +
-		quote(transcriptPath) + " " + quote(transcriptPath+".handed-off-to-"+a.Host)
-	if session, block := os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"); !a.Desktop && session != "" && block != "" {
-		script += " && rex block close -s " + quote(session) + " " + quote(block)
-	}
-	cmd := exec.Command("sh", "-c", script)
+	cmd := exec.Command("sh", "-c", retireScript, "cielago", strconv.Itoa(a.PID), desktop, transcriptPath, a.Host, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()
 }

@@ -37,12 +37,31 @@ func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+type commandError struct {
+	what   string
+	stderr string
+	err    error
+}
+
+func (e *commandError) Error() string {
+	if e.stderr == "" {
+		return e.what + ": " + e.err.Error()
+	}
+	var exit *exec.ExitError
+	if errors.As(e.err, &exit) && exit.ExitCode() >= 0 {
+		return e.stderr
+	}
+	return e.stderr + " (" + e.err.Error() + ")"
+}
+
+func (e *commandError) Unwrap() error { return e.err }
+
 func output(cmd *exec.Cmd, what string) ([]byte, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return out, fmt.Errorf("%s: %w: %s", what, err, strings.TrimSpace(stderr.String()))
+		return out, &commandError{what: what, stderr: strings.TrimSpace(stderr.String()), err: err}
 	}
 	return out, nil
 }
@@ -59,15 +78,15 @@ type Machine interface {
 	Name() string
 	Context() context.Context
 	SetContext(context.Context)
-	Command(script string) *exec.Cmd
+	Command(script string, args ...string) *exec.Cmd
 }
 
-func sh(m Machine, script string) ([]byte, error) {
-	return shIn(m, script, nil)
+func sh(m Machine, script string, args ...string) ([]byte, error) {
+	return shIn(m, script, nil, args...)
 }
 
-func shIn(m Machine, script string, input []byte) ([]byte, error) {
-	cmd := m.Command(script)
+func shIn(m Machine, script string, input []byte, args ...string) ([]byte, error) {
+	cmd := m.Command(script, args...)
 	if input != nil {
 		cmd.Stdin = bytes.NewReader(input)
 	}
@@ -94,8 +113,8 @@ func newLocal(ctx context.Context) (*Local, error) {
 func (l *Local) Name() string                   { return l.name }
 func (l *Local) Context() context.Context       { return l.ctx }
 func (l *Local) SetContext(ctx context.Context) { l.ctx = ctx }
-func (l *Local) Command(script string) *exec.Cmd {
-	return command(l.ctx, "sh", "-c", script)
+func (l *Local) Command(script string, args ...string) *exec.Cmd {
+	return command(l.ctx, "sh", append([]string{"-c", script, "cielago"}, args...)...)
 }
 
 type Remote struct {
@@ -129,9 +148,23 @@ func newRemote(ctx context.Context, host string) (*Remote, error) {
 func (r *Remote) Name() string                   { return r.host }
 func (r *Remote) Context() context.Context       { return r.ctx }
 func (r *Remote) SetContext(ctx context.Context) { r.ctx = ctx }
-func (r *Remote) Command(script string) *exec.Cmd {
-	args := append(append([]string{}, r.opts...), r.host, "--", "LC_ALL=C sh -c "+quote(script))
-	return command(r.ctx, "ssh", args...)
+func (r *Remote) Command(script string, args ...string) *exec.Cmd {
+	payload := "set -- " + quoteAll(args) + "\n" + script
+	line := `env LC_ALL=C sh -c 'eval "$(printf "$1")"' cielago '` + printfEscape(payload) + `'`
+	return command(r.ctx, "ssh", append(append([]string{}, r.opts...), r.host, "--", line)...)
+}
+
+func printfEscape(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c >= 0x7f || strings.IndexByte(`'\%!`, c) >= 0 {
+			fmt.Fprintf(&b, `\%03o`, c)
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 func (r *Remote) sshCommand() string {
@@ -144,24 +177,6 @@ type Archive struct {
 	KeepNewer bool
 }
 
-func packScript(dir string, a Archive) string {
-	var s strings.Builder
-	s.WriteString("cd " + quote(dir) + ` && M=; if tar --version 2>/dev/null | grep -q bsdtar; then M=--no-mac-metadata; fi; COPYFILE_DISABLE=1 tar --no-xattrs --no-acls $M`)
-	for _, e := range a.Exclude {
-		s.WriteString(" --exclude " + quote(e))
-	}
-	s.WriteString(" --null -T - -cf -")
-	return s.String()
-}
-
-func unpackScript(dir string, a Archive) string {
-	keep := ""
-	if a.KeepNewer {
-		keep = "--keep-newer-files "
-	}
-	return "mkdir -p " + quote(dir) + " && tar " + keep + "-xpf - -C " + quote(dir)
-}
-
 func transfer(from Machine, fromDir string, a Archive, to Machine, toDir string) error {
 	if len(a.Paths) == 0 {
 		return nil
@@ -170,12 +185,16 @@ func transfer(from Machine, fromDir string, a Archive, to Machine, toDir string)
 	if err != nil {
 		return err
 	}
-	pack := from.Command(packScript(fromDir, a))
+	pack := from.Command(transferScript, append([]string{"pack", fromDir}, a.Exclude...)...)
 	pack.Stdin = strings.NewReader(strings.Join(a.Paths, "\x00") + "\x00")
 	pack.Stdout = write
 	var packErr bytes.Buffer
 	pack.Stderr = &packErr
-	unpack := to.Command(unpackScript(toDir, a))
+	keep := "0"
+	if a.KeepNewer {
+		keep = "1"
+	}
+	unpack := to.Command(transferScript, "unpack", toDir, keep)
 	unpack.Stdin = read
 	var unpackErr bytes.Buffer
 	unpack.Stderr = &unpackErr
@@ -192,13 +211,12 @@ func transfer(from Machine, fromDir string, a Archive, to Machine, toDir string)
 		}
 		return startErr
 	}
-	packRunErr := pack.Wait()
-	unpackRunErr := unpack.Wait()
-	if packRunErr != nil {
-		return fmt.Errorf("tar on %s: %w: %s", from.Name(), packRunErr, strings.TrimSpace(packErr.String()))
+	var errs []error
+	if err := unpack.Wait(); err != nil {
+		errs = append(errs, fmt.Errorf("unpacking on %s: %w", to.Name(), &commandError{what: "tar", stderr: strings.TrimSpace(unpackErr.String()), err: err}))
 	}
-	if unpackRunErr != nil {
-		return fmt.Errorf("unpack on %s: %w: %s", to.Name(), unpackRunErr, strings.TrimSpace(unpackErr.String()))
+	if err := pack.Wait(); err != nil {
+		errs = append(errs, fmt.Errorf("packing on %s: %w", from.Name(), &commandError{what: "tar", stderr: strings.TrimSpace(packErr.String()), err: err}))
 	}
-	return nil
+	return errors.Join(errs...)
 }

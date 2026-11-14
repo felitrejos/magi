@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+- Committed Git LFS files arrive with their content even when their objects
+  were never uploaded: cielago copies the LFS objects the other machine lacks.
+- Secret files inside ignored folders come along; folders listed in `exclude`
+  are skipped.
+- A remote written with an SSH host alias (`git@github-work:acme/api`) matches
+  the same repository written with the real host.
+- Works when the other machine's login shell is fish, csh or tcsh, and on
+  BusyBox systems such as Alpine.
+- All shell code lives in scripts that shellcheck checks, and every path and
+  name reaches them as an argument, never as part of the script.
+- Secret files that are symlinks come along as symlinks, and folders cielago
+  can't read no longer stop a handoff.
+- A Claude session that doesn't exit within a minute of the handoff is killed,
+  so its transcript is always retired.
+- `cielago unpark` works during a merge or rebase.
+- A new folder on the other machine is filled from the repository's `origin`
+  first, so shallow clones and large histories hand off.
+- Trying again after a failed handoff picks up from the copy it left, even if
+  you kept working meanwhile.
+- When the new session waits for you to trust its folder, the error says so.
+- A session started inside a submodule hands off the whole project.
+- The new session's start is timed by the other machine's clock, so clock
+  drift between machines doesn't fail a handoff.
+- tmux sessions cielago starts no longer inherit `LC_ALL=C`.
+- `cielago pull <host>` says when the last session there was already brought
+  back; `cielago unpark` also clears submodules.
+- `cielago doctor` checks for git 2.31 or newer and gives each host its own
+  time limit; `cielago init` keeps an existing tab command.
+- Error messages show what went wrong without shell noise.
+- Builds use the latest Go 1.27 patch release; CI runs staticcheck and
+  govulncheck.
+
 ## 0.2.0
 
 - Repositories without any commits can be handed off.

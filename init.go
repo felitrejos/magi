@@ -50,7 +50,7 @@ func existing(m Machine, candidates []string) []string {
 	var found []string
 	seen := map[string]bool{}
 	for _, c := range candidates {
-		out, err := sh(m, `d="$HOME"/`+quote(strings.TrimPrefix(c, "~/"))+`; [ -d "$d" ] && ls -di "$d" | awk '{print $1}'`)
+		out, err := sh(m, `d=$HOME/$1; [ -d "$d" ] && ls -di "$d" | awk '{print $1}'`, strings.TrimPrefix(c, "~/"))
 		inode := strings.TrimSpace(string(out))
 		if err == nil && !seen[inode] {
 			seen[inode] = true
@@ -114,7 +114,7 @@ func initConfig(in io.Reader, out io.Writer) error {
 		cfg.LocalRoots = list(answer)
 	}
 	if len(cfg.Exclude) == 0 {
-		answer, err := p.ask("Folders to skip when copying projects that aren't git repos", "node_modules, .venv, dist, build, target")
+		answer, err := p.ask("Folder names to skip when copying projects and looking for secret files", "node_modules, .venv, dist, build, target")
 		if err != nil {
 			return err
 		}
@@ -175,11 +175,15 @@ func initConfig(in io.Reader, out io.Writer) error {
 			return err
 		}
 	}
+	tabQuestion := "Command to run in a new project's tab, {repo} is the repo name (blank for none)"
 	if h.NewTabCommand != "" {
-		fmt.Fprintf(out, "Current command for new project tabs: %s\n", h.NewTabCommand)
+		tabQuestion = "Command to run in a new project's tab, {repo} is the repo name (Enter keeps it, none removes it)"
 	}
-	if h.NewTabCommand, err = p.ask("Command to run in a new project's tab, {repo} is the repo name (blank for none)", ""); err != nil {
+	if h.NewTabCommand, err = p.ask(tabQuestion, h.NewTabCommand); err != nil {
 		return err
+	}
+	if h.NewTabCommand == "none" {
+		h.NewTabCommand = ""
 	}
 	if err := h.validate(name); err != nil {
 		return err

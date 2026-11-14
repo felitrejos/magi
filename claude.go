@@ -3,8 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -25,32 +25,42 @@ func projectSlug(dir string) (string, error) {
 	return slug.String(), nil
 }
 
-func sessionFiles(m Machine, transcriptPath string) (dir string, files []string, err error) {
-	dir = filepath.Dir(transcriptPath)
+type sessionFileSet struct {
+	Dir       string
+	Files     []string
+	Subagents bool
+}
+
+func sessionFiles(m Machine, transcriptPath string) (sessionFileSet, error) {
+	set := sessionFileSet{Dir: filepath.Dir(transcriptPath)}
 	name := filepath.Base(transcriptPath)
 	sidecar := strings.TrimSuffix(name, ".jsonl")
-	out, err := sh(m, "cd "+quote(dir)+" && [ -f "+quote(name)+" ] && if [ -d "+quote(sidecar)+" ]; then echo sidecar; fi")
+	out, err := sh(m, sessionScript, "transcript", transcriptPath)
 	if err != nil {
-		return "", nil, err
+		return set, err
 	}
-	files = []string{name}
-	if strings.TrimSpace(string(out)) == "sidecar" {
-		files = append(files, sidecar)
+	set.Files = []string{name}
+	for _, line := range strings.Fields(string(out)) {
+		switch line {
+		case "sidecar":
+			set.Files = append(set.Files, sidecar)
+		case "subagents":
+			set.Subagents = true
+		}
 	}
-	return dir, files, nil
+	return set, nil
 }
 
 type liveSession struct {
 	PID             int     `json:"pid"`
 	SessionID       string  `json:"sessionId"`
 	Cwd             string  `json:"cwd"`
-	Status          string  `json:"status"`
 	StartedAt       int64   `json:"startedAt"`
 	BridgeSessionID *string `json:"bridgeSessionId"`
 }
 
 func liveSessions(m Machine) ([]liveSession, error) {
-	out, err := sh(m, `for f in "$HOME"/.claude/sessions/*.json; do [ -f "$f" ] && cat "$f" && printf '\0'; done; true`)
+	out, err := sh(m, sessionScript, "sessions")
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +84,18 @@ func splitNull(out []byte) []string {
 	return items
 }
 
+func clock(m Machine) (time.Time, error) {
+	out, err := sh(m, "date +%s")
+	if err != nil {
+		return time.Time{}, err
+	}
+	seconds, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("unexpected time %q from %s", out, m.Name())
+	}
+	return time.Unix(seconds, 0), nil
+}
+
 func waitForRemoteControl(m Machine, sessionID string, launchedAt time.Time) error {
 	notBefore := launchedAt.Add(-10 * time.Second).UnixMilli()
 	for {
@@ -95,7 +117,7 @@ func waitForRemoteControl(m Machine, sessionID string, launchedAt time.Time) err
 }
 
 func stopSession(m Machine, sessionID string) error {
-	_, err := sh(m, "pkill -TERM -f -- "+quote("[-]-resume "+sessionID)+"; true")
+	_, err := sh(m, sessionScript, "kill", sessionID)
 	return err
 }
 
@@ -151,8 +173,8 @@ func handoffPrompt(p Prompt) string {
 	return b.String()
 }
 
-func syncMemory(local *Local, from Machine, fromDir string, to Machine, toDir string) error {
-	listing, err := sh(from, "if [ -d "+quote(fromDir)+" ]; then cd "+quote(fromDir)+` && for f in * .[!.]*; do [ -e "$f" ] && printf '%s\0' "$f"; done; fi; true`)
+func syncMemory(from Machine, fromDir string, to Machine, toDir string) error {
+	listing, err := sh(from, memoryScript, "list", fromDir)
 	if err != nil {
 		return err
 	}
@@ -172,8 +194,7 @@ func syncMemory(local *Local, from Machine, fromDir string, to Machine, toDir st
 		return nil
 	}
 	read := func(m Machine, dir string) (string, error) {
-		path := quote(dir + "/" + memoryIndex)
-		out, err := sh(m, "if [ -f "+path+" ]; then cat "+path+"; fi")
+		out, err := sh(m, memoryScript, "read", dir)
 		return string(out), err
 	}
 	incoming, err := read(from, fromDir)
@@ -184,15 +205,8 @@ func syncMemory(local *Local, from Machine, fromDir string, to Machine, toDir st
 	if err != nil {
 		return err
 	}
-	staging, err := os.MkdirTemp("", "cielago-memory-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(staging)
-	if err := os.WriteFile(filepath.Join(staging, memoryIndex), []byte(mergeMemoryIndex(incoming, existing)), 0o600); err != nil {
-		return err
-	}
-	return transfer(local, staging, Archive{Paths: []string{memoryIndex}}, to, toDir)
+	_, err = shIn(to, memoryScript, []byte(mergeMemoryIndex(incoming, existing)), "write", toDir)
+	return err
 }
 
 const memoryIndex = "MEMORY.md"

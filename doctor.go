@@ -17,6 +17,8 @@ import (
 
 var testedClaude = [2]string{"2.1.319", "2.1.325"}
 
+var minGit = [3]int{2, 31, 0}
+
 type checks struct {
 	out    io.Writer
 	failed int
@@ -90,6 +92,23 @@ func (c *checks) claudeVersion(where, text string) {
 	}
 }
 
+func (c *checks) gitVersion(where, text string, err error) {
+	if err != nil {
+		c.fail("git isn't installed on "+where, "install git 2.31 or newer")
+		return
+	}
+	words := append(strings.Fields(text), "", "", "")
+	v, ok := parseVersion(words[2])
+	switch {
+	case !ok:
+		c.warn("git's version on "+where+" is unreadable: "+strings.TrimSpace(text), "cielago needs git 2.31 or newer.")
+	case compareVersions(v, minGit) < 0:
+		c.fail("git on "+where+" is "+words[2], "cielago needs git 2.31 or newer; update it")
+	default:
+		c.pass("git " + words[2] + " on " + where)
+	}
+}
+
 func (c *checks) login(where, statusJSON string) {
 	var status struct {
 		LoggedIn   bool   `json:"loggedIn"`
@@ -119,7 +138,9 @@ func doctor(names []string, out io.Writer) error {
 	if !c.check(err, "config at "+path, "run cielago init to create it") {
 		return errors.New("fix the config first")
 	}
-	for _, tool := range []string{"git", "tar", "ssh"} {
+	gitOut, gitErr := run(ctx, "git", "--version")
+	c.gitVersion("this machine", string(gitOut), gitErr)
+	for _, tool := range []string{"tar", "ssh"} {
 		_, err := exec.LookPath(tool)
 		c.check(err, tool+" is installed", "install "+tool)
 	}
@@ -156,7 +177,9 @@ func doctor(names []string, out io.Writer) error {
 		if !c.check(err, "config for "+name, "edit "+path) {
 			continue
 		}
-		doctorHost(ctx, c, name, h)
+		hostCtx, cancelHost := context.WithTimeout(context.Background(), 60*time.Second)
+		doctorHost(hostCtx, c, name, h)
+		cancelHost()
 	}
 	if c.failed > 0 {
 		return fmt.Errorf("%d check(s) failed", c.failed)
@@ -174,21 +197,23 @@ func doctorHost(ctx context.Context, c *checks, name string, h Host) {
 	if _, err := sh(remote, "true"); !c.check(err, "ssh "+h.SSH+" works without a password prompt", "set up key-based ssh to "+h.SSH) {
 		return
 	}
-	_, err = sh(remote, "command -v git >/dev/null && command -v tar >/dev/null")
-	c.check(err, "git and tar on "+name, "install git and tar there")
+	gitOut, gitErr := sh(remote, "git --version")
+	c.gitVersion(name, string(gitOut), gitErr)
+	_, err = sh(remote, "command -v tar >/dev/null")
+	c.check(err, "tar on "+name, "install tar there")
 	home, err := homeDir(remote)
 	if err != nil {
 		c.fail("read $HOME on "+name, err.Error())
 		return
 	}
-	claude := quote(expandHome(h.Claude, home))
-	if v, err := sh(remote, claude+" --version"); c.check(err, "claude at "+h.Claude+" on "+name, "fix the claude path for "+name) {
+	claude := expandHome(h.Claude, home)
+	if v, err := sh(remote, `"$1" --version`, claude); c.check(err, "claude at "+h.Claude+" on "+name, "fix the claude path for "+name) {
 		c.claudeVersion(name, string(v))
-		status, _ := sh(remote, claude+" auth status")
+		status, _ := sh(remote, `"$1" auth status`, claude)
 		c.login(name, string(status))
 	}
 	for _, root := range h.Roots {
-		_, err := sh(remote, "[ -d "+quote(expandHome(root, home))+" ]")
+		_, err := sh(remote, `[ -d "$1" ]`, expandHome(root, home))
 		c.check(err, "root "+root+" exists on "+name, "create it there or fix roots")
 	}
 	switch h.Launcher {

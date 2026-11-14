@@ -31,9 +31,9 @@ func newLauncher(h Host, remote *Remote) Launcher {
 
 func shellIn(dir string, command ...string) []string {
 	if len(command) == 0 {
-		return []string{"sh", "-c", "cd " + quote(dir) + ` && exec "$SHELL" -l`}
+		return []string{"sh", "-c", `cd -- "$1" && exec "$SHELL" -l`, "cielago", dir}
 	}
-	return []string{"sh", "-c", "cd " + quote(dir) + " && exec " + quoteAll(command)}
+	return append([]string{"sh", "-c", `cd -- "$1" && shift && exec "$@"`, "cielago", dir}, command...)
 }
 
 func claudeTabLabel(name string) string {
@@ -201,7 +201,7 @@ type Tmux struct {
 var tmuxName = strings.NewReplacer(".", "_", ":", "_").Replace
 
 func (t Tmux) session(group string) (string, error) {
-	out, err := sh(t.remote, `tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null || :`)
+	out, err := sh(t.remote, tmuxScript, "sessions")
 	if err != nil {
 		return "", err
 	}
@@ -218,12 +218,11 @@ func (t Tmux) Start(group, label, dir string, command []string) (Tab, error) {
 	if err != nil {
 		return Tab{}, err
 	}
-	argv := quoteAll(shellIn(dir, command...))
-	script := "tmux new-session -d -P -F '#{session_id} #{window_id} #{pane_id}' -s " + quote(tmuxName(group)) + " -n " + quote(label) + " " + argv
+	args := []string{"new-session", tmuxName(group), label, dir}
 	if session != "" {
-		script = "tmux new-window -P -F '#{session_id} #{window_id} #{pane_id}' -t " + quote(session+":") + " -n " + quote(label) + " " + argv
+		args = []string{"new-window", session, label, dir}
 	}
-	out, err := sh(t.remote, script)
+	out, err := sh(t.remote, tmuxScript, append(args, shellIn(dir, command...)...)...)
 	if err != nil {
 		return Tab{}, err
 	}
@@ -235,14 +234,12 @@ func (t Tmux) Start(group, label, dir string, command []string) (Tab, error) {
 }
 
 func (t Tmux) OpenProjectTab(tab Tab, name, dir, command string) error {
-	_, err := sh(t.remote, `set -e; if ! tmux list-windows -t `+quote(tab.Session)+` -F '#{window_name}' | grep -qxF -- `+quote(name)+`; then `+
-		`p=$(tmux new-window -d -P -F '#{pane_id}' -t `+quote(tab.Session+":")+` -n `+quote(name)+` -c `+quote(dir)+`); `+
-		`tmux send-keys -t "$p" -l `+quote(command)+`; tmux send-keys -t "$p" Enter; fi`)
+	_, err := sh(t.remote, tmuxScript, "open-tab", tab.Session, name, dir, command)
 	return err
 }
 
 func (t Tmux) Show(tab Tab) ([]string, error) {
-	_, err := sh(t.remote, "tmux select-window -t "+quote(tab.Window))
+	_, err := sh(t.remote, tmuxScript, "select", tab.Window)
 	return nil, err
 }
 
@@ -250,9 +247,9 @@ func (t Tmux) Discard(tab Tab) error {
 	var err error
 	switch {
 	case tab.SessionCreated:
-		_, err = sh(t.remote, "tmux kill-session -t "+quote(tab.Session))
+		_, err = sh(t.remote, tmuxScript, "kill-session", tab.Session)
 	case tab.Window != "":
-		_, err = sh(t.remote, "tmux kill-window -t "+quote(tab.Window))
+		_, err = sh(t.remote, tmuxScript, "kill-window", tab.Window)
 	}
 	return err
 }

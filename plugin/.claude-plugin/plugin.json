@@ -1,7 +1,7 @@
 {
   "name": "cielago",
   "description": "Hand a running Claude Code session off to another machine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "felitrejos",
     "url": "https://github.com/felitrejos"
