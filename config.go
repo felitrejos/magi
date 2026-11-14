@@ -20,9 +20,7 @@ type Host struct {
 	Claude    string   `toml:"claude"`
 	Roots     []string `toml:"roots"`
 	Secrets   []string `toml:"secrets"`
-	Launcher  string   `toml:"launcher"`
 	RexServer string   `toml:"rex_server"`
-	TmuxName  string   `toml:"tmux_session"`
 }
 
 func configPath() (string, error) {
@@ -64,18 +62,8 @@ func (h Host) validate(name string) error {
 		return missing("claude")
 	case len(h.Roots) == 0:
 		return missing("roots")
-	}
-	switch h.Launcher {
-	case "rex":
-		if h.RexServer == "" {
-			return missing("rex_server")
-		}
-	case "tmux":
-		if h.TmuxName == "" {
-			return missing("tmux_session")
-		}
-	default:
-		return fmt.Errorf("host %q: launcher must be \"rex\" or \"tmux\", got %q", name, h.Launcher)
+	case h.RexServer == "":
+		return missing("rex_server")
 	}
 	return nil
 }

@@ -53,9 +53,10 @@ was, with Remote Control on, and the copy on your laptop closes.
    even when it lives at a different path.
 4. **Your secrets too.** `.env` files and anything else you list travel over
    SSH, straight from disk to disk, never through the conversation.
-5. **Pick it up anywhere.** The session starts with Remote Control, so you
-   continue from the Claude app, your phone or claude.ai, and it opens in a
-   [Rex](https://superlogical.com) pane or a tmux window you can attach to.
+5. **Pick it up anywhere.** The session starts with Remote Control, so it
+   shows up in the Claude app, on your phone and on claude.ai, and it opens as
+   a pane beside the repository's tab in [Rex](https://superlogical.com), where
+   you can watch it work.
 6. **Nothing in the middle.** Plain SSH between your own machines. No relay, no
    extra account, no daemon.
 7. **One place at a time.** It refuses to clobber work on the other machine,
@@ -69,21 +70,6 @@ inspect 0.3s · sync 0.2s · transcript 0.1s · launch 0.0s · start 2.4s   → 
 
 ## How it works
 
-```mermaid
-sequenceDiagram
-    actor You
-    participant Laptop as Claude on your laptop
-    participant Server as Your server
-    You->>Laptop: "hand this off to my homelab"
-    Laptop->>Laptop: arm the handoff, finish the turn
-    Laptop->>Server: push the branch, copy changes and .env over SSH
-    Laptop->>Server: copy the session transcript
-    Laptop->>Server: claude --resume … --remote-control, in Rex or tmux
-    Server-->>Laptop: Remote Control is up
-    Laptop->>Laptop: close, or archive itself in the desktop app
-    You->>Server: carry on from the Claude app
-```
-
 The `handoff` skill tells the agent to run `cielago arm`, then end its turn.
 When the turn is over, the plugin's Stop hook does the move:
 
@@ -93,8 +79,8 @@ When the turn is over, the plugin's Stop hook does the move:
   uncommitted work or commits you don't have;
 - copies changed, new and deleted files, plus files matching `secrets`;
 - copies the transcript into the server's `~/.claude/projects`;
-- starts the session beside the repository's Rex window, or in a tmux window,
-  with a first message telling Claude where it is now;
+- opens the session in a pane beside the repository's tab in Rex, with a
+  first message telling Claude where it is now;
 - waits for Remote Control, then closes the laptop's copy and renames its
   transcript so it can't be resumed twice.
 
@@ -106,8 +92,10 @@ claude plugin marketplace add felitrejos/cielago
 claude plugin install cielago@cielago
 ```
 
-On the server, cielago needs `git`, `tar`, and Claude Code logged in with
-`claude auth login`. Remote Control doesn't work with `setup-token` tokens.
+cielago drives [Rex](https://superlogical.com): your laptop's Rex needs to
+reach the server, and each repository needs a Rex tab there named after its
+folder. On the server, cielago needs `git`, `tar`, and Claude Code logged in
+with `claude auth login`. Remote Control doesn't work with `setup-token` tokens.
 
 ## Getting started
 
@@ -127,9 +115,7 @@ ssh = "homelab"                            # ssh destination
 claude = "~/.local/bin/claude"             # claude binary on the server
 roots = ["~/developer"]                    # where your clones live, up to two folders deep
 secrets = [".env", ".env.*", ".dev.vars"]  # gitignored files to bring along
-launcher = "rex"                           # "rex" or "tmux"
-rex_server = "homelab"                     # rex: opens beside the window named after the repo
-# tmux_session = "cielago"                 # tmux: session to open a window in
+rex_server = "homelab"                     # the server's Rex host; sessions open beside the tab named after the repo
 ```
 
 The name of the table is what you call the machine: "hand this off to my
@@ -158,14 +144,6 @@ From your laptop's disk to the server's, over SSH. They never enter the
 conversation, the transcript or cielago's output. The laptop's copy replaces
 the server's, so values that only exist in the server's `.env` are overwritten.
 
-**Do I need Rex?**
-No. Set `launcher = "tmux"` and the session opens in a tmux window on the
-server. Remote Control works the same either way.
-
-**Does this use A2A or some other agent protocol?**
-No. Those delegate tasks between different agents; cielago moves one agent's
-own session. The [research notes](docs/research/report.md) cover why.
-
 ## Limits
 
 - It moves between turns, never in the middle of a reply or a tool call.
@@ -181,8 +159,7 @@ go test ./...
 ```
 
 The tests run cielago's generated server-side scripts against a fake SSH host,
-including branch names built to break out of the shell. To re-record the demo,
-run `vhs assets/handoff.tape` with a `demo-app` clone on both machines.
+including branch names built to break out of the shell.
 
 ## License
 

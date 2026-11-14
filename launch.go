@@ -13,20 +13,11 @@ type Launch struct {
 	Command []string
 }
 
-func (l Launch) start() error {
-	switch l.Host.Launcher {
-	case "rex":
-		return l.startRex()
-	default:
-		return l.startTmux()
-	}
-}
-
 func (l Launch) shellLine() string {
 	return "cd " + quote(l.Dir) + " && exec " + quoteAll(l.Command)
 }
 
-func (l Launch) startRex() error {
+func (l Launch) start() error {
 	session, anchor, err := l.findRexWindow()
 	if err != nil {
 		return err
@@ -74,12 +65,4 @@ func (l Launch) findRexWindow() (session, anchor string, err error) {
 		}
 	}
 	return "", "", fmt.Errorf("no Rex window named %q on %s", l.Name, l.Host.RexServer)
-}
-
-func (l Launch) startTmux() error {
-	session := quote(l.Host.TmuxName)
-	script := "tmux has-session -t =" + session + " 2>/dev/null || tmux new-session -d -s " + session + "; " +
-		"tmux new-window -d -t " + session + ": -n " + quote(l.Name) + " " + quote(l.shellLine())
-	_, err := l.Remote.sh(script)
-	return err
 }
