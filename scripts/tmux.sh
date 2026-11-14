@@ -14,8 +14,9 @@ case $command in
     tmux new-session -d -P -F "$format" -s "$name" -n "$label" -c "$dir" "$@"
     ;;
   new-window)
-    session=$1 label=$2 dir=$3
-    shift 3
+    session=$1 label=$2 dir=$3 detached=$4
+    shift 4
+    if [ "$detached" = 1 ]; then set -- -d "$@"; fi
     tmux new-window -P -F "$format" -t "$session:" -n "$label" -c "$dir" "$@"
     ;;
   open-tab)

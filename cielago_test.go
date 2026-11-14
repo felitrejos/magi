@@ -1423,7 +1423,7 @@ func TestTmuxLauncherOpensItsOwnWindowAndCleansUp(t *testing.T) {
 	f.isolatedTmux()
 	tm := Tmux{remote: f.remoteHost()}
 
-	first, err := tm.Start("my.group", "api · claude", f.remote, []string{"sleep", "60"})
+	first, err := tm.Start("my.group", "api · claude", f.remote, []string{"sleep", "60"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1433,7 +1433,7 @@ func TestTmuxLauncherOpensItsOwnWindowAndCleansUp(t *testing.T) {
 	if env, _ := exec.Command("tmux", "show-environment", "-g", "LC_ALL").CombinedOutput(); strings.Contains(string(env), "LC_ALL=C") {
 		t.Errorf("the tmux server started with cielago's LC_ALL=C: %s", env)
 	}
-	second, err := tm.Start("my.group", "web · claude", f.remote, []string{"sleep", "60"})
+	second, err := tm.Start("my.group", "web · claude", f.remote, []string{"sleep", "60"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

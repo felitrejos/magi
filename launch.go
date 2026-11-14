@@ -15,7 +15,7 @@ type Tab struct {
 }
 
 type Launcher interface {
-	Start(group, label, dir string, command []string) (Tab, error)
+	Start(group, label, dir string, command []string, focus bool) (Tab, error)
 	Show(tab Tab) (shownOn []string, err error)
 	Discard(tab Tab) error
 	OpenProjectTab(tab Tab, name, dir, command string) error
@@ -87,7 +87,7 @@ func (x Rex) groupSession(group string) (string, error) {
 	return "", nil
 }
 
-func (x Rex) Start(group, label, dir string, command []string) (Tab, error) {
+func (x Rex) Start(group, label, dir string, command []string, focus bool) (Tab, error) {
 	session, err := x.groupSession(group)
 	if err != nil {
 		return Tab{}, err
@@ -108,8 +108,12 @@ func (x Rex) Start(group, label, dir string, command []string) (Tab, error) {
 		tab.Window, tab.Pane = created.Windows[0].ID, created.Windows[0].BlockIDs[0]
 		return tab, nil
 	}
+	args := []string{"window", "new", "-s", session, label, "--json"}
+	if !focus {
+		args = append(args, "--focus=false")
+	}
 	var created rexWindow
-	if err := x.rexJSON(&created, append([]string{"window", "new", "-s", session, label, "--json", "--"}, claude...)...); err != nil {
+	if err := x.rexJSON(&created, append(append(args, "--"), claude...)...); err != nil {
 		return Tab{}, err
 	}
 	tab := Tab{Session: session, Window: created.ID}
@@ -231,14 +235,18 @@ func (t Tmux) session(group string) (string, error) {
 	return "", nil
 }
 
-func (t Tmux) Start(group, label, dir string, command []string) (Tab, error) {
+func (t Tmux) Start(group, label, dir string, command []string, focus bool) (Tab, error) {
 	session, err := t.session(group)
 	if err != nil {
 		return Tab{}, err
 	}
 	args := []string{"new-session", tmuxName(group), label, dir}
 	if session != "" {
-		args = []string{"new-window", session, label, dir}
+		detached := "0"
+		if !focus {
+			detached = "1"
+		}
+		args = []string{"new-window", session, label, dir, detached}
 	}
 	out, err := sh(t.remote, tmuxScript, append(args, shellIn(dir, command...)...)...)
 	if err != nil {

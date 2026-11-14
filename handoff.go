@@ -163,7 +163,7 @@ func (h Handoff) Run() (res Result, err error) {
 		}
 		prompt := handoffPrompt(Prompt{From: local.Name(), To: h.HostName, OldDir: h.Cwd, NewDir: remoteDir, Git: ws.Git != nil, Note: h.Note, Sidecar: sidecar, Project: projectNote})
 		command := []string{expandHome(h.Host.Claude, where.Home), "--resume", h.SessionID, "--remote-control", name, prompt}
-		if tab, err = launcher.Start(where.Group, claudeTabLabel(name), remoteDir, command); err != nil {
+		if tab, err = launcher.Start(where.Group, claudeTabLabel(name), remoteDir, command, true); err != nil {
 			return err
 		}
 		res.ShownOn, res.ShowNote = launcher.Show(tab)

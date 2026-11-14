@@ -149,16 +149,17 @@ func listClones(m Machine, roots []string) ([]Clone, error) {
 	return clones, nil
 }
 
-func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
-	same := func(c Clone) bool {
-		if ws.Git.Origin != "" {
-			return c.Origin != "" && (c.OriginKey == ws.Git.OriginKey || normalizeRemote(c.Origin) == normalizeRemote(ws.Git.Origin))
-		}
-		return c.Origin == "" && ws.Git.RootCommit != "" && c.RootCommit == ws.Git.RootCommit
+func sameRepository(c Clone, ws Workspace) bool {
+	if ws.Git.Origin != "" {
+		return c.Origin != "" && (c.OriginKey == ws.Git.OriginKey || normalizeRemote(c.Origin) == normalizeRemote(ws.Git.Origin))
 	}
+	return c.Origin == "" && ws.Git.RootCommit != "" && c.RootCommit == ws.Git.RootCommit
+}
+
+func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
 	var matches []string
 	for _, c := range clones {
-		if same(c) {
+		if sameRepository(c, ws) {
 			matches = append(matches, c.Dir)
 		}
 	}

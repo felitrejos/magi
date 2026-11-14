@@ -261,7 +261,7 @@ func seedLFS(from, to Machine, ws Workspace, repo string) error {
 
 type sendObjects func(ws Workspace, repo string) error
 
-func syncGit(from, to Machine, ws Workspace, repo string, send sendObjects) error {
+func syncGit(from, to Machine, ws Workspace, repo, mode string, send sendObjects) error {
 	if err := send(ws, repo); err != nil {
 		return err
 	}
@@ -269,16 +269,16 @@ func syncGit(from, to Machine, ws Workspace, repo string, send sendObjects) erro
 		return errors.Join(err, dropRefs(to, repo))
 	}
 	g := ws.Git
-	if _, err := sh(to, checkoutScript, "apply", repo, g.Head, g.Worktree, g.Index, g.Branch); err != nil {
+	if _, err := sh(to, checkoutScript, mode, repo, g.Head, g.Worktree, g.Index, g.Branch); err != nil {
 		return errors.Join(err, dropRefs(to, repo))
 	}
-	if err := finishGit(from, to, ws, repo, send); err != nil {
+	if err := finishGit(from, to, ws, repo, mode, send); err != nil {
 		return errors.Join(err, park(to, repo, ws))
 	}
 	return nil
 }
 
-func finishGit(from, to Machine, ws Workspace, repo string, send sendObjects) error {
+func finishGit(from, to Machine, ws Workspace, repo, mode string, send sendObjects) error {
 	if ws.LFSStore != "" && ws.Git.Head != "" {
 		if _, err := sh(to, `cd -- "$1" && if git lfs version >/dev/null 2>&1 && git config --get filter.lfs.clean >/dev/null; then git lfs checkout >&2; fi`, repo); err != nil {
 			return err
@@ -291,7 +291,7 @@ func finishGit(from, to Machine, ws Workspace, repo string, send sendObjects) er
 		if err := ensureSubmodule(to, repo, sub); err != nil {
 			return fmt.Errorf("submodule %s: %w", sub.Subpath, err)
 		}
-		if err := syncGit(from, to, sub, repo+"/"+sub.Subpath, send); err != nil {
+		if err := syncGit(from, to, sub, repo+"/"+sub.Subpath, mode, send); err != nil {
 			return fmt.Errorf("submodule %s: %w", sub.Subpath, err)
 		}
 	}
@@ -299,7 +299,11 @@ func finishGit(from, to Machine, ws Workspace, repo string, send sendObjects) er
 }
 
 func pushGit(local *Local, remote *Remote, ws Workspace, remoteRepo string) error {
-	return syncGit(local, remote, ws, remoteRepo, func(ws Workspace, repo string) error {
+	return sendGit(local, remote, ws, remoteRepo, "apply")
+}
+
+func sendGit(local *Local, remote *Remote, ws Workspace, remoteRepo, mode string) error {
+	return syncGit(local, remote, ws, remoteRepo, mode, func(ws Workspace, repo string) error {
 		refspecs := snapshotRefspecs(*ws.Git, func(ref, id string) string { return id + ":" + ref })
 		_, err := sh(local, `dir=$1 ssh=$2; shift 2; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git push --quiet --force --no-verify "$@"`,
 			append([]string{ws.Root, remote.sshCommand(), remote.host + ":" + repo}, refspecs...)...)
@@ -308,7 +312,7 @@ func pushGit(local *Local, remote *Remote, ws Workspace, remoteRepo string) erro
 }
 
 func pullGit(remote *Remote, local *Local, ws Workspace, localRepo string) error {
-	return syncGit(remote, local, ws, localRepo, func(ws Workspace, repo string) error {
+	return syncGit(remote, local, ws, localRepo, "apply", func(ws Workspace, repo string) error {
 		mark := []string{ws.Root}
 		for _, spec := range snapshotRefspecs(*ws.Git, func(ref, id string) string { return outPrefix + baseName(ref) + " " + id }) {
 			name, id, _ := strings.Cut(spec, " ")
