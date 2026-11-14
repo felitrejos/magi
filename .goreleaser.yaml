@@ -15,19 +15,3 @@ checksum:
 
 changelog:
   disable: true
-
-homebrew_casks:
-  - repository:
-      owner: felitrejos
-      name: homebrew-tap
-      token: '{{ envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "" }}'
-    skip_upload: '{{ if envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "" }}false{{ else }}true{{ end }}'
-    hooks:
-      post:
-        install_steps: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cielago"]
-          end
-    homepage: https://github.com/felitrejos/cielago
-    description: Hand a running Claude Code session off to another machine
-    license: MIT
