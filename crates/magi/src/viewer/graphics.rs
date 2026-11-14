@@ -31,7 +31,6 @@ const QUERY: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[c"
 #[derive(Clone, Copy)]
 pub enum Kind {
     Area,
-    Bars,
     Meter,
 }
 
@@ -323,22 +322,6 @@ fn render(chart: &Chart, width: u32, height: u32, density: f32) -> Option<Vec<u8
                     pixmap.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
                 }
             }
-            Kind::Bars => {
-                let slot = w / values.len() as f32;
-                let gap = (slot * 0.25).clamp(1.0, 6.0);
-                let (tr, tg, tb) = rgb(TRACK);
-                let mut track = Paint::default();
-                track.set_color_rgba8(tr, tg, tb, 255);
-                for (index, value) in values.iter().enumerate() {
-                    let left = index as f32 * slot + gap / 2.0;
-                    let right = (index + 1) as f32 * slot - gap / 2.0;
-                    let full = tiny_skia::Rect::from_ltrb(left, 1.0, right, h)?;
-                    pixmap.fill_rect(full, &track, Transform::identity(), None);
-                    let top = scale(*value).min(h - 2.0);
-                    let rect = tiny_skia::Rect::from_ltrb(left, top, right, h)?;
-                    pixmap.fill_rect(rect, &solid, Transform::identity(), None);
-                }
-            }
             Kind::Area => {
                 let step = if values.len() > 1 {
                     w / (values.len() - 1) as f32
@@ -493,7 +476,6 @@ fn draw_cells(buf: &mut Buffer, area: Rect, chart: &Chart) {
                 draw_meter_cells(buf, area, finite(series.values[0]), series.color);
                 continue;
             }
-            Kind::Bars => stretch(&scaled, width),
             Kind::Area => scaled,
         };
         for (row, line) in chart::columns(&values, width, height).iter().enumerate() {
@@ -531,15 +513,6 @@ fn draw_meter_cells(buf: &mut Buffer, area: Rect, fraction: f32, color: Color) {
                 .set_bg(TRACK),
         };
     }
-}
-
-fn stretch(values: &[f32], width: usize) -> Vec<f32> {
-    if values.is_empty() {
-        return Vec::new();
-    }
-    (0..width)
-        .map(|col| values[col * values.len() / width.max(1)])
-        .collect()
 }
 
 #[cfg(test)]
@@ -734,37 +707,5 @@ mod tests {
             .find(|y| empty[(y * 20) * 4 + 3] == 255)
             .expect("a dashed 50% guide");
         assert!((4..=6).contains(&middle), "{middle}");
-        let cores = Chart {
-            kind: Kind::Bars,
-            max: 1.0,
-            series: vec![Series {
-                values: &[0.0, 1.0],
-                color: BLUE,
-            }],
-        };
-        let bars = render(&cores, 20, 10, 1.0).unwrap();
-        let (tr, tg, tb) = rgb(TRACK);
-        assert_eq!(
-            &bars[(5 * 20 + 5) * 4..(5 * 20 + 5) * 4 + 4],
-            &[tr, tg, tb, 255]
-        );
-        assert_eq!(
-            &bars[(5 * 20 + 15) * 4..(5 * 20 + 15) * 4 + 4],
-            &[108, 164, 255, 255]
-        );
-        let meter = Chart {
-            kind: Kind::Meter,
-            max: 1.0,
-            series: vec![Series {
-                values: &[0.5],
-                color: BLUE,
-            }],
-        };
-        let bar = render(&meter, 40, 10, 1.0).unwrap();
-        let at = |x: usize| &bar[(5 * 40 + x) * 4..(5 * 40 + x) * 4 + 4];
-        assert_eq!(at(10), &[108, 164, 255, 255]);
-        let (tr, tg, tb) = rgb(TRACK);
-        assert_eq!(at(30), &[tr, tg, tb, 255]);
-        assert_eq!(bar[3], 0);
     }
 }

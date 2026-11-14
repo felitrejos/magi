@@ -1,38 +1,48 @@
 use std::path::Path;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{clip, panel};
+use super::{clip, icon, rule};
 use crate::log;
 use crate::viewer::alerts::{Alerts, Event, Severity};
-use crate::viewer::style::{self, CRIT, DIM, FAINT, TEXT, WARN};
+use crate::viewer::style::{self, CRIT, DIM, FAINT, WARN};
 
 pub fn render(frame: &mut Frame, area: Rect, alerts: &Alerts) {
     let active = alerts.active().count();
-    let block = panel(
-        vec![
-            Span::styled("Alerts", style::bold(TEXT)),
-            Span::styled(
-                format!("  {active} active"),
-                if active > 0 {
-                    style::bold(WARN)
-                } else {
-                    style::fg(DIM)
-                },
-            ),
-        ],
-        alerts.path().map(|path| {
-            vec![Span::styled(
-                format!("kept in {}", home_relative(path)),
-                style::fg(FAINT),
-            )]
-        }),
+    let inner = area.inner(Margin {
+        horizontal: 2,
+        vertical: 0,
+    });
+    if inner.height == 0 || inner.width < 12 {
+        return;
+    }
+    let mut right = vec![Span::styled(
+        format!("{active} active"),
+        if active > 0 {
+            style::bold(WARN)
+        } else {
+            style::fg(DIM)
+        },
+    )];
+    if let Some(path) = alerts.path() {
+        right.push(Span::styled(
+            format!(" · kept in {}", home_relative(path)),
+            style::fg(FAINT),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(rule(icon("●"), "Alerts", right, inner.width as usize)),
+        Rect::new(inner.x, inner.y, inner.width, 1),
     );
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = Rect::new(
+        inner.x,
+        inner.y + 2,
+        inner.width,
+        inner.height.saturating_sub(2),
+    );
     let width = inner.width as usize;
     let mut lines = Vec::new();
     let today = log::local_time(log::now_secs(), c"%Y-%m-%d");

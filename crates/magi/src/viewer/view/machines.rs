@@ -1,18 +1,18 @@
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{Composed, Cursor, clip, pad, panel, selected_style, spans_width, truncate};
+use super::{Composed, Cursor, clip, icon, pad, panel, selected_style, spans_width, truncate};
 use crate::proto::FULL;
 use crate::viewer::graphics::{Chart, Graphics, Kind, Series};
 use crate::viewer::model::{
     self, HISTORY, Level, LinkState, Machine, Model, Presence, Row, Subsystem,
 };
-use crate::viewer::style::{self, ACCENT, CRIT, DIM, FAINT, GOOD, TEAL, TEXT};
+use crate::viewer::style::{self, ACCENT, CRIT, DIM, FAINT, LAVENDER, TEXT};
 use crate::viewer::units;
 
 const GUTTER: u16 = 9;
@@ -195,71 +195,89 @@ pub fn render_detail(
     now: Instant,
     graphics: &mut Graphics,
 ) {
-    let block = panel(
-        vec![Span::styled(row.name.clone(), style::bold(TEXT))],
-        Some(vec![Span::styled(
-            if row.here {
-                "this machine"
-            } else {
-                "on your tailnet"
-            },
-            style::fg(DIM),
-        )]),
-    );
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.height == 0 || inner.width < 4 {
+    let area = area.inner(Margin {
+        horizontal: 2,
+        vertical: 0,
+    });
+    if area.height < 2 || area.width < 12 {
         return;
     }
-    let width = inner.width as usize;
-    let mut cursor = Cursor::new(inner);
-    let machine = row.machine();
-    if let Some(machine) = machine {
-        cursor.line(frame, Line::from(clip(facts(machine), width)));
+    let width = area.width as usize;
+    let mut cursor = Cursor::new(area);
+    let mut header = vec![
+        Span::styled(row.name.clone(), style::bold(TEXT)),
+        Span::styled(
+            if row.here {
+                "  this machine"
+            } else {
+                "  on your tailnet"
+            },
+            style::fg(DIM),
+        ),
+    ];
+    if let Some(machine) = row.machine() {
+        header.push(Span::styled("  ·  ", style::fg(FAINT)));
+        header.extend(facts(machine));
     }
-    if row.state() != Some(&LinkState::Live) {
-        cursor.line(frame, Line::from(status_span(row, port, now, width)));
-    }
-    let Some((machine, sample)) =
-        machine.and_then(|machine| machine.latest.as_ref().map(|sample| (machine, sample)))
+    cursor.line(frame, Line::from(clip(header, width)));
+    let Some((machine, sample)) = row
+        .machine()
+        .filter(|_| row.state() == Some(&LinkState::Live))
+        .and_then(|machine| machine.latest.as_ref().map(|sample| (machine, sample)))
     else {
+        cursor.line(frame, Line::from(status_span(row, port, now, width)));
         return;
     };
     cursor.skip();
+
     let disks: Vec<_> = sample.filesystems.iter().take(3).collect();
-    let fixed_lines = 3 + 3 + 1 + disks.len() as u16;
+    let fixed_lines = 3 * 3 + 1 + disks.len() as u16;
     let room = cursor.left().saturating_sub(fixed_lines);
-    let with_cores = room >= 12 && !sample.cores.is_empty();
-    let chart_room = room.saturating_sub(if with_cores { 3 } else { 0 });
-    let cpu_rows = (chart_room * 40 / 100).max(2);
-    let memory_rows = (chart_room * 25 / 100).max(2);
-    let network_rows = chart_room.saturating_sub(cpu_rows + memory_rows).max(2);
+    let cpu_rows = (room * 3 / 8).max(2);
+    let memory_rows = (room / 4).max(2);
+    let network_rows = room.saturating_sub(cpu_rows + memory_rows).max(2);
     let plot_width = (width.saturating_sub(GUTTER as usize)).max(1);
     let window = (plot_width * graphics.samples_per_cell()).min(HISTORY);
     let stretches = graphics.stretches_history();
-    let drawn = |samples: usize| if stretches { samples } else { plot_width };
+    let shown = |samples: usize| {
+        span(
+            if stretches { samples } else { plot_width },
+            machine.interval,
+        )
+    };
 
     let cpu = machine.smoothed_cpu();
-    cursor.line(
+    let busiest = sample
+        .cores
+        .iter()
+        .map(|core| f32::from(*core) / f32::from(FULL))
+        .fold(0.0, f32::max);
+    let cpu_history = machine.cpu.tail(window);
+    chart_section(
+        &mut cursor,
         frame,
-        section(
-            "CPU",
-            vec![
+        graphics,
+        ChartSection {
+            icon: "◉",
+            title: "CPU",
+            short: vec![Span::styled(
+                units::percent(cpu).trim().to_string(),
+                style::bold(level_text(cpu, Subsystem::Cpu)),
+            )],
+            value: vec![
                 Span::styled(
                     units::percent(cpu).trim().to_string(),
                     style::bold(level_text(cpu, Subsystem::Cpu)),
                 ),
-                Span::styled(format!("  load {:.2}", sample.load[0]), style::fg(DIM)),
+                Span::styled(
+                    format!(
+                        " · busiest core {} · load {:.2}",
+                        units::percent(busiest).trim(),
+                        sample.load[0]
+                    ),
+                    style::fg(DIM),
+                ),
             ],
-            width,
-        ),
-    );
-    let cpu_history = machine.cpu.tail(window);
-    plot(
-        &mut cursor,
-        frame,
-        graphics,
-        Plot {
             rows: cpu_rows,
             slot: "cpu",
             chart: Chart {
@@ -271,89 +289,41 @@ pub fn render_detail(
                 }],
             },
             scale: percent_scale(),
-            shown: Some(span(drawn(cpu_history.len()), machine.interval)),
+            shown: shown(cpu_history.len()),
         },
     );
-    if with_cores {
-        let cores: Vec<f32> = sample
-            .cores
-            .iter()
-            .map(|core| f32::from(*core) / f32::from(FULL))
-            .collect();
-        cursor.line(
-            frame,
-            section(
-                &format!("{} cores, now", cores.len()),
-                vec![Span::styled(
-                    format!(
-                        "busiest {}",
-                        units::percent(cores.iter().copied().fold(0.0, f32::max)).trim()
-                    ),
-                    style::fg(DIM),
-                )],
-                width,
-            ),
-        );
-        plot(
-            &mut cursor,
-            frame,
-            graphics,
-            Plot {
-                rows: 2,
-                slot: "cores",
-                chart: Chart {
-                    kind: Kind::Bars,
-                    max: 1.0,
-                    series: vec![Series {
-                        values: &cores,
-                        color: ACCENT,
-                    }],
-                },
-                scale: Scale {
-                    top: "100%".into(),
-                    middle: None,
-                    bottom: "0%".into(),
-                },
-                shown: None,
-            },
-        );
-    }
 
     let memory = machine.memory_fraction();
-    let mut memory_facts = vec![
+    let mut memory_value = vec![
         Span::styled(
             units::percent(memory).trim().to_string(),
             style::bold(level_text(memory, Subsystem::Memory)),
         ),
         Span::styled(
             format!(
-                "  {} of {}",
+                " · {} of {}",
                 units::bytes(sample.memory.used),
                 units::bytes(sample.memory.total)
             ),
             style::fg(DIM),
         ),
     ];
-    if sample.memory.swap_total > 0 {
-        memory_facts.push(Span::styled(
-            format!(
-                " · swap {}",
-                units::percent(model::fraction(
-                    sample.memory.swap_used,
-                    sample.memory.swap_total
-                ))
-                .trim()
-            ),
+    if sample.memory.swap_used > 0 {
+        memory_value.push(Span::styled(
+            format!(" · swap {}", units::bytes(sample.memory.swap_used)),
             style::fg(DIM),
         ));
     }
-    cursor.line(frame, section("Memory", memory_facts, width));
     let memory_history = machine.memory.tail(window);
-    plot(
+    chart_section(
         &mut cursor,
         frame,
         graphics,
-        Plot {
+        ChartSection {
+            icon: "◫",
+            title: "Memory",
+            short: memory_value[..2].to_vec(),
+            value: memory_value,
             rows: memory_rows,
             slot: "memory",
             chart: Chart {
@@ -361,39 +331,44 @@ pub fn render_detail(
                 max: 1.0,
                 series: vec![Series {
                     values: &memory_history,
-                    color: TEAL,
+                    color: LAVENDER,
                 }],
             },
             scale: percent_scale(),
-            shown: Some(span(drawn(memory_history.len()), machine.interval)),
+            shown: shown(memory_history.len()),
         },
     );
 
-    cursor.line(
+    let rx = machine.rx.tail(window);
+    let tx = machine.tx.tail(window);
+    let peak = rx.iter().chain(&tx).copied().fold(1.0, f32::max) * 1.1;
+    chart_section(
+        &mut cursor,
         frame,
-        section(
-            "Network",
-            vec![
+        graphics,
+        ChartSection {
+            icon: "⇅",
+            title: "Network",
+            short: vec![
+                Span::styled(
+                    format!("↓ {}", units::rate(sample.network.rx_per_sec)),
+                    style::fg(ACCENT),
+                ),
+                Span::styled(
+                    format!("  ↑ {}", units::rate(sample.network.tx_per_sec)),
+                    style::fg(LAVENDER),
+                ),
+            ],
+            value: vec![
                 Span::styled(
                     format!("↓ download {}", units::rate(sample.network.rx_per_sec)),
                     style::fg(ACCENT),
                 ),
                 Span::styled(
                     format!("   ↑ upload {}", units::rate(sample.network.tx_per_sec)),
-                    style::fg(GOOD),
+                    style::fg(LAVENDER),
                 ),
             ],
-            width,
-        ),
-    );
-    let rx = machine.rx.tail(window);
-    let tx = machine.tx.tail(window);
-    let peak = rx.iter().chain(&tx).copied().fold(1.0, f32::max) * 1.1;
-    plot(
-        &mut cursor,
-        frame,
-        graphics,
-        Plot {
             rows: network_rows,
             slot: "network",
             chart: Chart {
@@ -406,7 +381,7 @@ pub fn render_detail(
                     },
                     Series {
                         values: &tx,
-                        color: GOOD,
+                        color: LAVENDER,
                     },
                 ],
             },
@@ -415,13 +390,14 @@ pub fn render_detail(
                 middle: Some(units::rate((peak / 2.0) as u64)),
                 bottom: "0".into(),
             },
-            shown: Some(span(drawn(rx.len()), machine.interval)),
+            shown: shown(rx.len()),
         },
     );
 
     cursor.line(
         frame,
-        section(
+        super::rule(
+            icon("▥"),
             "Storage",
             vec![Span::styled(
                 format!(
@@ -436,7 +412,7 @@ pub fn render_detail(
     );
     for fs in disks {
         let used = model::fraction(fs.used, fs.total);
-        let label_width = (width / 3).clamp(4, 28);
+        let label_width = (width / 4).clamp(6, 20);
         let size = format!(
             "  {:>5}  {} of {}",
             units::percent(used).trim(),
@@ -445,7 +421,7 @@ pub fn render_detail(
         );
         let bar = width
             .saturating_sub(label_width + 1 + size.chars().count())
-            .min(24);
+            .min(28);
         let mut line = Composed::of(vec![Span::styled(
             pad(&truncate_left(&fs.mount, label_width), label_width + 1),
             style::fg(DIM),
@@ -467,39 +443,55 @@ struct Scale {
     bottom: String,
 }
 
-struct Plot<'a> {
+struct ChartSection<'a> {
+    icon: &'static str,
+    title: &'static str,
+    value: Vec<Span<'static>>,
+    short: Vec<Span<'static>>,
     rows: u16,
     slot: &'static str,
     chart: Chart<'a>,
     scale: Scale,
-    shown: Option<Duration>,
+    shown: Duration,
 }
 
-fn plot(cursor: &mut Cursor, frame: &mut Frame, graphics: &mut Graphics, plot: Plot) {
-    let Plot {
+fn chart_section(
+    cursor: &mut Cursor,
+    frame: &mut Frame,
+    graphics: &mut Graphics,
+    section: ChartSection,
+) {
+    let ChartSection {
+        icon: symbol,
+        title,
+        value,
+        short,
         rows,
         slot,
         chart,
         scale,
         shown,
-    } = plot;
+    } = section;
+    let width = cursor.area.width as usize;
+    let fits = title.chars().count() + spans_width(&value) + 12 <= width;
+    cursor.line(
+        frame,
+        super::rule(icon(symbol), title, if fits { value } else { short }, width),
+    );
     let rows = rows.min(cursor.left());
-    if rows == 0 {
+    if rows == 0 || cursor.area.width <= GUTTER {
         return;
     }
-    let gutter = GUTTER.min(cursor.area.width.saturating_sub(1));
-    let label = |text: &str| {
-        Line::from(Span::styled(
-            format!("{text:>width$} ", width = gutter.saturating_sub(1) as usize),
-            style::fg(FAINT),
-        ))
-    };
     let top = cursor.y;
     let bottom = top + rows - 1;
+    let x = cursor.area.x;
     let mut place = |y: u16, text: &str| {
         frame.render_widget(
-            Paragraph::new(label(text)),
-            Rect::new(cursor.area.x, y, gutter, 1),
+            Paragraph::new(Span::styled(
+                format!("{text:>width$} ", width = GUTTER as usize - 1),
+                style::fg(FAINT),
+            )),
+            Rect::new(x, y, GUTTER, 1),
         );
     };
     place(top, &scale.top);
@@ -511,33 +503,27 @@ fn plot(cursor: &mut Cursor, frame: &mut Frame, graphics: &mut Graphics, plot: P
     }
     graphics.chart(
         frame.buffer_mut(),
-        Rect::new(
-            cursor.area.x + gutter,
-            top,
-            cursor.area.width - gutter,
-            rows,
-        ),
+        Rect::new(x + GUTTER, top, cursor.area.width - GUTTER, rows),
         slot.to_string(),
         &chart,
     );
     cursor.y += rows;
-    if let Some(shown) = shown {
-        let width = (cursor.area.width - gutter) as usize;
-        cursor.line(
-            frame,
-            Line::from(vec![
-                Span::raw(" ".repeat(gutter as usize)),
-                Span::styled(
-                    pad(
-                        &format!("{} ago", units::duration(shown)),
-                        width.saturating_sub(3),
-                    ),
-                    style::fg(FAINT),
+    let axis = width.saturating_sub(GUTTER as usize);
+    cursor.line(
+        frame,
+        Line::from(vec![
+            Span::raw(" ".repeat(GUTTER as usize)),
+            Span::styled(
+                pad(
+                    &format!("{} ago", units::duration(shown)),
+                    axis.saturating_sub(3),
                 ),
-                Span::styled("now", style::fg(FAINT)),
-            ]),
-        );
-    }
+                style::fg(FAINT),
+            ),
+            Span::styled("now", style::fg(FAINT)),
+        ]),
+    );
+    cursor.skip();
 }
 
 fn percent_scale() -> Scale {
@@ -554,7 +540,7 @@ pub fn span(samples: usize, interval: Duration) -> Duration {
 
 fn facts(machine: &Machine) -> Vec<Span<'static>> {
     let mut details = vec![
-        machine.identity.os.clone(),
+        short_os(&machine.identity.os).to_string(),
         machine.identity.cpu_model.clone(),
     ];
     if let Some(sample) = &machine.latest {
@@ -573,14 +559,6 @@ fn facts(machine: &Machine) -> Vec<Span<'static>> {
             .join(" · "),
         style::fg(DIM),
     )]
-}
-
-fn section(title: &str, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
-    super::spread(
-        vec![Span::styled(title.to_string(), style::bold(TEXT))],
-        right,
-        width,
-    )
 }
 
 fn truncate_left(text: &str, width: usize) -> String {

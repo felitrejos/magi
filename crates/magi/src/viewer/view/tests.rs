@@ -207,15 +207,25 @@ fn every_chart_says_its_scale_its_time_span_and_what_its_lines_are() {
         let label = format!("{label:>8} ");
         lines.iter().filter(|line| line.contains(&label)).count()
     };
-    assert_eq!(gutter("100%"), 3, "{screen}");
-    assert_eq!(gutter("0%"), 3, "{screen}");
+    assert_eq!(gutter("100%"), 2, "{screen}");
+    assert_eq!(gutter("0%"), 2, "{screen}");
     assert!(gutter("0") >= 1, "{screen}");
     let axes = lines
         .iter()
-        .filter(|line| line.contains("ago") && line.trim_end_matches(['│', ' ']).ends_with("now"))
+        .filter(|line| {
+            line.contains(" ago ") && line.trim_end_matches(['│', ' ', '─', '╯']).ends_with("now")
+        })
         .count();
     assert_eq!(axes, 3, "{screen}");
-    for text in ["cores, now", "↓ download", "↑ upload"] {
+    for text in [
+        "busiest core",
+        "↓ download",
+        "↑ upload",
+        "◉ CPU",
+        "◫ Memory",
+        "⇅ Network",
+        "▥ Storage",
+    ] {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");
     }
     assert!(!screen.contains("charts show"), "{screen}");
@@ -299,6 +309,13 @@ fn no_line_overflows_the_pane() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "prints the screen: cargo test -- --ignored --nocapture print_phone"]
+fn print_phone() {
+    let now = Instant::now();
+    println!("{}", draw(&fleet(2, now), 46, 60, now));
 }
 
 #[test]

@@ -1,12 +1,14 @@
 use std::time::Duration;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{Composed, Cursor, clip, panel, selected_style, short_name, spread, truncate};
+use super::{
+    Composed, Cursor, clip, icon, panel, rule, selected_style, short_name, spread, truncate,
+};
 use crate::proto::{AgentSession, FULL, Plan, SessionState, Waiting};
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Model};
@@ -165,20 +167,24 @@ pub fn render_detail(
 ) {
     let session = agent.session;
     let (mark, color) = style::agent(session.agent);
-    let block = panel(
-        vec![
-            Span::styled(format!("{mark} "), style::fg(color)),
-            Span::styled(session.title.clone(), style::bold(TEXT)),
-        ],
-        Some(vec![Span::styled(session.agent.name(), style::fg(color))]),
-    );
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.height == 0 {
+    let inner = area.inner(Margin {
+        horizontal: 2,
+        vertical: 0,
+    });
+    if inner.height == 0 || inner.width < 12 {
         return;
     }
     let width = inner.width as usize;
     let mut cursor = Cursor::new(inner);
+    cursor.line(
+        frame,
+        rule(
+            Span::styled(mark.to_string(), style::fg(color)),
+            &truncate(&session.title, width / 2),
+            vec![Span::styled(session.agent.name(), style::fg(color))],
+            width,
+        ),
+    );
     let facts: Vec<String> = [
         session.project.clone(),
         format!("on {}", agent.machine),
@@ -256,7 +262,7 @@ pub fn render_detail(
     );
     cursor.skip();
     let tokens = session.tokens;
-    cursor.line(frame, Line::from(label("Tokens")));
+    cursor.line(frame, rule(icon("◇"), "Tokens", Vec::new(), width));
     for (name, value) in [
         ("output", tokens.output),
         ("input", tokens.input),
@@ -282,7 +288,12 @@ pub fn render_detail(
         cursor.skip();
         cursor.line(
             frame,
-            Line::from(label(&format!("{} plan", short_name(plan.agent)))),
+            rule(
+                icon("◔"),
+                &format!("{} plan", short_name(plan.agent)),
+                Vec::new(),
+                width,
+            ),
         );
         for window in &plan.windows {
             let fraction = f32::from(window.used) / f32::from(FULL);

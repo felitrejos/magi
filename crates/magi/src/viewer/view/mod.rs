@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::graphics::Graphics;
 use super::model::{AgentRow, Level, LinkState, Model, Row, Strain};
-use super::style::{self, ACCENT, BORDER, CRIT, DIM, FAINT, GOOD, TEXT, WARN, WARN_TINT};
+use super::style::{self, BORDER, CRIT, DIM, FAINT, GOOD, LAVENDER, RULE, TEXT, WARN, WARN_TINT};
 use super::units;
 use crate::log;
 use crate::proto::{Agent, FULL, Plan, SessionState};
@@ -91,6 +91,34 @@ fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Block<'a> {
         block = block.title(Line::from(right).alignment(Alignment::Right));
     }
     block
+}
+
+fn rule(
+    icon: Span<'static>,
+    title: &str,
+    right: Vec<Span<'static>>,
+    width: usize,
+) -> Line<'static> {
+    let head = vec![
+        icon,
+        Span::raw(" "),
+        Span::styled(title.to_string(), style::bold(LAVENDER)),
+        Span::raw("  "),
+    ];
+    let right_width = spans_width(&right);
+    let gap = if right_width > 0 { 2 } else { 0 };
+    let fill = width.saturating_sub(spans_width(&head) + right_width + gap);
+    let mut spans = head;
+    spans.push(Span::styled("╌".repeat(fill), style::fg(RULE)));
+    if right_width > 0 {
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.extend(right);
+    }
+    Line::from(clip(spans, width))
+}
+
+fn icon(symbol: &str) -> Span<'static> {
+    Span::styled(symbol.to_string(), style::fg(LAVENDER))
 }
 
 struct Bar {
@@ -217,7 +245,7 @@ fn render_header(
 ) {
     let width = area.width as usize;
     let mut left = vec![
-        Span::styled("magi", style::bold(ACCENT)),
+        Span::styled("magi", style::bold(LAVENDER)),
         Span::styled(
             format!(
                 "  {} {} · {} {}",
