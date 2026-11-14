@@ -3,6 +3,7 @@ mod base64;
 mod chart;
 mod diacritics;
 mod graphics;
+mod input;
 mod link;
 mod model;
 mod style;
@@ -20,12 +21,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 
 use crate::{log, net};
 use graphics::Graphics;
+use input::{Input, Key};
 use link::{Dial, LinkHandle};
 use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
@@ -38,7 +39,7 @@ pub struct Config {
 }
 
 pub enum Event {
-    Input(TermEvent),
+    Input(input::Input),
     Topology(Topology),
     Link(Endpoint, u64, LinkUpdate),
 }
@@ -55,10 +56,11 @@ pub fn run(config: Config) -> io::Result<()> {
     let alerts = alerts::Alerts::open(net::state_dir()?.join("alerts.jsonl"), Instant::now())?;
     let mut terminal = ratatui::try_init()?;
     let reply = terminal::probe(&mut io::stdout())?;
-    style::init(&reply);
+    style::update(&reply);
     let mut graphics = Graphics::from_reply(&reply);
+    write_terminal(terminal::FOLLOW)?;
     topology::spawn(sender.clone())?;
-    spawn_input(sender)?;
+    spawn_input(sender, terminal::unanswered(&reply).to_vec())?;
     let result = write_status(alerts::CLEAR_ALL).and_then(|()| {
         event_loop(
             &mut terminal,
@@ -69,18 +71,17 @@ pub fn run(config: Config) -> io::Result<()> {
             &mut graphics,
         )
     });
-    let cleared = write_status(alerts::CLEAR_ALL).and_then(|()| graphics.clear(&mut io::stdout()));
+    let cleared = write_status(alerts::CLEAR_ALL)
+        .and_then(|()| write_terminal(terminal::UNFOLLOW))
+        .and_then(|()| graphics.clear(&mut io::stdout()));
     ratatui::restore();
     result.and(cleared)
 }
 
-fn spawn_input(events: SyncSender<Event>) -> io::Result<()> {
+fn spawn_input(events: SyncSender<Event>, early: Vec<u8>) -> io::Result<()> {
     thread::Builder::new().name("input".into()).spawn(move || {
-        while let Ok(input) = event::read() {
-            if events.send(Event::Input(input)).is_err() {
-                return;
-            }
-        }
+        let _ = input::read(&early, |input| events.send(Event::Input(input)).is_ok());
+        let _ = events.send(Event::Input(Input::Key(Key::Quit)));
     })?;
     Ok(())
 }
@@ -178,13 +179,17 @@ fn event_loop(
     }
 }
 
+fn write_terminal(sequence: &[u8]) -> io::Result<()> {
+    let mut out = io::stdout().lock();
+    out.write_all(sequence)?;
+    out.flush()
+}
+
 fn write_status(sequence: &str) -> io::Result<()> {
     if sequence.is_empty() {
         return Ok(());
     }
-    let mut out = io::stdout().lock();
-    out.write_all(sequence.as_bytes())?;
-    out.flush()
+    write_terminal(sequence.as_bytes())
 }
 
 fn handle_batch(
@@ -204,19 +209,19 @@ fn handle_batch(
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
     let now = Instant::now();
     match event {
-        Event::Input(TermEvent::Key(key)) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return Ok(Flow::Quit),
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return Ok(Flow::Quit);
-            }
-            KeyCode::Up | KeyCode::Char('k') => model.move_selection(-1, now),
-            KeyCode::Down | KeyCode::Char('j') => model.move_selection(1, now),
-            KeyCode::Home | KeyCode::Char('g') => model.move_selection(isize::MIN, now),
-            KeyCode::End | KeyCode::Char('G') => model.move_selection(isize::MAX, now),
-            KeyCode::Char('a') => model.showing_alerts = !model.showing_alerts,
-            _ => {}
+        Event::Input(Input::Key(key)) => match key {
+            Key::Quit => return Ok(Flow::Quit),
+            Key::Up => model.move_selection(-1, now),
+            Key::Down => model.move_selection(1, now),
+            Key::First => model.move_selection(isize::MIN, now),
+            Key::Last => model.move_selection(isize::MAX, now),
+            Key::Alerts => model.showing_alerts = !model.showing_alerts,
         },
-        Event::Input(_) => {}
+        Event::Input(Input::Recheck) => write_terminal(terminal::COLOURS)?,
+        Event::Input(Input::Theme(reply)) => {
+            style::update(&reply);
+        }
+        Event::Input(Input::Resize) => {}
         Event::Topology(topology) => {
             let mut wanted: Vec<Endpoint> = std::iter::once(Endpoint::Local)
                 .chain(
@@ -254,13 +259,11 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
 mod tests {
     use std::net::Ipv4Addr;
 
-    use ratatui::crossterm::event::KeyEvent;
-
     use super::*;
     use crate::proto::{Identity, Welcome};
 
-    fn key(code: KeyCode) -> Event {
-        Event::Input(TermEvent::Key(KeyEvent::from(code)))
+    fn key(key: Key) -> Event {
+        Event::Input(Input::Key(key))
     }
 
     fn agent(model: &mut Model, endpoint: Endpoint, name: &str) {
@@ -319,23 +322,23 @@ mod tests {
     #[test]
     fn arrow_keys_move_the_selection() {
         let (mut model, mut links) = fleet();
-        handle_batch([key(KeyCode::Down)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Down)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(selected(&model), "homelab");
         handle_batch(
-            [key(KeyCode::Down), key(KeyCode::Down), key(KeyCode::Up)].into_iter(),
+            [key(Key::Down), key(Key::Down), key(Key::Up)].into_iter(),
             &mut model,
             &mut links,
         )
         .unwrap();
         assert_eq!(selected(&model), "homelab");
-        handle_batch([key(KeyCode::End)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(selected(&model), "nas");
     }
 
     #[test]
     fn the_selection_follows_its_machine_when_rows_reorder() {
         let (mut model, mut links) = fleet();
-        handle_batch([key(KeyCode::End)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
         agent(
             &mut model,
             Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 4)),
@@ -349,12 +352,7 @@ mod tests {
     #[test]
     fn q_quits() {
         let (mut model, mut links) = fleet();
-        let flow = handle_batch(
-            [key(KeyCode::Char('q'))].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
+        let flow = handle_batch([key(Key::Quit)].into_iter(), &mut model, &mut links).unwrap();
         assert!(flow == Flow::Quit);
     }
 }

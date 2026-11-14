@@ -3,10 +3,8 @@ use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
-const QUERY: &[u8] = concat!(
-    "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\",
-    "\x1b[16t",
-    "\x1b[>q",
+const GRAPHICS: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[>q";
+pub const COLOURS: &[u8] = concat!(
     "\x1b]10;?\x1b\\",
     "\x1b]11;?\x1b\\",
     "\x1b]4;1;?\x1b\\",
@@ -17,9 +15,12 @@ const QUERY: &[u8] = concat!(
     "\x1b[c",
 )
 .as_bytes();
+pub const FOLLOW: &[u8] = b"\x1b[?1004h\x1b[?2031h";
+pub const UNFOLLOW: &[u8] = b"\x1b[?2031l\x1b[?1004l";
 
 pub fn probe(out: &mut impl Write) -> io::Result<Vec<u8>> {
-    out.write_all(QUERY)?;
+    out.write_all(GRAPHICS)?;
+    out.write_all(COLOURS)?;
     out.flush()?;
     read_reply(Instant::now() + TIMEOUT)
 }
@@ -60,10 +61,17 @@ fn read_reply(deadline: Instant) -> io::Result<Vec<u8>> {
 }
 
 fn answered(reply: &[u8]) -> bool {
-    reply
-        .windows(3)
-        .position(|window| window == b"\x1b[?")
-        .is_some_and(|start| reply[start..].contains(&b'c'))
+    answer_end(reply).is_some()
+}
+
+pub fn unanswered(reply: &[u8]) -> &[u8] {
+    answer_end(reply).map_or(reply, |end| &reply[end..])
+}
+
+fn answer_end(reply: &[u8]) -> Option<usize> {
+    let start = reply.windows(3).position(|window| window == b"\x1b[?")?;
+    let c = reply[start..].iter().position(|&byte| byte == b'c')?;
+    Some(start + c + 1)
 }
 
 #[cfg(test)]
@@ -74,5 +82,7 @@ mod tests {
     fn the_reply_ends_at_the_device_attributes_answer() {
         assert!(answered(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c"));
         assert!(!answered(b"\x1b_Gi=31;OK\x1b\\"));
+        assert_eq!(unanswered(b"\x1b]10;rgb:1/2/3\x1b\\\x1b[?62cj"), b"j");
+        assert_eq!(unanswered(b"\x1b]10;rgb:1a1a"), b"\x1b]10;rgb:1a1a");
     }
 }

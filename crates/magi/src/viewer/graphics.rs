@@ -233,6 +233,8 @@ fn fingerprint(chart: &Chart, cols: u16, rows: u16) -> u64 {
         chart.max.to_bits(),
         chart.kind as u8,
         chart.guide,
+        theme().track,
+        theme().guide,
     )
         .hash(&mut hasher);
     for series in &chart.series {

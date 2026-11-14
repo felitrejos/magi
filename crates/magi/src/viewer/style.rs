@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{LazyLock, PoisonError, RwLock};
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -16,8 +16,10 @@ const FALLBACK: Palette = Palette {
     magenta: Rgb(186, 140, 250),
 };
 
-static THEME: OnceLock<Theme> = OnceLock::new();
+static CURRENT: LazyLock<RwLock<(Palette, Theme)>> =
+    LazyLock::new(|| RwLock::new((FALLBACK, Theme::from(FALLBACK))));
 
+#[derive(Clone, Copy)]
 pub struct Theme {
     pub text: Color,
     pub dim: Color,
@@ -39,7 +41,7 @@ pub struct Theme {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Rgb(u8, u8, u8);
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Palette {
     foreground: Rgb,
     background: Rgb,
@@ -50,12 +52,18 @@ struct Palette {
     magenta: Rgb,
 }
 
-pub fn init(reply: &[u8]) {
-    THEME.get_or_init(|| Theme::from(Palette::parse(reply)));
+pub fn update(reply: &[u8]) -> bool {
+    let mut current = CURRENT.write().unwrap_or_else(PoisonError::into_inner);
+    let palette = Palette::parse(reply, current.0);
+    if palette == current.0 {
+        return false;
+    }
+    *current = (palette, Theme::from(palette));
+    true
 }
 
-pub fn theme() -> &'static Theme {
-    THEME.get_or_init(|| Theme::from(FALLBACK))
+pub fn theme() -> Theme {
+    CURRENT.read().unwrap_or_else(PoisonError::into_inner).1
 }
 
 impl From<Palette> for Theme {
@@ -82,9 +90,9 @@ impl From<Palette> for Theme {
 }
 
 impl Palette {
-    fn parse(reply: &[u8]) -> Self {
+    fn parse(reply: &[u8], base: Self) -> Self {
         let text = String::from_utf8_lossy(reply);
-        let mut palette = FALLBACK;
+        let mut palette = base;
         for answer in text.split("\x1b]").skip(1) {
             let answer = answer.split(['\x07', '\x1b']).next().unwrap_or_default();
             let Some((slot, value)) = answer.rsplit_once(";rgb:") else {
@@ -185,13 +193,13 @@ mod tests {
     #[test]
     fn the_palette_comes_from_the_terminal_and_fills_gaps_from_the_fallback() {
         let reply = b"\x1b_Gi=31;OK\x1b\\\x1b]10;rgb:e6e6/eded/f3f3\x1b\\\x1b]11;rgb:0d0d/1111/1717\x07\x1b]4;2;rgb:3f/b9/50\x1b\\\x1b]4;5;rgb:bcbc/8c8c/ffff\x1b\\\x1b[?62;22c";
-        let palette = Palette::parse(reply);
+        let palette = Palette::parse(reply, FALLBACK);
         assert_eq!(palette.foreground, Rgb(230, 237, 243));
         assert_eq!(palette.background, Rgb(13, 17, 23));
         assert_eq!(palette.green, Rgb(63, 185, 80));
         assert_eq!(palette.magenta, Rgb(188, 140, 255));
         assert_eq!(palette.red, FALLBACK.red);
-        assert_eq!(Palette::parse(b"\x1b[?62c"), FALLBACK);
+        assert_eq!(Palette::parse(b"\x1b[?62c", palette), palette);
     }
 
     #[test]
