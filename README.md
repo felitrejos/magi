@@ -14,6 +14,7 @@
   <a href="#why-rex">Why Rex</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#alerts">Alerts</a> ·
+  <a href="#with-cielago">With cielago</a> ·
   <a href="#faq">FAQ</a> ·
   <a href="#roadmap">Roadmap</a>
 </p>
@@ -44,6 +45,10 @@ view, so a glance answers "is anything stuck, and what is it costing?".
 - **Agents first.** Sessions waiting on you rise to the top with the tool
   they want to run; the rest show what they're doing, their model, context and
   cost.
+- **Watch any agent.** Select a session running in a Rex pane and its screen
+  shows live beside the list, from whichever machine it's on.
+- **What each one uses.** CPU and memory for every session and everything it
+  started, such as test runs and builds.
 - **Plan limits.** Your Claude and Codex 5-hour and weekly windows, with when
   they reset.
 - **Alerts.** Raised in Rex and kept in a short history.
@@ -57,8 +62,9 @@ running on an always-on machine and lets you open that same pane from the Mac
 app, the iOS app or the web, already up to date. Alerts use Rex's
 [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status),
 so they show on Rex's session picker and tab headers on whichever device you
-have open, right beside the tabs your agents run in. Press `Enter` on an agent
-and Rex opens the tab it runs in, on whichever machine.
+have open, right beside the tabs your agents run in. Select an agent and its
+Rex pane shows live in magi; press `Enter` and Rex opens that tab, on
+whichever machine.
 
 magi runs in other terminals too. Charts and meters are drawn with the
 [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/),
@@ -108,6 +114,21 @@ history once.
 Alerts clear themselves when the condition ends. Press `a` to see the last 200,
 kept in `~/.local/state/magi/alerts.jsonl`.
 
+## With cielago
+
+[cielago](https://github.com/felitrejos/cielago) moves a Claude Code session to
+another machine, conversation and uncommitted work included, and lets Claude
+send work there. magi shows where there's room and what each session costs;
+cielago does the moving.
+
+| In magi | With cielago |
+|---|---|
+| A session pushes a busy machine while another sits idle, and its detail suggests moving it | Press `m`, confirm with `y`, and the session continues on the other machine, each step shown in magi |
+| Every machine's load and every session's CPU and memory, in `magi fleet --json` | Claude picks the lightest machine for `run_elsewhere`, `delegate` and `start_session`, and asks you first |
+| Your plan windows | cielago holds back new work when a window is nearly used |
+
+Without cielago, magi works the same and `m` explains how to get it.
+
 ## Install
 
 ```bash
@@ -125,10 +146,12 @@ Needs [Tailscale](https://tailscale.com) with its CLI on every machine.
 
 Flags: `--port` (default 2015) for the viewer and agent, and `--interval`
 (100–60000 ms, default 1000) for `magi agent install`. Keys: `↑`/`↓` or `j`/`k`,
-`g`/`G`, `Enter` to open an agent's Rex tab, `a` for alerts, `q` to quit.
+`g`/`G`, `Enter` to open an agent's Rex tab, `s` to switch between its screen
+and details, `m` to move it, `a` for alerts, `q` to quit.
 
-`magi fleet --json` prints every machine's load and agents once, for scripts
-and tools that pick where to run work.
+`magi fleet --json` prints every machine's load, each session's CPU and
+memory, and your plan windows once, for scripts and tools that pick where to
+run work.
 
 ## Performance
 

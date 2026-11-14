@@ -16,9 +16,21 @@
 
 - Local viewers and the status line use Unix sockets in
   `~/.local/state/magi/`, a folder only you can open.
-- The agent only reads Claude Code's and Codex's session files and transcripts.
-  It sends counts, states, model names and session titles, never message
-  text.
+- The agent reads Claude Code's and Codex's session files and transcripts. In
+  its regular samples it sends counts, states, model names and session titles,
+  never message text.
+- For each agent process it reads that process's CPU time and memory, and
+  from its environment only `REX_SESSION`, `REX_BLOCK`, `REX_SERVER` and
+  `REX_BIN_DIR`. Nothing else in the environment is kept or sent.
+- When a viewer selects a session that runs in a Rex pane, the agent captures
+  that pane's visible screen through Rex and sends it to that viewer only,
+  until it selects something else. This is the one time screen text, which
+  can include the conversation, leaves the machine, and only to a viewer
+  signed in as you.
+- A viewer can ask an agent to do two things: watch a pane, or move a Claude
+  Code session with [cielago](https://github.com/felitrejos/cielago). The
+  agent acts only on sessions it found itself, checks the machine name, and
+  runs `rex` and `cielago` with arguments, never through a shell.
 - `magi statusline install` edits only `statusLine` in
   `~/.claude/settings.json`, writes atomically, keeps the file's permissions
   and leaves a backup with the same permissions.
