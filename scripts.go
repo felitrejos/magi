@@ -33,4 +33,6 @@ var (
 	retireScript string
 	//go:embed scripts/project.sh
 	projectScript string
+	//go:embed scripts/task.sh
+	taskScript string
 )

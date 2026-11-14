@@ -160,6 +160,11 @@ func doctor(names []string, out io.Writer) error {
 			c.fail("the cielago plugin isn't installed", "claude plugin marketplace add felitrejos/cielago && claude plugin install cielago@cielago")
 		}
 	}
+	if fleet, err := readFleet(ctx); err != nil {
+		c.warn("magi doesn't report machine load ("+err.Error()+")", "tasks sent to other machines go to the first configured host that answers; with a magi that has magi fleet, cielago picks the least loaded one.")
+	} else {
+		c.pass(fmt.Sprintf("magi reports load for %d machine(s)", len(fleet)))
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err

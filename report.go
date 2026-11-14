@@ -1,0 +1,281 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+)
+
+const (
+	tailLines     = 80
+	keepCollected = 7 * 24 * time.Hour
+)
+
+func tail(text string) string {
+	text = strings.ToValidUTF8(text, "�")
+	if len(text) >= tailBytes {
+		if _, rest, ok := strings.Cut(text, "\n"); ok {
+			text = rest
+		}
+	}
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) > tailLines {
+		lines = lines[len(lines)-tailLines:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func ago(t time.Time) string {
+	d := time.Since(t).Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh%02dm ago", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+
+func fence(text string) string {
+	if text == "" {
+		return "(no output)\n"
+	}
+	ticks := "```"
+	for strings.Contains(text, ticks) {
+		ticks += "`"
+	}
+	return ticks + "\n" + text + "\n" + ticks + "\n"
+}
+
+func describeStarted(s *started, why string) string {
+	t := s.Task
+	var b strings.Builder
+	fmt.Fprintf(&b, "Started task %s (%s) on %s: %s.\n", t.ID, t.Kind, t.Host, why)
+	fmt.Fprintf(&b, "It runs in its own copy of the project at %s there, %s, tab %q.\n", t.RunDir, t.Where, t.tabLabel())
+	if len(s.ShownOn) > 0 {
+		fmt.Fprintf(&b, "It's open in %s.\n", strings.Join(s.ShownOn, ", "))
+	}
+	for _, n := range s.Notes {
+		fmt.Fprintf(&b, "Note: %s.\n", strings.TrimSuffix(n, "."))
+	}
+	switch t.Kind {
+	case kindSession:
+		b.WriteString("When the user quits that session, task_result brings its changes back as a branch.\n")
+	default:
+		b.WriteString("Check on it with task_status and collect it with task_result once it's done; it doesn't block this session.\n")
+	}
+	return b.String()
+}
+
+func (t *Task) tabLabel() string {
+	return taskTabLabel(t.Name, t.Kind, t.ID)
+}
+
+func describeReport(r *taskReport) string {
+	t, st := r.Task, r.State
+	var b strings.Builder
+	head := fmt.Sprintf("Task %s (%s on %s, started %s): %s", t.ID, t.Kind, t.Host, ago(t.Created), t.summary())
+	switch st.State {
+	case "running":
+		fmt.Fprintf(&b, "%s\nStill running, %s, tab %q.\n", head, t.Where, t.tabLabel())
+		if t.Kind == kindRun || t.Kind == kindDelegate {
+			fmt.Fprintf(&b, "Latest output:\n%s", fence(tail(st.Tail)))
+		}
+		return b.String()
+	case "starting":
+		fmt.Fprintf(&b, "%s\nStill copying the project to %s.\n", head, t.Host)
+		return b.String()
+	case "done", "lost", "gone":
+		fmt.Fprintf(&b, "%s\n%s. task_result collects it.\n", head, finishedState(st))
+		if t.Kind != kindSession {
+			fmt.Fprintf(&b, "Last output:\n%s", fence(tail(st.Tail)))
+		}
+		return b.String()
+	}
+	o := t.Outcome
+	if o == nil {
+		return head + "\nState: " + st.State + "\n"
+	}
+	fmt.Fprintf(&b, "%s\n%s.\n", head, outcomeState(o))
+	if t.Kind == kindDelegate && o.Message != "" {
+		fmt.Fprintf(&b, "Claude's final message:\n%s\n", strings.TrimSpace(o.Message))
+	}
+	if t.Kind == kindRun || t.Kind == kindDelegate && o.Message == "" {
+		fmt.Fprintf(&b, "Last output:\n%s", fence(tail(o.Tail)))
+	}
+	if o.Log != "" {
+		fmt.Fprintf(&b, "Full log on this machine: %s\n", o.Log)
+	}
+	switch {
+	case o.Branch != "":
+		fmt.Fprintf(&b, "Its changes are on branch %s in %s, compared with your working tree when the task started (%s); your working tree wasn't touched.\n", o.Branch, t.Project, shortCommit(t.Base))
+		if o.Diffstat != "" {
+			b.WriteString(fence(o.Diffstat))
+		}
+		fmt.Fprintf(&b, "See them: git diff %s %s\nApply them here: git diff --binary %s %s | git apply\n", shortCommit(t.Base), o.Branch, shortCommit(t.Base), o.Branch)
+	case o.Files != "":
+		fmt.Fprintf(&b, "Its copy of the folder, as it left it, is at %s on this machine.\n", o.Files)
+	case t.Kind != kindRun && o.State != "cancelled":
+		b.WriteString("It changed no files.\n")
+	}
+	if t.Subs && t.Kind != kindRun {
+		b.WriteString("Changes made inside submodules aren't brought back.\n")
+	}
+	if o.Note != "" {
+		fmt.Fprintf(&b, "Note: %s\n", o.Note)
+	}
+	return b.String()
+}
+
+func shortCommit(id string) string {
+	return id[:min(12, len(id))]
+}
+
+func finishedState(st taskState) string {
+	switch st.State {
+	case "lost":
+		return "Its process is gone without recording an exit status (its tab was closed or the machine restarted)"
+	case "gone":
+		return "Its copy on that machine is gone"
+	}
+	return "Finished: " + st.Exit
+}
+
+func outcomeState(o *Outcome) string {
+	switch o.State {
+	case "cancelled":
+		return "Cancelled " + ago(o.Ended)
+	case "lost":
+		return "Collected " + ago(o.Ended) + "; its process had ended without recording an exit status"
+	case "gone":
+		return "Collected " + ago(o.Ended) + "; its copy was already gone"
+	}
+	return "Finished (" + o.Exit + "), collected " + ago(o.Ended)
+}
+
+func describeMachines(view fleetView) string {
+	var b strings.Builder
+	if view.FleetErr != nil {
+		fmt.Fprintf(&b, "Live load is unknown: %v. Without magi, cielago picks the first configured machine that answers.\n\n", view.FleetErr)
+	}
+	if view.Here != nil {
+		fmt.Fprintf(&b, "This machine (%s): %s\n\n", view.Here.Name, view.Here.describe())
+	}
+	b.WriteString("Machines cielago can send work to:\n")
+	for _, m := range view.Machines {
+		fmt.Fprintf(&b, "- %s (ssh %s)", m.Name, m.Host.SSH)
+		if m.Reachable != nil {
+			fmt.Fprintf(&b, ": NOT reachable over SSH (%v)", m.Reachable)
+		} else {
+			b.WriteString(": reachable")
+		}
+		if m.Fleet != nil {
+			fmt.Fprintf(&b, "; %s", strings.TrimSpace(m.Fleet.OS+" "+m.Fleet.describe()))
+		} else if view.FleetErr == nil {
+			b.WriteString("; magi doesn't report it, so its load is unknown")
+		}
+		b.WriteString("\n")
+		for _, t := range m.Tasks {
+			fmt.Fprintf(&b, "    task %s (%s, started %s): %s\n", t.ID, t.Kind, ago(t.Created), t.summary())
+		}
+	}
+	if c, ok := leastLoaded(view); ok {
+		fmt.Fprintf(&b, "\nSuggested: %s, %s.\n", c.Host, c.Why)
+	}
+	if len(view.Unmatched) > 0 {
+		var names []string
+		for _, m := range view.Unmatched {
+			names = append(names, m.Name)
+		}
+		fmt.Fprintf(&b, "\nmagi also sees %s, which isn't a cielago host; add it to the config to send work there.\n", strings.Join(names, ", "))
+	}
+	return b.String()
+}
+
+func printTasks(w io.Writer) error {
+	tasks, err := listTasks()
+	if err != nil {
+		return err
+	}
+	if len(tasks) == 0 {
+		fmt.Fprintln(w, "No tasks yet.")
+		return nil
+	}
+	states := make([]string, len(tasks))
+	var wg sync.WaitGroup
+	for i, t := range tasks {
+		if t.Outcome != nil {
+			states[i] = outcomeState(t.Outcome)
+			continue
+		}
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			r, _, err := t.remote(ctx)
+			if err == nil {
+				var st taskState
+				if st, err = probeTask(r, t); err == nil {
+					states[i] = st.State
+					if st.State == "done" {
+						states[i] = "finished (" + st.Exit + "), not collected"
+					}
+					return
+				}
+			}
+			states[i] = fmt.Sprintf("unknown (%v)", err)
+		})
+	}
+	wg.Wait()
+	for i, t := range tasks {
+		fmt.Fprintf(w, "%s  %-8s  %-10s  %-16s  %s\n    %s\n", t.ID, t.Kind, t.Host, ago(t.Created), t.summary(), firstLine(states[i]))
+	}
+	return nil
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	if utf8.RuneCountInString(line) > 160 {
+		line = string([]rune(line)[:157]) + "..."
+	}
+	return line
+}
+
+func cleanTasks(w io.Writer) error {
+	tasks, err := listTasks()
+	if err != nil {
+		return err
+	}
+	cleaned := 0
+	for _, t := range tasks {
+		if t.Outcome != nil {
+			continue
+		}
+		r, err := collectTask(t.ID, false)
+		if err != nil {
+			fmt.Fprintf(w, "%s: %v\n", t.ID, err)
+			continue
+		}
+		if r.Task.Outcome != nil {
+			cleaned++
+			fmt.Fprintf(w, "%s: collected (%s)\n", t.ID, outcomeState(r.Task.Outcome))
+		}
+	}
+	pruned := 0
+	for _, t := range tasks {
+		if t.Outcome != nil && time.Since(t.Outcome.Ended) > keepCollected {
+			if err := t.forget(); err != nil {
+				fmt.Fprintf(w, "%s: %v\n", t.ID, err)
+				continue
+			}
+			pruned++
+		}
+	}
+	fmt.Fprintf(w, "Collected %d finished task(s); running ones were left alone. Forgot %d collected more than a week ago.\n", cleaned, pruned)
+	return nil
+}

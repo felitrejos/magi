@@ -21,7 +21,7 @@ import (
 
 var version = "dev"
 
-const usage = `cielago moves a Claude Code session to another machine.
+const usage = `cielago moves a Claude Code session to another machine, or sends it work there.
 
 Usage:
   cielago init                          set up this machine and a machine to hand off to
@@ -30,12 +30,17 @@ Usage:
   cielago status                        recent handoffs and parked checkouts
   cielago unpark [dir]                  stop treating a checkout as parked
   cielago allow [dir]                   let the project's .cielago.toml run after handoffs
+  cielago tasks                         work sent to other machines, and its state
+  cielago tasks show <id>               a task's output; collects it if it's finished
+  cielago tasks cancel <id>             stop a task and remove its copy
+  cielago tasks clean                   collect every finished task
   cielago version
 
 Used by the Claude Code plugin:
   cielago arm <host> <session-id> [-]   hand this session off when its turn ends;
                                         with -, read a note on what was running from stdin
   cielago hook stop                     the plugin's Stop hook (reads the hook JSON on stdin)
+  cielago mcp                           the plugin's tool server, on stdin and stdout
 `
 
 var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -82,6 +87,17 @@ func main() {
 			dir = args[1]
 		}
 		err = unpark(dir, os.Stdout)
+	case len(args) == 1 && args[0] == "mcp":
+		err = serveMCP(context.Background())
+	case len(args) == 1 && args[0] == "tasks":
+		err = printTasks(os.Stdout)
+	case len(args) == 2 && args[0] == "tasks" && args[1] == "clean":
+		err = cleanTasks(os.Stdout)
+	case len(args) == 3 && args[0] == "tasks" && (args[1] == "show" || args[1] == "cancel"):
+		var r *taskReport
+		if r, err = collectTask(args[2], args[1] == "cancel"); err == nil {
+			fmt.Print(describeReport(r))
+		}
 	case len(args) == 1 && (args[0] == "version" || args[0] == "--version"):
 		fmt.Println("cielago", currentVersion())
 	default:
