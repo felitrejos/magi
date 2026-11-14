@@ -131,6 +131,7 @@ func planGate(plans []plan, despite bool) (string, error) {
 
 func startElsewhere(ctx context.Context, host string, spec TaskSpec, despite bool) (string, error) {
 	sweepIdleCopies()
+	spec.Caller = self
 	agents := spec.Kind != kindRun
 	picks, skipped, plans, err := chooseHosts(ctx, host, agents)
 	if err != nil {
@@ -314,5 +315,6 @@ func newMCPServer() *mcp.Server {
 }
 
 func serveMCP(ctx context.Context) error {
+	self = callerOf(ctx, os.Getppid())
 	return newMCPServer().Run(ctx, &mcp.StdioTransport{})
 }

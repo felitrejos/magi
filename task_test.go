@@ -821,3 +821,43 @@ func TestMagiSessionsWithoutNumbersYetAreRead(t *testing.T) {
 		t.Errorf("load = %q", got)
 	}
 }
+
+func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	started, err := processStart(context.Background(), os.Getpid())
+	if err != nil || time.Since(started) < 0 || time.Since(started) > 10*time.Minute {
+		t.Fatalf("this process started %v (%v)", started, err)
+	}
+	self = callerOf(context.Background(), os.Getpid())
+	t.Cleanup(func() { self = caller{} })
+	if _, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "sleep 0.5"}, false); err != nil {
+		t.Fatal(err)
+	}
+	tasks, _ := listTasks()
+	id := tasks[0].ID
+	record := func() map[string]any {
+		var m map[string]any
+		dir, _ := tasksDir()
+		json.Unmarshal([]byte(f.read(dir, id+".json")), &m)
+		return m
+	}
+	if m := record(); m["caller_pid"] != float64(os.Getpid()) || m["caller_started"] != float64(started.Unix()) || m["state"] != "running" {
+		t.Errorf("record = %v", m)
+	}
+	f.waitForTask(id)
+	if m := record(); m["state"] != "done" {
+		t.Errorf("after finishing, state = %v", m["state"])
+	}
+	collectTask(id, false)
+	if m := record(); m["state"] != "collected" {
+		t.Errorf("after collecting, state = %v", m["state"])
+	}
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Task.Caller != 0 || s.Task.CallerAt != 0 {
+		t.Errorf("a task started without the tool server has a caller: %+v", s.Task)
+	}
+}

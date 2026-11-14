@@ -145,7 +145,7 @@ func replyTask(ctx context.Context, id, message string) (*started, error) {
 		return nil, errors.Join(err, launcher.Discard(tab))
 	}
 	t.History = append(t.History, *t.Outcome)
-	t.Outcome, t.Tab, t.Reply = nil, tab, message
+	t.Outcome, t.Tab, t.Reply, t.State = nil, tab, message, "running"
 	t.Turn++
 	if err := t.save(); err != nil {
 		return nil, err

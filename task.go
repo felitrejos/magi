@@ -57,6 +57,9 @@ type Task struct {
 	Reply    string    `json:"reply,omitempty"`
 	Tip      string    `json:"tip,omitempty"`
 	History  []Outcome `json:"history,omitempty"`
+	State    string    `json:"state"`
+	Caller   int       `json:"caller_pid,omitempty"`
+	CallerAt int64     `json:"caller_started,omitempty"`
 }
 
 type Outcome struct {
@@ -82,6 +85,7 @@ type TaskSpec struct {
 	Prompt  string
 	Setup   bool
 	Claude  []string
+	Caller  caller
 }
 
 func tasksDir() (string, error) {
@@ -248,6 +252,9 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		Prompt:   spec.Prompt,
 		Dir:      remoteHome + "/.cielago/tasks/" + id,
 		Turn:     1,
+		State:    "starting",
+		Caller:   spec.Caller.PID,
+		CallerAt: spec.Caller.Started,
 	}
 	t.Checkout = t.Dir + "/checkout/" + ws.Name
 	t.RunDir = filepath.Join(t.Checkout, ws.Subdir)
@@ -331,7 +338,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err := waitForTask(remote, t.Dir); err != nil {
 		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
 	}
-	t.Tab, t.Where, t.Starting = tab, launcher.Where(group), false
+	t.Tab, t.Where, t.Starting, t.State = tab, launcher.Where(group), false, "running"
 	if spec.Kind == kindSession {
 		if trusted, err := isTrusted(remote, t.RunDir); err == nil && !trusted {
 			res.Notes = append(res.Notes, fmt.Sprintf("Claude there first asks whether to trust the copy's folder; the user answers Yes in that tab. To skip that for later sessions, the user can run claude once in %s/.cielago/tasks on %s and trust it", remoteHome, spec.Host))
@@ -517,7 +524,25 @@ func taskStatus(id string) (*taskReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	t.noteState(st.State)
 	return &taskReport{Task: t, State: st}, nil
+}
+
+func (t *Task) noteState(state string) {
+	if t.State == state {
+		return
+	}
+	unlock, err := lockTask(t.ID)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	fresh, err := loadTask(t.ID)
+	if err != nil || fresh.Outcome != nil || fresh.Starting || fresh.Turn != t.Turn {
+		return
+	}
+	fresh.State = state
+	fresh.save()
 }
 
 func lockTask(id string) (func(), error) {
@@ -625,7 +650,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	if err := errors.Join(notes...); err != nil {
 		o.Note = err.Error()
 	}
-	t.Outcome = o
+	t.Outcome, t.State = o, "collected"
 	if err := t.save(); err != nil {
 		return nil, err
 	}

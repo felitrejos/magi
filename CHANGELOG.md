@@ -25,6 +25,9 @@
   `start_session` and `task_reply` don't start, and say when it resets, unless
   the user says to go ahead anyway; from 75% they warn. `machines` shows the
   plan's windows and what each machine's agent sessions use.
+- Each task's record in `~/.cielago/tasks` names the Claude Code process
+  that started it (`caller_pid`, `caller_started`) and keeps its `state`
+  current, so magi can show tasks under the session that sent them.
 
 ## 0.4.0
 

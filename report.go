@@ -253,6 +253,7 @@ func printTasks(w io.Writer) error {
 			if err == nil {
 				var st taskState
 				if st, err = probeTask(r, t); err == nil {
+					t.noteState(st.State)
 					states[i] = st.State
 					if st.State == "done" {
 						states[i] = "finished (" + st.Exit + "), not collected"
