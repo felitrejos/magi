@@ -32,6 +32,7 @@ use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
 const FRAME: Duration = Duration::from_millis(33);
 const TICK: Duration = Duration::from_secs(1);
+const THEME_CHECK: Duration = Duration::from_secs(2);
 const EVENT_BACKLOG: usize = 4096;
 
 pub struct Config {
@@ -140,7 +141,12 @@ fn event_loop(
     links.reconcile(&mut model, &[Endpoint::Local])?;
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME;
+    let mut last_theme_check = Instant::now();
     loop {
+        if last_theme_check.elapsed() >= THEME_CHECK {
+            write_terminal(terminal::COLOURS)?;
+            last_theme_check = Instant::now();
+        }
         if dirty && last_draw.elapsed() >= FRAME {
             let now = Instant::now();
             let now_secs = log::now_secs();
