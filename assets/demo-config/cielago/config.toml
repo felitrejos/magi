@@ -1,0 +1,7 @@
+[hosts.homelab]
+ssh = "homelab"
+claude = "~/.local/bin/claude"
+roots = ["~/developer"]
+secrets = [".env", ".env.*"]
+launcher = "tmux"
+tmux_session = "demo"
