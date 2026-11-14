@@ -127,6 +127,9 @@ Flags: `--port` (default 2015) for the viewer and agent, and `--interval`
 (100–60000 ms, default 1000) for `magi agent install`. Keys: `↑`/`↓` or `j`/`k`,
 `g`/`G`, `Enter` to open an agent's Rex tab, `a` for alerts, `q` to quit.
 
+`magi fleet --json` prints every machine's load and agents once, for scripts
+and tools that pick where to run work.
+
 ## Performance
 
 Agent on a MacBook (Apple M4), measured with `bench/agent_load.py`:

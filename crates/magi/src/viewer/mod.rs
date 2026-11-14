@@ -2,6 +2,7 @@ mod alerts;
 mod base64;
 mod chart;
 mod diacritics;
+mod fleet;
 mod graphics;
 mod input;
 mod link;
@@ -46,6 +47,8 @@ pub enum Event {
     Topology(Topology),
     Link(Endpoint, u64, LinkUpdate),
 }
+
+pub use fleet::print as fleet;
 
 pub fn run(config: Config) -> io::Result<()> {
     let (sender, events) = mpsc::sync_channel(EVENT_BACKLOG);

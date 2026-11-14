@@ -83,7 +83,6 @@ struct Log {
 }
 
 impl Alerts {
-    #[cfg(test)]
     pub fn in_memory(now: Instant) -> Self {
         Self::with_history(VecDeque::new(), None, now)
     }

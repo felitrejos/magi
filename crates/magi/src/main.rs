@@ -19,6 +19,7 @@ const USAGE: &str = "magi: live monitoring for your machines and coding agents, 
 
 Usage:
   magi [--port PORT]                                   open the viewer (press a for alerts)
+  magi fleet [--json] [--port PORT]                    print every machine's load and agents once
   magi agent install [--port PORT] [--interval MS]     run the agent in the background, now and at login
   magi agent uninstall                                 stop it and remove the background service
   magi agent [--port PORT] [--interval MS]             run the agent in this terminal
@@ -33,6 +34,7 @@ Options:
 
 enum Command {
     Viewer(viewer::Config),
+    Fleet(viewer::Config, bool),
     Agent(agent::Config),
     Install(agent::Config),
     Uninstall,
@@ -53,6 +55,7 @@ fn main() -> ExitCode {
     };
     let result = match command {
         Command::Viewer(config) => viewer::run(config),
+        Command::Fleet(config, json) => viewer::fleet(config, json),
         Command::Agent(config) => agent::run(config),
         Command::Install(config) => service::install(&config),
         Command::Uninstall => service::uninstall(),
@@ -80,6 +83,7 @@ fn main() -> ExitCode {
 #[derive(PartialEq)]
 enum Mode {
     Viewer,
+    Fleet,
     Agent,
     Install,
     Uninstall,
@@ -92,9 +96,12 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
     let mut mode = Mode::Viewer;
     let mut port = proto::DEFAULT_PORT;
     let mut interval_ms: u32 = 1000;
+    let mut json = false;
     while let Some(arg) = parser.next()? {
         match arg {
             Value(value) if value == "agent" && mode == Mode::Viewer => mode = Mode::Agent,
+            Value(value) if value == "fleet" && mode == Mode::Viewer => mode = Mode::Fleet,
+            Long("json") if mode == Mode::Fleet => json = true,
             Value(value) if value == "statusline" && mode == Mode::Viewer => {
                 mode = Mode::StatusLine
             }
@@ -106,7 +113,12 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
             }
             Value(value) if value == "install" && mode == Mode::Agent => mode = Mode::Install,
             Value(value) if value == "uninstall" && mode == Mode::Agent => mode = Mode::Uninstall,
-            Long("port") if matches!(mode, Mode::Viewer | Mode::Agent | Mode::Install) => {
+            Long("port")
+                if matches!(
+                    mode,
+                    Mode::Viewer | Mode::Fleet | Mode::Agent | Mode::Install
+                ) =>
+            {
                 port = parser.value()?.parse()?
             }
             Long("interval") if matches!(mode, Mode::Agent | Mode::Install) => {
@@ -126,6 +138,7 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
     };
     Ok(match mode {
         Mode::Viewer => Command::Viewer(viewer::Config { port }),
+        Mode::Fleet => Command::Fleet(viewer::Config { port }, json),
         Mode::Agent => Command::Agent(config),
         Mode::Install => Command::Install(config),
         Mode::Uninstall => Command::Uninstall,
