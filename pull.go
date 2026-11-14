@@ -159,6 +159,10 @@ func findRemoteSession(r *Remote, hostName, id string) (remoteSession, error) {
 		}
 		id = last
 	}
+	return findSession(r, id)
+}
+
+func findSession(r Machine, id string) (remoteSession, error) {
 	if !sessionIDPattern.MatchString(id) {
 		return remoteSession{}, fmt.Errorf("%q is not a Claude session id", id)
 	}

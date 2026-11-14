@@ -57,6 +57,8 @@ type liveSession struct {
 	Cwd             string  `json:"cwd"`
 	StartedAt       int64   `json:"startedAt"`
 	BridgeSessionID *string `json:"bridgeSessionId"`
+	Status          string  `json:"status"`
+	Entrypoint      string  `json:"entrypoint"`
 }
 
 func liveSessions(m Machine) ([]liveSession, error) {

@@ -245,6 +245,7 @@ you hand off from; to bring a session back to a laptop that doesn't, use
 | `cielago init` | Writes the config for this machine and a machine to hand off to, then checks it. |
 | `cielago doctor [host]` | Checks ssh, tools, Claude Code's version and login, roots and [Rex](https://superlogical.com/rex) or tmux on both ends, and says how to fix anything missing. |
 | `cielago pull <host> [session]` | Brings a session back from `<host>` and continues it here. Without a session id, it takes the last one you handed off there. |
+| `cielago move <session> <host>` | Moves a session running on this machine from outside it: at once if it's idle, or when its turn ends. `--json` prints each step and the outcome as JSON lines, for programs such as [magi](https://github.com/felitrejos/magi). |
 | `cielago status` | Recent handoffs, and checkouts here that a session left. |
 | `cielago unpark [dir]` | Stops treating a checkout as one a session left. |
 | `cielago allow [dir]` | Lets the project's `.cielago.toml` run after handoffs, until the file changes. |

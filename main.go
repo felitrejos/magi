@@ -27,6 +27,9 @@ Usage:
   cielago init                          set up this machine and a machine to hand off to
   cielago doctor [host...]              check that everything a handoff needs is in place
   cielago pull <host> [session-id]      bring a session back from <host> and continue it here
+  cielago move <session-id> <host> [--json]
+                                        move a session running on this machine to <host>, from
+                                        outside it: now if it's idle, or when its turn ends
   cielago status                        recent handoffs and parked checkouts
   cielago unpark [dir]                  stop treating a checkout as parked
   cielago allow [dir]                   let the project's .cielago.toml run after handoffs
@@ -50,6 +53,7 @@ type armed struct {
 	PID     int    `json:"pid"`
 	Desktop bool   `json:"desktop"`
 	Note    string `json:"note"`
+	Notify  bool   `json:"notify,omitempty"`
 }
 
 func main() {
@@ -87,6 +91,8 @@ func main() {
 			dir = args[1]
 		}
 		err = unpark(dir, os.Stdout)
+	case len(args) >= 1 && args[0] == "move":
+		err = moveCommand(args[1:], os.Stdout)
 	case len(args) == 1 && args[0] == "mcp":
 		err = serveMCP(context.Background())
 	case len(args) == 1 && args[0] == "tasks":
@@ -103,6 +109,9 @@ func main() {
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
+	}
+	if errors.Is(err, errReported) {
+		os.Exit(1)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cielago:", err)
@@ -188,11 +197,17 @@ func stopHook(in io.Reader, out io.Writer) error {
 	}
 	ours, err := isAncestor(a.PID)
 	if err != nil || !ours {
+		if a.Notify {
+			err = errors.Join(err, writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: "the session that ended its turn wasn't the one armed to move"}))
+		}
 		return err
 	}
 
 	res, err := handoff(a, input)
 	if err != nil {
+		if a.Notify {
+			writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: fmt.Sprintf("the handoff to %s failed, so the session keeps running here: %v", a.Host, err)})
+		}
 		return json.NewEncoder(out).Encode(map[string]string{
 			"decision": "block",
 			"reason":   fmt.Sprintf("cielago could not hand this session off to %s, so it is still running here: %v. Tell the user what failed in plain words.", a.Host, err),
@@ -203,6 +218,9 @@ func stopHook(in io.Reader, out io.Writer) error {
 	}
 	if logErr := appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}); logErr != nil {
 		res.ParkNote = errors.Join(res.ParkNote, logErr)
+	}
+	if a.Notify {
+		res.ParkNote = errors.Join(res.ParkNote, writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary()}))
 	}
 	return json.NewEncoder(out).Encode(handedOff(a, res))
 }

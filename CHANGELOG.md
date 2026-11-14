@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `cielago move <session-id> <host>` moves a Claude Code session running on
+  this machine from outside it, for tools such as magi. An idle session is
+  stopped and handed off at once; a session in the middle of a turn moves
+  when the turn ends, through its own Stop hook. Each step and the outcome
+  come out as JSON lines with `--json`. Codex sessions are refused.
+
 ## 0.4.0
 
 - Send work to another machine without moving the session. The plugin now

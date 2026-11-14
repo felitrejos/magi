@@ -45,6 +45,14 @@ case $command in
       exit 1
     fi
     ;;
+  alive)
+    pid=$1
+    if [ -r "/proc/$pid/cmdline" ]; then args=$(tr '\0' ' ' < "/proc/$pid/cmdline"); else args=$(ps -o args= -p "$pid" 2>/dev/null); fi
+    case $args in
+      *claude*) exit 0 ;;
+    esac
+    exit 1
+    ;;
   kill)
     pkill -TERM -f -- "[-]-resume $1"
     true
