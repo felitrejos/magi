@@ -18,7 +18,8 @@ import (
 const usage = `cielago moves a Claude Code session to another machine.
 
 Usage:
-  cielago arm <host> <session-id>   hand this session off when its turn ends
+  cielago arm <host> <session-id> [note]   hand this session off when its turn ends;
+                                           note says what was running and needs restarting
   cielago hook stop                 Claude Code Stop hook (reads the hook JSON on stdin)
 `
 
@@ -28,14 +29,15 @@ type armed struct {
 	Host    string `json:"host"`
 	PID     int    `json:"pid"`
 	Desktop bool   `json:"desktop"`
+	Note    string `json:"note"`
 }
 
 func main() {
 	args := os.Args[1:]
 	var err error
 	switch {
-	case len(args) == 3 && args[0] == "arm":
-		err = arm(args[1], args[2])
+	case (len(args) == 3 || len(args) == 4) && args[0] == "arm":
+		err = arm(args[1], args[2], strings.Join(args[3:], ""))
 	case len(args) == 2 && args[0] == "hook" && args[1] == "stop":
 		err = stopHook(os.Stdin, os.Stdout)
 	default:
@@ -59,7 +61,7 @@ func armedPath(sessionID string) (string, error) {
 	return filepath.Join(home, ".cielago", "armed", sessionID+".json"), nil
 }
 
-func arm(hostName, sessionID string) error {
+func arm(hostName, sessionID, note string) error {
 	if _, err := loadHost(hostName); err != nil {
 		return err
 	}
@@ -74,7 +76,7 @@ func arm(hostName, sessionID string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.Marshal(armed{Host: hostName, PID: pid, Desktop: os.Getenv("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop"})
+	data, err := json.Marshal(armed{Host: hostName, PID: pid, Desktop: os.Getenv("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop", Note: note})
 	if err != nil {
 		return err
 	}
@@ -119,7 +121,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 		return err
 	}
 
-	res, err := handoff(a.Host, input)
+	res, err := handoff(a, input)
 	if err != nil {
 		return json.NewEncoder(out).Encode(map[string]string{
 			"decision": "block",
@@ -140,8 +142,11 @@ func handedOff(a armed, res Result) map[string]string {
 	if res.RexNote != nil {
 		where += fmt.Sprintf(" (%v)", res.RexNote)
 	}
-	if res.NewClone != "" {
-		where += fmt.Sprintf(". %s didn't have this project yet, so it now lives at %s", a.Host, res.NewClone)
+	if res.NewFolder != "" {
+		where += fmt.Sprintf(". %s didn't have this project yet, so it now lives at %s", a.Host, res.NewFolder)
+	}
+	if res.ParkNote != nil {
+		where += fmt.Sprintf(". Marking this checkout as handed off failed (%v), so handing the session back here will need a clean checkout", res.ParkNote)
 	}
 	if res.TabNote != nil {
 		where += fmt.Sprintf(". The new tab's command didn't start: %v", res.TabNote)
@@ -177,13 +182,14 @@ func isAncestor(pid int) (bool, error) {
 	return false, nil
 }
 
-func handoff(hostName string, input stopInput) (Result, error) {
-	host, err := loadHost(hostName)
+func handoff(a armed, input stopInput) (Result, error) {
+	host, err := loadHost(a.Host)
 	if err != nil {
 		return Result{}, err
 	}
 	return Handoff{
-		HostName:       hostName,
+		HostName:       a.Host,
+		Note:           a.Note,
 		Host:           host,
 		SessionID:      input.SessionID,
 		TranscriptPath: input.TranscriptPath,

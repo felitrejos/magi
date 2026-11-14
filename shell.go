@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -88,18 +89,40 @@ func (r *Remote) sh(script string) ([]byte, error) {
 	return out, nil
 }
 
-func (r *Remote) copyFiles(localDir string, files []string, remoteDir string) error {
-	if len(files) == 0 {
+type Archive struct {
+	Dir       string
+	Paths     []string
+	Exclude   []string
+	KeepNewer bool
+}
+
+func tarCreateArgs(a Archive) []string {
+	args := []string{"--no-xattrs", "--no-acls"}
+	if runtime.GOOS == "darwin" {
+		args = append(args, "--no-mac-metadata")
+	}
+	for _, e := range a.Exclude {
+		args = append(args, "--exclude", e)
+	}
+	return append(args, "--null", "-T", "-", "-cf", "-")
+}
+
+func (r *Remote) copy(a Archive, remoteDir string) error {
+	if len(a.Paths) == 0 {
 		return nil
 	}
-	pack := exec.CommandContext(r.ctx, "tar", "--no-mac-metadata", "--no-xattrs", "--no-acls", "--null", "-T", "-", "-cf", "-")
-	pack.Dir = localDir
-	pack.Stdin = strings.NewReader(strings.Join(files, "\x00") + "\x00")
+	pack := exec.CommandContext(r.ctx, "tar", tarCreateArgs(a)...)
+	pack.Dir = a.Dir
+	pack.Stdin = strings.NewReader(strings.Join(a.Paths, "\x00") + "\x00")
 	pack.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
 	var packErr bytes.Buffer
 	pack.Stderr = &packErr
 
-	unpack := exec.CommandContext(r.ctx, "ssh", r.args("mkdir -p "+quote(remoteDir)+" && tar -xpf - -C "+quote(remoteDir))...)
+	extract := "tar -xpf - -C " + quote(remoteDir)
+	if a.KeepNewer {
+		extract = "tar --keep-newer-files -xpf - -C " + quote(remoteDir)
+	}
+	unpack := exec.CommandContext(r.ctx, "ssh", r.args("mkdir -p "+quote(remoteDir)+" && "+extract)...)
 	var unpackErr bytes.Buffer
 	unpack.Stderr = &unpackErr
 

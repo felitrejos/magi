@@ -96,10 +96,98 @@ func isTrusted(r *Remote, dir string) (bool, error) {
 	}
 }
 
-func handoffPrompt(from, to, oldDir, newDir string) string {
-	return fmt.Sprintf("[cielago] This session was just handed off from %s to %s. "+
-		"The project is now at %s (it was %s on %s); branch, commits, uncommitted changes and secret files were synced. "+
-		"Earlier messages mention the old paths: use the new ones from now on, and read a file again before editing it here. "+
-		"Reply with one short line confirming you're on %s, then wait for the next instruction.",
-		from, to, newDir, oldDir, from, to)
+type Prompt struct {
+	From, To, OldDir, NewDir string
+	Git                      bool
+	Note                     string
+	Sidecar                  string
+}
+
+func handoffPrompt(p Prompt) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[cielago] This session was just handed off from %s to %s. The project is now at %s (it was %s on %s). ", p.From, p.To, p.NewDir, p.OldDir, p.From)
+	if p.Git {
+		b.WriteString("Branch, commits, staged and unstaged changes, secret files and project memory were synced. ")
+	} else {
+		b.WriteString("The folder's files and project memory were copied. ")
+	}
+	b.WriteString("Earlier messages mention the old paths: use the new ones from now on, and read a file again before editing it here. ")
+	fmt.Fprintf(&b, "Nothing that was running on %s moved: background tasks, dev servers and subagents stopped there, and dependencies such as node_modules were not copied. ", p.From)
+	if p.Sidecar != "" {
+		fmt.Fprintf(&b, "Transcripts of earlier subagents are in %s/subagents. ", p.Sidecar)
+	}
+	if p.Note != "" {
+		fmt.Fprintf(&b, "Before the handoff you wrote down what was still running: %q. Restart what still needs to run, then ", p.Note)
+	} else {
+		b.WriteString("Then ")
+	}
+	fmt.Fprintf(&b, "reply with one short line confirming you're on %s and wait for the next instruction.", p.To)
+	return b.String()
+}
+
+func syncMemory(r *Remote, localDir, remoteDir string) error {
+	entries, err := os.ReadDir(localDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var files []string
+	for _, e := range entries {
+		if e.Name() != memoryIndex {
+			files = append(files, e.Name())
+		}
+	}
+	if err := r.copy(Archive{Dir: localDir, Paths: files, KeepNewer: true}, remoteDir); err != nil {
+		return err
+	}
+	local, err := os.ReadFile(filepath.Join(localDir, memoryIndex))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	remote, err := r.sh("cat " + quote(remoteDir+"/"+memoryIndex) + " 2>/dev/null || :")
+	if err != nil {
+		return err
+	}
+	staging, err := os.MkdirTemp("", "cielago-memory-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+	if err := os.WriteFile(filepath.Join(staging, memoryIndex), []byte(mergeMemoryIndex(string(remote), string(local))), 0o600); err != nil {
+		return err
+	}
+	return r.copy(Archive{Dir: staging, Paths: []string{memoryIndex}}, remoteDir)
+}
+
+const memoryIndex = "MEMORY.md"
+
+func mergeMemoryIndex(remote, local string) string {
+	key := func(line string) string {
+		if _, target, ok := strings.Cut(line, "]("); ok {
+			if file, _, ok := strings.Cut(target, ")"); ok {
+				return file
+			}
+		}
+		return strings.TrimSpace(line)
+	}
+	lines := strings.Split(strings.TrimRight(remote, "\n"), "\n")
+	if strings.TrimSpace(remote) == "" {
+		lines = nil
+	}
+	seen := map[string]bool{}
+	for _, l := range lines {
+		seen[key(l)] = true
+	}
+	for _, l := range strings.Split(strings.TrimRight(local, "\n"), "\n") {
+		if strings.TrimSpace(l) != "" && !seen[key(l)] {
+			lines = append(lines, l)
+			seen[key(l)] = true
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
 }

@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,7 +37,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(home, "bin")
-	f := &fixture{t: t, home: home, local: filepath.Join(home, "laptop", "app"), remote: filepath.Join(home, "developer", "group", "app")}
+	f := &fixture{t: t, home: home, local: filepath.Join(home, "laptop", "acme", "api"), remote: filepath.Join(home, "developer", "acme", "api")}
 	f.write(bin, "ssh", fakeSSH)
 	if err := os.Chmod(filepath.Join(bin, "ssh"), 0o755); err != nil {
 		t.Fatal(err)
@@ -53,15 +52,16 @@ func newFixture(t *testing.T) *fixture {
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@t")
 
 	f.git(home, "init", "-q", "-b", "main", f.local)
-	f.git(f.local, "remote", "add", "origin", "git@github.com:me/app.git")
+	f.git(f.local, "remote", "add", "origin", "git@github.com:acme/api.git")
 	f.write(f.local, ".gitignore", ".env*\nnode_modules/\n")
 	f.write(f.local, "kept.txt", "v1")
 	f.write(f.local, "edited.txt", "v1")
 	f.write(f.local, "gone.txt", "v1")
+	f.write(f.local, "staged-gone.txt", "v1")
 	f.git(f.local, "add", ".")
 	f.git(f.local, "commit", "-q", "-m", "init")
 	f.git(home, "clone", "-q", f.local, f.remote)
-	f.git(f.remote, "remote", "set-url", "origin", "https://github.com/me/app")
+	f.git(f.remote, "remote", "set-url", "origin", "https://github.com/acme/api")
 	return f
 }
 
@@ -107,101 +107,115 @@ func (f *fixture) remoteHost() *Remote {
 	return r
 }
 
-func (f *fixture) workspace() Workspace {
+func (f *fixture) workspace(dir string) Workspace {
 	f.t.Helper()
-	ws, err := readWorkspace(context.Background(), f.local, []string{".env", ".env.*"})
+	ws, err := readWorkspace(context.Background(), dir, []string{".env", ".env.*"})
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	return ws
 }
 
-func TestReadWorkspaceListsChangesDeletionsAndSecrets(t *testing.T) {
-	f := newFixture(t)
-	f.write(f.local, "edited.txt", "v2")
-	f.write(f.local, "staged-new.txt", "new")
-	f.git(f.local, "add", "staged-new.txt")
-	f.write(f.local, "untracked.txt", "u")
-	if err := os.Remove(filepath.Join(f.local, "gone.txt")); err != nil {
-		t.Fatal(err)
+func (f *fixture) messUp(dir string) {
+	f.t.Helper()
+	f.write(dir, "committed.txt", "from a commit")
+	f.git(dir, "add", "committed.txt")
+	f.git(dir, "commit", "-q", "-m", "work")
+	f.write(dir, "edited.txt", "staged")
+	f.git(dir, "add", "edited.txt")
+	f.write(dir, "edited.txt", "staged then edited")
+	f.write(dir, "new-staged.txt", "new")
+	f.git(dir, "add", "new-staged.txt")
+	f.write(dir, "dir with space/untracked.bin", "\x00\x01binary")
+	if err := os.Remove(filepath.Join(dir, "gone.txt")); err != nil {
+		f.t.Fatal(err)
 	}
-	f.write(f.local, ".env", "SECRET=1")
-	f.write(f.local, "web/.env.local", "SECRET=2")
-	f.write(f.local, "node_modules/pkg/.env", "not ours")
-	f.git(f.local, "init", "-q", "vendor/nested")
-
-	ws := f.workspace()
-	slices.Sort(ws.Changed)
-	slices.Sort(ws.Secrets)
-	if want := []string{"edited.txt", "staged-new.txt", "untracked.txt"}; !slices.Equal(ws.Changed, want) {
-		t.Errorf("Changed = %v, want %v", ws.Changed, want)
-	}
-	if want := []string{"gone.txt"}; !slices.Equal(ws.Deleted, want) {
-		t.Errorf("Deleted = %v, want %v", ws.Deleted, want)
-	}
-	if want := []string{".env", "web/.env.local"}; !slices.Equal(ws.Secrets, want) {
-		t.Errorf("Secrets = %v, want %v", ws.Secrets, want)
-	}
-	if ws.Branch != "main" || ws.Subdir != "." {
-		t.Errorf("Branch = %q, Subdir = %q", ws.Branch, ws.Subdir)
-	}
+	f.git(dir, "rm", "-q", "staged-gone.txt")
+	f.write(dir, ".env", "SECRET=1")
+	f.write(dir, "node_modules/pkg/.env", "not ours")
 }
 
-func TestHandoffSyncsCommitsChangesAndSecretsToTheHost(t *testing.T) {
+func TestHandoffReproducesCommitsStagingAndTheWorkingTree(t *testing.T) {
 	f := newFixture(t)
-	f.write(f.local, "committed.txt", "from a laptop commit")
-	f.git(f.local, "add", "committed.txt")
-	f.git(f.local, "commit", "-q", "-m", "laptop work")
-	f.write(f.local, "edited.txt", "v2")
-	f.write(f.local, "dir with space/new file.txt", "new")
-	if err := os.Remove(filepath.Join(f.local, "gone.txt")); err != nil {
+	f.messUp(f.local)
+	ws := f.workspace(f.local)
+	if err := syncGit(f.remoteHost(), ws, f.remote); err != nil {
 		t.Fatal(err)
 	}
-	f.write(f.local, ".env", "SECRET=1")
-
-	r := f.remoteHost()
-	ws := f.workspace()
-	home, clones, err := listClones(r, []string{"~/developer"})
-	if err != nil {
-		t.Fatal(err)
+	if got, want := f.git(f.remote, "rev-parse", "HEAD"), f.git(f.local, "rev-parse", "HEAD"); got != want {
+		t.Errorf("HEAD = %s, want %s", got, want)
 	}
-	repo, err := matchClone(clones, ws, r.host)
-	if err != nil {
-		t.Fatal(err)
+	if got, want := f.git(f.remote, "status", "--porcelain"), f.git(f.local, "status", "--porcelain"); got != want {
+		t.Errorf("status on the host:\n%s\nwant:\n%s", got, want)
 	}
-	if home != f.home || repo != f.remote {
-		t.Fatalf("found %q, %q; want %q, %q", home, repo, f.home, f.remote)
-	}
-	if err := syncWorkspace(r, ws, repo); err != nil {
-		t.Fatal(err)
-	}
-
-	if got, want := f.git(f.remote, "rev-parse", "main"), f.git(f.local, "rev-parse", "HEAD"); got != want {
-		t.Errorf("host main = %s, want %s", got, want)
-	}
-	for name, want := range map[string]string{
-		"committed.txt":               "from a laptop commit",
-		"edited.txt":                  "v2",
-		"dir with space/new file.txt": "new",
-		".env":                        "SECRET=1",
-		"gone.txt":                    "<missing>",
-	} {
-		if got := f.read(f.remote, name); got != want {
-			t.Errorf("host %s = %q, want %q", name, got, want)
+	for _, name := range []string{"edited.txt", "new-staged.txt", "dir with space/untracked.bin", ".env", "gone.txt"} {
+		if got, want := f.read(f.remote, name), f.read(f.local, name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
 		}
 	}
+	if got := f.read(f.remote, "node_modules/pkg/.env"); got != "<missing>" {
+		t.Errorf("a .env inside node_modules was copied: %q", got)
+	}
 }
 
-func TestHandoffRefusesAHostWithUncommittedWork(t *testing.T) {
+func TestHandoffRefusesAHostWithItsOwnUncommittedWork(t *testing.T) {
 	f := newFixture(t)
 	f.write(f.remote, "edited.txt", "host-only edit")
-
-	err := syncWorkspace(f.remoteHost(), f.workspace(), f.remote)
+	err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote)
 	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
-		t.Fatalf("err = %v, want uncommitted changes refusal", err)
+		t.Fatalf("err = %v, want an uncommitted changes refusal", err)
 	}
 	if got := f.read(f.remote, "edited.txt"); got != "host-only edit" {
 		t.Errorf("host edit was overwritten: %q", got)
+	}
+}
+
+func TestSessionCanComeBackToTheCheckoutItLeft(t *testing.T) {
+	f := newFixture(t)
+	f.messUp(f.local)
+	out := f.workspace(f.local)
+	if err := syncGit(f.remoteHost(), out, f.remote); err != nil {
+		t.Fatal(err)
+	}
+	if err := park(context.Background(), out); err != nil {
+		t.Fatal(err)
+	}
+
+	f.write(f.remote, "edited.txt", "continued on the host")
+	f.write(f.remote, "host-new.txt", "made on the host")
+	back := f.workspace(f.remote)
+	if err := syncGit(f.remoteHost(), back, f.local); err != nil {
+		t.Fatalf("handing back to the parked laptop failed: %v", err)
+	}
+	if got, want := f.git(f.local, "status", "--porcelain"), f.git(f.remote, "status", "--porcelain"); got != want {
+		t.Errorf("laptop status after the round trip:\n%s\nwant:\n%s", got, want)
+	}
+	if got := f.read(f.local, "edited.txt") + "|" + f.read(f.local, "host-new.txt"); got != "continued on the host|made on the host" {
+		t.Errorf("laptop files after the round trip = %q", got)
+	}
+	if out, _ := exec.Command("git", "-C", f.local, "rev-parse", "-q", "--verify", parkedRef).Output(); len(out) != 0 {
+		t.Error("the laptop is still marked as parked after the session came back")
+	}
+}
+
+func TestSessionCannotComeBackOverWorkDoneAfterLeaving(t *testing.T) {
+	f := newFixture(t)
+	f.messUp(f.local)
+	out := f.workspace(f.local)
+	if err := syncGit(f.remoteHost(), out, f.remote); err != nil {
+		t.Fatal(err)
+	}
+	if err := park(context.Background(), out); err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.local, "kept.txt", "edited on the laptop after the handoff")
+
+	err := syncGit(f.remoteHost(), f.workspace(f.remote), f.local)
+	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	if got := f.read(f.local, "kept.txt"); got != "edited on the laptop after the handoff" {
+		t.Errorf("laptop edit was overwritten: %q", got)
 	}
 }
 
@@ -215,13 +229,115 @@ func TestHandoffRefusesADivergedBranchWithoutRunningItsName(t *testing.T) {
 	f.git(f.remote, "add", "host.txt")
 	f.git(f.remote, "commit", "-q", "-m", "host only")
 
-	err := syncWorkspace(f.remoteHost(), f.workspace(), f.remote)
+	err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote)
 	if err == nil || !strings.Contains(err.Error(), "has commits this machine does not") {
 		t.Fatalf("err = %v, want divergence refusal", err)
 	}
 	for _, dir := range []string{f.remote, f.local, f.home} {
 		if _, err := os.Stat(filepath.Join(dir, "PWNED")); err == nil {
 			t.Fatalf("branch name was executed as shell code (PWNED in %s)", dir)
+		}
+	}
+}
+
+func TestHandoffCreatesACloneForAProjectTheHostDoesNotHave(t *testing.T) {
+	f := newFixture(t)
+	f.messUp(f.local)
+	r := f.remoteHost()
+	ws := f.workspace(f.local)
+	_, clones, err := listClones(r, []string{"~/developer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.Git.Origin = "git@github.com:acme/brand-new.git"
+	if repo, err := matchClone(clones, ws, r.host); err != nil || repo != "" {
+		t.Fatalf("matchClone = %q, %v; want no clone", repo, err)
+	}
+	dir := filepath.Join(f.home, "developer", "acme", "brand-new")
+	if err := createClone(r, dir, ws.Git.Origin); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncGit(r, ws, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.git(dir, "status", "--porcelain"), f.git(f.local, "status", "--porcelain"); got != want {
+		t.Errorf("new clone status:\n%s\nwant:\n%s", got, want)
+	}
+	if got := f.git(dir, "branch", "--show-current"); got != "main" {
+		t.Errorf("new clone branch = %q, want main", got)
+	}
+}
+
+func TestMatchCloneFindsARepoWithNoRemoteByItsFirstCommit(t *testing.T) {
+	f := newFixture(t)
+	f.git(f.local, "remote", "remove", "origin")
+	f.git(f.remote, "remote", "remove", "origin")
+	r := f.remoteHost()
+	_, clones, err := listClones(r, []string{"~/developer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := matchClone(clones, f.workspace(f.local), r.host)
+	if err != nil || repo != f.remote {
+		t.Fatalf("matchClone = %q, %v; want %q", repo, err, f.remote)
+	}
+}
+
+func TestPlainFolderIsCopiedWithoutExcludedPaths(t *testing.T) {
+	f := newFixture(t)
+	notes := filepath.Join(f.home, "laptop", "notes")
+	f.write(notes, "todo.md", "ship it")
+	f.write(notes, "drafts/idea.md", "idea")
+	f.write(notes, "node_modules/big/index.js", "huge")
+	ws := f.workspace(notes)
+	if ws.Git != nil || ws.Root != notes || ws.Name != "notes" {
+		t.Fatalf("workspace = %+v, want a plain folder", ws)
+	}
+	dest := filepath.Join(f.home, "developer", "notes", "notes")
+	if err := f.remoteHost().copy(Archive{Dir: ws.Root, Paths: []string{"."}, Exclude: []string{"node_modules"}}, dest); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.read(dest, "todo.md") + "|" + f.read(dest, "drafts/idea.md"); got != "ship it|idea" {
+		t.Errorf("copied files = %q", got)
+	}
+	if got := f.read(dest, "node_modules/big/index.js"); got != "<missing>" {
+		t.Errorf("an excluded folder was copied: %q", got)
+	}
+}
+
+func TestMemoryIsMergedNotReplaced(t *testing.T) {
+	f := newFixture(t)
+	local := filepath.Join(f.home, "laptop-memory")
+	remote := filepath.Join(f.home, "host-memory")
+	f.write(local, "MEMORY.md", "- [Deploys](deploys.md) — laptop wording\n- [Style](style.md) — tabs\n")
+	f.write(local, "style.md", "tabs")
+	f.write(local, "deploys.md", "laptop deploys")
+	f.write(remote, "MEMORY.md", "- [Deploys](deploys.md) — host wording\n- [Hosts](hosts.md) — names\n")
+	f.write(remote, "hosts.md", "names")
+	f.write(remote, "deploys.md", "host deploys, newer")
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(remote, "deploys.md"), future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := syncMemory(f.remoteHost(), local, remote); err != nil {
+		t.Fatal(err)
+	}
+	want := "- [Deploys](deploys.md) — host wording\n- [Hosts](hosts.md) — names\n- [Style](style.md) — tabs\n"
+	if got := f.read(remote, "MEMORY.md"); got != want {
+		t.Errorf("MEMORY.md =\n%s\nwant:\n%s", got, want)
+	}
+	if got := f.read(remote, "style.md") + "|" + f.read(remote, "hosts.md") + "|" + f.read(remote, "deploys.md"); got != "tabs|names|host deploys, newer" {
+		t.Errorf("memory files = %q", got)
+	}
+}
+
+func TestHandoffPromptCarriesTheNoteAndSubagentTranscripts(t *testing.T) {
+	p := handoffPrompt(Prompt{From: "laptop", To: "server", OldDir: "/a", NewDir: "/b", Git: true,
+		Note: "dev server on :3000; a subagent was halfway through the API tests", Sidecar: "/h/.claude/projects/-b/s1"})
+	for _, want := range []string{"dev server on :3000", "/h/.claude/projects/-b/s1/subagents", "staged and unstaged", "confirming you're on server"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt is missing %q:\n%s", want, p)
 		}
 	}
 }
@@ -271,91 +387,96 @@ func TestIsTrustedAcceptsATrustedParent(t *testing.T) {
 	}
 }
 
-func TestHandoffCreatesACloneForAProjectTheHostDoesNotHave(t *testing.T) {
+func TestStopRemoteSessionStopsTheSessionWithoutKillingItself(t *testing.T) {
 	f := newFixture(t)
-	f.write(f.local, "edited.txt", "v2")
-	f.write(f.local, ".env", "SECRET=1")
-	r := f.remoteHost()
-	ws := f.workspace()
-	_, clones, err := listClones(r, []string{"~/developer"})
-	if err != nil {
+	sessionID := "11111111-2222-3333-4444-555555555555"
+	fake := exec.Command("sh", "-c", "sleep 30; : --resume "+sessionID)
+	if err := fake.Start(); err != nil {
 		t.Fatal(err)
 	}
-	ws.Origin = "git@github.com:me/brand-new.git"
-	if repo, err := matchClone(clones, ws, r.host); err != nil || repo != "" {
-		t.Fatalf("matchClone = %q, %v; want no clone", repo, err)
+	done := make(chan error, 1)
+	go func() { done <- fake.Wait() }()
+	if err := stopRemoteSession(f.remoteHost(), sessionID); err != nil {
+		t.Fatalf("stopRemoteSession failed: %v", err)
 	}
-
-	dir := filepath.Join(f.home, "developer", "newgroup", "brand-new")
-	if err := createClone(r, dir, ws.Origin); err != nil {
-		t.Fatal(err)
-	}
-	if err := syncWorkspace(r, ws, dir); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := f.git(dir, "rev-parse", "HEAD"), f.git(f.local, "rev-parse", "HEAD"); got != want {
-		t.Errorf("new clone HEAD = %s, want %s", got, want)
-	}
-	if got := f.git(dir, "branch", "--show-current"); got != "main" {
-		t.Errorf("new clone branch = %q, want main", got)
-	}
-	if got := f.read(dir, ".env") + "|" + f.read(dir, "edited.txt"); got != "SECRET=1|v2" {
-		t.Errorf("new clone files = %q", got)
-	}
-	if err := createClone(r, dir, ws.Origin); err == nil {
-		t.Fatal("createClone overwrote a folder that already exists")
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		fake.Process.Kill()
+		t.Fatal("the session process was not stopped")
 	}
 }
 
-func TestMatchCloneFindsARepoWithNoRemoteByItsFirstCommit(t *testing.T) {
+func TestReadWorkspaceNamesAWorktreeAfterItsMainCheckout(t *testing.T) {
 	f := newFixture(t)
-	f.git(f.local, "remote", "remove", "origin")
-	f.git(f.remote, "remote", "remove", "origin")
-	r := f.remoteHost()
-	_, clones, err := listClones(r, []string{"~/developer"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo, err := matchClone(clones, f.workspace(), r.host)
-	if err != nil || repo != f.remote {
-		t.Fatalf("matchClone = %q, %v; want %q", repo, err, f.remote)
+	tree := filepath.Join(f.local, ".claude", "worktrees", "feat")
+	f.git(f.local, "worktree", "add", "-q", "-b", "feat", tree)
+	ws := f.workspace(tree)
+	if ws.Name != "api" || ws.MainRoot != f.local {
+		t.Errorf("Name = %q, MainRoot = %q; want api, %q", ws.Name, ws.MainRoot, f.local)
 	}
 }
 
-func TestLocalGroupMirrorsTheMacFolderLayout(t *testing.T) {
+func TestReadWorkspaceRefusesARepositoryWithoutCommits(t *testing.T) {
+	f := newFixture(t)
+	empty := filepath.Join(f.home, "laptop", "empty")
+	f.git(f.home, "init", "-q", empty)
+	if _, err := readWorkspace(context.Background(), empty, nil); err == nil || !strings.Contains(err.Error(), "first commit") {
+		t.Fatalf("err = %v, want a first-commit error", err)
+	}
+}
+
+func TestHostRejectsRelativeRoots(t *testing.T) {
+	h := Host{SSH: "s", Claude: "c", RexServer: "r", Roots: []string{"developer"}}
+	if err := h.validate("server"); err == nil {
+		t.Fatal("a relative root was accepted")
+	}
+	h.Roots = []string{"~/developer", "/srv/code"}
+	if err := h.validate("server"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGroupsMirrorTheLaptopAndKeepTheServersLayout(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	for _, dir := range []string{"Personal/stampr/stampr-ops", "Personal/kodo", "elsewhere/tool"} {
+	for _, dir := range []string{"Projects/acme/api", "Projects/notes", "elsewhere/tool"} {
 		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	roots := []string{"~/Personal"}
+	roots := []string{"~/Missing", "~/Projects"}
 	for dir, want := range map[string]string{
-		"Personal/stampr/stampr-ops": "stampr",
-		"Personal/kodo":              "kodo",
-		"elsewhere/tool":             "tool",
+		"Projects/acme/api": "acme",
+		"Projects/notes":    "notes",
+		"elsewhere/tool":    "tool",
+		"Projects":          "Projects",
 	} {
-		got, err := localGroup(filepath.Join(home, dir), roots)
-		if err != nil {
-			t.Fatal(err)
+		if got, err := localGroup(filepath.Join(home, dir), roots); err != nil || got != want {
+			t.Errorf("localGroup(%s) = %q, %v; want %q", dir, got, err, want)
 		}
-		if got != want {
-			t.Errorf("localGroup(%s) = %q, want %q", dir, got, want)
+	}
+	for clone, want := range map[string]string{
+		"/home/me/developer/acme/api-server": "acme",
+		"/home/me/developer/notes":           "notes",
+		"/srv/other/thing":                   "other",
+	} {
+		if got := serverGroup(clone, []string{"~/developer"}, "/home/me"); got != want {
+			t.Errorf("serverGroup(%s) = %q, want %q", clone, got, want)
 		}
 	}
 }
 
 func TestNormalizeRemoteMatchesSshAndHttpsForms(t *testing.T) {
-	want := "github.com/felitrejos/stampr"
+	want := "github.com/acme/api"
 	for _, raw := range []string{
-		"https://github.com/felitrejos/stampr.git",
-		"https://GitHub.com/felitrejos/stampr/",
-		"git@github.com:felitrejos/stampr.git",
-		"ssh://git@github.com/felitrejos/stampr",
+		"https://github.com/acme/api.git",
+		"https://GitHub.com/acme/api/",
+		"git@github.com:acme/api.git",
+		"ssh://git@github.com/acme/api",
 	} {
 		if got := normalizeRemote(raw); got != want {
 			t.Errorf("normalizeRemote(%q) = %q, want %q", raw, got, want)
@@ -365,9 +486,9 @@ func TestNormalizeRemoteMatchesSshAndHttpsForms(t *testing.T) {
 
 func TestProjectSlugMatchesClaudeFolderNames(t *testing.T) {
 	for dir, want := range map[string]string{
-		"/home/felitrejos/developer/stampr/stampr-ops": "-home-felitrejos-developer-stampr-stampr-ops",
-		"/home/me/café": "-home-me-caf-",
-		"/home/me/a😀b":  "-home-me-a--b",
+		"/home/me/developer/acme/api-server": "-home-me-developer-acme-api-server",
+		"/home/me/café":                      "-home-me-caf-",
+		"/home/me/a😀b":                       "-home-me-a--b",
 	} {
 		got, err := projectSlug(dir)
 		if err != nil {
@@ -427,15 +548,16 @@ func startFakeClaude(t *testing.T, seconds string) *exec.Cmd {
 }
 
 func TestRetireClosesATerminalSessionAndRetiresItsTranscript(t *testing.T) {
+	t.Setenv("REX_SESSION", "")
 	transcript := filepath.Join(t.TempDir(), "s.jsonl")
 	if err := os.WriteFile(transcript, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	claude := startFakeClaude(t, "60")
-	if err := retire(armed{Host: "homelab", PID: claude.Process.Pid}, transcript); err != nil {
+	if err := retire(armed{Host: "server", PID: claude.Process.Pid}, transcript); err != nil {
 		t.Fatal(err)
 	}
-	if !waitForFile(t, transcript+".handed-off-to-homelab", 5*time.Second) {
+	if !waitForFile(t, transcript+".handed-off-to-server", 5*time.Second) {
 		t.Fatal("transcript was not retired after the session was closed")
 	}
 }
@@ -446,98 +568,24 @@ func TestRetireLeavesADesktopSessionRunningUntilItIsArchived(t *testing.T) {
 		t.Fatal(err)
 	}
 	claude := startFakeClaude(t, "3")
-	if err := retire(armed{Host: "homelab", PID: claude.Process.Pid, Desktop: true}, transcript); err != nil {
+	if err := retire(armed{Host: "server", PID: claude.Process.Pid, Desktop: true}, transcript); err != nil {
 		t.Fatal(err)
 	}
-	if waitForFile(t, transcript+".handed-off-to-homelab", 2*time.Second) {
+	if waitForFile(t, transcript+".handed-off-to-server", 2*time.Second) {
 		t.Fatal("desktop session was stopped or its transcript moved before it archived itself")
 	}
-	if !waitForFile(t, transcript+".handed-off-to-homelab", 4*time.Second) {
+	if !waitForFile(t, transcript+".handed-off-to-server", 4*time.Second) {
 		t.Fatal("transcript was not retired after the desktop session exited")
 	}
 }
 
 func TestHandedOffAsksDesktopSessionsToArchiveThemselves(t *testing.T) {
-	desktop := handedOff(armed{Host: "homelab", Desktop: true}, Result{ShownOn: []string{"MacBook"}})
+	desktop := handedOff(armed{Host: "server", Desktop: true}, Result{ShownOn: []string{"Laptop"}})
 	if desktop["decision"] != "block" || !strings.Contains(desktop["reason"], "archive_session") {
 		t.Errorf("desktop output = %v", desktop)
 	}
-	terminal := handedOff(armed{Host: "homelab"}, Result{ShownOn: []string{"MacBook"}})
+	terminal := handedOff(armed{Host: "server"}, Result{ShownOn: []string{"Laptop"}})
 	if _, blocks := terminal["decision"]; blocks || terminal["systemMessage"] == "" {
 		t.Errorf("terminal output = %v", terminal)
-	}
-}
-
-func TestStopRemoteSessionStopsTheSessionWithoutKillingItself(t *testing.T) {
-	f := newFixture(t)
-	sessionID := "11111111-2222-3333-4444-555555555555"
-	fake := exec.Command("sh", "-c", "sleep 30; : --resume "+sessionID)
-	if err := fake.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- fake.Wait() }()
-	if err := stopRemoteSession(f.remoteHost(), sessionID); err != nil {
-		t.Fatalf("stopRemoteSession failed: %v", err)
-	}
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		fake.Process.Kill()
-		t.Fatal("the session process was not stopped")
-	}
-}
-
-func TestHostRejectsRelativeRoots(t *testing.T) {
-	h := Host{SSH: "s", Claude: "c", RexServer: "r", Roots: []string{"developer"}}
-	if err := h.validate("homelab"); err == nil {
-		t.Fatal("a relative root was accepted")
-	}
-	h.Roots = []string{"~/developer", "/srv/code"}
-	if err := h.validate("homelab"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestReadWorkspaceNamesAWorktreeAfterItsMainCheckout(t *testing.T) {
-	f := newFixture(t)
-	tree := filepath.Join(f.local, ".claude", "worktrees", "feat")
-	f.git(f.local, "worktree", "add", "-q", "-b", "feat", tree)
-	ws, err := readWorkspace(context.Background(), tree, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ws.Name != "app" || ws.MainRoot != f.local {
-		t.Errorf("Name = %q, MainRoot = %q; want app, %q", ws.Name, ws.MainRoot, f.local)
-	}
-}
-
-func TestServerGroupKeepsTheServersLayout(t *testing.T) {
-	for clone, want := range map[string]string{
-		"/home/me/developer/quorum/quorum-trader": "quorum",
-		"/home/me/developer/kodo":                 "kodo",
-		"/srv/other/thing":                        "other",
-	} {
-		if got := serverGroup(clone, []string{"~/developer"}, "/home/me"); got != want {
-			t.Errorf("serverGroup(%s) = %q, want %q", clone, got, want)
-		}
-	}
-}
-
-func TestLocalGroupSkipsMissingRootsAndTheRootItself(t *testing.T) {
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, "Personal", "kodo"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	roots := []string{"~/Missing", "~/Personal"}
-	if got, err := localGroup(filepath.Join(home, "Personal", "kodo"), roots); err != nil || got != "kodo" {
-		t.Errorf("localGroup = %q, %v; want kodo", got, err)
-	}
-	if got, err := localGroup(filepath.Join(home, "Personal"), roots); err != nil || got != "Personal" {
-		t.Errorf("localGroup(root itself) = %q, %v; want Personal", got, err)
 	}
 }

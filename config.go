@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	LocalRoots []string        `toml:"local_roots"`
+	Exclude    []string        `toml:"exclude"`
 	Hosts      map[string]Host `toml:"hosts"`
 }
 
@@ -24,6 +25,7 @@ type Host struct {
 	RexServer     string   `toml:"rex_server"`
 	NewTabCommand string   `toml:"new_tab_command"`
 	LocalRoots    []string `toml:"-"`
+	Exclude       []string `toml:"-"`
 }
 
 func configPath() (string, error) {
@@ -52,6 +54,7 @@ func loadHost(name string) (Host, error) {
 		return Host{}, fmt.Errorf("no host %q in %s; configured hosts: %s", name, path, strings.Join(names, ", "))
 	}
 	host.LocalRoots = cfg.LocalRoots
+	host.Exclude = cfg.Exclude
 	return host, host.validate(name)
 }
 

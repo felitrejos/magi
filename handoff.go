@@ -17,6 +17,7 @@ type Handoff struct {
 	SessionID      string
 	TranscriptPath string
 	Cwd            string
+	Note           string
 }
 
 type Step struct {
@@ -25,11 +26,12 @@ type Step struct {
 }
 
 type Result struct {
-	Steps    []Step
-	ShownOn  []string
-	RexNote  error
-	TabNote  error
-	NewClone string
+	Steps     []Step
+	ShownOn   []string
+	RexNote   error
+	TabNote   error
+	ParkNote  error
+	NewFolder string
 }
 
 func (r Result) Summary() string {
@@ -59,7 +61,7 @@ func (h Handoff) Run() (Result, error) {
 
 	var ws Workspace
 	var remote *Remote
-	var remoteHome, remoteRepo, remoteDir, group string
+	var remoteHome, remoteRoot, remoteDir, group string
 	err := step("inspect", func() (err error) {
 		if ws, err = readWorkspace(ctx, h.Cwd, h.Host.Secrets); err != nil {
 			return err
@@ -67,23 +69,36 @@ func (h Handoff) Run() (Result, error) {
 		if remote, err = newRemote(ctx, h.Host.SSH); err != nil {
 			return err
 		}
-		var clones []Clone
-		if remoteHome, clones, err = listClones(remote, h.Host.Roots); err != nil {
+		if ws.Git != nil {
+			var clones []Clone
+			if remoteHome, clones, err = listClones(remote, h.Host.Roots); err != nil {
+				return err
+			}
+			if remoteRoot, err = matchClone(clones, ws, remote.host); err != nil {
+				return err
+			}
+		} else if remoteHome, err = remoteHomeDir(remote); err != nil {
 			return err
 		}
-		if remoteRepo, err = matchClone(clones, ws, remote.host); err != nil {
-			return err
-		}
-		if remoteRepo != "" {
-			group = serverGroup(remoteRepo, h.Host.Roots, remoteHome)
+		if remoteRoot != "" {
+			group = serverGroup(remoteRoot, h.Host.Roots, remoteHome)
 		} else {
 			if group, err = localGroup(ws.MainRoot, h.Host.LocalRoots); err != nil {
 				return err
 			}
-			res.NewClone = expandHome(h.Host.Roots[0], remoteHome) + "/" + group + "/" + ws.Name
-			remoteRepo = res.NewClone
+			remoteRoot = expandHome(h.Host.Roots[0], remoteHome) + "/" + group + "/" + ws.Name
+			exists, err := remoteExists(remote, remoteRoot)
+			if err != nil {
+				return err
+			}
+			if ws.Git != nil && exists {
+				return fmt.Errorf("%s already exists on %s but isn't a clone of this repository", remoteRoot, remote.host)
+			}
+			if !exists {
+				res.NewFolder = remoteRoot
+			}
 		}
-		remoteDir = filepath.Join(remoteRepo, ws.Subdir)
+		remoteDir = filepath.Join(remoteRoot, ws.Subdir)
 		return nil
 	})
 	if err != nil {
@@ -91,7 +106,7 @@ func (h Handoff) Run() (Result, error) {
 	}
 
 	var tab RexTab
-	name := filepath.Base(remoteRepo)
+	name := filepath.Base(remoteRoot)
 	launch := Launch{Host: h.Host, Remote: remote, Group: group, Name: name, Dir: remoteDir}
 	undo := func(err error) error {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -105,37 +120,50 @@ func (h Handoff) Run() (Result, error) {
 		if closeErr := launch.discard(tab); closeErr != nil {
 			err = fmt.Errorf("%w; removing the new Rex tab also failed: %v", err, closeErr)
 		}
-		if res.NewClone == "" {
-			return fmt.Errorf("%w (%s on %s now has this branch and these changes checked out)", err, remoteRepo, h.HostName)
+		if res.NewFolder == "" {
+			return fmt.Errorf("%w (%s on %s now has this session's files)", err, remoteRoot, h.HostName)
 		}
-		if rmErr := removeClone(remote, res.NewClone); rmErr != nil {
-			return fmt.Errorf("%w; removing the new clone at %s also failed: %v", err, res.NewClone, rmErr)
+		if rmErr := removeFolder(remote, res.NewFolder); rmErr != nil {
+			return fmt.Errorf("%w; removing the new folder %s also failed: %v", err, res.NewFolder, rmErr)
 		}
-		return fmt.Errorf("%w (cielago removed the clone it had just created at %s)", err, res.NewClone)
+		return fmt.Errorf("%w (cielago removed the folder it had just created at %s)", err, res.NewFolder)
 	}
 
-	if res.NewClone != "" {
-		if err := step("clone", func() error { return createClone(remote, res.NewClone, ws.Origin) }); err != nil {
-			return res, err
+	if err := step("sync", func() error {
+		if ws.Git == nil {
+			return remote.copy(Archive{Dir: ws.Root, Paths: []string{"."}, Exclude: h.Host.Exclude}, remoteRoot)
 		}
-	}
-	if err := step("sync", func() error { return syncWorkspace(remote, ws, remoteRepo) }); err != nil {
-		if res.NewClone == "" {
+		if res.NewFolder != "" {
+			if err := createClone(remote, res.NewFolder, ws.Git.Origin); err != nil {
+				return err
+			}
+		}
+		return syncGit(remote, ws, remoteRoot)
+	}); err != nil {
+		if res.NewFolder == "" && ws.Git != nil {
 			return res, err
 		}
 		return res, undo(err)
 	}
 
+	sidecar := ""
 	if err := step("transcript", func() error {
 		slug, err := projectSlug(remoteDir)
 		if err != nil {
 			return err
 		}
+		remoteProject := remoteHome + "/.claude/projects/" + slug
 		dir, files, err := transcriptFiles(h.TranscriptPath)
 		if err != nil {
 			return err
 		}
-		return remote.copyFiles(dir, files, remoteHome+"/.claude/projects/"+slug)
+		if len(files) > 1 {
+			sidecar = remoteProject + "/" + files[1]
+		}
+		if err := remote.copy(Archive{Dir: dir, Paths: files}, remoteProject); err != nil {
+			return err
+		}
+		return syncMemory(remote, filepath.Join(dir, "memory"), remoteProject+"/memory")
 	}); err != nil {
 		return res, undo(err)
 	}
@@ -146,9 +174,12 @@ func (h Handoff) Run() (Result, error) {
 		if err != nil {
 			return err
 		}
-		prompt := handoffPrompt(strings.TrimSuffix(from, ".local"), h.HostName, h.Cwd, remoteDir)
+		prompt := handoffPrompt(Prompt{
+			From: strings.TrimSuffix(from, ".local"), To: h.HostName, OldDir: h.Cwd, NewDir: remoteDir,
+			Git: ws.Git != nil, Note: h.Note, Sidecar: sidecar,
+		})
 		launch.Command = []string{expandHome(h.Host.Claude, remoteHome), "--resume", h.SessionID, "--remote-control", name, prompt}
-		if tab, err = launch.start(remoteRepo); err != nil {
+		if tab, err = launch.start(); err != nil {
 			return err
 		}
 		res.ShownOn, res.RexNote = launch.show(tab)
@@ -164,12 +195,15 @@ func (h Handoff) Run() (Result, error) {
 		return res, undo(err)
 	}
 
-	if tab.Created && h.Host.NewTabCommand != "" {
-		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		remote.ctx = cleanup
+	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	remote.ctx = finish
+	if ws.Git != nil {
+		res.ParkNote = park(finish, ws)
+	}
+	if h.Host.NewTabCommand != "" {
 		res.TabNote = step("tab", func() error {
-			return launch.runInShell(tab, strings.ReplaceAll(h.Host.NewTabCommand, "{repo}", quote(name)))
+			return launch.openProjectTab(tab, remoteRoot, strings.ReplaceAll(h.Host.NewTabCommand, "{repo}", quote(name)))
 		})
 	}
 	return res, nil
@@ -185,7 +219,7 @@ func expandHome(path, home string) string {
 	return path
 }
 
-func localGroup(repoRoot string, localRoots []string) (string, error) {
+func localGroup(projectRoot string, localRoots []string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -198,13 +232,13 @@ func localGroup(repoRoot string, localRoots []string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("local_roots: %w", err)
 		}
-		rel, err := filepath.Rel(real, repoRoot)
+		rel, err := filepath.Rel(real, projectRoot)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
 			continue
 		}
 		return strings.Split(rel, string(filepath.Separator))[0], nil
 	}
-	return filepath.Base(repoRoot), nil
+	return filepath.Base(projectRoot), nil
 }
 
 func serverGroup(clone string, roots []string, home string) string {
@@ -221,6 +255,16 @@ type Clone struct {
 	Dir        string
 	Origin     string
 	RootCommit string
+}
+
+func remoteHomeDir(r *Remote) (string, error) {
+	out, err := r.sh(`printf '%s' "$HOME"`)
+	return string(out), err
+}
+
+func remoteExists(r *Remote, path string) (bool, error) {
+	out, err := r.sh("[ -e " + quote(path) + " ] && echo yes || :")
+	return strings.TrimSpace(string(out)) == "yes", err
 }
 
 func listClones(r *Remote, roots []string) (home string, clones []Clone, err error) {
@@ -251,10 +295,10 @@ func listClones(r *Remote, roots []string) (home string, clones []Clone, err err
 
 func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
 	same := func(c Clone) bool {
-		if ws.Origin != "" {
-			return c.Origin != "" && normalizeRemote(c.Origin) == normalizeRemote(ws.Origin)
+		if ws.Git.Origin != "" {
+			return c.Origin != "" && normalizeRemote(c.Origin) == normalizeRemote(ws.Git.Origin)
 		}
-		return c.Origin == "" && c.RootCommit == ws.RootCommit
+		return c.Origin == "" && c.RootCommit == ws.Git.RootCommit
 	}
 	var matches []string
 	for _, c := range clones {
@@ -273,8 +317,7 @@ func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
 }
 
 func createClone(r *Remote, dir, origin string) error {
-	script := "set -e; if [ -e " + quote(dir) + " ]; then echo " + quote(dir+" already exists but isn't a clone of this repository") + " >&2; exit 5; fi; " +
-		"trap " + quote("rm -rf -- "+quote(dir)) + " EXIT; git init --quiet " + quote(dir) + "; "
+	script := "set -e; trap " + quote("rm -rf -- "+quote(dir)) + " EXIT; git init --quiet " + quote(dir) + "; "
 	if origin != "" {
 		script += "git -C " + quote(dir) + " remote add origin " + quote(origin) + "; "
 	}
@@ -283,39 +326,7 @@ func createClone(r *Remote, dir, origin string) error {
 	return err
 }
 
-func removeClone(r *Remote, dir string) error {
+func removeFolder(r *Remote, dir string) error {
 	_, err := r.sh("rm -rf -- " + quote(dir))
 	return err
-}
-
-const handoffRef = "refs/cielago/handoff"
-
-func syncWorkspace(r *Remote, ws Workspace, remoteRepo string) error {
-	push := []string{"push", "--quiet", "--force", "--no-verify", r.host + ":" + remoteRepo, "HEAD:" + handoffRef}
-	if _, err := run(r.ctx, ws.Root, []string{"GIT_SSH_COMMAND=" + r.sshCommand()}, "git", push...); err != nil {
-		return err
-	}
-	if _, err := r.sh(checkoutScript(remoteRepo, ws.Branch, ws.Deleted)); err != nil {
-		return err
-	}
-	return r.copyFiles(ws.Root, append(append([]string{}, ws.Changed...), ws.Secrets...), remoteRepo)
-}
-
-func checkoutScript(repo, branch string, deleted []string) string {
-	script := "set -e; cd " + quote(repo) + "; " +
-		`if [ -n "$(git status --porcelain)" ]; then echo "$PWD has uncommitted changes; commit or stash them there first" >&2; exit 3; fi; `
-	if branch == "" {
-		script += "git checkout --quiet --detach " + handoffRef + "; "
-	} else {
-		ref := quote("refs/heads/" + branch)
-		script += "if git rev-parse --verify --quiet " + ref + " >/dev/null; then " +
-			"rc=0; git merge-base --is-ancestor " + ref + " " + handoffRef + " || rc=$?; " +
-			"if [ $rc -eq 1 ]; then printf 'branch %s has commits this machine does not; pull them here first\\n' " + quote(branch) + " >&2; exit 4; fi; " +
-			"[ $rc -eq 0 ]; fi; " +
-			"git checkout --quiet -B " + quote(branch) + " " + handoffRef + "; "
-	}
-	if len(deleted) > 0 {
-		script += "rm -f -- " + quoteAll(deleted) + "; "
-	}
-	return script
 }
