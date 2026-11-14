@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/fleet.gif" alt="magi in the Rex app: two machines, six Claude Code and Codex sessions with their state, model, context and cost, one session that needs approval, the detail of a Codex session, and the alerts view with a plan nearly used and a session waiting on a permission prompt." width="820">
+  <img src="assets/fleet.gif" alt="magi in the Rex app: a machines panel and an agents panel on the left, a home server's CPU, memory and network drawn as pixel charts on the right, then the detail of a Codex session and the alerts view with a plan nearly used and a session waiting on a permission prompt." width="820">
 </p>
 <p align="center">
   <i>A Mac and a home server, six agent sessions, one waiting on you.</i>
