@@ -164,7 +164,8 @@ terminal, in Rex and in the desktop app, tools for that:
 | `run_elsewhere` | Runs a shell command there, such as `go test ./...`, and returns its exit code and the end of its output. |
 | `delegate` | Gives a self-contained task to a background Claude there, like a subagent on another machine. You get its final message, and its changes as a branch. |
 | `start_session` | Opens a new interactive session for the project there, in a tab of its own with Remote Control. |
-| `task_status` · `task_result` · `cancel_task` | Checks on a task, collects it, or stops it. |
+| `task_reply` | Sends a follow-up to a delegated Claude, which resumes with everything it knew and did. |
+| `task_status` · `task_result` · `cancel_task` | Checks on a task, collects it, or stops it and removes its copy. |
 
 Ask in plain words, "run the tests on whichever machine is lighter", and
 Claude checks `machines`, proposes a machine and what it will run there, and
@@ -189,7 +190,9 @@ Every task is a copy, never a move:
   For a delegated Claude it returns its final message, and fetches its changes
   into your repository as the branch `cielago/task-<id>`, next to your working
   tree rather than into it. Collecting a task closes its tab and removes its
-  copy.
+  copy, except a delegated Claude's: that stays for follow-ups with
+  `task_reply`, each a new turn of the same session that moves the branch
+  forward, until `cancel_task`, or a day idle and `cielago tasks clean`.
 - **Dependencies.** `node_modules` and the like aren't copied; the project's
   approved [`.cielago.toml`](#set-up-the-project-on-arrival) setup runs first.
 

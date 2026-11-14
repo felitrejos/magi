@@ -81,6 +81,9 @@ func describeReport(r *taskReport) string {
 	t, st := r.Task, r.State
 	var b strings.Builder
 	head := fmt.Sprintf("Task %s (%s on %s, started %s): %s", t.ID, t.Kind, t.Host, ago(t.Created), t.summary())
+	if t.Turn > 1 {
+		head += fmt.Sprintf("\nTurn %d: %s", t.Turn, oneLine(t.Reply))
+	}
 	switch st.State {
 	case "running":
 		fmt.Fprintf(&b, "%s\nStill running, %s, tab %q.\n", head, t.Where, t.tabLabel())
@@ -113,16 +116,29 @@ func describeReport(r *taskReport) string {
 		fmt.Fprintf(&b, "Full log on this machine: %s\n", o.Log)
 	}
 	switch {
+	case o.Branch != "" && o.Diffstat == "" && t.Turn > 1:
+		fmt.Fprintf(&b, "This turn changed no files; the task's changes so far are on branch %s.\n", o.Branch)
 	case o.Branch != "":
-		fmt.Fprintf(&b, "Its changes are on branch %s in %s, compared with your working tree when the task started (%s); your working tree wasn't touched.\n", o.Branch, t.Project, shortCommit(t.Base))
-		if o.Diffstat != "" {
-			b.WriteString(fence(o.Diffstat))
+		if t.Turn > 1 {
+			fmt.Fprintf(&b, "This turn's changes:\n%s", fence(o.Diffstat))
+			fmt.Fprintf(&b, "All the task's changes are on branch %s in %s, compared with your working tree when the task started (%s); your working tree wasn't touched.\n", o.Branch, t.Project, shortCommit(t.Base))
+		} else {
+			fmt.Fprintf(&b, "Its changes are on branch %s in %s, compared with your working tree when the task started (%s); your working tree wasn't touched.\n", o.Branch, t.Project, shortCommit(t.Base))
+			if o.Diffstat != "" {
+				b.WriteString(fence(o.Diffstat))
+			}
 		}
 		fmt.Fprintf(&b, "See them: git diff %s %s\nApply them here: git diff --binary %s %s | git apply\n", shortCommit(t.Base), o.Branch, shortCommit(t.Base), o.Branch)
 	case o.Files != "":
 		fmt.Fprintf(&b, "Its copy of the folder, as it left it, is at %s on this machine.\n", o.Files)
 	case t.Kind != kindRun && o.State != "cancelled":
 		b.WriteString("It changed no files.\n")
+	}
+	if o.Closed {
+		fmt.Fprintf(&b, "Its copy on %s has been removed, so it takes no more follow-ups.\n", t.Host)
+	}
+	if o.Kept {
+		fmt.Fprintf(&b, "Its copy stays on %s so you can send a follow-up with task_reply, which keeps its context. When you're done with it, cancel_task removes the copy; cielago tasks clean removes copies idle for a day.\n", t.Host)
 	}
 	if t.Subs && t.Kind != kindRun {
 		b.WriteString("Changes made inside submodules aren't brought back.\n")
@@ -272,9 +288,16 @@ func cleanTasks(w io.Writer) error {
 			fmt.Fprintf(w, "%s: collected (%s)\n", t.ID, outcomeState(r.Task.Outcome))
 		}
 	}
-	pruned := 0
+	pruned, closed := 0, 0
 	for _, t := range tasks {
-		if t.Outcome != nil && time.Since(t.Outcome.Ended) > keepCollected {
+		if t.Outcome != nil && t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies {
+			if err := t.closeCopy(); err != nil {
+				fmt.Fprintf(w, "%s: %v\n", t.ID, err)
+				continue
+			}
+			closed++
+		}
+		if t.Outcome != nil && !t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCollected {
 			if err := t.forget(); err != nil {
 				fmt.Fprintf(w, "%s: %v\n", t.ID, err)
 				continue
@@ -282,6 +305,6 @@ func cleanTasks(w io.Writer) error {
 			pruned++
 		}
 	}
-	fmt.Fprintf(w, "Collected %d finished task(s); running ones were left alone. Forgot %d collected more than a week ago.\n", cleaned, pruned)
+	fmt.Fprintf(w, "Collected %d finished task(s); running ones were left alone. Removed %d delegate copies idle for a day, and forgot %d tasks collected more than a week ago.\n", cleaned, closed, pruned)
 	return nil
 }

@@ -220,7 +220,11 @@ case $command in
     printf '%s\n' "$kind" > "$dir/kind"
     ;;
   remove)
+    slug=$1
     rm -rf -- "$dir"
+    case $slug in
+      *-cielago-tasks-"${dir##*/}"-*) rm -rf -- "$HOME/.claude/projects/$slug" ;;
+    esac
     ;;
   *)
     echo "task.sh: unknown command $command" >&2

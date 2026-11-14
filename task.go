@@ -50,6 +50,13 @@ type Task struct {
 	Where    string    `json:"where"`
 	Tab      Tab       `json:"tab"`
 	Outcome  *Outcome  `json:"outcome,omitempty"`
+	Group    string    `json:"group,omitempty"`
+	Session  string    `json:"claude_session,omitempty"`
+	Claude   []string  `json:"claude_args,omitempty"`
+	Turn     int       `json:"turn,omitempty"`
+	Reply    string    `json:"reply,omitempty"`
+	Tip      string    `json:"tip,omitempty"`
+	History  []Outcome `json:"history,omitempty"`
 }
 
 type Outcome struct {
@@ -63,6 +70,8 @@ type Outcome struct {
 	Diffstat string    `json:"diffstat,omitempty"`
 	Files    string    `json:"files,omitempty"`
 	Note     string    `json:"note,omitempty"`
+	Kept     bool      `json:"kept,omitempty"`
+	Closed   bool      `json:"closed,omitempty"`
 }
 
 type TaskSpec struct {
@@ -165,14 +174,18 @@ func (t *Task) summary() string {
 	if t.Kind != kindRun {
 		what = t.Prompt
 	}
-	what = strings.Join(strings.Fields(what), " ")
-	if r := []rune(what); len(r) > 70 {
-		what = string(r[:67]) + "..."
-	}
-	if what == "" {
+	if what = oneLine(what); what == "" {
 		what = "interactive session"
 	}
 	return what
+}
+
+func oneLine(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if r := []rune(text); len(r) > 70 {
+		text = string(r[:67]) + "..."
+	}
+	return text
 }
 
 func (t *Task) branch() string {
@@ -234,6 +247,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		Starting: true,
 		Prompt:   spec.Prompt,
 		Dir:      remoteHome + "/.cielago/tasks/" + id,
+		Turn:     1,
 	}
 	t.Checkout = t.Dir + "/checkout/" + ws.Name
 	t.RunDir = filepath.Join(t.Checkout, ws.Subdir)
@@ -256,6 +270,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 			}
 		}
 	}
+	t.Group = group
 	if err := t.save(); err != nil {
 		return nil, err
 	}
@@ -295,12 +310,8 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		if _, err := shIn(remote, `cat > "$1"`, []byte(spec.Prompt), t.Dir+"/prompt"); err != nil {
 			return nil, removeCopy(err)
 		}
-		claude := []string{expandHome(host.Claude, remoteHome)}
-		if ws.Subdir != "." {
-			claude = append(claude, "--add-dir", t.Checkout)
-		}
-		claude = append(claude, spec.Claude...)
-		command = append([]string{"sh", "-c", taskScript, "cielago", "delegate", t.Dir, setup}, claude...)
+		t.Session, t.Claude = newSessionID(), spec.Claude
+		command = t.delegateCommand(host, setup, false)
 	case kindSession:
 		claude := []string{expandHome(host.Claude, remoteHome), "--remote-control", ws.Name + " task " + id}
 		if spec.Prompt != "" {
@@ -523,6 +534,11 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 		return nil, err
 	}
 	if t.Outcome != nil {
+		if cancelIt && t.Outcome.Kept {
+			if err := t.closeCopy(); err != nil {
+				return nil, err
+			}
+		}
 		return &taskReport{Task: t, State: taskState{State: "collected", Exit: t.Outcome.Exit, Tail: t.Outcome.Tail}}, nil
 	}
 	if t.Starting && time.Since(t.Created) < startBudget {
@@ -565,6 +581,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	if cancelled {
 		o.State, o.Exit = "cancelled", "cancelled"
 	}
+	o.Kept = t.Kind == kindDelegate && st.State == "done" && !cancelled
 	if t.Kind == kindSession {
 		o.Tail = ""
 	} else if st.State != "gone" {
@@ -584,8 +601,10 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	if err := newLauncher(host, r).Discard(t.Tab); err != nil && !tabGone(err) {
 		notes = append(notes, fmt.Errorf("closing its tab on %s failed: %w", t.Host, err))
 	}
-	if _, err := sh(r, taskScript, "remove", t.Dir); err != nil {
-		notes = append(notes, fmt.Errorf("removing its copy at %s on %s failed: %w", t.Dir, t.Host, err))
+	if !o.Kept {
+		if err := t.removeCopy(r); err != nil {
+			notes = append(notes, err)
+		}
 	}
 	if err := errors.Join(notes...); err != nil {
 		o.Note = err.Error()
@@ -608,6 +627,9 @@ func fetchLog(r *Remote, t *Task) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, t.ID+".log")
+	if t.Turn > 1 {
+		path = filepath.Join(dir, fmt.Sprintf("%s-%d.log", t.ID, t.Turn))
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
@@ -668,12 +690,22 @@ func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error
 		return nil
 	}
 	message := fmt.Sprintf("cielago task %s on %s: %s", t.ID, t.Host, t.summary())
-	out, err := sh(r, taskScript, "result", t.Dir, t.Checkout, t.Head, t.Base, message)
+	if t.Turn > 1 {
+		message = fmt.Sprintf("cielago task %s, turn %d, on %s: %s", t.ID, t.Turn, t.Host, oneLine(t.Reply))
+	}
+	base := t.Base
+	if t.Tip != "" {
+		base = t.Tip
+	}
+	out, err := sh(r, taskScript, "result", t.Dir, t.Checkout, t.Head, base, message)
 	if err != nil {
 		return fmt.Errorf("recording the task's changes failed: %w", err)
 	}
 	result := strings.TrimSpace(string(out))
 	if result == "" {
+		if t.Tip != "" {
+			o.Branch = t.branch()
+		}
 		return nil
 	}
 	if !commitPattern.MatchString(result) {
@@ -683,8 +715,8 @@ func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error
 		t.Project, r.sshCommand(), r.host+":"+t.Checkout, t.branch()); err != nil {
 		return fmt.Errorf("fetching the task's changes failed: %w", err)
 	}
-	o.Branch = t.branch()
-	if stat, err := sh(local, `cd -- "$1" && git diff --stat "$2" "$3" --`, t.Project, t.Base, "refs/heads/"+t.branch()); err == nil {
+	o.Branch, t.Tip = t.branch(), result
+	if stat, err := sh(local, `cd -- "$1" && git diff --stat "$2" "$3" --`, t.Project, base, "refs/heads/"+t.branch()); err == nil {
 		o.Diffstat = strings.TrimRight(string(stat), "\n")
 	}
 	return nil

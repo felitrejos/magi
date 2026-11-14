@@ -443,7 +443,7 @@ func TestADelegatedClaudeNeverBypassesPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(args[:9], " "); got != "-p --output-format stream-json --verbose --permission-mode acceptEdits --permission-prompts none --no-session-persistence" {
+	if got := strings.Join(args[:8], " "); got != "-p --output-format stream-json --verbose --permission-mode acceptEdits --permission-prompts none" {
 		t.Errorf("args = %s", got)
 	}
 	for _, mode := range []string{"bypassPermissions", "default", "plan"} {
@@ -481,7 +481,7 @@ func TestTheToolServerOffersItsTools(t *testing.T) {
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
 	}
-	if got := strings.Join(names, " "); got != "cancel_task delegate machines run_elsewhere start_session task_result task_status" {
+	if got := strings.Join(names, " "); got != "cancel_task delegate machines run_elsewhere start_session task_reply task_result task_status" {
 		t.Errorf("tools = %s", got)
 	}
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "machines"})
@@ -613,4 +613,103 @@ func TestTaskScriptsOnlyTouchTaskFolders(t *testing.T) {
 			t.Errorf("remove accepted %s", dir)
 		}
 	}
+}
+
+const fakeTurnsClaude = `#!/bin/sh
+prompt=$(cat)
+printf '%s\n' "$@" >> "$HOME/claude-turns"
+echo --- >> "$HOME/claude-turns"
+case " $* " in
+  *" --resume "*) printf two > two.txt ;;
+  *) printf one > one.txt ;;
+esac
+printf '{"type":"result","subtype":"success","num_turns":1,"result":"did: %s"}\n' "$prompt"
+`
+
+func TestAFollowUpResumesTheSameClaudeAndMovesTheBranchForward(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	f.tool("claude", fakeTurnsClaude)
+	args, _ := delegateArgs(delegateInput{})
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "first", Claude: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := s.Task.ID
+	f.waitForTask(id)
+	first, err := collectTask(id, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Task.Outcome.Kept || !strings.Contains(describeReport(first), "task_reply") {
+		t.Fatalf("the copy wasn't kept for follow-ups:\n%s", describeReport(first))
+	}
+	if _, err := os.Stat(s.Task.Checkout); err != nil {
+		t.Fatalf("the copy is gone: %v", err)
+	}
+	tip := f.git(f.local, "rev-parse", "cielago/task-"+id)
+
+	if _, err := replyTask(context.Background(), id, "second"); err != nil {
+		t.Fatal(err)
+	}
+	f.waitForTask(id)
+	second, err := collectTask(id, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := second.Task.Outcome
+	if !strings.HasPrefix(o.Message, "did: second") || second.Task.Turn != 2 || len(second.Task.History) != 1 {
+		t.Errorf("second turn = %+v (turn %d)", o, second.Task.Turn)
+	}
+	if parent := f.git(f.local, "rev-parse", "cielago/task-"+id+"^"); parent != tip {
+		t.Errorf("the second turn's commit sits on %s, want the first turn's %s", parent, tip)
+	}
+	if got := f.git(f.local, "diff", "--name-only", s.Task.Base, "cielago/task-"+id); got != "one.txt\ntwo.txt" {
+		t.Errorf("the branch changes %q", got)
+	}
+	if !strings.Contains(o.Diffstat, "two.txt") || strings.Contains(o.Diffstat, "one.txt") {
+		t.Errorf("the turn's diffstat = %q", o.Diffstat)
+	}
+	if !strings.HasSuffix(o.Log, id+"-2.log") {
+		t.Errorf("log = %s", o.Log)
+	}
+	turns := strings.Split(f.read(f.home, "claude-turns"), "---\n")
+	if !strings.Contains(turns[0], "--session-id\n"+s.Task.Session+"\n") || !strings.Contains(turns[1], "--resume\n"+s.Task.Session+"\n") || !strings.Contains(turns[1], "acceptEdits") {
+		t.Errorf("claude was run with:\n%s", strings.Join(turns, "---\n"))
+	}
+
+	closed, err := collectTask(id, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(describeReport(closed), "has been removed") {
+		t.Errorf("closing doesn't say so:\n%s", describeReport(closed))
+	}
+	if _, err := os.Stat(s.Task.Dir); !os.IsNotExist(err) {
+		t.Errorf("cancelling didn't remove the kept copy: %v", err)
+	}
+	if _, err := replyTask(context.Background(), id, "third"); err == nil || !strings.Contains(err.Error(), "is gone") {
+		t.Errorf("a reply after closing = %v", err)
+	}
+}
+
+func TestOnlyADelegatedClaudeTakesFollowUps(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replyTask(context.Background(), s.Task.ID, "more"); err == nil || !strings.Contains(err.Error(), "only a delegated Claude") {
+		t.Errorf("reply to a run task = %v", err)
+	}
+	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nsleep 30\n")
+	d, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replyTask(context.Background(), d.Task.ID, "more"); err == nil || !strings.Contains(err.Error(), "still working") {
+		t.Errorf("reply to a running delegate = %v", err)
+	}
+	collectTask(d.Task.ID, true)
 }

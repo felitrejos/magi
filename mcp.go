@@ -52,6 +52,11 @@ type taskInput struct {
 	TaskID string `json:"task_id" jsonschema:"the task id a start tool returned"`
 }
 
+type replyInput struct {
+	TaskID  string `json:"task_id" jsonschema:"the id of a delegate task"`
+	Message string `json:"message" jsonschema:"the follow-up for the remote Claude, which remembers the task and what it did so far"`
+}
+
 type optionalTaskInput struct {
 	TaskID string `json:"task_id,omitempty" jsonschema:"the task id; leave out to list this machine's tasks"`
 }
@@ -85,7 +90,7 @@ func delegateArgs(in delegateInput) ([]string, error) {
 	if !slices.Contains(delegateModes, mode) {
 		return nil, fmt.Errorf("permission_mode %q isn't allowed; use one of %s", mode, strings.Join(delegateModes, ", "))
 	}
-	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--permission-mode", mode, "--permission-prompts", "none", "--no-session-persistence", "--append-system-prompt", delegateSystemPrompt}
+	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--permission-mode", mode, "--permission-prompts", "none", "--append-system-prompt", delegateSystemPrompt}
 	if in.Model != "" {
 		if !modelPattern.MatchString(in.Model) {
 			return nil, fmt.Errorf("model %q isn't a model name", in.Model)
@@ -253,8 +258,20 @@ func newMCPServer() *mcp.Server {
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "task_reply",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
+		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; check it with task_status and collect it with task_result, which returns its new message and moves the branch cielago/task-<id> forward. Tell the user what you're asking it before you send it.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in replyInput) (*mcp.CallToolResult, any, error) {
+		s, err := replyTask(ctx, in.TaskID, in.Message)
+		if err != nil {
+			return nil, nil, err
+		}
+		return textResult(fmt.Sprintf("Sent the follow-up to task %s on %s as turn %d; it runs %s, tab %q. Check on it with task_status and collect it with task_result.\n", s.Task.ID, s.Task.Host, s.Task.Turn, s.Task.Where, s.Task.tabLabel())), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cancel_task",
-		Description: "Stop a running task, close its tab and remove its copy on the other machine. Its changes are discarded; the output so far is kept in a log on this machine. Ask the user before cancelling a task.",
+		Description: "Stop a running task, close its tab and remove its copy on the other machine; its unfinished changes are discarded and the output so far is kept in a log on this machine. Also use it to remove a finished delegate's copy once you're done sending it follow-ups. Ask the user before stopping a running task.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in taskInput) (*mcp.CallToolResult, any, error) {
 		r, err := collectTask(in.TaskID, true)
 		if err != nil {

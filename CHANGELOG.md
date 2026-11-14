@@ -15,6 +15,12 @@
   its last slot, and a full host is skipped for the next with the reason.
 - `machines` and `cielago doctor` show each host's budget and why a host has
   no room; `cielago init` keeps the order of the hosts in the config.
+- `task_reply` sends a follow-up to a delegated Claude that has finished a
+  turn. It resumes the same headless session in the same copy, so it keeps
+  its context, and its changes move the branch `cielago/task-<id>` forward.
+  A delegate's copy now stays after `task_result` for follow-ups;
+  `cancel_task` removes it, and `cielago tasks clean` removes copies idle for
+  a day, with the delegate's transcript there.
 
 ## 0.4.0
 
