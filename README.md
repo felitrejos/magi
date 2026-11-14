@@ -31,10 +31,10 @@
   <i>A real handoff. Top: the MacBook. Bottom: the homelab, where a new session picks up the same conversation.</i>
 </p>
 
-You start something on your laptop, and then you want it running on the
-always-on machine in the closet: so it keeps going when the lid closes, so it
-can use the bigger CPU, so you can check on it from your phone. Until now that
-meant starting over and explaining everything again.
+Some sessions run for hours: a big refactor, a migration, an agent working
+through a backlog. A laptop is the wrong place for them, because it sleeps the
+moment you close the lid. Until now, moving one to an always-on machine meant
+starting over and explaining everything again.
 
 cielago moves the session itself. Ask for it in plain words and, as soon as the
 current turn ends, your branch, your uncommitted work, your secret files and the
@@ -155,15 +155,6 @@ the server's, so values that only exist in the server's `.env` are overwritten.
 - Claude's per-project memory folder stays separate on each machine.
 - `node_modules` and other build output aren't copied; reinstall if a lockfile
   changed.
-
-## Contributing
-
-```bash
-go test ./...
-```
-
-The tests run cielago's generated server-side scripts against a fake SSH host,
-including branch names built to break out of the shell.
 
 ## License
 
