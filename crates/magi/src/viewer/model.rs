@@ -52,6 +52,7 @@ pub struct Machine {
     pub interval: Duration,
     pub latest: Option<Sample>,
     pub cpu: History,
+    pub memory: History,
     pub rx: History,
     pub tx: History,
 }
@@ -63,6 +64,7 @@ impl Machine {
             interval: Duration::from_millis(u64::from(welcome.interval_ms)),
             latest: None,
             cpu: History::default(),
+            memory: History::default(),
             rx: History::default(),
             tx: History::default(),
         }
@@ -130,10 +132,6 @@ impl History {
         } else {
             recent.iter().sum::<f32>() / recent.len() as f32
         }
-    }
-
-    pub fn recent_max(&self, count: usize) -> f32 {
-        self.tail(count).into_iter().fold(0.0, f32::max)
     }
 }
 
@@ -302,6 +300,9 @@ impl Model {
                 };
                 link.state = LinkState::Live;
                 machine.cpu.push(f32::from(sample.cpu) / f32::from(FULL));
+                machine
+                    .memory
+                    .push(fraction(sample.memory.used, sample.memory.total));
                 machine.rx.push(sample.network.rx_per_sec as f32);
                 machine.tx.push(sample.network.tx_per_sec as f32);
                 machine.latest = Some(*sample);

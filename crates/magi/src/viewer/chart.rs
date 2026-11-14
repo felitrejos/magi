@@ -16,28 +16,6 @@ pub fn columns(values: &[f32], width: usize, height: usize) -> Vec<Vec<Option<ch
         .collect()
 }
 
-pub fn spark(values: &[f32], width: usize) -> String {
-    right_aligned(values, width)
-        .iter()
-        .map(|value| value.map_or(' ', |value| cell(scaled(value, 8)).unwrap_or(LEVELS[0])))
-        .collect()
-}
-
-pub fn level(fraction: f32) -> char {
-    LEVELS[scaled(fraction, 8).clamp(1, 8) - 1]
-}
-
-pub fn meter(fraction: f32, width: usize) -> (String, String) {
-    let halves = scaled(fraction, width * 2);
-    let full = halves / 2;
-    let mut filled = "━".repeat(full);
-    if halves % 2 == 1 {
-        filled.push('╸');
-    }
-    let used = full + halves % 2;
-    (filled, "─".repeat(width.saturating_sub(used)))
-}
-
 fn right_aligned(values: &[f32], width: usize) -> Vec<Option<f32>> {
     let shown = &values[values.len().saturating_sub(width)..];
     std::iter::repeat_n(None, width - shown.len())
@@ -83,7 +61,6 @@ mod tests {
             render(columns(&[0.001], 3, 2)),
             vec!["   ".to_string(), "  ▁".to_string()]
         );
-        assert_eq!(spark(&[0.0, 1.0], 4), "  ▁█");
     }
 
     #[test]
@@ -93,21 +70,5 @@ mod tests {
             vec![" █ ".to_string()]
         );
         assert!(columns(&[0.5; 10], 0, 0).is_empty());
-        assert_eq!(spark(&[], 3), "   ");
-    }
-
-    #[test]
-    fn meters_fill_in_half_steps() {
-        assert_eq!(meter(0.5, 4), ("━━".into(), "──".into()));
-        assert_eq!(meter(0.4, 4), ("━╸".into(), "──".into()));
-        assert_eq!(meter(1.5, 3), ("━━━".into(), String::new()));
-        assert_eq!(meter(f32::NAN, 2), (String::new(), "──".into()));
-    }
-
-    #[test]
-    fn levels_cover_the_range_and_never_vanish() {
-        assert_eq!(level(0.0), '▁');
-        assert_eq!(level(1.0), '█');
-        assert_eq!(level(0.5), '▄');
     }
 }

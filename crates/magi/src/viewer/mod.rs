@@ -1,5 +1,8 @@
 mod alerts;
+mod base64;
 mod chart;
+mod diacritics;
+mod graphics;
 mod link;
 mod model;
 mod style;
@@ -17,8 +20,11 @@ use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 
 use crate::{log, net};
+use graphics::Graphics;
 use link::{Dial, LinkHandle};
 use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
@@ -45,13 +51,22 @@ pub fn run(config: Config) -> io::Result<()> {
         socket: net::local_socket()?,
         sender: sender.clone(),
     };
-    topology::spawn(sender.clone())?;
-    spawn_input(sender)?;
     let alerts = alerts::Alerts::open(net::state_dir()?.join("alerts.jsonl"), Instant::now())?;
     let mut terminal = ratatui::try_init()?;
-    let result = write_status(alerts::CLEAR_ALL)
-        .and_then(|()| event_loop(&mut terminal, &events, &mut links, config.port, alerts));
-    let cleared = write_status(alerts::CLEAR_ALL);
+    let mut graphics = Graphics::detect(&mut io::stdout())?;
+    topology::spawn(sender.clone())?;
+    spawn_input(sender)?;
+    let result = write_status(alerts::CLEAR_ALL).and_then(|()| {
+        event_loop(
+            &mut terminal,
+            &events,
+            &mut links,
+            config.port,
+            alerts,
+            &mut graphics,
+        )
+    });
+    let cleared = write_status(alerts::CLEAR_ALL).and_then(|()| graphics.clear(&mut io::stdout()));
     ratatui::restore();
     result.and(cleared)
 }
@@ -115,6 +130,7 @@ fn event_loop(
     links: &mut Links,
     port: u16,
     alerts: alerts::Alerts,
+    graphics: &mut Graphics,
 ) -> io::Result<()> {
     let mut model = Model::new(port, Instant::now(), alerts);
     links.reconcile(&mut model, &[Endpoint::Local])?;
@@ -127,7 +143,14 @@ fn event_loop(
             let conditions = alerts::conditions(&model, now, now_secs);
             let changes = model.alerts.update(conditions, now, now_secs);
             write_status(&alerts::report(&changes))?;
-            terminal.draw(|frame| view::render(frame, &model, now))?;
+            let mut out = io::stdout();
+            execute!(out, BeginSynchronizedUpdate)?;
+            let drawn = terminal
+                .draw(|frame| view::render(frame, &model, now, graphics))
+                .map(drop)
+                .and_then(|()| graphics.flush(&mut out));
+            execute!(out, EndSynchronizedUpdate)?;
+            drawn?;
             last_draw = now;
             dirty = false;
         }

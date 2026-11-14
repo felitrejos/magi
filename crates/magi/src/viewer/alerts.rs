@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use super::base64;
 use super::model::{self, Level, LinkState, Model, Subsystem};
 use crate::proto::{FULL, SessionState, Waiting};
 
@@ -425,8 +426,8 @@ pub fn report(changes: &Changes) -> String {
         out.push_str(&format!(
             "\x1b]7501;state={state}:app=magi:id={}:title={}:msg={}\x1b\\",
             record_id(&condition.key),
-            base64(&printable(title, MAX_TITLE_BYTES)),
-            base64(&printable(&condition.text, MAX_MSG_BYTES)),
+            base64::encode(printable(title, MAX_TITLE_BYTES).as_bytes()),
+            base64::encode(printable(&condition.text, MAX_MSG_BYTES).as_bytes()),
         ));
     }
     out
@@ -476,25 +477,6 @@ fn printable(text: &str, max_bytes: usize) -> String {
     out
 }
 
-fn base64(text: &str) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = u32::from(chunk[0]) << 16
-            | u32::from(*chunk.get(1).unwrap_or(&0)) << 8
-            | u32::from(*chunk.get(2).unwrap_or(&0));
-        for index in 0..4 {
-            if index <= chunk.len() {
-                out.push(char::from(ALPHABET[(n >> (18 - 6 * index)) as usize & 63]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
@@ -529,10 +511,6 @@ mod tests {
 
     #[test]
     fn reports_follow_the_program_status_protocol() {
-        assert_eq!(base64(""), "");
-        assert_eq!(base64("f"), "Zg==");
-        assert_eq!(base64("fo"), "Zm8=");
-        assert_eq!(base64("foobar"), "Zm9vYmFy");
         assert_eq!(printable("a\nb\u{1b}c", 2048), "abc");
         assert_eq!(printable("ééé", 4), "éé");
         let changes = Changes {
@@ -549,8 +527,8 @@ mod tests {
             report(&changes),
             format!(
                 "\x1b]7501;state=clear:id=machine/nas/lost\x1b\\\x1b]7501;state=blocked:kind=permission:app=magi:id=agent/mac/s1:title={}:msg={}\x1b\\",
-                base64("mac"),
-                base64("deploy needs you · wants to run Bash")
+                base64::encode(b"mac"),
+                base64::encode("deploy needs you · wants to run Bash".as_bytes())
             )
         );
         let long = Condition {
