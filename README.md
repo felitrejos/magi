@@ -21,7 +21,7 @@
 <p align="center">
   <a href="https://github.com/felitrejos/cielago/actions/workflows/ci.yml"><img src="https://github.com/felitrejos/cielago/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/Claude%20Code-plugin-D97757" alt="Claude Code plugin">
-  <img src="https://img.shields.io/badge/macOS%20·%20Linux-black" alt="macOS and Linux">
+  <img src="https://img.shields.io/badge/macOS%20·%20Linux%20·%20Windows%20soon-black" alt="macOS and Linux, Windows soon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
@@ -108,7 +108,7 @@ stops it, brings everything back, and continues it in your terminal.
 
 | | |
 |---|---|
-| **Moves** | The conversation; commits and branch; staged and unstaged changes; untracked files; files matching `secrets`; Claude's project memory; subagent transcripts. |
+| **Moves** | The conversation; commits and branch; staged and unstaged changes; untracked files; changes inside submodules; uncommitted Git LFS files; files matching `secrets`; Claude's project memory; subagent transcripts. A repository without any commits yet moves too. |
 | **Restarts** | Background shells, dev servers and background subagents. The agent stops them before the handoff and writes down what each was doing; the new session reads that note and restarts what still needs to run. |
 | **Stays** | Dependencies and build output such as `node_modules`; your user-level `~/.claude` settings and plugins, which each machine keeps its own. |
 
@@ -122,8 +122,12 @@ your laptop. With `local_roots = ["~/Projects"]` and the server's
 | `~/Projects/notes` | `~/developer/notes/notes` | `notes` · `notes · claude` |
 
 The first time Claude runs in a new folder it asks you to trust it; answer
-once in the new tab and the handoff carries on. **Folders that aren't git
-repositories** are copied whole, minus anything in `exclude`.
+once in the new tab and the handoff carries on.
+
+**Folders that aren't git repositories** are mirrored, minus anything in
+`exclude`: files you deleted on one side are deleted on the other too. cielago
+remembers what each copy looked like when a session left it, and refuses to
+mirror over a copy that someone changed since.
 
 ## Install
 
@@ -162,7 +166,7 @@ you hand off from; to bring a session back to a laptop that doesn't, use
 
 ```toml
 local_roots = ["~/Projects"]                    # where your projects live on this machine
-exclude = ["node_modules", ".venv", "dist"]     # skipped when copying folders that aren't git repos
+exclude = ["node_modules", ".venv", "dist"]     # names skipped when copying folders that aren't git repos
 
 [hosts.homelab]
 ssh = "homelab"                                 # ssh destination
@@ -218,15 +222,6 @@ conversation. See [SECURITY.md](SECURITY.md).
 cielago reads some Claude Code internals, such as the transcript format.
 `cielago doctor` warns when a machine runs a version newer than cielago was
 tested with.
-
-## Limits
-
-- It moves between turns, never in the middle of a reply or a tool call.
-- A git repository needs at least one commit.
-- In folders that aren't git repositories, files deleted on one machine stay on
-  the other.
-- Git LFS files and changes inside git submodules don't move.
-- macOS and Linux only.
 
 ## License
 

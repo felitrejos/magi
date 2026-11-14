@@ -75,10 +75,13 @@ func (p Pull) Run() (Pulled, error) {
 		if ws.Git == nil && (ws.Root == remoteHome || ws.Root == "/") {
 			return fmt.Errorf("%s is a whole home folder on %s, not a project", ws.Root, p.HostName)
 		}
-		if where, err = place(local, ws, p.Host.LocalRoots, serverGroup(ws.MainRoot, p.Host.Roots, remoteHome)); err != nil {
+		if where, err = place(local, ws, p.Host.LocalRoots, serverGroup(ws.MainRoot, p.Host.Roots, remoteHome), p.Host.Exclude); err != nil {
 			return err
 		}
-		return localCheckoutAccepts(local, where, ws)
+		if where.NewFolder != "" || ws.Git == nil {
+			return nil
+		}
+		return checkoutAccepts(local, where.Root, ws)
 	}); err != nil {
 		res.Steps = st.steps
 		return res, err
@@ -116,7 +119,7 @@ func (p Pull) Run() (Pulled, error) {
 		case where.NewFolder != "":
 			err = withFolderUndo(err, local, where, local.Name())
 		case synced && ws.Git != nil:
-			if _, parkErr := sh(local, "cd "+quote(where.Root)+" && git update-ref "+parkedRef+" "+quote(ws.Git.Worktree)); parkErr != nil {
+			if parkErr := park(local, where.Root, ws); parkErr != nil {
 				err = fmt.Errorf("%w; marking %s as handed off also failed: %v", err, where.Root, parkErr)
 			}
 		}
@@ -125,12 +128,26 @@ func (p Pull) Run() (Pulled, error) {
 
 	if err := st.run("sync", func() error {
 		if ws.Git == nil {
-			return transfer(remote, ws.Root, Archive{Paths: []string{"."}, Exclude: p.Host.Exclude}, local, where.Root)
+			if where.NewFolder == "" {
+				f, err := folderState(local, where.Root)
+				if err != nil {
+					return err
+				}
+				if err := folderUnchanged(local, where.Root, f.Recorded, p.Host.Exclude); err != nil {
+					return err
+				}
+			}
+			if err := mirrorFolder(remote, ws.Root, local, where.Root, p.Host.Exclude); err != nil {
+				return err
+			}
+			return registerFolder(local, where.Root, p.Host.Exclude)
 		}
 		if where.NewFolder != "" {
 			if err := createClone(local, where.NewFolder, ws.Git.Origin); err != nil {
 				return err
 			}
+		} else if err := checkoutAccepts(local, where.Root, ws); err != nil {
+			return err
 		}
 		return pullGit(remote, local, ws, where.Root)
 	}); err != nil {
@@ -146,25 +163,13 @@ func (p Pull) Run() (Pulled, error) {
 		res.Steps = st.steps
 		return res, undo(err)
 	}
-	res.ParkNote = settle(remote, local, ws, where)
+	res.ParkNote = settle(remote, ws, p.Host.Exclude)
 	if _, err := sh(remote, "mv -- "+quote(session.Transcript)+" "+quote(session.Transcript+".handed-off-to-"+local.Name())); err != nil {
 		res.ParkNote = errors.Join(res.ParkNote, err)
 	}
 	res.Steps = st.steps
 	res.Prompt = handoffPrompt(Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Sidecar: sidecar})
 	return res, nil
-}
-
-func localCheckoutAccepts(local *Local, where Placement, ws Workspace) error {
-	if where.NewFolder != "" || ws.Git == nil {
-		return nil
-	}
-	_, err := sh(local, "cd "+quote(where.Root)+` && if [ -n "$(git status --porcelain --untracked-files=all --ignore-submodules=none)" ]; then `+
-		`d=$(mktemp -d); trap 'rm -rf "$d"' EXIT; x=$(git rev-parse --path-format=absolute --git-path index); if [ -f "$x" ]; then cp "$x" "$d/index"; fi; `+
-		`GIT_INDEX_FILE="$d/index" git add -A >/dev/null; now=$(GIT_INDEX_FILE="$d/index" git write-tree); `+
-		`parked=$(git rev-parse -q --verify '`+parkedRef+`^{tree}' || :); `+
-		`[ "$now" = "$parked" ] || { echo "$PWD has uncommitted changes made on this machine; commit or stash them first" >&2; exit 3; }; fi`)
-	return err
 }
 
 func findRemoteSession(r *Remote, hostName, id string) (remoteSession, error) {

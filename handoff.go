@@ -89,7 +89,7 @@ func (h Handoff) Run() (Result, error) {
 		if err != nil {
 			return err
 		}
-		where, err = place(remote, ws, h.Host.Roots, group)
+		where, err = place(remote, ws, h.Host.Roots, group, h.Host.Exclude)
 		return err
 	})
 	if err != nil {
@@ -164,7 +164,7 @@ func (h Handoff) Run() (Result, error) {
 	defer cancel()
 	local.SetContext(finish)
 	remote.SetContext(finish)
-	res.ParkNote = settle(local, remote, ws, where)
+	res.ParkNote = settle(local, ws, h.Host.Exclude)
 	if h.Host.NewTabCommand != "" {
 		res.TabNote = st.run("tab", func() error {
 			return launcher.OpenProjectTab(tab, name, where.Root, strings.ReplaceAll(h.Host.NewTabCommand, "{repo}", quote(name)))
@@ -187,21 +187,26 @@ func refuseHome(ws Workspace) error {
 
 func syncProject(local *Local, remote *Remote, ws Workspace, where Placement, exclude []string) error {
 	if ws.Git == nil {
-		return transfer(local, ws.Root, Archive{Paths: []string{"."}, Exclude: exclude}, remote, where.Root)
+		if err := mirrorFolder(local, ws.Root, remote, where.Root, exclude); err != nil {
+			return err
+		}
+		return registerFolder(remote, where.Root, exclude)
 	}
 	if where.NewFolder != "" {
 		if err := createClone(remote, where.NewFolder, ws.Git.Origin); err != nil {
 			return err
 		}
+	} else if err := checkoutAccepts(remote, where.Root, ws); err != nil {
+		return err
 	}
 	return pushGit(local, remote, ws, where.Root)
 }
 
-func settle(source, target Machine, ws Workspace, where Placement) error {
+func settle(source Machine, ws Workspace, exclude []string) error {
 	if ws.Git != nil {
-		return park(source, ws)
+		return park(source, ws.Root, ws)
 	}
-	return registerFolder(target, where.Root)
+	return registerFolder(source, ws.Root, exclude)
 }
 
 func withFolderUndo(err error, target Machine, where Placement, targetName string) error {
@@ -309,7 +314,7 @@ type Placement struct {
 	NewFolder string
 }
 
-func place(target Machine, ws Workspace, roots []string, groupIfNew string) (Placement, error) {
+func place(target Machine, ws Workspace, roots []string, groupIfNew string, exclude []string) (Placement, error) {
 	home, err := homeDir(target)
 	if err != nil {
 		return Placement{}, err
@@ -330,17 +335,20 @@ func place(target Machine, ws Workspace, roots []string, groupIfNew string) (Pla
 	}
 	p.Group = groupIfNew
 	p.Root = expandHome(roots[0], home) + "/" + groupIfNew + "/" + ws.Name
-	state, err := folderState(target, p.Root)
+	f, err := folderState(target, p.Root)
 	if err != nil {
 		return p, err
 	}
 	switch {
-	case state == "new":
+	case f.State == "new":
 		p.NewFolder = p.Root
+	case ws.Git != nil && f.State == "git" && ws.Git.Origin == "" && f.Origin == "" && f.RootCommit == "":
 	case ws.Git != nil:
 		return p, fmt.Errorf("%s already exists on %s but isn't a clone of this repository", p.Root, target.Name())
-	case state != "ours":
+	case f.State != "ours":
 		return p, fmt.Errorf("%s already exists on %s and wasn't created by cielago; move it away or hand off from a folder with another name", p.Root, target.Name())
+	default:
+		return p, folderUnchanged(target, p.Root, f.Recorded, exclude)
 	}
 	return p, nil
 }
@@ -355,21 +363,6 @@ type Clone struct {
 func homeDir(m Machine) (string, error) {
 	out, err := sh(m, `printf '%s' "$HOME"`)
 	return string(out), err
-}
-
-const folderRegistry = `"$HOME"/.cielago/folders`
-
-func folderState(m Machine, path string) (string, error) {
-	p := quote(path)
-	out, err := sh(m, "if [ ! -e "+p+" ]; then echo new; elif [ -e "+p+"/.git ]; then echo git; "+
-		"elif [ -f "+folderRegistry+" ] && grep -qxF -- "+p+" "+folderRegistry+"; then echo ours; else echo foreign; fi")
-	return strings.TrimSpace(string(out)), err
-}
-
-func registerFolder(m Machine, path string) error {
-	p := quote(path)
-	_, err := sh(m, `mkdir -p "$HOME"/.cielago && { [ -f `+folderRegistry+` ] && grep -qxF -- `+p+` `+folderRegistry+` || printf '%s\n' `+p+` >> `+folderRegistry+`; }`)
-	return err
 }
 
 func listClones(m Machine, roots []string) ([]Clone, error) {
@@ -405,7 +398,7 @@ func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
 		if ws.Git.Origin != "" {
 			return c.Origin != "" && normalizeRemote(c.Origin) == normalizeRemote(ws.Git.Origin)
 		}
-		return c.Origin == "" && c.RootCommit == ws.Git.RootCommit
+		return c.Origin == "" && ws.Git.RootCommit != "" && c.RootCommit == ws.Git.RootCommit
 	}
 	var matches []string
 	for _, c := range clones {

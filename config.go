@@ -76,6 +76,11 @@ func (h Host) validate(name string) error {
 			return fmt.Errorf("host %q: roots must start with / or ~/, got %q", name, root)
 		}
 	}
+	for _, e := range h.Exclude {
+		if e == "" || strings.Contains(e, "/") {
+			return fmt.Errorf("exclude: %q isn't a file or folder name; list names such as \"node_modules\", without slashes", e)
+		}
+	}
 	return nil
 }
 

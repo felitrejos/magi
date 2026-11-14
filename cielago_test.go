@@ -189,7 +189,7 @@ func TestSessionCanComeBackToTheCheckoutItLeft(t *testing.T) {
 	if err := pushGit(f.machine(), f.remoteHost(), out, f.remote); err != nil {
 		t.Fatal(err)
 	}
-	if err := park(f.machine(), out); err != nil {
+	if err := park(f.machine(), out.Root, out); err != nil {
 		t.Fatal(err)
 	}
 
@@ -217,7 +217,7 @@ func TestSessionCannotComeBackOverWorkDoneAfterLeaving(t *testing.T) {
 	if err := pushGit(f.machine(), f.remoteHost(), out, f.remote); err != nil {
 		t.Fatal(err)
 	}
-	if err := park(f.machine(), out); err != nil {
+	if err := park(f.machine(), out.Root, out); err != nil {
 		t.Fatal(err)
 	}
 	f.write(f.local, "kept.txt", "edited on the laptop after the handoff")
@@ -280,7 +280,7 @@ func TestAFileAddedOnTheParkedMachineIsNotCleanedAway(t *testing.T) {
 	if err := pushGit(f.machine(), f.remoteHost(), out, f.remote); err != nil {
 		t.Fatal(err)
 	}
-	if err := park(f.machine(), out); err != nil {
+	if err := park(f.machine(), out.Root, out); err != nil {
 		t.Fatal(err)
 	}
 	f.write(f.local, "written-after.txt", "keep me")
@@ -322,10 +322,10 @@ func TestPlainFolderStateTellsNewOwnAndForeignFoldersApart(t *testing.T) {
 	foreign := filepath.Join(f.home, "developer", "other", "notes")
 	f.write(ours, "todo.md", "x")
 	f.write(foreign, "todo.md", "y")
-	if err := registerFolder(r, ours); err != nil {
+	if err := registerFolder(r, ours, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := registerFolder(r, ours); err != nil {
+	if err := registerFolder(r, ours, nil); err != nil {
 		t.Fatal(err)
 	}
 	for path, want := range map[string]string{
@@ -334,12 +334,180 @@ func TestPlainFolderStateTellsNewOwnAndForeignFoldersApart(t *testing.T) {
 		f.remote:                             "git",
 		filepath.Join(f.home, "nope", "new"): "new",
 	} {
-		if got, err := folderState(r, path); err != nil || got != want {
-			t.Errorf("folderState(%s) = %q, %v; want %q", path, got, err, want)
+		if got, err := folderState(r, path); err != nil || got.State != want {
+			t.Errorf("folderState(%s) = %q, %v; want %q", path, got.State, err, want)
 		}
 	}
-	if got := f.read(f.home, ".cielago/folders"); got != ours+"\n" {
-		t.Errorf("registry = %q, want one entry", got)
+	if lines := strings.Count(f.read(f.home, ".cielago/folders"), "\n"); lines != 1 {
+		t.Errorf("registry has %d lines, want one entry", lines)
+	}
+}
+
+func TestPlainFoldersMirrorDeletionsAndRefuseChangedCopies(t *testing.T) {
+	f := newFixture(t)
+	r := f.remoteHost()
+	laptop := filepath.Join(f.home, "laptop", "notes")
+	server := filepath.Join(f.home, "developer", "notes", "notes")
+	exclude := []string{"node_modules"}
+	f.write(laptop, "todo.md", "ship it")
+	f.write(laptop, "draft.md", "old draft")
+	f.write(laptop, "node_modules/x.js", "big")
+	if err := mirrorFolder(f.machine(), laptop, r, server, exclude); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFolder(r, server, exclude); err != nil {
+		t.Fatal(err)
+	}
+	if err := settle(f.machine(), Workspace{Root: laptop}, exclude); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(filepath.Join(laptop, "draft.md")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(server, "node_modules/server-only.js", "kept")
+	folder, err := folderState(r, server)
+	if err != nil || folder.State != "ours" {
+		t.Fatalf("state = %q, %v", folder.State, err)
+	}
+	if err := folderUnchanged(r, server, folder.Recorded, exclude); err != nil {
+		t.Fatalf("an untouched copy counted as changed: %v", err)
+	}
+	if err := mirrorFolder(f.machine(), laptop, r, server, exclude); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.read(server, "draft.md"); got != "<missing>" {
+		t.Errorf("a file deleted on the laptop survived on the server: %q", got)
+	}
+	if got := f.read(server, "node_modules/server-only.js"); got != "kept" {
+		t.Errorf("an excluded folder on the server was touched: %q", got)
+	}
+	if err := registerFolder(r, server, exclude); err != nil {
+		t.Fatal(err)
+	}
+
+	f.write(server, "todo.md", "edited on the server by hand")
+	folder, _ = folderState(r, server)
+	if err := folderUnchanged(r, server, folder.Recorded, exclude); err == nil {
+		t.Fatal("a copy edited on the server counted as unchanged")
+	}
+	folder, err = folderState(f.machine(), laptop)
+	if err != nil || folder.State != "ours" {
+		t.Fatalf("the laptop folder wasn't recorded when the session left it: %q, %v", folder.State, err)
+	}
+	if err := folderUnchanged(f.machine(), laptop, folder.Recorded, exclude); err == nil {
+		t.Fatal("the laptop folder changed after the session left (draft.md deleted) but counted as unchanged")
+	}
+}
+
+func TestMirroringIntoThisMachineDeletesOnlyWhatTheSourceLacks(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("LC_ALL", "en_US.UTF-8")
+	server := filepath.Join(f.home, "developer", "notes", "notes")
+	laptop := filepath.Join(f.home, "laptop", "notes")
+	f.write(server, "alpha", "kept")
+	f.write(server, "b", "kept")
+	f.write(server, "dir/inner", "kept")
+	f.write(laptop, "alpha", "old")
+	f.write(laptop, "b", "old")
+	f.write(laptop, "Zeta", "gone on the server")
+	f.write(laptop, "x\nb", "gone on the server")
+	f.write(laptop, "old/deep/file", "gone on the server")
+	if err := os.MkdirAll(filepath.Join(laptop, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("alpha", filepath.Join(laptop, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mirrorFolder(f.remoteHost(), server, f.machine(), laptop, nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(laptop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if got := strings.Join(names, ","); got != "alpha,b,dir" {
+		t.Errorf("laptop has %q, want alpha,b,dir", got)
+	}
+	if got := f.read(laptop, "b"); got != "kept" {
+		t.Errorf("b = %q", got)
+	}
+}
+
+func TestARetryIntoAFolderTheFailedHandoffAlreadyFilledIsAccepted(t *testing.T) {
+	f := newFixture(t)
+	laptop := filepath.Join(f.home, "laptop", "notes")
+	f.write(laptop, "todo.md", "ship it")
+	ws := f.workspace(laptop)
+	r := f.remoteHost()
+	where, err := place(r, ws, []string{"~/developer"}, "notes", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncProject(f.machine(), r, ws, where, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.write(laptop, "todo.md", "ship it today")
+	if _, err := place(r, ws, []string{"~/developer"}, "notes", nil); err != nil {
+		t.Fatalf("the retry was refused over the files the failed attempt copied: %v", err)
+	}
+}
+
+func TestAFolderFingerprintNoticesChangesAndFailsOnWhatItCannotRead(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.home, "notes")
+	f.write(dir, "a.md", "same size")
+	m := f.machine()
+	before, err := fingerprint(m, dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "a.md"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := fingerprint(m, dir, nil); after == before {
+		t.Error("a mode change wasn't noticed")
+	}
+	before, _ = fingerprint(m, dir, nil)
+	f.write(dir, "a.md", "same SIZE")
+	if err := os.Chtimes(filepath.Join(dir, "a.md"), time.Now(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := fingerprint(m, dir, nil); after == before {
+		t.Error("an edit that kept the size wasn't noticed")
+	}
+	if err := os.Mkdir(filepath.Join(dir, "locked"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	f.write(dir, "z.md", "x")
+	t.Cleanup(func() { os.Chmod(filepath.Join(dir, "locked"), 0o755) })
+	if _, err := fingerprint(m, dir, nil); err == nil {
+		t.Error("a folder it couldn't read gave a fingerprint instead of failing")
+	}
+}
+
+func TestRegistryLinesFromVersionZeroOneAreRecognizedAndReplaced(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.home, "developer", "notes", "notes")
+	f.write(dir, "todo.md", "x")
+	f.write(f.home, ".cielago/folders", dir+"\n")
+	m := f.machine()
+	folder, err := folderState(m, dir)
+	if err != nil || folder.State != "ours" || folder.Recorded != legacyEntry {
+		t.Fatalf("folder = %+v, %v", folder, err)
+	}
+	if err := folderUnchanged(m, dir, folder.Recorded, nil); err == nil {
+		t.Fatal("a folder with no recorded contents counted as unchanged")
+	}
+	if err := registerFolder(m, dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(f.read(f.home, ".cielago/folders"), "\n"); got != 1 {
+		t.Errorf("registry has %d lines, want the old line replaced", got)
 	}
 }
 
@@ -541,12 +709,179 @@ func TestReadWorkspaceNamesAWorktreeAfterItsMainCheckout(t *testing.T) {
 	}
 }
 
-func TestReadWorkspaceRefusesARepositoryWithoutCommits(t *testing.T) {
+func TestARepositoryWithoutCommitsIsHandedOffTwiceAndComesBack(t *testing.T) {
 	f := newFixture(t)
-	empty := filepath.Join(f.home, "laptop", "empty")
-	f.git(f.home, "init", "-q", empty)
-	if _, err := readWorkspace(f.machine(), empty, nil); err == nil || !strings.Contains(err.Error(), "first commit") {
-		t.Fatalf("err = %v, want a first-commit error", err)
+	empty := filepath.Join(f.home, "laptop", "fresh", "fresh")
+	f.git(f.home, "init", "-q", "-b", "main", empty)
+	f.write(empty, "staged.txt", "staged")
+	f.git(empty, "add", "staged.txt")
+	f.write(empty, "loose.txt", "not staged")
+	ws := f.workspace(empty)
+	if ws.Git == nil || ws.Git.Head != "" || ws.Git.Branch != "main" {
+		t.Fatalf("workspace = %+v", ws.Git)
+	}
+	r := f.remoteHost()
+	where, err := place(r, ws, []string{"~/developer"}, "fresh", nil)
+	if err != nil || where.NewFolder == "" {
+		t.Fatalf("first handoff: %+v, %v", where, err)
+	}
+	if err := syncProject(f.machine(), r, ws, where, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := where.Root
+	if got, want := f.git(dir, "status", "--porcelain"), f.git(empty, "status", "--porcelain"); got != want {
+		t.Errorf("status:\n%s\nwant:\n%s", got, want)
+	}
+	if got := f.git(dir, "symbolic-ref", "--short", "HEAD"); got != "main" {
+		t.Errorf("branch = %q", got)
+	}
+	if err := park(f.machine(), ws.Root, ws); err != nil {
+		t.Fatal(err)
+	}
+
+	home := f.machine()
+	there, err := readWorkspace(r, dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pullGit(r, home, there, empty); err != nil {
+		t.Fatalf("coming back without commits: %v", err)
+	}
+	if err := park(r, dir, there); err != nil {
+		t.Fatal(err)
+	}
+	f.write(empty, "loose.txt", "edited on the laptop before handing off again")
+	again := f.workspace(empty)
+	if where, err = place(r, again, []string{"~/developer"}, "fresh", nil); err != nil || where.Root != dir || where.NewFolder != "" {
+		t.Fatalf("second handoff placed at %+v, %v; want the existing %s", where, err, dir)
+	}
+	if err := syncProject(f.machine(), r, again, where, nil); err != nil {
+		t.Fatalf("second handoff: %v", err)
+	}
+	if err := park(f.machine(), again.Root, again); err != nil {
+		t.Fatal(err)
+	}
+
+	f.git(dir, "commit", "-q", "-m", "first commit, made on the server")
+	back, err := readWorkspace(r, dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if where, err = place(home, back, []string{"~/laptop"}, "fresh", nil); err != nil || where.Root != empty {
+		t.Fatalf("pulling back placed at %+v, %v; want %s", where, err, empty)
+	}
+	if err := checkoutAccepts(home, where.Root, back); err != nil {
+		t.Fatal(err)
+	}
+	if err := pullGit(r, home, back, empty); err != nil {
+		t.Fatalf("pulling back: %v", err)
+	}
+	if got := f.git(empty, "log", "--format=%s"); got != "first commit, made on the server" {
+		t.Errorf("laptop log = %q", got)
+	}
+	if got := f.read(empty, "loose.txt"); got != "edited on the laptop before handing off again" {
+		t.Errorf("loose.txt = %q", got)
+	}
+}
+
+func TestInspectingFromASubfolderFindsLFSFilesAndSecretsAcrossTheRepository(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.local, ".gitattributes", "assets/** filter=lfs\n")
+	f.write(f.local, "assets/model.bin", "weights")
+	f.write(f.local, "assets/it's \"odd\"\\.bin", "weights")
+	f.write(f.local, "sub/.env", "SECRET=2")
+	f.write(f.local, "sub/code.go", "package sub")
+	ws := f.workspace(filepath.Join(f.local, "sub"))
+	if got := strings.Join(ws.LFS, "|"); got != "assets/it's \"odd\"\\.bin|assets/model.bin" {
+		t.Errorf("LFS = %q", got)
+	}
+	if got := strings.Join(ws.Secrets, "|"); got != "sub/.env" {
+		t.Errorf("secrets = %q", got)
+	}
+	if ws.Subdir != "sub" {
+		t.Errorf("subdir = %q", ws.Subdir)
+	}
+}
+
+func TestUncommittedLFSFilesArriveWithTheirContent(t *testing.T) {
+	if _, err := exec.LookPath("git-lfs"); err != nil {
+		t.Skip("git-lfs isn't installed")
+	}
+	f := newFixture(t)
+	for _, repo := range []string{f.local, f.remote} {
+		f.git(repo, "config", "filter.lfs.clean", "git-lfs clean -- %f")
+		f.git(repo, "config", "filter.lfs.smudge", "git-lfs smudge -- %f")
+		f.git(repo, "config", "filter.lfs.process", "git-lfs filter-process")
+		f.git(repo, "config", "filter.lfs.required", "true")
+	}
+	f.write(f.local, ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n")
+	f.git(f.local, "add", ".gitattributes")
+	f.git(f.local, "commit", "-q", "-m", "lfs")
+	f.git(f.remote, "pull", "-q", f.local, "main")
+	f.write(f.local, "model.bin", "real model bytes")
+	ws := f.workspace(f.local)
+	if strings.Join(ws.LFS, ",") != "model.bin" {
+		t.Fatalf("LFS = %v, want model.bin", ws.LFS)
+	}
+	if err := pushGit(f.machine(), f.remoteHost(), ws, f.remote); err != nil {
+		t.Fatal(err)
+	}
+	if blob := f.git(f.remote, "cat-file", "-p", ws.Git.Worktree+":model.bin"); !strings.HasPrefix(blob, "version https://git-lfs") {
+		t.Fatalf("the snapshot didn't go through the LFS filter: %q", blob)
+	}
+	if got := f.read(f.remote, "model.bin"); got != "real model bytes" {
+		t.Errorf("model.bin on the server = %q", got)
+	}
+}
+
+func TestChangesInsideASubmoduleMove(t *testing.T) {
+	f := newFixture(t)
+	lib := filepath.Join(f.home, "upstream", "lib")
+	f.git(f.home, "init", "-q", "-b", "main", lib)
+	f.write(lib, "lib.txt", "v1")
+	f.git(lib, "add", ".")
+	f.git(lib, "commit", "-q", "-m", "lib")
+	f.git(f.local, "-c", "protocol.file.allow=always", "submodule", "add", "-q", lib, "vendor/lib")
+	f.git(f.local, "commit", "-q", "-m", "add lib")
+	f.git(f.remote, "pull", "-q", f.local, "main")
+
+	f.write(filepath.Join(f.local, "vendor/lib"), "lib.txt", "edited inside the submodule")
+	f.write(filepath.Join(f.local, "vendor/lib"), "new.txt", "new inside the submodule")
+	ws := f.workspace(f.local)
+	if len(ws.Submodules) != 1 || ws.Submodules[0].Subpath != "vendor/lib" {
+		t.Fatalf("submodules = %+v", ws.Submodules)
+	}
+	r := f.remoteHost()
+	if err := syncProject(f.machine(), r, ws, Placement{Root: f.remote}, nil); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(f.remote, "vendor/lib")
+	if got := f.read(sub, "lib.txt") + "|" + f.read(sub, "new.txt"); got != "edited inside the submodule|new inside the submodule" {
+		t.Errorf("submodule on the server = %q", got)
+	}
+	if got := f.git(sub, "remote", "get-url", "origin"); got != lib {
+		t.Errorf("the submodule created on the server has origin %q, want %q", got, lib)
+	}
+	back, err := readWorkspace(r, f.remote, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Submodules) != 1 {
+		t.Fatalf("the server doesn't see the submodule it was given: %+v", back.Submodules)
+	}
+	if err := park(r, f.remote, back); err != nil {
+		t.Fatal(err)
+	}
+
+	f.write(sub, "lib.txt", "edited by hand on the server")
+	f.write(f.local, "kept.txt", "a later laptop edit")
+	f.git(f.local, "update-ref", "-d", parkedRef)
+	later := f.workspace(f.local)
+	if err := syncProject(f.machine(), r, later, Placement{Root: f.remote}, nil); err == nil {
+		t.Fatal("a hand edit inside the server's submodule was overwritten")
+	}
+	if got := f.read(f.remote, "kept.txt"); got != "v1" {
+		t.Errorf("the parent checkout was changed before the submodule was checked: kept.txt = %q", got)
 	}
 }
 
@@ -558,6 +893,10 @@ func TestHostRejectsRelativeRoots(t *testing.T) {
 	h.Roots = []string{"~/developer", "/srv/code"}
 	if err := h.validate("server"); err != nil {
 		t.Fatal(err)
+	}
+	h.Exclude = []string{"build/cache"}
+	if err := h.validate("server"); err == nil {
+		t.Fatal("an exclude with a slash was accepted, though find and tar would read it differently")
 	}
 }
 
@@ -721,7 +1060,7 @@ func TestPullBringsWorkDoneOnTheServerBackToTheParkedLaptop(t *testing.T) {
 	if err := pushGit(f.machine(), f.remoteHost(), out, f.remote); err != nil {
 		t.Fatal(err)
 	}
-	if err := park(f.machine(), out); err != nil {
+	if err := park(f.machine(), out.Root, out); err != nil {
 		t.Fatal(err)
 	}
 	f.write(f.remote, "edited.txt", "finished on the server")
@@ -927,11 +1266,11 @@ func TestPullRefusesALocalCheckoutWithItsOwnChangesBeforeStoppingAnything(t *tes
 	f := newFixture(t)
 	f.write(f.local, "kept.txt", "laptop edit")
 	ws := f.workspace(f.remote)
-	if err := localCheckoutAccepts(f.machine(), Placement{Root: f.local}, ws); err == nil {
+	if err := checkoutAccepts(f.machine(), f.local, ws); err == nil {
 		t.Fatal("a laptop checkout with its own changes was accepted")
 	}
 	f.git(f.local, "checkout", "-q", "--", "kept.txt")
-	if err := localCheckoutAccepts(f.machine(), Placement{Root: f.local}, ws); err != nil {
+	if err := checkoutAccepts(f.machine(), f.local, ws); err != nil {
 		t.Fatalf("a clean checkout was refused: %v", err)
 	}
 }

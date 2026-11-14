@@ -63,7 +63,15 @@ type Machine interface {
 }
 
 func sh(m Machine, script string) ([]byte, error) {
-	out, err := output(m.Command(script), "sh")
+	return shIn(m, script, nil)
+}
+
+func shIn(m Machine, script string, input []byte) ([]byte, error) {
+	cmd := m.Command(script)
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
+	out, err := output(cmd, "sh")
 	if err != nil {
 		return out, fmt.Errorf("on %s: %w", m.Name(), err)
 	}

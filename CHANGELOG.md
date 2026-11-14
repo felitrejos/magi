@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Repositories without any commits can be handed off.
+- Folders that aren't git repositories are mirrored, deletions included, and a
+  copy changed since a session left it is never overwritten. A session can
+  come back to the folder it started in.
+- Uncommitted Git LFS files arrive with their real content.
+- Uncommitted changes inside git submodules move too, and a submodule the
+  other machine doesn't have yet is set up there with its own remote.
+- Secret and Git LFS files are found across the whole repository when Claude
+  runs in a subfolder.
+- `exclude` takes file and folder names; a pattern with a slash is refused.
+
 ## 0.1.0
 
 First release.
