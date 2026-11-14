@@ -2,7 +2,7 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::UnixListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,8 +11,10 @@ use crate::collect::{self, Collector, SystemInfo};
 use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
-    self, AgentMessage, Hello, Identity, PROTOCOL_VERSION, Reply, Request, StatusReport, Welcome,
+    self, AgentMessage, Hello, Identity, PROTOCOL_VERSION, Reply, Request, Run, Screen,
+    StatusReport, Welcome,
 };
+use crate::screen::Capturer;
 use crate::sessions::{Board, Sessions, Snapshot};
 use crate::{log, tailscale};
 
@@ -26,6 +28,7 @@ const FRAME_BACKLOG: usize = 4;
 const HELLO_MAX_BYTES: usize = 8;
 const STATUS_MAX_BYTES: usize = 4096;
 const REQUEST_MAX_BYTES: usize = 4096;
+const SCREEN_EVERY: Duration = Duration::from_millis(500);
 const STATUS_RETRY: Duration = Duration::from_millis(10);
 const STATUS_READ_TIMEOUT: Duration = Duration::from_secs(1);
 const SESSIONS_EVERY: Duration = Duration::from_secs(1);
@@ -107,6 +110,18 @@ struct Agent {
 }
 
 impl Agent {
+    fn capture(&self, session: &str, capturer: &mut Capturer) -> Result<Vec<Vec<Run>>, String> {
+        let pane = self
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .panes
+            .get(session)
+            .cloned()
+            .ok_or("that session isn't in a Rex pane on this machine")?;
+        capturer.capture(&pane, Instant::now())
+    }
+
     fn new(identity: Identity, interval: Duration) -> Self {
         Self {
             identity: RwLock::new(identity),
@@ -400,38 +415,96 @@ fn spawn_requests(
         .name("requests".into())
         .spawn(move || {
             let mut buf = Vec::new();
+            let mut watcher: Option<SyncSender<Option<String>>> = None;
             while let Ok(request) =
                 proto::read_frame_within::<Request, _>(&mut *conn, &mut buf, REQUEST_MAX_BYTES)
             {
-                answer(request, &agent, &replies);
+                match request {
+                    Request::Move { session, to } => move_session(&session, &to, &agent, &replies),
+                    Request::Watch { session } => {
+                        let delivered = watcher
+                            .as_ref()
+                            .is_some_and(|watcher| watcher.send(session.clone()).is_ok());
+                        if !delivered && session.is_some() {
+                            watcher =
+                                spawn_watcher(session, replies.clone(), Arc::clone(&agent)).ok();
+                        }
+                    }
+                }
             }
         })?;
     Ok(())
 }
 
-fn answer(request: Request, agent: &Agent, replies: &SyncSender<Frame>) {
-    match request {
-        Request::Move { session, to } => {
-            let found = agent
-                .sessions
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .sessions
-                .iter()
-                .find(|known| known.id == session)
-                .cloned();
-            let Some(found) = found else {
-                return reply(replies, false, "that session has ended".into());
-            };
-            let later = replies.clone();
-            let started = handoff::start(&found, &to, move |outcome| {
-                reply(&later, outcome.ok, outcome.text);
-            });
-            match started {
-                Ok(text) => reply(replies, true, text),
-                Err(text) => reply(replies, false, text),
+fn spawn_watcher(
+    first: Option<String>,
+    replies: SyncSender<Frame>,
+    agent: Arc<Agent>,
+) -> io::Result<SyncSender<Option<String>>> {
+    let (watch, changes) = mpsc::sync_channel(4);
+    thread::Builder::new()
+        .name("screen".into())
+        .spawn(move || {
+            let mut watching = first;
+            let mut capturer = Capturer::default();
+            let mut last: Option<Screen> = None;
+            loop {
+                if let Some(session) = &watching {
+                    let screen = Screen {
+                        session: session.clone(),
+                        view: agent.capture(session, &mut capturer),
+                    };
+                    if last.as_ref() != Some(&screen) {
+                        let Ok(frame) = proto::encode_frame(&AgentMessage::Screen(screen.clone()))
+                        else {
+                            return;
+                        };
+                        if replies.send(frame.into()).is_err() {
+                            return;
+                        }
+                        last = Some(screen);
+                    }
+                }
+                let next = if watching.is_some() {
+                    match changes.recv_timeout(SCREEN_EVERY) {
+                        Ok(next) => next,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                } else {
+                    match changes.recv() {
+                        Ok(next) => next,
+                        Err(_) => return,
+                    }
+                };
+                if next != watching {
+                    last = None;
+                }
+                watching = next;
             }
-        }
+        })?;
+    Ok(watch)
+}
+
+fn move_session(session: &str, to: &str, agent: &Agent, replies: &SyncSender<Frame>) {
+    let found = agent
+        .sessions
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .sessions
+        .iter()
+        .find(|known| known.id == session)
+        .cloned();
+    let Some(found) = found else {
+        return reply(replies, false, "that session has ended".into());
+    };
+    let later = replies.clone();
+    let started = handoff::start(&found, to, move |outcome| {
+        reply(&later, outcome.ok, outcome.text);
+    });
+    match started {
+        Ok(text) => reply(replies, true, text),
+        Err(text) => reply(replies, false, text),
     }
 }
 
@@ -658,6 +731,37 @@ mod tests {
         );
         let next: AgentMessage = proto::read_frame(&mut stream, &mut buf).unwrap();
         assert!(matches!(next, AgentMessage::Sample(_)), "{next:?}");
+    }
+
+    #[test]
+    fn watching_a_session_outside_rex_says_why_there_is_no_screen() {
+        let agent = start_local_agent("watch", Duration::from_millis(100));
+        let (mut stream, reply) = connect(&agent, PROTOCOL_VERSION);
+        assert!(matches!(reply, AgentMessage::Welcome(_)), "{reply:?}");
+        proto::write_frame(
+            &mut stream,
+            &Request::Watch {
+                session: Some("elsewhere".into()),
+            },
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        let screen = (0..50)
+            .find_map(
+                |_| match proto::read_frame(&mut stream, &mut buf).unwrap() {
+                    AgentMessage::Screen(screen) => Some(screen),
+                    _ => None,
+                },
+            )
+            .expect("a screen among the samples");
+        assert_eq!(
+            screen,
+            Screen {
+                session: "elsewhere".into(),
+                view: Err("that session isn't in a Rex pane on this machine".into()),
+            }
+        );
+        proto::write_frame(&mut stream, &Request::Watch { session: None }).unwrap();
     }
 
     #[test]

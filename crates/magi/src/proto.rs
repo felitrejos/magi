@@ -144,12 +144,42 @@ pub enum AgentMessage {
     Sample(Sample),
     Rejected(String),
     Reply(Reply),
+    Screen(Screen),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum Request {
     Move { session: String, to: String },
+    Watch { session: Option<String> },
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Screen {
+    pub session: String,
+    pub view: Result<Vec<Vec<Run>>, String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Run {
+    pub text: String,
+    pub fg: Shade,
+    pub bg: Shade,
+    pub flags: u8,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Shade {
+    #[default]
+    Default,
+    Indexed(u8),
+    Rgb(u8, u8, u8),
+}
+
+pub const BOLD: u8 = 1;
+pub const DIM: u8 = 2;
+pub const ITALIC: u8 = 4;
+pub const UNDERLINE: u8 = 8;
+pub const INVERSE: u8 = 16;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Reply {

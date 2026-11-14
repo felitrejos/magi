@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
 use crate::proto::{
-    Agent, AgentSession, FULL, Identity, Plan, Reply, Sample, SessionState, Welcome,
+    Agent, AgentSession, FULL, Identity, Plan, Reply, Run, Sample, Screen, SessionState, Welcome,
 };
 use crate::tailscale::Peer;
 
@@ -30,6 +30,7 @@ pub enum LinkUpdate {
     Lost(String),
     Rejected(String),
     Reply(Reply),
+    Screen(Screen),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -282,6 +283,9 @@ pub struct Model {
     flash: Option<Flash>,
     pub opening: bool,
     pub pending_move: Option<PendingMove>,
+    pub show_details: bool,
+    pub watching: Option<(Endpoint, String)>,
+    screens: HashMap<String, Result<Vec<Vec<Run>>, String>>,
 }
 
 struct Flash {
@@ -319,14 +323,36 @@ impl Model {
             flash: None,
             opening: false,
             pending_move: None,
+            show_details: false,
+            watching: None,
+            screens: HashMap::new(),
         }
     }
 
     pub fn apply(&mut self, endpoint: Endpoint, update: LinkUpdate, now: Instant) {
-        if let LinkUpdate::Reply(reply) = update {
-            self.flash(reply.text, reply.ok, now);
-            return;
-        }
+        let update = match update {
+            LinkUpdate::Reply(reply) => return self.flash(reply.text, reply.ok, now),
+            LinkUpdate::Screen(screen) => {
+                if self
+                    .watching
+                    .as_ref()
+                    .is_some_and(|(_, id)| *id == screen.session)
+                {
+                    self.screens.insert(screen.session, screen.view);
+                }
+                return;
+            }
+            LinkUpdate::Welcome(_)
+                if self
+                    .watching
+                    .as_ref()
+                    .is_some_and(|(at, _)| *at == endpoint) =>
+            {
+                self.watching = None;
+                update
+            }
+            update => update,
+        };
         let Some(link) = self.links.get_mut(&endpoint) else {
             return;
         };
@@ -362,7 +388,9 @@ impl Model {
                 link.state = LinkState::Lost { since, reason };
             }
             LinkUpdate::Rejected(reason) => link.state = LinkState::Rejected(reason),
-            LinkUpdate::Reply(_) => unreachable!("replies are flashed before a link is looked up"),
+            LinkUpdate::Reply(_) | LinkUpdate::Screen(_) => {
+                unreachable!("replies and screens are handled before a link is looked up")
+            }
         }
     }
 
@@ -531,6 +559,25 @@ impl Model {
             .as_ref()
             .filter(|flash| now.duration_since(flash.at) < FLASH_FOR)
             .map(|flash| (flash.text.as_str(), flash.good))
+    }
+
+    pub fn screen(&self, session: &str) -> Option<&Result<Vec<Vec<Run>>, String>> {
+        self.screens.get(session)
+    }
+
+    pub fn wanted_watch(&self, now: Instant) -> Option<(Endpoint, String)> {
+        if self.showing_alerts || self.show_details {
+            return None;
+        }
+        let agent = self.selected_agent(now)?;
+        (agent.live && agent.session.pane.is_some())
+            .then(|| (agent.endpoint, agent.session.id.clone()))
+    }
+
+    pub fn watch(&mut self, watching: Option<(Endpoint, String)>) {
+        self.screens
+            .retain(|id, _| watching.as_ref().is_some_and(|(_, watched)| watched == id));
+        self.watching = watching;
     }
 
     pub fn move_target(&self, agent: &AgentRow<'_>, now: Instant) -> Option<MoveTarget> {

@@ -280,7 +280,25 @@ fn handle_batch(
         }
     }
     model.reselect(Instant::now());
+    sync_watch(model, links);
     Ok(Flow::Continue)
+}
+
+fn sync_watch(model: &mut Model, links: &Links) {
+    let wanted = model.wanted_watch(Instant::now());
+    if wanted == model.watching {
+        return;
+    }
+    if let Some((endpoint, _)) = &model.watching {
+        let _ = links.request(*endpoint, &proto::Request::Watch { session: None });
+    }
+    let started = wanted.filter(|(endpoint, session)| {
+        let request = proto::Request::Watch {
+            session: Some(session.clone()),
+        };
+        links.request(*endpoint, &request).is_ok()
+    });
+    model.watch(started);
 }
 
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
@@ -300,6 +318,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Key::Alerts => model.showing_alerts = !model.showing_alerts,
             Key::Open => open_selected(model, links, now)?,
             Key::Move => propose_move(model, now),
+            Key::Screen => model.show_details = !model.show_details,
             Key::Yes | Key::No => {}
         },
         Event::Opened(result) => {
@@ -633,5 +652,90 @@ mod tests {
             Some(("moving run the tests to nas…", true))
         );
         assert!(footer(&model).contains("moving run the tests to nas…"));
+    }
+
+    #[test]
+    fn the_selected_rex_session_is_watched_and_its_screen_shown_until_s_switches_to_details() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let mut session = claude("s1", 0);
+        session.pane = Some(RexPane {
+            session: "session:1".into(),
+            window: "window:2".into(),
+        });
+        model.apply(Endpoint::Local, live_sample(1_000, Some(session)), now);
+        model.selected = 3;
+        assert_eq!(
+            model.wanted_watch(now),
+            Some((Endpoint::Local, "s1".to_string()))
+        );
+        model.watch(model.wanted_watch(now));
+        assert!(footer(&model).contains("s details"));
+        let screen = |text: &str| {
+            LinkUpdate::Screen(crate::proto::Screen {
+                session: "s1".into(),
+                view: Ok(vec![vec![crate::proto::Run {
+                    text: text.into(),
+                    fg: crate::proto::Shade::Rgb(217, 119, 87),
+                    bg: crate::proto::Shade::Default,
+                    flags: crate::proto::BOLD,
+                }]]),
+            })
+        };
+        let draw = |model: &Model| {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+            terminal
+                .draw(|frame| {
+                    view::render(frame, model, Instant::now(), &mut Graphics::cells_only())
+                })
+                .unwrap();
+            format!("{:?}", terminal.backend().buffer())
+        };
+        assert!(draw(&model).contains("connecting to the pane"));
+        model.apply(Endpoint::Local, screen("> run the tests"), now);
+        let shown = draw(&model);
+        assert!(shown.contains("Screen"), "{shown}");
+        assert!(shown.contains("> run the tests"), "{shown}");
+        handle_batch([key(Key::Screen)].into_iter(), &mut model, &mut links).unwrap();
+        assert!(model.show_details);
+        assert_eq!(model.wanted_watch(now), None);
+        assert_eq!(model.watching, None);
+        assert!(!draw(&model).contains("> run the tests"));
+        assert!(footer(&model).contains("s screen"));
+    }
+
+    #[test]
+    fn a_reconnect_forgets_the_watch_so_it_is_asked_for_again_and_stale_screens_are_ignored() {
+        let (mut model, _) = fleet();
+        let now = Instant::now();
+        model.watch(Some((Endpoint::Local, "s1".into())));
+        model.apply(
+            Endpoint::Local,
+            LinkUpdate::Screen(crate::proto::Screen {
+                session: "other".into(),
+                view: Err("old".into()),
+            }),
+            now,
+        );
+        assert_eq!(model.screen("other"), None);
+        let identity = Identity {
+            hostname: "mac".into(),
+            tailscale_node: Some("mac".into()),
+            os: String::new(),
+            kernel: String::new(),
+            arch: String::new(),
+            cpu_model: String::new(),
+            agent_version: String::new(),
+        };
+        model.apply(
+            Endpoint::Local,
+            LinkUpdate::Welcome(Box::new(Welcome {
+                interval_ms: 1000,
+                identity,
+            })),
+            now,
+        );
+        assert_eq!(model.watching, None);
     }
 }

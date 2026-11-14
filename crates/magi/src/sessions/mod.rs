@@ -4,7 +4,7 @@ mod ledger;
 mod pricing;
 mod process;
 mod registry;
-mod rex;
+pub mod rex;
 mod tail;
 mod transcript;
 mod usage;
@@ -80,6 +80,7 @@ pub struct Snapshot {
     pub sessions: Vec<AgentSession>,
     pub plans: Vec<Plan>,
     pub notices: Vec<String>,
+    pub panes: HashMap<String, rex::Location>,
 }
 
 pub struct Found {
@@ -130,14 +131,18 @@ impl Sessions {
         }
         let pids: Vec<i32> = found.iter().filter_map(|found| found.pid).collect();
         let usage = self.meter.measure(&pids, now);
-        snapshot.sessions = found
-            .into_iter()
-            .map(|Found { session, pid }| AgentSession {
-                pane: pid.and_then(|pid| self.panes.find(pid, now)),
+        for Found { session, pid } in found {
+            let pane = pid.and_then(|pid| self.panes.find(pid, now));
+            let pane = pane.map(|(pane, location)| {
+                snapshot.panes.insert(session.id.clone(), location);
+                pane
+            });
+            snapshot.sessions.push(AgentSession {
+                pane,
                 usage: pid.and_then(|pid| usage.get(&pid).copied()),
                 ..session
-            })
-            .collect();
+            });
+        }
         snapshot
     }
 }

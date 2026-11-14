@@ -2,14 +2,17 @@ use std::time::Duration;
 
 use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{
     Composed, Cursor, clip, icon, panel, rule, selected_style, short_name, spread, truncate,
 };
-use crate::proto::{AgentSession, FULL, Plan, SessionState, Usage, Waiting};
+use crate::proto::{
+    AgentSession, BOLD, DIM, FULL, INVERSE, ITALIC, Plan, Run, SessionState, Shade, UNDERLINE,
+    Usage, Waiting,
+};
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Capacity, Model, MoveTarget};
 use crate::viewer::style::{self, theme};
@@ -17,6 +20,7 @@ use crate::viewer::units;
 
 const LABEL: usize = 14;
 const BUSY_MILLICORES: u32 = 500;
+const IDLE_MILLICORES: u32 = 50;
 
 pub fn render_list(
     frame: &mut Frame,
@@ -193,6 +197,7 @@ pub fn render_detail(
     area: Rect,
     agent: &AgentRow<'_>,
     suggestion: Option<&MoveTarget>,
+    preview: Option<Preview<'_>>,
     plans: &[&Plan],
     graphics: &mut Graphics,
 ) {
@@ -265,6 +270,9 @@ pub fn render_detail(
         );
     }
     cursor.skip();
+    if let Some(preview) = preview {
+        return live_screen(&mut cursor, frame, agent, preview, width);
+    }
 
     let bar = width.saturating_sub(LABEL + 30).clamp(6, 40);
     let label = |text: &str| Span::styled(format!("{text:<LABEL$}"), style::bold(theme().text));
@@ -383,6 +391,114 @@ pub fn render_detail(
             style::fg(theme().faint),
         )),
     );
+}
+
+pub enum Preview<'a> {
+    Waiting,
+    Ready(&'a [Vec<Run>]),
+    Failed(&'a str),
+}
+
+fn live_screen(
+    cursor: &mut Cursor,
+    frame: &mut Frame,
+    agent: &AgentRow<'_>,
+    preview: Preview<'_>,
+    width: usize,
+) {
+    let session = agent.session;
+    let mut summary = Vec::new();
+    match session.context_used {
+        Some(used) => summary.push(format!(
+            "context {}",
+            units::percent(f32::from(used) / f32::from(FULL)).trim()
+        )),
+        None if session.context_tokens > 0 => summary.push(format!(
+            "context {} tokens",
+            units::count(session.context_tokens)
+        )),
+        None => {}
+    }
+    summary.push(format!("cost {}", cost(session)));
+    if let Some(usage) = session.usage {
+        match usage.cpu {
+            Some(millicores) if millicores < IDLE_MILLICORES => summary.push("cpu idle".into()),
+            Some(millicores) => summary.push(format!("cpu {}", units::cores(millicores))),
+            None => {}
+        }
+        summary.push(format!("memory {}", units::bytes(usage.memory)));
+    }
+    cursor.line(
+        frame,
+        Line::from(clip(
+            vec![Span::styled(summary.join(" · "), style::fg(theme().dim))],
+            width,
+        )),
+    );
+    cursor.skip();
+    cursor.line(
+        frame,
+        rule(
+            icon("▣"),
+            "Screen",
+            vec![Span::styled(
+                "live from Rex · s for details",
+                style::fg(theme().faint),
+            )],
+            width,
+        ),
+    );
+    let rows = match preview {
+        Preview::Ready(rows) => rows,
+        Preview::Waiting => {
+            return cursor.line(
+                frame,
+                Line::from(Span::styled(
+                    "connecting to the pane…",
+                    style::fg(theme().faint),
+                )),
+            );
+        }
+        Preview::Failed(reason) => {
+            return cursor.line(
+                frame,
+                Line::from(clip(
+                    vec![Span::styled(reason.to_string(), style::fg(theme().warn))],
+                    width,
+                )),
+            );
+        }
+    };
+    let room = cursor.left() as usize;
+    for row in &rows[rows.len().saturating_sub(room)..] {
+        let spans = row.iter().map(run_span).collect();
+        cursor.line(frame, Line::from(clip(spans, width)));
+    }
+}
+
+fn run_span(run: &Run) -> Span<'static> {
+    let color = |shade: Shade| match shade {
+        Shade::Default => Color::Reset,
+        Shade::Indexed(index) => Color::Indexed(index),
+        Shade::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    };
+    let modifiers = [
+        (BOLD, Modifier::BOLD),
+        (DIM, Modifier::DIM),
+        (ITALIC, Modifier::ITALIC),
+        (UNDERLINE, Modifier::UNDERLINED),
+        (INVERSE, Modifier::REVERSED),
+    ]
+    .into_iter()
+    .filter(|(flag, _)| run.flags & flag != 0)
+    .fold(Modifier::empty(), |all, (_, modifier)| all | modifier);
+    Span::styled(
+        run.text.clone(),
+        Style::new()
+            .fg(color(run.fg))
+            .bg(color(run.bg))
+            .add_modifier(modifiers),
+    )
 }
 
 fn resources(

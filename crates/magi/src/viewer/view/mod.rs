@@ -76,11 +76,21 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         machines::render_detail(frame, detail_area, row, model.port, now, graphics);
     } else if let Some(agent) = agents.get(model.selected - rows.len()) {
         let suggestion = model.move_suggestion(agent, now);
+        let preview = model
+            .watching
+            .as_ref()
+            .filter(|(_, watched)| *watched == agent.session.id)
+            .map(|_| match model.screen(&agent.session.id) {
+                None => agents::Preview::Waiting,
+                Some(Ok(rows)) => agents::Preview::Ready(rows),
+                Some(Err(reason)) => agents::Preview::Failed(reason),
+            });
         agents::render_detail(
             frame,
             detail_area,
             agent,
             suggestion.as_ref(),
+            preview,
             &plans,
             graphics,
         );
@@ -426,6 +436,17 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         .is_some_and(|agent| agent.live && agent.session.agent == Agent::ClaudeCode)
     {
         keys.extend([key("m"), label(" move   ")]);
+    }
+    if selected
+        .as_ref()
+        .is_some_and(|agent| agent.live && agent.session.pane.is_some())
+    {
+        let other = if model.show_details {
+            " screen   "
+        } else {
+            " details   "
+        };
+        keys.extend([key("s"), label(other)]);
     }
     keys.extend([key("a"), label(" alerts")]);
     let active = model.alerts.active().count();

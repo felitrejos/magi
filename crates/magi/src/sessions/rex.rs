@@ -14,11 +14,27 @@ const RETRY_MISSING_AFTER: Duration = Duration::from_secs(5);
 const REREAD_PROCESS_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq)]
-struct Location {
-    session: String,
-    block: String,
+pub struct Location {
+    pub session: String,
+    pub block: String,
     server: Option<OsString>,
     bin_dir: PathBuf,
+}
+
+impl Location {
+    pub fn rex(&self, timeout: &str, args: &[&str]) -> Command {
+        let mut command = Command::new(self.bin_dir.join("rex"));
+        command
+            .args(["--autostart=false", "--timeout", timeout])
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped());
+        match &self.server {
+            Some(server) => command.env("REX_SERVER", server),
+            None => command.env_remove("REX_SERVER"),
+        };
+        command
+    }
 }
 
 #[derive(Default)]
@@ -44,7 +60,7 @@ struct Block {
 }
 
 impl Panes {
-    pub fn find(&mut self, pid: i32, now: Instant) -> Option<RexPane> {
+    pub fn find(&mut self, pid: i32, now: Instant) -> Option<(RexPane, Location)> {
         let here = self.locate(pid, now)?;
         let key = (here.server.clone(), here.session.clone());
         let due = match self.servers.get(&key) {
@@ -64,11 +80,12 @@ impl Panes {
                 },
             );
         }
-        let window = self.servers.get(&key)?.windows.get(&here.block)?;
-        Some(RexPane {
-            session: here.session,
-            window: window.clone(),
-        })
+        let window = self.servers.get(&key)?.windows.get(&here.block)?.clone();
+        let pane = RexPane {
+            session: here.session.clone(),
+            window,
+        };
+        Some((pane, here))
     }
 
     fn locate(&mut self, pid: i32, now: Instant) -> Option<Location> {
@@ -112,25 +129,10 @@ fn location(environment: &[u8]) -> Option<Location> {
 }
 
 fn list_windows(here: &Location) -> Option<HashMap<String, String>> {
-    let mut command = Command::new(here.bin_dir.join("rex"));
-    command
-        .args([
-            "--autostart=false",
-            "--timeout",
-            "1s",
-            "block",
-            "ls",
-            "--json",
-            "-s",
-            &here.session,
-        ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
-    match &here.server {
-        Some(server) => command.env("REX_SERVER", server),
-        None => command.env_remove("REX_SERVER"),
-    };
-    let output = command.output().ok()?;
+    let output = here
+        .rex("1s", &["block", "ls", "--json", "-s", &here.session])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

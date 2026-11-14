@@ -5,6 +5,7 @@ mod handoff;
 mod log;
 mod net;
 mod proto;
+mod screen;
 mod service;
 mod sessions;
 mod statusline;
