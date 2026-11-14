@@ -10,7 +10,7 @@
       "name": "cielago",
       "description": "Say \"hand this off to <host>\" and the session continues there with Remote Control",
       "source": "./plugin",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "category": "productivity",
       "tags": ["remote", "handoff", "sessions"]
     }

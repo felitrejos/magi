@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Committed Git LFS files arrive with their content even when their objects
   were never uploaded: cielago copies the LFS objects the other machine lacks.
