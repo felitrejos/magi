@@ -316,6 +316,9 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
 	}
 	tab.SessionCreated = false
+	if err := waitForTask(remote, t.Dir); err != nil {
+		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
+	}
 	t.Tab, t.Where, t.Starting = tab, launcher.Where(group), false
 	if spec.Kind == kindSession {
 		if trusted, err := isTrusted(remote, t.RunDir); err == nil && !trusted {
@@ -334,6 +337,27 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
 	}
 	return res, nil
+}
+
+const launchWait = 20 * time.Second
+
+func waitForTask(m Machine, dir string) error {
+	deadline := time.Now().Add(launchWait)
+	for {
+		if _, err := sh(m, `[ -s "$1/pid" ] || [ -f "$1/exit" ]`, dir); err == nil {
+			return nil
+		} else if exitCode(err) != 1 {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the task's tab opened on %s, but its command didn't start within %s", m.Name(), launchWait)
+		}
+		select {
+		case <-m.Context().Done():
+			return m.Context().Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
 }
 
 func taskTabLabel(name, kind, id string) string {
