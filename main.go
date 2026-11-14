@@ -18,8 +18,8 @@ import (
 const usage = `cielago moves a Claude Code session to another machine.
 
 Usage:
-  cielago arm <host> <session-id> [note]   hand this session off when its turn ends;
-                                           note says what was running and needs restarting
+  cielago arm <host> <session-id> [-]   hand this session off when its turn ends;
+                                        with -, read a note on what was running from stdin
   cielago hook stop                 Claude Code Stop hook (reads the hook JSON on stdin)
 `
 
@@ -36,8 +36,13 @@ func main() {
 	args := os.Args[1:]
 	var err error
 	switch {
-	case (len(args) == 3 || len(args) == 4) && args[0] == "arm":
-		err = arm(args[1], args[2], strings.Join(args[3:], ""))
+	case len(args) == 3 && args[0] == "arm":
+		err = arm(args[1], args[2], "")
+	case len(args) == 4 && args[0] == "arm" && args[3] == "-":
+		var note []byte
+		if note, err = io.ReadAll(os.Stdin); err == nil {
+			err = arm(args[1], args[2], strings.TrimSpace(string(note)))
+		}
 	case len(args) == 2 && args[0] == "hook" && args[1] == "stop":
 		err = stopHook(os.Stdin, os.Stdout)
 	default:

@@ -66,6 +66,12 @@ func (h Handoff) Run() (Result, error) {
 		if ws, err = readWorkspace(ctx, h.Cwd, h.Host.Secrets); err != nil {
 			return err
 		}
+		if home, err := os.UserHomeDir(); err != nil || ws.Git == nil && (ws.Root == home || ws.Root == "/") {
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("%s is a whole home folder, not a project; start Claude in the project's folder to hand it off", ws.Root)
+		}
 		if remote, err = newRemote(ctx, h.Host.SSH); err != nil {
 			return err
 		}
@@ -87,15 +93,17 @@ func (h Handoff) Run() (Result, error) {
 				return err
 			}
 			remoteRoot = expandHome(h.Host.Roots[0], remoteHome) + "/" + group + "/" + ws.Name
-			exists, err := remoteExists(remote, remoteRoot)
+			state, err := remoteFolderState(remote, remoteRoot)
 			if err != nil {
 				return err
 			}
-			if ws.Git != nil && exists {
-				return fmt.Errorf("%s already exists on %s but isn't a clone of this repository", remoteRoot, remote.host)
-			}
-			if !exists {
+			switch {
+			case state == "new":
 				res.NewFolder = remoteRoot
+			case ws.Git != nil:
+				return fmt.Errorf("%s already exists on %s but isn't a clone of this repository", remoteRoot, remote.host)
+			case state != "ours":
+				return fmt.Errorf("%s already exists on %s and wasn't created by cielago; move it away or hand off from a folder with another name", remoteRoot, remote.host)
 			}
 		}
 		remoteDir = filepath.Join(remoteRoot, ws.Subdir)
@@ -158,12 +166,26 @@ func (h Handoff) Run() (Result, error) {
 			return err
 		}
 		if len(files) > 1 {
-			sidecar = remoteProject + "/" + files[1]
+			if _, err := os.Stat(filepath.Join(dir, files[1], "subagents")); err == nil {
+				sidecar = remoteProject + "/" + files[1]
+			}
 		}
 		if err := remote.copy(Archive{Dir: dir, Paths: files}, remoteProject); err != nil {
 			return err
 		}
-		return syncMemory(remote, filepath.Join(dir, "memory"), remoteProject+"/memory")
+		localSlug, err := projectSlug(ws.MainRoot)
+		if err != nil {
+			return err
+		}
+		remoteSlug, err := projectSlug(remoteRoot)
+		if err != nil {
+			return err
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		return syncMemory(remote, filepath.Join(home, ".claude", "projects", localSlug, "memory"), remoteHome+"/.claude/projects/"+remoteSlug+"/memory")
 	}); err != nil {
 		return res, undo(err)
 	}
@@ -200,6 +222,8 @@ func (h Handoff) Run() (Result, error) {
 	remote.ctx = finish
 	if ws.Git != nil {
 		res.ParkNote = park(finish, ws)
+	} else {
+		res.ParkNote = registerFolder(remote, remoteRoot)
 	}
 	if h.Host.NewTabCommand != "" {
 		res.TabNote = step("tab", func() error {
@@ -262,9 +286,19 @@ func remoteHomeDir(r *Remote) (string, error) {
 	return string(out), err
 }
 
-func remoteExists(r *Remote, path string) (bool, error) {
-	out, err := r.sh("[ -e " + quote(path) + " ] && echo yes || :")
-	return strings.TrimSpace(string(out)) == "yes", err
+const folderRegistry = `"$HOME"/.cielago/folders`
+
+func remoteFolderState(r *Remote, path string) (string, error) {
+	p := quote(path)
+	out, err := r.sh("if [ ! -e " + p + " ]; then echo new; elif [ -e " + p + "/.git ]; then echo git; " +
+		"elif [ -f " + folderRegistry + " ] && grep -qxF -- " + p + " " + folderRegistry + "; then echo ours; else echo foreign; fi")
+	return strings.TrimSpace(string(out)), err
+}
+
+func registerFolder(r *Remote, path string) error {
+	p := quote(path)
+	_, err := r.sh(`mkdir -p "$HOME"/.cielago && { [ -f ` + folderRegistry + ` ] && grep -qxF -- ` + p + ` ` + folderRegistry + ` || printf '%s\n' ` + p + ` >> ` + folderRegistry + `; }`)
+	return err
 }
 
 func listClones(r *Remote, roots []string) (home string, clones []Clone, err error) {
@@ -317,7 +351,7 @@ func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
 }
 
 func createClone(r *Remote, dir, origin string) error {
-	script := "set -e; trap " + quote("rm -rf -- "+quote(dir)) + " EXIT; git init --quiet " + quote(dir) + "; "
+	script := "set -e; mkdir -p " + quote(filepath.Dir(dir)) + "; mkdir " + quote(dir) + "; trap " + quote("rm -rf -- "+quote(dir)) + " EXIT; git init --quiet " + quote(dir) + "; "
 	if origin != "" {
 		script += "git -C " + quote(dir) + " remote add origin " + quote(origin) + "; "
 	}

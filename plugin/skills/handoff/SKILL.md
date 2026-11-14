@@ -11,10 +11,18 @@ cielago moves this session to another machine once your turn ends: it syncs the 
 Nothing that is running moves. So first:
 
 1. If you have background shells, dev servers, monitors or background subagents running, stop them. Let a subagent that is about to finish complete instead. Write one or two sentences saying what each was doing and what is left, for example "dev server on :3000 (pnpm dev); subagent was halfway through migrating the billing tests, files done: a.ts, b.ts". Skip this if nothing is running.
-2. Take the host name from what the user said ("my homelab" → `homelab`) and run, passing the note from step 1 as the last argument when there is one:
+2. Take the host name from what the user said ("my homelab" → `homelab`) and run:
 
    ```bash
-   cielago arm <host> ${CLAUDE_SESSION_ID} "<note>"
+   cielago arm <host> ${CLAUDE_SESSION_ID}
+   ```
+
+   If you wrote a note in step 1, pass it on stdin with a quoted heredoc, exactly like this, so nothing in it is expanded by the shell:
+
+   ```bash
+   cielago arm <host> ${CLAUDE_SESSION_ID} - <<'NOTE'
+   <note>
+   NOTE
    ```
 
 3. If it says there is no such host, it lists the configured ones: run it again with the one the user meant, or ask if none clearly matches.

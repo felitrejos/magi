@@ -149,7 +149,7 @@ func syncMemory(r *Remote, localDir, remoteDir string) error {
 	if err != nil {
 		return err
 	}
-	remote, err := r.sh("cat " + quote(remoteDir+"/"+memoryIndex) + " 2>/dev/null || :")
+	remote, err := r.sh("if [ -f " + quote(remoteDir+"/"+memoryIndex) + " ]; then cat " + quote(remoteDir+"/"+memoryIndex) + "; fi")
 	if err != nil {
 		return err
 	}
@@ -158,7 +158,7 @@ func syncMemory(r *Remote, localDir, remoteDir string) error {
 		return err
 	}
 	defer os.RemoveAll(staging)
-	if err := os.WriteFile(filepath.Join(staging, memoryIndex), []byte(mergeMemoryIndex(string(remote), string(local))), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(staging, memoryIndex), []byte(mergeMemoryIndex(string(local), string(remote))), 0o600); err != nil {
 		return err
 	}
 	return r.copy(Archive{Dir: staging, Paths: []string{memoryIndex}}, remoteDir)
@@ -166,7 +166,7 @@ func syncMemory(r *Remote, localDir, remoteDir string) error {
 
 const memoryIndex = "MEMORY.md"
 
-func mergeMemoryIndex(remote, local string) string {
+func mergeMemoryIndex(incoming, existing string) string {
 	key := func(line string) string {
 		if _, target, ok := strings.Cut(line, "]("); ok {
 			if file, _, ok := strings.Cut(target, ")"); ok {
@@ -175,19 +175,25 @@ func mergeMemoryIndex(remote, local string) string {
 		}
 		return strings.TrimSpace(line)
 	}
-	lines := strings.Split(strings.TrimRight(remote, "\n"), "\n")
-	if strings.TrimSpace(remote) == "" {
-		lines = nil
+	nonEmpty := func(text string) []string {
+		var lines []string
+		for _, l := range strings.Split(text, "\n") {
+			if strings.TrimSpace(l) != "" {
+				lines = append(lines, l)
+			}
+		}
+		return lines
 	}
+	merged := nonEmpty(incoming)
 	seen := map[string]bool{}
-	for _, l := range lines {
+	for _, l := range merged {
 		seen[key(l)] = true
 	}
-	for _, l := range strings.Split(strings.TrimRight(local, "\n"), "\n") {
-		if strings.TrimSpace(l) != "" && !seen[key(l)] {
-			lines = append(lines, l)
+	for _, l := range nonEmpty(existing) {
+		if !seen[key(l)] {
+			merged = append(merged, l)
 			seen[key(l)] = true
 		}
 	}
-	return strings.Join(lines, "\n") + "\n"
+	return strings.Join(merged, "\n") + "\n"
 }

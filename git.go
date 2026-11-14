@@ -24,6 +24,7 @@ type GitState struct {
 	Origin     string
 	RootCommit string
 	Branch     string
+	Head       string
 	Worktree   string
 	Index      string
 }
@@ -32,7 +33,7 @@ const (
 	handoffRef  = "refs/cielago/handoff"
 	worktreeRef = "refs/cielago/worktree"
 	indexRef    = "refs/cielago/index"
-	parkedRef   = "refs/cielago/parked"
+	parkedRef   = "refs/worktree/cielago/parked"
 )
 
 var snapshotIdentity = []string{
@@ -50,7 +51,7 @@ func readWorkspace(ctx context.Context, cwd string, secretPatterns []string) (Wo
 		return strings.TrimSpace(string(out)), err
 	}
 	top, err := git(nil, "rev-parse", "--show-toplevel")
-	if exitCode(err) == 128 {
+	if err != nil && strings.Contains(err.Error(), "not a git repository") {
 		return Workspace{Root: realCwd, MainRoot: realCwd, Name: filepath.Base(realCwd), Subdir: "."}, nil
 	}
 	if err != nil {
@@ -81,6 +82,9 @@ func readWorkspace(ctx context.Context, cwd string, secretPatterns []string) (Wo
 	if g.Branch, err = git(nil, "symbolic-ref", "--short", "-q", "HEAD"); err != nil && exitCode(err) != 1 {
 		return Workspace{}, err
 	}
+	if g.Head, err = git(nil, "rev-parse", "HEAD"); err != nil {
+		return Workspace{}, err
+	}
 	if g.Worktree, g.Index, err = snapshot(git); err != nil {
 		return Workspace{}, err
 	}
@@ -91,26 +95,45 @@ func readWorkspace(ctx context.Context, cwd string, secretPatterns []string) (Wo
 }
 
 func snapshot(git func(env []string, args ...string) (string, error)) (worktree, index string, err error) {
+	if unmerged, err := git(nil, "ls-files", "--unmerged"); err != nil || unmerged != "" {
+		if err != nil {
+			return "", "", err
+		}
+		return "", "", errors.New("the repository has unresolved merge conflicts; resolve them before handing off")
+	}
+	for _, marker := range []string{"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"} {
+		path, err := git(nil, "rev-parse", "--path-format=absolute", "--git-path", marker)
+		if err != nil {
+			return "", "", err
+		}
+		if _, err := os.Stat(path); err == nil {
+			return "", "", errors.New("a merge, rebase or cherry-pick is in progress; finish or abort it before handing off")
+		}
+	}
 	indexTree, err := git(nil, "write-tree")
 	if err != nil {
-		return "", "", errors.New("the repository has unresolved merge conflicts; resolve them before handing off")
+		return "", "", err
 	}
 	indexPath, err := git(nil, "rev-parse", "--path-format=absolute", "--git-path", "index")
 	if err != nil {
 		return "", "", err
 	}
-	tmp, err := os.CreateTemp("", "cielago-index-*")
+	dir, err := os.MkdirTemp("", "cielago-index-*")
 	if err != nil {
 		return "", "", err
 	}
-	tmp.Close()
-	defer os.Remove(tmp.Name())
-	if data, err := os.ReadFile(indexPath); err == nil {
-		if err := os.WriteFile(tmp.Name(), data, 0o600); err != nil {
+	defer os.RemoveAll(dir)
+	tmp := filepath.Join(dir, "index")
+	data, err := os.ReadFile(indexPath)
+	switch {
+	case err == nil:
+		if err := os.WriteFile(tmp, data, 0o600); err != nil {
 			return "", "", err
 		}
+	case !os.IsNotExist(err):
+		return "", "", err
 	}
-	env := []string{"GIT_INDEX_FILE=" + tmp.Name()}
+	env := []string{"GIT_INDEX_FILE=" + tmp}
 	if _, err := git(env, "add", "-A"); err != nil {
 		return "", "", err
 	}
@@ -183,27 +206,30 @@ func normalizeRemote(raw string) string {
 	return strings.ToLower(host) + "/" + strings.TrimPrefix(path, "/")
 }
 
-func checkoutScript(repo, branch string) string {
+func checkoutScript(repo string, g GitState) string {
 	var s strings.Builder
-	s.WriteString("set -e; cd " + quote(repo) + "; ")
-	s.WriteString(`tree_now() { i=$(mktemp); cp "$(git rev-parse --git-path index)" "$i" 2>/dev/null || :; ` +
+	s.WriteString("set -e; cd " + quote(repo) + "; H=" + g.Head + "; W=" + g.Worktree + "; I=" + g.Index + "; ")
+	s.WriteString(`tree_now() { i=$(mktemp); rm -f "$i"; x=$(git rev-parse --git-path index); if [ -f "$x" ]; then cp "$x" "$i"; fi; ` +
 		`GIT_INDEX_FILE="$i" git add -A >/dev/null; GIT_INDEX_FILE="$i" git write-tree; rm -f "$i"; }; `)
-	s.WriteString(`parked=; if [ -n "$(git status --porcelain)" ]; then ` +
-		`parked=$(git rev-parse -q --verify '` + parkedRef + `^{tree}' || :); ` +
-		`if [ -z "$parked" ] || [ "$(tree_now)" != "$parked" ]; then ` +
+	s.WriteString(`force=; if [ -n "$(git status --porcelain --untracked-files=all --ignore-submodules=none)" ]; then ` +
+		`now=$(tree_now); parked=$(git rev-parse -q --verify '` + parkedRef + `^{tree}' || :); ` +
+		`if [ "$now" = "$parked" ] || [ "$now" = "$(git rev-parse "$W^{tree}")" ]; then force=1; else ` +
 		`echo "$PWD has uncommitted changes made on this machine; commit or stash them there first" >&2; exit 3; fi; fi; `)
-	if branch == "" {
-		s.WriteString(`[ -n "$parked" ] && git clean -fdq; git checkout --quiet --force --detach ` + handoffRef + "; ")
+	s.WriteString(`git -c core.quotepath=false diff --name-only --diff-filter=A "$H" "$W" | while IFS= read -r p; do ` +
+		`if [ -e "$p" ] && git check-ignore -q -- "$p" && [ "$(git hash-object -- "$p")" != "$(git rev-parse "$W:$p")" ]; then ` +
+		`printf '%s exists here, is ignored, and would be overwritten; move it away first\n' "$p" >&2; exit 6; fi; done; `)
+	if g.Branch == "" {
+		s.WriteString(`git checkout --quiet ${force:+--force} --detach "$H"; `)
 	} else {
-		ref := quote("refs/heads/" + branch)
+		ref := quote("refs/heads/" + g.Branch)
 		s.WriteString("if git rev-parse --verify --quiet " + ref + " >/dev/null; then " +
-			"rc=0; git merge-base --is-ancestor " + ref + " " + handoffRef + " || rc=$?; " +
-			"if [ $rc -eq 1 ]; then printf 'branch %s has commits this machine does not; pull them here first\\n' " + quote(branch) + " >&2; exit 4; fi; " +
+			`rc=0; git merge-base --is-ancestor ` + ref + ` "$H" || rc=$?; ` +
+			"if [ $rc -eq 1 ]; then printf 'branch %s has commits this machine does not; pull them here first\\n' " + quote(g.Branch) + " >&2; exit 4; fi; " +
 			"[ $rc -eq 0 ]; fi; ")
-		s.WriteString(`[ -n "$parked" ] && git clean -fdq; git checkout --quiet --force -B ` + quote(branch) + " " + handoffRef + "; ")
+		s.WriteString(`git checkout --quiet ${force:+--force} -B ` + quote(g.Branch) + ` "$H"; `)
 	}
-	s.WriteString("git read-tree -m -u HEAD " + worktreeRef + "; git read-tree " + indexRef + "; ")
-	s.WriteString("for r in " + worktreeRef + " " + indexRef + " " + parkedRef + "; do git update-ref -d $r 2>/dev/null || :; done")
+	s.WriteString(`if [ -n "$force" ]; then git clean -fdq; fi; git read-tree -m -u HEAD "$W"; git read-tree "$I"; `)
+	s.WriteString("for r in " + handoffRef + " " + worktreeRef + " " + indexRef + " " + parkedRef + "; do git update-ref -d $r; done")
 	return s.String()
 }
 
@@ -213,7 +239,7 @@ func syncGit(r *Remote, ws Workspace, remoteRepo string) error {
 	if _, err := run(r.ctx, ws.Root, []string{"GIT_SSH_COMMAND=" + r.sshCommand()}, "git", push...); err != nil {
 		return err
 	}
-	if _, err := r.sh(checkoutScript(remoteRepo, ws.Git.Branch)); err != nil {
+	if _, err := r.sh(checkoutScript(remoteRepo, *ws.Git)); err != nil {
 		return err
 	}
 	return r.copy(Archive{Dir: ws.Root, Paths: ws.Secrets}, remoteRepo)

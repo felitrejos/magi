@@ -219,6 +219,118 @@ func TestSessionCannotComeBackOverWorkDoneAfterLeaving(t *testing.T) {
 	}
 }
 
+func TestARetryAfterAFailedHandoffIsAccepted(t *testing.T) {
+	f := newFixture(t)
+	f.messUp(f.local)
+	ws := f.workspace(f.local)
+	if err := syncGit(f.remoteHost(), ws, f.remote); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote); err != nil {
+		t.Fatalf("a second attempt with the same changes was refused: %v", err)
+	}
+	if got, want := f.git(f.remote, "status", "--porcelain"), f.git(f.local, "status", "--porcelain"); got != want {
+		t.Errorf("status after the retry:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestHiddenUntrackedFilesOnTheHostAreNotOverwritten(t *testing.T) {
+	f := newFixture(t)
+	f.git(f.remote, "config", "status.showUntrackedFiles", "no")
+	f.write(f.remote, "committed.txt", "HOST ONLY DATA")
+	f.messUp(f.local)
+	if err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote); err == nil {
+		t.Fatal("handoff went ahead over an untracked file that status hides")
+	}
+	if got := f.read(f.remote, "committed.txt"); got != "HOST ONLY DATA" {
+		t.Errorf("host-only file was overwritten: %q", got)
+	}
+}
+
+func TestIgnoredFilesOnTheHostAreNotOverwritten(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.remote, ".git/info/exclude", "scratch.md\n")
+	f.write(f.remote, "scratch.md", "host notes")
+	f.write(f.local, "scratch.md", "laptop notes")
+	err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote)
+	if err == nil || !strings.Contains(err.Error(), "would be overwritten") {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	if got := f.read(f.remote, "scratch.md"); got != "host notes" {
+		t.Errorf("ignored host file was overwritten: %q", got)
+	}
+}
+
+func TestAFileAddedOnTheParkedMachineIsNotCleanedAway(t *testing.T) {
+	f := newFixture(t)
+	f.messUp(f.local)
+	out := f.workspace(f.local)
+	if err := syncGit(f.remoteHost(), out, f.remote); err != nil {
+		t.Fatal(err)
+	}
+	if err := park(context.Background(), out); err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.local, "written-after.txt", "keep me")
+	if err := syncGit(f.remoteHost(), f.workspace(f.remote), f.local); err == nil {
+		t.Fatal("handoff back went ahead although the laptop gained a file after parking")
+	}
+	if got := f.read(f.local, "written-after.txt"); got != "keep me" {
+		t.Errorf("new laptop file was removed: %q", got)
+	}
+}
+
+func TestReadWorkspaceRefusesAMergeInProgress(t *testing.T) {
+	f := newFixture(t)
+	f.git(f.local, "checkout", "-q", "-b", "side")
+	f.write(f.local, "side.txt", "side")
+	f.git(f.local, "add", "side.txt")
+	f.git(f.local, "commit", "-q", "-m", "side")
+	f.git(f.local, "checkout", "-q", "main")
+	f.git(f.local, "merge", "--no-commit", "--no-ff", "-q", "side")
+	if _, err := readWorkspace(context.Background(), f.local, nil); err == nil || !strings.Contains(err.Error(), "in progress") {
+		t.Fatalf("err = %v, want a merge-in-progress refusal", err)
+	}
+}
+
+func TestReadWorkspaceHandlesACheckoutWithoutAnIndex(t *testing.T) {
+	f := newFixture(t)
+	bare := filepath.Join(f.home, "laptop", "no-index")
+	f.git(f.home, "clone", "-q", "--no-checkout", f.local, bare)
+	ws := f.workspace(bare)
+	if ws.Git == nil || ws.Git.Worktree == "" {
+		t.Fatalf("workspace = %+v, want a snapshot", ws)
+	}
+}
+
+func TestPlainFolderStateTellsNewOwnAndForeignFoldersApart(t *testing.T) {
+	f := newFixture(t)
+	r := f.remoteHost()
+	ours := filepath.Join(f.home, "developer", "notes", "notes")
+	foreign := filepath.Join(f.home, "developer", "other", "notes")
+	f.write(ours, "todo.md", "x")
+	f.write(foreign, "todo.md", "y")
+	if err := registerFolder(r, ours); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerFolder(r, ours); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{
+		ours:                                 "ours",
+		foreign:                              "foreign",
+		f.remote:                             "git",
+		filepath.Join(f.home, "nope", "new"): "new",
+	} {
+		if got, err := remoteFolderState(r, path); err != nil || got != want {
+			t.Errorf("remoteFolderState(%s) = %q, %v; want %q", path, got, err, want)
+		}
+	}
+	if got := f.read(f.home, ".cielago/folders"); got != ours+"\n" {
+		t.Errorf("registry = %q, want one entry", got)
+	}
+}
+
 func TestHandoffRefusesADivergedBranchWithoutRunningItsName(t *testing.T) {
 	f := newFixture(t)
 	branch := `x";touch${IFS}PWNED;"y`
@@ -323,7 +435,7 @@ func TestMemoryIsMergedNotReplaced(t *testing.T) {
 	if err := syncMemory(f.remoteHost(), local, remote); err != nil {
 		t.Fatal(err)
 	}
-	want := "- [Deploys](deploys.md) — host wording\n- [Hosts](hosts.md) — names\n- [Style](style.md) — tabs\n"
+	want := "- [Deploys](deploys.md) — laptop wording\n- [Style](style.md) — tabs\n- [Hosts](hosts.md) — names\n"
 	if got := f.read(remote, "MEMORY.md"); got != want {
 		t.Errorf("MEMORY.md =\n%s\nwant:\n%s", got, want)
 	}

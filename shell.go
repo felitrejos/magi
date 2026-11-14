@@ -8,8 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"sync"
 )
 
 func quote(s string) string {
@@ -89,6 +89,11 @@ func (r *Remote) sh(script string) ([]byte, error) {
 	return out, nil
 }
 
+var bsdtar = sync.OnceValue(func() bool {
+	out, _ := exec.Command("tar", "--version").Output()
+	return strings.Contains(string(out), "bsdtar")
+})
+
 type Archive struct {
 	Dir       string
 	Paths     []string
@@ -98,7 +103,7 @@ type Archive struct {
 
 func tarCreateArgs(a Archive) []string {
 	args := []string{"--no-xattrs", "--no-acls"}
-	if runtime.GOOS == "darwin" {
+	if bsdtar() {
 		args = append(args, "--no-mac-metadata")
 	}
 	for _, e := range a.Exclude {
