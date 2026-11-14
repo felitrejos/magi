@@ -37,6 +37,14 @@ it touches and how.
 The first time Claude runs in a new folder on a machine, Claude Code asks you
 to trust it. cielago never answers that for you.
 
+A project's `.cielago.toml` runs commands on the machine a session moves to.
+cielago runs them only if you approved that file, at that path, with
+`cielago allow` on the machine starting the handoff or pull. It records the
+path and the file's SHA-256 in `~/.cielago/allowed`, so another project's
+identical file, an older version or any edit needs its own approval.
+Approval covers the commands, not what they run: `pnpm install` runs whatever
+`package.json` the session left behind, outside Claude's permission prompts.
+
 ## Reporting a problem
 
 Please report security issues privately through GitHub's

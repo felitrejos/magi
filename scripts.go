@@ -31,4 +31,6 @@ var (
 	tmuxScript string
 	//go:embed scripts/retire.sh
 	retireScript string
+	//go:embed scripts/project.sh
+	projectScript string
 )

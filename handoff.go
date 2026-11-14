@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,7 @@ type Result struct {
 	Where     string
 	ShowNote  error
 	TabNote   error
+	SetupNote error
 	ParkNote  error
 	NewFolder string
 	From      string
@@ -97,6 +99,10 @@ func (h Handoff) Run() (res Result, err error) {
 	}); err != nil {
 		return res, err
 	}
+	project, err := approvedProject(local, ws.Root)
+	if err != nil {
+		res.SetupNote = err
+	}
 	res.NewFolder = where.NewFolder
 	res.From = local.Name()
 	res.FromDir = h.Cwd
@@ -142,12 +148,20 @@ func (h Handoff) Run() (res Result, err error) {
 	}
 
 	var launchedAt time.Time
+	var setupStatus string
 	name := baseName(where.Root)
 	if err := st.run("launch", func() (err error) {
 		if launchedAt, err = clock(remote); err != nil {
 			return err
 		}
-		prompt := handoffPrompt(Prompt{From: local.Name(), To: h.HostName, OldDir: h.Cwd, NewDir: remoteDir, Git: ws.Git != nil, Note: h.Note, Sidecar: sidecar})
+		projectNote := ""
+		if project != nil {
+			if setupStatus, err = prepareSetupStatus(remote, h.SessionID); err != nil {
+				return err
+			}
+			projectNote = projectPrompt(project, setupStatus)
+		}
+		prompt := handoffPrompt(Prompt{From: local.Name(), To: h.HostName, OldDir: h.Cwd, NewDir: remoteDir, Git: ws.Git != nil, Note: h.Note, Sidecar: sidecar, Project: projectNote})
 		command := []string{expandHome(h.Host.Claude, where.Home), "--resume", h.SessionID, "--remote-control", name, prompt}
 		if tab, err = launcher.Start(where.Group, claudeTabLabel(name), remoteDir, command); err != nil {
 			return err
@@ -167,7 +181,12 @@ func (h Handoff) Run() (res Result, err error) {
 	defer cancel()
 	local.SetContext(finish)
 	remote.SetContext(finish)
-	res.ParkNote = settle(local, ws, h.Host.Exclude)
+	res.ParkNote = errors.Join(settle(local, ws, h.Host.Exclude), recordTab(remote, h.SessionID, h.Host.Launcher, tab))
+	if project != nil {
+		if err := st.run("panes", func() error { return startProject(remote, launcher, tab, where.Root, setupStatus, project) }); err != nil {
+			res.SetupNote = errors.Unwrap(err)
+		}
+	}
 	if h.Host.NewTabCommand != "" {
 		res.TabNote = st.run("tab", func() error {
 			return launcher.OpenProjectTab(tab, name, where.Root, strings.ReplaceAll(h.Host.NewTabCommand, "{repo}", quote(name)))

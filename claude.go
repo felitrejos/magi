@@ -149,6 +149,7 @@ type Prompt struct {
 	Git                      bool
 	Note                     string
 	Sidecar                  string
+	Project                  string
 }
 
 func handoffPrompt(p Prompt) string {
@@ -164,6 +165,7 @@ func handoffPrompt(p Prompt) string {
 	if p.Sidecar != "" {
 		fmt.Fprintf(&b, "Transcripts of earlier subagents are in %s/subagents. ", p.Sidecar)
 	}
+	b.WriteString(p.Project)
 	if p.Note != "" {
 		fmt.Fprintf(&b, "Before the handoff you wrote down what was still running: %q. Restart what still needs to run, then ", p.Note)
 	} else {

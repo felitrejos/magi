@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- A project's `.cielago.toml` says what to run when it arrives: `setup` runs
+  in a pane below Claude, then each of `services` in its own pane. Claude is
+  told they're running. `cielago pull` runs the setup before Claude continues.
+- `cielago allow` shows a project's `.cielago.toml` and approves it for that
+  project; changing the file needs a new approval.
+- When a session leaves a machine, by `cielago pull` or another handoff, the
+  tab cielago opened for it there closes, panes included.
+
 ## 0.3.0
 
 - Committed Git LFS files arrive with their content even when their objects

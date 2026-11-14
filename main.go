@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
@@ -28,6 +29,7 @@ Usage:
   cielago pull <host> [session-id]      bring a session back from <host> and continue it here
   cielago status                        recent handoffs and parked checkouts
   cielago unpark [dir]                  stop treating a checkout as parked
+  cielago allow [dir]                   let the project's .cielago.toml run after handoffs
   cielago version
 
 Used by the Claude Code plugin:
@@ -66,6 +68,12 @@ func main() {
 		err = pullCommand(args[1], "")
 	case len(args) == 3 && args[0] == "pull":
 		err = pullCommand(args[1], args[2])
+	case len(args) <= 2 && len(args) >= 1 && args[0] == "allow":
+		dir := "."
+		if len(args) == 2 {
+			dir = args[1]
+		}
+		err = allowProject(dir, os.Stdin, os.Stdout)
 	case len(args) == 1 && args[0] == "status":
 		err = status(os.Stdout)
 	case len(args) <= 2 && len(args) >= 1 && args[0] == "unpark":
@@ -174,7 +182,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 			"reason":   fmt.Sprintf("cielago could not hand this session off to %s, so it is still running here: %v. Tell the user what failed in plain words.", a.Host, err),
 		})
 	}
-	if err := retire(a, input.TranscriptPath); err != nil {
+	if err := retire(a, input.SessionID, input.TranscriptPath); err != nil {
 		return err
 	}
 	if logErr := appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}); logErr != nil {
@@ -199,6 +207,9 @@ func handedOff(a armed, res Result) map[string]string {
 	}
 	if res.TabNote != nil {
 		where += fmt.Sprintf(". The new tab's command didn't start: %v", res.TabNote)
+	}
+	if res.SetupNote != nil {
+		where += fmt.Sprintf(". %v", res.SetupNote)
 	}
 	took := res.Summary()
 	if a.Desktop {
@@ -259,14 +270,47 @@ func handoff(a armed, input stopInput) (Result, error) {
 	}.Run()
 }
 
-func retire(a armed, transcriptPath string) error {
+func retire(a armed, sessionID, transcriptPath string) error {
 	desktop := "0"
 	if a.Desktop {
 		desktop = "1"
 	}
-	cmd := exec.Command("sh", "-c", retireScript, "cielago", strconv.Itoa(a.PID), desktop, transcriptPath, a.Host, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"))
+	cmd := exec.Command("sh", "-c", retireScript, "cielago", strconv.Itoa(a.PID), desktop, transcriptPath, a.Host, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"), sessionID)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()
+}
+
+func runSetupHere(dir, setup string, out io.Writer) error {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	interrupted := make(chan os.Signal, 1)
+	signal.Notify(interrupted, os.Interrupt)
+	defer signal.Stop(interrupted)
+	cmd := exec.Command(shell, "-lc", setup)
+	cmd.Dir, cmd.Stdin, cmd.Stdout, cmd.Stderr = dir, os.Stdin, out, out
+	return cmd.Run()
+}
+
+func setUpPulledProject(p *Project, root string, out io.Writer) string {
+	if p == nil {
+		return ""
+	}
+	var b strings.Builder
+	if p.Setup != "" {
+		fmt.Fprintf(out, "Running the project's setup: %s\n", p.Setup)
+		if err := runSetupHere(root, p.Setup, out); err != nil {
+			fmt.Fprintf(out, "Note: the setup failed (%v); Claude continues anyway.\n", err)
+			fmt.Fprintf(&b, "The project's %s setup (%s) failed here before you continued (%v). ", projectFile, p.Setup, err)
+		} else {
+			fmt.Fprintf(&b, "The project's %s setup (%s) ran here before you continued. ", projectFile, p.Setup)
+		}
+	}
+	if len(p.Services) > 0 {
+		fmt.Fprintf(&b, "Its services (%s) aren't running here; start them if you need them. ", strings.Join(p.Services, "; "))
+	}
+	return b.String()
 }
 
 func pullCommand(hostName, sessionID string) error {
@@ -292,5 +336,11 @@ func pullCommand(hostName, sessionID string) error {
 	if res.ParkNote != nil {
 		fmt.Printf("Note: %v\n", res.ParkNote)
 	}
-	return resumeHere(res.ToDir, res.Session, res.Name, res.Prompt)
+	for _, note := range []error{res.TabNote, res.SetupNote} {
+		if note != nil {
+			fmt.Printf("Note: %v\n", note)
+		}
+	}
+	res.PromptInfo.Project = setUpPulledProject(res.Project, res.ProjectRoot, os.Stdout)
+	return resumeHere(res.ToDir, res.Session, res.Name, handoffPrompt(res.PromptInfo))
 }

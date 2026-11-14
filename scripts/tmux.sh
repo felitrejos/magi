@@ -26,6 +26,12 @@ case $command in
       tmux send-keys -t "$pane" Enter
     fi
     ;;
+  split)
+    pane=$1 direction=$2 dir=$3
+    shift 3
+    if [ "$direction" = below ]; then set -- -v -l 35% "$@"; else set -- -h "$@"; fi
+    tmux split-window -d -P -F '#{pane_id}' -t "$pane" -c "$dir" "$@"
+    ;;
   select)
     tmux select-window -t "$1"
     ;;

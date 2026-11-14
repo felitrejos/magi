@@ -109,7 +109,7 @@ stops it, brings everything back, and continues it in your terminal.
 | | |
 |---|---|
 | **Moves** | The conversation; commits and branch; staged and unstaged changes; untracked files; changes inside submodules; uncommitted Git LFS files; files matching `secrets`; Claude's project memory; subagent transcripts. A repository without any commits yet moves too. |
-| **Restarts** | Background shells, dev servers and background subagents. The agent stops them before the handoff and writes down what each was doing; the new session reads that note and restarts what still needs to run. |
+| **Restarts** | Background shells, dev servers and background subagents. The agent stops them before the handoff and writes down what each was doing; the new session reads that note and restarts what still needs to run. A project can also say what to run on arrival, in [`.cielago.toml`](#set-up-the-project-on-arrival). |
 | **Stays** | Dependencies and build output such as `node_modules`; your user-level `~/.claude` settings and plugins, which each machine keeps its own. |
 
 **Projects the other machine doesn't have yet** are created where they'd be on
@@ -128,6 +128,26 @@ once in the new tab and the handoff carries on.
 `exclude`: files you deleted on one side are deleted on the other too. cielago
 remembers what each copy looked like when a session left it, and refuses to
 mirror over a copy that someone changed since.
+
+### Set up the project on arrival
+
+Dependencies don't move, and dev servers stop. Put a `.cielago.toml` at the
+root of the project to say what to run when it arrives on the other machine:
+
+```toml
+setup = "pnpm install"           # runs once, in a pane below Claude
+services = ["pnpm dev"]          # each in its own pane, once setup succeeds
+```
+
+The panes open in the session's Rex or tmux tab, beside Claude, which is
+told what's starting there and where setup reports how it went. A handoff
+doesn't wait for them. Commands run in your login shell. `cielago pull` runs
+the setup in your terminal before Claude continues there, and closes the
+session's tab on the other machine, panes included.
+
+Because these commands come from the repository, cielago runs them only after
+you approve that file, in that project, with `cielago allow`. If the file
+changes, the next handoff skips it and says so until you allow it again.
 
 ## Install
 
@@ -165,6 +185,7 @@ you hand off from; to bring a session back to a laptop that doesn't, use
 | `cielago pull <host> [session]` | Brings a session back from `<host>` and continues it here. Without a session id, it takes the last one you handed off there. |
 | `cielago status` | Recent handoffs, and checkouts here that a session left. |
 | `cielago unpark [dir]` | Stops treating a checkout as one a session left. |
+| `cielago allow [dir]` | Lets the project's `.cielago.toml` run after handoffs, until the file changes. |
 
 ## Configure
 

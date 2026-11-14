@@ -19,6 +19,7 @@ type Launcher interface {
 	Show(tab Tab) (shownOn []string, err error)
 	Discard(tab Tab) error
 	OpenProjectTab(tab Tab, name, dir, command string) error
+	Split(tab Tab, anchor string, below bool, label, dir string, command []string) (string, error)
 	Where(group string) string
 }
 
@@ -145,6 +146,23 @@ func (x Rex) OpenProjectTab(tab Tab, name, dir, command string) error {
 	return err
 }
 
+func (x Rex) Split(tab Tab, anchor string, below bool, label, dir string, command []string) (string, error) {
+	args := []string{"split", "-s", tab.Session, "-b", anchor, "--focus=false", "--label", label, "-c", dir, "--json"}
+	if below {
+		args = append(args, "--split", "below", "--ratio", "35")
+	}
+	var created struct {
+		BlockIDs []string `json:"block_ids"`
+	}
+	if err := x.rexJSON(&created, append(append(args, "--"), command...)...); err != nil {
+		return "", err
+	}
+	if len(created.BlockIDs) == 0 {
+		return "", errors.New("rex split returned no pane")
+	}
+	return created.BlockIDs[0], nil
+}
+
 func (x Rex) Show(tab Tab) ([]string, error) {
 	var listing struct {
 		Clients []struct {
@@ -236,6 +254,22 @@ func (t Tmux) Start(group, label, dir string, command []string) (Tab, error) {
 func (t Tmux) OpenProjectTab(tab Tab, name, dir, command string) error {
 	_, err := sh(t.remote, tmuxScript, "open-tab", tab.Session, name, dir, command)
 	return err
+}
+
+func (t Tmux) Split(tab Tab, anchor string, below bool, label, dir string, command []string) (string, error) {
+	direction := "right"
+	if below {
+		direction = "below"
+	}
+	out, err := sh(t.remote, tmuxScript, append([]string{"split", anchor, direction, dir}, command...)...)
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(id, "%") {
+		return "", fmt.Errorf("unexpected tmux output %q", out)
+	}
+	return id, nil
 }
 
 func (t Tmux) Show(tab Tab) ([]string, error) {

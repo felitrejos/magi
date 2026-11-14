@@ -29,9 +29,11 @@ type Pull struct {
 
 type Pulled struct {
 	Result
-	Session string
-	Name    string
-	Prompt  string
+	Session     string
+	Name        string
+	PromptInfo  Prompt
+	Project     *Project
+	ProjectRoot string
 }
 
 type remoteSession struct {
@@ -90,6 +92,9 @@ func (p Pull) Run() (res Pulled, err error) {
 	if err := st.run("stop", func() error { return stopAtTurnEnd(remote, session, p.Out) }); err != nil {
 		return res, err
 	}
+	if err := closeRecordedTab(remote, p.Host, session.ID); err != nil {
+		res.TabNote = fmt.Errorf("closing the session's old tab on %s failed: %w", p.HostName, err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), pullBudget)
 	defer cancel()
@@ -137,7 +142,12 @@ func (p Pull) Run() (res Pulled, err error) {
 	if _, err := sh(remote, `mv -- "$1" "$2"`, session.Transcript, session.Transcript+".handed-off-to-"+local.Name()); err != nil {
 		res.ParkNote = errors.Join(res.ParkNote, err)
 	}
-	res.Prompt = handoffPrompt(Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Sidecar: sidecar})
+	project, err := approvedProject(local, where.Root)
+	if err != nil {
+		res.SetupNote = err
+	}
+	res.Project, res.ProjectRoot = project, where.Root
+	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Sidecar: sidecar}
 	return res, nil
 }
 
