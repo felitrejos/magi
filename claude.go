@@ -69,14 +69,14 @@ func waitForRemoteControl(r *Remote, sessionID string, launchedAt time.Time) err
 }
 
 func stopRemoteSession(r *Remote, sessionID string) error {
-	_, err := r.sh("pkill -TERM -f -- " + quote("--resume "+sessionID) + "; true")
+	_, err := r.sh("pkill -TERM -f -- " + quote("[-]-resume "+sessionID) + "; true")
 	return err
 }
 
-func checkTrusted(r *Remote, dir string) error {
+func isTrusted(r *Remote, dir string) (bool, error) {
 	out, err := r.sh(`cat "$HOME"/.claude.json`)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var state struct {
 		Projects map[string]struct {
@@ -84,14 +84,14 @@ func checkTrusted(r *Remote, dir string) error {
 		} `json:"projects"`
 	}
 	if err := json.Unmarshal(out, &state); err != nil {
-		return fmt.Errorf("read ~/.claude.json on %s: %w", r.host, err)
+		return false, fmt.Errorf("read ~/.claude.json on %s: %w", r.host, err)
 	}
 	for d := dir; ; d = filepath.Dir(d) {
 		if state.Projects[d].Trusted {
-			return nil
+			return true, nil
 		}
 		if d == "/" {
-			return fmt.Errorf("Claude Code on %s doesn't trust %s yet; start claude there once and accept the trust prompt", r.host, dir)
+			return false, nil
 		}
 	}
 }

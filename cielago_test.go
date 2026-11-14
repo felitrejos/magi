@@ -161,12 +161,16 @@ func TestHandoffSyncsCommitsChangesAndSecretsToTheHost(t *testing.T) {
 
 	r := f.remoteHost()
 	ws := f.workspace()
-	home, repo, err := findRemoteRepo(r, []string{"~/developer"}, ws.Origin)
+	home, clones, err := listClones(r, []string{"~/developer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := matchClone(clones, ws, r.host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if home != f.home || repo != f.remote {
-		t.Fatalf("findRemoteRepo = %q, %q; want %q, %q", home, repo, f.home, f.remote)
+		t.Fatalf("found %q, %q; want %q, %q", home, repo, f.home, f.remote)
 	}
 	if err := syncWorkspace(r, ws, repo); err != nil {
 		t.Fatal(err)
@@ -255,15 +259,93 @@ func TestWaitForRemoteControlWorksWithNoSessionFiles(t *testing.T) {
 	}
 }
 
-func TestCheckTrustedAcceptsATrustedParent(t *testing.T) {
+func TestIsTrustedAcceptsATrustedParent(t *testing.T) {
 	f := newFixture(t)
 	f.write(f.home, ".claude.json", `{"projects":{"`+f.home+`/developer":{"hasTrustDialogAccepted":true}}}`)
 	r := f.remoteHost()
-	if err := checkTrusted(r, f.remote); err != nil {
+	if trusted, err := isTrusted(r, f.remote); err != nil || !trusted {
+		t.Fatalf("trusted = %v, err = %v; want a trusted parent to count", trusted, err)
+	}
+	if trusted, err := isTrusted(r, filepath.Join(f.home, "elsewhere")); err != nil || trusted {
+		t.Fatalf("trusted = %v, err = %v; want an untrusted folder to report false", trusted, err)
+	}
+}
+
+func TestHandoffCreatesACloneForAProjectTheHostDoesNotHave(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.local, "edited.txt", "v2")
+	f.write(f.local, ".env", "SECRET=1")
+	r := f.remoteHost()
+	ws := f.workspace()
+	_, clones, err := listClones(r, []string{"~/developer"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := checkTrusted(r, filepath.Join(f.home, "elsewhere")); err == nil {
-		t.Fatal("an untrusted folder passed")
+	ws.Origin = "git@github.com:me/brand-new.git"
+	if repo, err := matchClone(clones, ws, r.host); err != nil || repo != "" {
+		t.Fatalf("matchClone = %q, %v; want no clone", repo, err)
+	}
+
+	dir := filepath.Join(f.home, "developer", "newgroup", "brand-new")
+	if err := createClone(r, dir, ws.Origin); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncWorkspace(r, ws, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.git(dir, "rev-parse", "HEAD"), f.git(f.local, "rev-parse", "HEAD"); got != want {
+		t.Errorf("new clone HEAD = %s, want %s", got, want)
+	}
+	if got := f.git(dir, "branch", "--show-current"); got != "main" {
+		t.Errorf("new clone branch = %q, want main", got)
+	}
+	if got := f.read(dir, ".env") + "|" + f.read(dir, "edited.txt"); got != "SECRET=1|v2" {
+		t.Errorf("new clone files = %q", got)
+	}
+	if err := createClone(r, dir, ws.Origin); err == nil {
+		t.Fatal("createClone overwrote a folder that already exists")
+	}
+}
+
+func TestMatchCloneFindsARepoWithNoRemoteByItsFirstCommit(t *testing.T) {
+	f := newFixture(t)
+	f.git(f.local, "remote", "remove", "origin")
+	f.git(f.remote, "remote", "remove", "origin")
+	r := f.remoteHost()
+	_, clones, err := listClones(r, []string{"~/developer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := matchClone(clones, f.workspace(), r.host)
+	if err != nil || repo != f.remote {
+		t.Fatalf("matchClone = %q, %v; want %q", repo, err, f.remote)
+	}
+}
+
+func TestLocalGroupMirrorsTheMacFolderLayout(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	for _, dir := range []string{"Personal/stampr/stampr-ops", "Personal/kodo", "elsewhere/tool"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	roots := []string{"~/Personal"}
+	for dir, want := range map[string]string{
+		"Personal/stampr/stampr-ops": "stampr",
+		"Personal/kodo":              "kodo",
+		"elsewhere/tool":             "tool",
+	} {
+		got, err := localGroup(filepath.Join(home, dir), roots)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("localGroup(%s) = %q, want %q", dir, got, want)
+		}
 	}
 }
 
@@ -376,12 +458,32 @@ func TestRetireLeavesADesktopSessionRunningUntilItIsArchived(t *testing.T) {
 }
 
 func TestHandedOffAsksDesktopSessionsToArchiveThemselves(t *testing.T) {
-	desktop := handedOff(armed{Host: "homelab", Desktop: true}, "3.0s")
+	desktop := handedOff(armed{Host: "homelab", Desktop: true}, Result{ShownOn: []string{"MacBook"}})
 	if desktop["decision"] != "block" || !strings.Contains(desktop["reason"], "archive_session") {
 		t.Errorf("desktop output = %v", desktop)
 	}
-	terminal := handedOff(armed{Host: "homelab"}, "3.0s")
+	terminal := handedOff(armed{Host: "homelab"}, Result{ShownOn: []string{"MacBook"}})
 	if _, blocks := terminal["decision"]; blocks || terminal["systemMessage"] == "" {
 		t.Errorf("terminal output = %v", terminal)
+	}
+}
+
+func TestStopRemoteSessionStopsTheSessionWithoutKillingItself(t *testing.T) {
+	f := newFixture(t)
+	sessionID := "11111111-2222-3333-4444-555555555555"
+	fake := exec.Command("sh", "-c", "sleep 30; : --resume "+sessionID)
+	if err := fake.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- fake.Wait() }()
+	if err := stopRemoteSession(f.remoteHost(), sessionID); err != nil {
+		t.Fatalf("stopRemoteSession failed: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		fake.Process.Kill()
+		t.Fatal("the session process was not stopped")
 	}
 }

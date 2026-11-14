@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "cielago hook stop",
-            "timeout": 120
+            "timeout": 150
           }
         ]
       }

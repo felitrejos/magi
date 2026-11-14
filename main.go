@@ -119,7 +119,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 		return err
 	}
 
-	steps, err := handoff(a.Host, input)
+	res, err := handoff(a.Host, input)
 	if err != nil {
 		return json.NewEncoder(out).Encode(map[string]string{
 			"decision": "block",
@@ -129,21 +129,32 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if err := retire(a, input.TranscriptPath); err != nil {
 		return err
 	}
-	return json.NewEncoder(out).Encode(handedOff(a, summarize(steps)))
+	return json.NewEncoder(out).Encode(handedOff(a, res))
 }
 
-func handedOff(a armed, took string) map[string]string {
+func handedOff(a armed, res Result) map[string]string {
+	where := "It runs with Remote Control, so it's in every Claude app on your account"
+	if len(res.ShownOn) > 0 {
+		where = fmt.Sprintf("It's open in Rex on %s, and with Remote Control it's in every Claude app on your account", strings.Join(res.ShownOn, ", "))
+	}
+	if res.RexNote != nil {
+		where += fmt.Sprintf(" (%v)", res.RexNote)
+	}
+	if res.NewClone != "" {
+		where += fmt.Sprintf(". %s didn't have this project yet, so it now lives at %s", a.Host, res.NewClone)
+	}
+	took := res.Summary()
 	if a.Desktop {
 		return map[string]string{
 			"decision": "block",
-			"reason": fmt.Sprintf("cielago handed this session off to %s in %s; it is now running there with Remote Control. "+
-				"Tell the user in one short line that the session continues on %s and that they can open it from the Claude app, "+
+			"reason": fmt.Sprintf("cielago handed this session off to %s in %s. %s. "+
+				"Tell the user in one or two short lines where the session continues now, "+
 				"then archive this session with the archive_session tool and session_id \"self\" (load the tool with ToolSearch if needed). "+
-				"Make no other tool calls.", a.Host, took, a.Host),
+				"Make no other tool calls.", a.Host, took, where),
 		}
 	}
 	return map[string]string{
-		"systemMessage": fmt.Sprintf("Handed off to %s in %s. Open it from the Claude app; this copy is closing.", a.Host, took),
+		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. This copy is closing.", a.Host, took, where),
 	}
 }
 
@@ -163,10 +174,10 @@ func isAncestor(pid int) (bool, error) {
 	return false, nil
 }
 
-func handoff(hostName string, input stopInput) ([]Step, error) {
+func handoff(hostName string, input stopInput) (Result, error) {
 	host, err := loadHost(hostName)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 	return Handoff{
 		HostName:       hostName,
@@ -185,6 +196,9 @@ func retire(a armed, transcriptPath string) error {
 	}
 	script := stop + "while kill -0 " + p + " 2>/dev/null; do sleep 0.2; done && mv -- " +
 		quote(transcriptPath) + " " + quote(transcriptPath+".handed-off-to-"+a.Host)
+	if session, block := os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"); !a.Desktop && session != "" && block != "" {
+		script += " && rex block close -s " + quote(session) + " " + quote(block)
+	}
 	cmd := exec.Command("sh", "-c", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()

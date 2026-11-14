@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
 type Workspace struct {
-	Root    string
-	Subdir  string
-	Origin  string
-	Branch  string
-	Changed []string
-	Deleted []string
-	Secrets []string
+	Root       string
+	Subdir     string
+	Origin     string
+	RootCommit string
+	Branch     string
+	Changed    []string
+	Deleted    []string
+	Secrets    []string
 }
 
 func readWorkspace(ctx context.Context, cwd string, secretPatterns []string) (Workspace, error) {
@@ -35,10 +37,15 @@ func readWorkspace(ctx context.Context, cwd string, secretPatterns []string) (Wo
 		return Workspace{}, err
 	}
 	origin, err := git("remote", "get-url", "origin")
-	if err != nil {
-		return Workspace{}, fmt.Errorf("%s has no origin remote to match it on the other host", ws.Root)
+	if err != nil && exitCode(err) != 2 {
+		return Workspace{}, err
 	}
 	ws.Origin = strings.TrimSpace(string(origin))
+	roots, err := git("rev-list", "--max-parents=0", "HEAD")
+	if err != nil {
+		return Workspace{}, fmt.Errorf("%s has no commits yet; make a first commit so it can be handed off", ws.Root)
+	}
+	ws.RootCommit = firstSorted(strings.Fields(string(roots)))
 	branch, err := git("symbolic-ref", "--short", "-q", "HEAD")
 	if err != nil && exitCode(err) != 1 {
 		return Workspace{}, err
@@ -71,6 +78,11 @@ func readWorkspace(ctx context.Context, cwd string, secretPatterns []string) (Wo
 	ignored, err := list(args...)
 	ws.Secrets = withoutDirs(ignored)
 	return ws, err
+}
+
+func firstSorted(items []string) string {
+	slices.Sort(items)
+	return items[0]
 }
 
 func withoutDirs(paths []string) []string {

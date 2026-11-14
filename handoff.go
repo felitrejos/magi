@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const handoffBudget = 80 * time.Second
+const handoffBudget = 110 * time.Second
 
 type Handoff struct {
 	HostName       string
@@ -24,25 +24,32 @@ type Step struct {
 	Took time.Duration
 }
 
-func summarize(steps []Step) string {
+type Result struct {
+	Steps    []Step
+	ShownOn  []string
+	RexNote  error
+	NewClone string
+}
+
+func (r Result) Summary() string {
 	var total time.Duration
-	parts := make([]string, len(steps))
-	for i, s := range steps {
+	parts := make([]string, len(r.Steps))
+	for i, s := range r.Steps {
 		total += s.Took
 		parts[i] = fmt.Sprintf("%s %.1fs", s.Name, s.Took.Seconds())
 	}
 	return fmt.Sprintf("%.1fs (%s)", total.Seconds(), strings.Join(parts, ", "))
 }
 
-func (h Handoff) Run() ([]Step, error) {
+func (h Handoff) Run() (Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), handoffBudget)
 	defer cancel()
 
-	var steps []Step
+	var res Result
 	step := func(name string, fn func() error) error {
 		start := time.Now()
 		err := fn()
-		steps = append(steps, Step{name, time.Since(start)})
+		res.Steps = append(res.Steps, Step{name, time.Since(start)})
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -51,29 +58,71 @@ func (h Handoff) Run() ([]Step, error) {
 
 	var ws Workspace
 	var remote *Remote
-	var remoteHome, remoteRepo, remoteDir string
+	var remoteHome, remoteRepo, remoteDir, group string
+	var trusted bool
 	err := step("inspect", func() (err error) {
 		if ws, err = readWorkspace(ctx, h.Cwd, h.Host.Secrets); err != nil {
+			return err
+		}
+		if group, err = localGroup(ws.Root, h.Host.LocalRoots); err != nil {
 			return err
 		}
 		if remote, err = newRemote(ctx, h.Host.SSH); err != nil {
 			return err
 		}
-		if remoteHome, remoteRepo, err = findRemoteRepo(remote, h.Host.Roots, ws.Origin); err != nil {
+		var clones []Clone
+		if remoteHome, clones, err = listClones(remote, h.Host.Roots); err != nil {
 			return err
 		}
+		if remoteRepo, err = matchClone(clones, ws, remote.host); err != nil {
+			return err
+		}
+		if remoteRepo == "" {
+			res.NewClone = expandHome(h.Host.Roots[0], remoteHome) + "/" + group + "/" + filepath.Base(ws.Root)
+			remoteRepo = res.NewClone
+		}
 		remoteDir = filepath.Join(remoteRepo, ws.Subdir)
-		return checkTrusted(remote, remoteDir)
+		trusted, err = isTrusted(remote, remoteDir)
+		return err
 	})
 	if err != nil {
-		return steps, err
+		return res, err
 	}
 
-	if err := step("sync", func() error { return syncWorkspace(remote, ws, remoteRepo) }); err != nil {
-		return steps, err
+	var tab RexTab
+	name := filepath.Base(remoteRepo)
+	launch := Launch{Host: h.Host, Remote: remote, Group: group, Name: name, Dir: remoteDir}
+	undo := func(err error) error {
+		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		remote.ctx = cleanup
+		if tab.Pane != "" {
+			if stopErr := stopRemoteSession(remote, h.SessionID); stopErr != nil {
+				err = fmt.Errorf("%w; stopping it there also failed: %v", err, stopErr)
+			}
+		}
+		if closeErr := launch.discard(tab); closeErr != nil {
+			err = fmt.Errorf("%w; removing the new Rex tab also failed: %v", err, closeErr)
+		}
+		if res.NewClone == "" {
+			return fmt.Errorf("%w (%s on %s now has this branch and these changes checked out)", err, remoteRepo, h.HostName)
+		}
+		if rmErr := removeClone(remote, res.NewClone); rmErr != nil {
+			return fmt.Errorf("%w; removing the new clone at %s also failed: %v", err, res.NewClone, rmErr)
+		}
+		return fmt.Errorf("%w (cielago removed the clone it had just created at %s)", err, res.NewClone)
 	}
-	leftChanged := func(err error) error {
-		return fmt.Errorf("%w (%s on %s now has this branch and these changes checked out)", err, remoteRepo, h.HostName)
+
+	if res.NewClone != "" {
+		if err := step("clone", func() error { return createClone(remote, res.NewClone, ws.Origin) }); err != nil {
+			return res, err
+		}
+	}
+	if err := step("sync", func() error { return syncWorkspace(remote, ws, remoteRepo) }); err != nil {
+		if res.NewClone == "" {
+			return res, err
+		}
+		return res, undo(err)
 	}
 
 	if err := step("transcript", func() error {
@@ -87,7 +136,7 @@ func (h Handoff) Run() ([]Step, error) {
 		}
 		return remote.copyFiles(dir, files, remoteHome+"/.claude/projects/"+slug)
 	}); err != nil {
-		return steps, leftChanged(err)
+		return res, undo(err)
 	}
 
 	launchedAt := time.Now()
@@ -96,29 +145,32 @@ func (h Handoff) Run() ([]Step, error) {
 		if err != nil {
 			return err
 		}
-		name := filepath.Base(remoteRepo)
 		prompt := handoffPrompt(strings.TrimSuffix(from, ".local"), h.HostName, h.Cwd, remoteDir)
-		return Launch{
-			Host:    h.Host,
-			Remote:  remote,
-			Name:    name,
-			Dir:     remoteDir,
-			Command: []string{expandHome(h.Host.Claude, remoteHome), "--resume", h.SessionID, "--remote-control", name, prompt},
-		}.start()
+		launch.Command = []string{expandHome(h.Host.Claude, remoteHome), "--resume", h.SessionID, "--remote-control", name, prompt}
+		if tab, err = launch.start(remoteRepo); err != nil {
+			return err
+		}
+		res.ShownOn, res.RexNote = launch.show(tab)
+		return nil
 	}); err != nil {
-		return steps, leftChanged(err)
+		return res, undo(err)
 	}
 
 	if err := step("start", func() error { return waitForRemoteControl(remote, h.SessionID, launchedAt) }); err != nil {
-		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		remote.ctx = cleanup
-		if stopErr := stopRemoteSession(remote, h.SessionID); stopErr != nil {
-			err = fmt.Errorf("%w; stopping it there also failed: %v", err, stopErr)
+		if !trusted {
+			err = fmt.Errorf("%w: the new session was waiting for you to trust %s; accept that in Rex and hand off again", err, remoteDir)
 		}
-		return steps, leftChanged(err)
+		return res, undo(err)
 	}
-	return steps, nil
+
+	if tab.Created && h.Host.NewTabCommand != "" {
+		if err := step("tab", func() error {
+			return launch.runInShell(tab, strings.ReplaceAll(h.Host.NewTabCommand, "{repo}", name))
+		}); err != nil {
+			return res, err
+		}
+	}
+	return res, nil
 }
 
 func expandHome(path, home string) string {
@@ -131,7 +183,32 @@ func expandHome(path, home string) string {
 	return path
 }
 
-func findRemoteRepo(r *Remote, roots []string, origin string) (home, repo string, err error) {
+func localGroup(repoRoot string, localRoots []string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	for _, root := range localRoots {
+		real, err := filepath.EvalSymlinks(expandHome(root, home))
+		if err != nil {
+			return "", fmt.Errorf("local_roots: %w", err)
+		}
+		rel, err := filepath.Rel(real, repoRoot)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		return strings.Split(rel, string(filepath.Separator))[0], nil
+	}
+	return filepath.Base(repoRoot), nil
+}
+
+type Clone struct {
+	Dir        string
+	Origin     string
+	RootCommit string
+}
+
+func listClones(r *Remote, roots []string) (home string, clones []Clone, err error) {
 	var script strings.Builder
 	script.WriteString(`printf '%s\n' "$HOME"; `)
 	for _, root := range roots {
@@ -140,30 +217,59 @@ func findRemoteRepo(r *Remote, roots []string, origin string) (home, repo string
 			dir = `"$HOME"/` + quote(rest)
 		}
 		script.WriteString(`find ` + dir + ` -maxdepth 3 -name .git -type d -prune -print 2>/dev/null | while IFS= read -r g; do ` +
-			`d=$(cd "${g%/.git}" && pwd -P); printf '%s\t%s\n' "$d" "$(git -C "$d" remote get-url origin 2>/dev/null)"; done; `)
+			`d=$(cd "${g%/.git}" && pwd -P); ` +
+			`printf '%s\t%s\t%s\n' "$d" "$(git -C "$d" remote get-url origin 2>/dev/null)" "$(git -C "$d" rev-list --max-parents=0 HEAD 2>/dev/null | sort | head -n 1)"; done; `)
 	}
 	out, err := r.sh(script.String())
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	home = lines[0]
-	want := normalizeRemote(origin)
-	var matches []string
 	for _, line := range lines[1:] {
-		dir, url, _ := strings.Cut(line, "\t")
-		if url != "" && normalizeRemote(url) == want {
-			matches = append(matches, dir)
+		fields := strings.Split(line, "\t")
+		if len(fields) == 3 {
+			clones = append(clones, Clone{Dir: fields[0], Origin: fields[1], RootCommit: fields[2]})
+		}
+	}
+	return lines[0], clones, nil
+}
+
+func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
+	same := func(c Clone) bool {
+		if ws.Origin != "" {
+			return c.Origin != "" && normalizeRemote(c.Origin) == normalizeRemote(ws.Origin)
+		}
+		return c.Origin == "" && c.RootCommit == ws.RootCommit
+	}
+	var matches []string
+	for _, c := range clones {
+		if same(c) {
+			matches = append(matches, c.Dir)
 		}
 	}
 	switch len(matches) {
 	case 0:
-		return "", "", fmt.Errorf("no clone of %s under %s on %s", want, strings.Join(roots, ", "), r.host)
+		return "", nil
 	case 1:
-		return home, matches[0], nil
+		return matches[0], nil
 	default:
-		return "", "", fmt.Errorf("%d clones of %s on %s: %s", len(matches), want, r.host, strings.Join(matches, ", "))
+		return "", fmt.Errorf("%d clones of this repository on %s: %s", len(matches), host, strings.Join(matches, ", "))
 	}
+}
+
+func createClone(r *Remote, dir, origin string) error {
+	script := "set -e; if [ -e " + quote(dir) + " ]; then echo " + quote(dir+" already exists but isn't a clone of this repository") + " >&2; exit 5; fi; " +
+		"mkdir -p " + quote(dir) + "; git -C " + quote(dir) + " init --quiet; "
+	if origin != "" {
+		script += "git -C " + quote(dir) + " remote add origin " + quote(origin) + "; "
+	}
+	_, err := r.sh(script)
+	return err
+}
+
+func removeClone(r *Remote, dir string) error {
+	_, err := r.sh("rm -rf -- " + quote(dir))
+	return err
 }
 
 const handoffRef = "refs/cielago/handoff"

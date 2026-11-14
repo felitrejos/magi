@@ -12,15 +12,18 @@ import (
 )
 
 type Config struct {
-	Hosts map[string]Host `toml:"hosts"`
+	LocalRoots []string        `toml:"local_roots"`
+	Hosts      map[string]Host `toml:"hosts"`
 }
 
 type Host struct {
-	SSH       string   `toml:"ssh"`
-	Claude    string   `toml:"claude"`
-	Roots     []string `toml:"roots"`
-	Secrets   []string `toml:"secrets"`
-	RexServer string   `toml:"rex_server"`
+	SSH           string   `toml:"ssh"`
+	Claude        string   `toml:"claude"`
+	Roots         []string `toml:"roots"`
+	Secrets       []string `toml:"secrets"`
+	RexServer     string   `toml:"rex_server"`
+	NewTabCommand string   `toml:"new_tab_command"`
+	LocalRoots    []string `toml:"-"`
 }
 
 func configPath() (string, error) {
@@ -48,6 +51,7 @@ func loadHost(name string) (Host, error) {
 		names := slices.Sorted(maps.Keys(cfg.Hosts))
 		return Host{}, fmt.Errorf("no host %q in %s; configured hosts: %s", name, path, strings.Join(names, ", "))
 	}
+	host.LocalRoots = cfg.LocalRoots
 	return host, host.validate(name)
 }
 
