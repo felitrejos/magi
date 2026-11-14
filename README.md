@@ -23,6 +23,7 @@
   <img src="https://img.shields.io/badge/Rex-pane-111111" alt="Rex pane">
   <img src="https://img.shields.io/badge/Claude%20Code%20·%20Codex-sessions-D97757" alt="Claude Code and Codex sessions">
   <img src="https://img.shields.io/badge/macOS%20·%20Linux-black" alt="macOS and Linux">
+  <img src="https://img.shields.io/badge/Windows-soon-lightgrey" alt="Windows soon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
@@ -143,8 +144,6 @@ for the affected sessions.
 
 - More agents: Gemini CLI, Cursor, Aider, OpenCode.
 - Alert thresholds you can set.
-- Smooth pixel charts in Rex with the kitty graphics protocol.
-- Windows.
 
 ## Security
 
