@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::model::{Endpoint, LinkState, Model, Presence, Row};
 use super::{Config, EVENT_BACKLOG, Event, Links, alerts, handle, net, topology};
-use crate::proto::{FULL, SessionState};
+use crate::proto::{Agent, AgentSession, FULL, Plan, SessionState};
 
 const WAIT: Duration = Duration::from_secs(3);
 
@@ -39,9 +39,10 @@ pub fn print(config: Config, as_json: bool) -> io::Result<()> {
     }
     let now = Instant::now();
     let machines: Vec<Value> = model.rows(now).iter().map(describe).collect();
+    let plans: Vec<Value> = model.plans(now).into_iter().map(plan).collect();
     let mut out = io::stdout().lock();
     if as_json {
-        serde_json::to_writer(&mut out, &json!({ "machines": machines }))?;
+        serde_json::to_writer(&mut out, &json!({ "machines": machines, "plans": plans }))?;
         writeln!(out)
     } else {
         table(&mut out, &machines)
@@ -98,8 +99,44 @@ fn describe(row: &Row<'_>) -> Value {
                 "waiting": count(|state| matches!(state, SessionState::Waiting(_))),
                 "idle": count(|state| matches!(state, SessionState::Idle)),
             },
+            "sessions": sample.sessions.iter().map(session).collect::<Vec<_>>(),
             "error": null,
     })
+}
+
+fn session(session: &AgentSession) -> Value {
+    let usage = session.usage;
+    json!({
+        "id": session.id,
+        "agent": agent_key(session.agent),
+        "title": session.title,
+        "project": session.project,
+        "state": match session.state {
+            SessionState::Working { .. } => "working",
+            SessionState::Waiting(_) => "waiting",
+            SessionState::Idle => "idle",
+        },
+        "cpu": usage.and_then(|usage| usage.cpu).map(|millicores| f64::from(millicores) / 1000.0),
+        "memory": usage.map(|usage| usage.memory),
+    })
+}
+
+fn plan(plan: &Plan) -> Value {
+    json!({
+        "agent": agent_key(plan.agent),
+        "windows": plan.windows.iter().map(|window| json!({
+            "label": window.label(),
+            "used": round(f32::from(window.used) / f32::from(FULL)),
+            "resets_at": window.resets_at,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn agent_key(agent: Agent) -> &'static str {
+    match agent {
+        Agent::ClaudeCode => "claude",
+        Agent::Codex => "codex",
+    }
 }
 
 fn round(value: f32) -> f64 {
@@ -185,6 +222,7 @@ mod tests {
         assert_eq!(machine["load"][0], 1.23);
         assert_eq!(machine["memory_total"], 16);
         assert_eq!(machine["agents"]["idle"], 0);
+        assert_eq!(machine["sessions"], json!([]));
         model.apply(
             Endpoint::Local,
             LinkUpdate::Lost("agent not running".into()),
@@ -193,5 +231,52 @@ mod tests {
         let machine = describe(&model.rows(now)[0]);
         assert_eq!(machine["live"], false);
         assert_eq!(machine["error"], "agent not running");
+    }
+
+    #[test]
+    fn sessions_carry_their_own_cpu_and_memory_and_plans_their_windows() {
+        use crate::proto::{Tokens, Usage, Window};
+        let busy = AgentSession {
+            agent: Agent::Codex,
+            id: "c1".into(),
+            title: "run the tests".into(),
+            project: "api".into(),
+            state: SessionState::Working { tool: None },
+            state_secs: 0,
+            model: String::new(),
+            context_tokens: 0,
+            context_used: None,
+            tokens: Tokens::default(),
+            cost_micros: 0,
+            cost_complete: true,
+            age_secs: 0,
+            pane: None,
+            usage: Some(Usage {
+                cpu: Some(2500),
+                memory: 1 << 30,
+            }),
+        };
+        assert_eq!(
+            session(&busy),
+            json!({"id": "c1", "agent": "codex", "title": "run the tests", "project": "api",
+                   "state": "working", "cpu": 2.5, "memory": 1u64 << 30})
+        );
+        let unmeasured = AgentSession {
+            usage: None,
+            ..busy
+        };
+        assert_eq!(session(&unmeasured)["cpu"], Value::Null);
+        let claude = Plan {
+            agent: Agent::ClaudeCode,
+            windows: vec![Window {
+                minutes: crate::proto::FIVE_HOURS,
+                used: 9_000,
+                resets_at: 42,
+            }],
+        };
+        assert_eq!(
+            plan(&claude),
+            json!({"agent": "claude", "windows": [{"label": "5h", "used": 0.9, "resets_at": 42}]})
+        );
     }
 }

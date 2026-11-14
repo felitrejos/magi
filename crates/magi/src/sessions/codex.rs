@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use super::Found;
 use super::ledger::{Counted, Ledger};
 use super::pricing::{self, OpenAiUsage};
 use super::process;
-use super::rex::Panes;
 use super::tail::{self, Lines, Tail};
 use crate::proto::{Agent, AgentSession, BasisPoints, FULL, Plan, SessionState, Tokens, Window};
 
@@ -166,11 +166,10 @@ impl Codex {
 
     pub fn poll(
         &mut self,
-        panes: &mut Panes,
         now: Instant,
         now_ms: u64,
         budget: &mut u64,
-    ) -> (Vec<AgentSession>, Option<Plan>) {
+    ) -> (Vec<Found>, Option<Plan>) {
         if self
             .found_at
             .is_none_or(|at| now.duration_since(at) >= FIND_PROCESSES_EVERY)
@@ -215,9 +214,9 @@ impl Codex {
                 .get(path)
                 .and_then(|rollout| describe(&rollout.state, titles, now_ms))
             {
-                sessions.push(AgentSession {
-                    pane: panes.find(*pid, now),
-                    ..session
+                sessions.push(Found {
+                    session,
+                    pid: Some(*pid),
                 });
             }
         }
@@ -444,6 +443,7 @@ fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<Agent
         cost_complete: !state.ledger.unpriced,
         age_secs: (now_ms.saturating_sub(state.started_ms) / 1000) as u32,
         pane: None,
+        usage: None,
     })
 }
 

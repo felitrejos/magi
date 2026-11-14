@@ -240,6 +240,13 @@ pub struct AgentRow<'a> {
     pub machine: String,
     pub session: &'a AgentSession,
     pub live: bool,
+    pub capacity: Capacity,
+}
+
+#[derive(Clone, Copy)]
+pub struct Capacity {
+    pub cores: usize,
+    pub memory: u64,
 }
 
 fn urgency(agent: &AgentRow<'_>) -> (u8, i64) {
@@ -416,10 +423,15 @@ impl Model {
                 let live = row.state() == Some(&LinkState::Live);
                 let machine = row.machine()?;
                 let sample = machine.latest.as_ref()?;
+                let capacity = Capacity {
+                    cores: sample.cores.len(),
+                    memory: sample.memory.total,
+                };
                 Some(sample.sessions.iter().map(move |session| AgentRow {
                     machine: row.name.clone(),
                     session,
                     live,
+                    capacity,
                 }))
             })
             .flatten()
@@ -725,6 +737,7 @@ mod tests {
             cost_complete: true,
             age_secs: 0,
             pane: None,
+            usage: None,
         };
         let mac = Sample {
             sessions: vec![

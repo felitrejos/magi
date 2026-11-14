@@ -7,6 +7,7 @@ mod registry;
 mod rex;
 mod tail;
 mod transcript;
+mod usage;
 
 use std::collections::HashMap;
 use std::io;
@@ -81,10 +82,16 @@ pub struct Snapshot {
     pub notices: Vec<String>,
 }
 
+pub struct Found {
+    pub session: AgentSession,
+    pub pid: Option<i32>,
+}
+
 pub struct Sessions {
     claude: ClaudeSessions,
     codex: Option<Codex>,
     panes: rex::Panes,
+    meter: usage::Meter,
 }
 
 impl Sessions {
@@ -94,6 +101,7 @@ impl Sessions {
             claude: ClaudeSessions::new(Path::new(&home).join(".claude")),
             codex: Codex::for_this_user(),
             panes: rex::Panes::default(),
+            meter: usage::Meter::default(),
         })
     }
 
@@ -104,12 +112,10 @@ impl Sessions {
             .map_or(0, |since| since.as_millis() as u64);
         let mut budget = READ_BUDGET_PER_POLL;
         let mut snapshot = Snapshot::default();
-        match self
-            .claude
-            .poll(board, &mut self.panes, now, now_ms, &mut budget)
-        {
+        let mut found = Vec::new();
+        match self.claude.poll(board, now, now_ms, &mut budget) {
             Ok(polled) => {
-                snapshot.sessions = polled.sessions;
+                found = polled.sessions;
                 snapshot.notices.extend(polled.notice);
             }
             Err(error) => snapshot
@@ -118,10 +124,20 @@ impl Sessions {
         }
         snapshot.plans.extend(board.plan(now_ms / 1000));
         if let Some(codex) = &mut self.codex {
-            let (sessions, plan) = codex.poll(&mut self.panes, now, now_ms, &mut budget);
-            snapshot.sessions.extend(sessions);
+            let (sessions, plan) = codex.poll(now, now_ms, &mut budget);
+            found.extend(sessions);
             snapshot.plans.extend(plan);
         }
+        let pids: Vec<i32> = found.iter().filter_map(|found| found.pid).collect();
+        let usage = self.meter.measure(&pids, now);
+        snapshot.sessions = found
+            .into_iter()
+            .map(|Found { session, pid }| AgentSession {
+                pane: pid.and_then(|pid| self.panes.find(pid, now)),
+                usage: pid.and_then(|pid| usage.get(&pid).copied()),
+                ..session
+            })
+            .collect();
         snapshot
     }
 }

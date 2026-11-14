@@ -9,13 +9,14 @@ use ratatui::widgets::Paragraph;
 use super::{
     Composed, Cursor, clip, icon, panel, rule, selected_style, short_name, spread, truncate,
 };
-use crate::proto::{AgentSession, FULL, Plan, SessionState, Waiting};
+use crate::proto::{AgentSession, FULL, Plan, SessionState, Usage, Waiting};
 use crate::viewer::graphics::Graphics;
-use crate::viewer::model::{AgentRow, Model};
+use crate::viewer::model::{AgentRow, Capacity, Model};
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
 
 const LABEL: usize = 14;
+const BUSY_MILLICORES: u32 = 500;
 
 pub fn render_list(
     frame: &mut Frame,
@@ -97,18 +98,23 @@ pub fn render_list(
             format!("  {}", place.join(" · ")),
             style::fg(theme().faint),
         ));
-        let details = if width >= 56 {
-            vec![Span::styled(
+        let mut details = Vec::new();
+        if width >= 56 {
+            details.push(Span::styled(
                 format!(
                     "{}  {}",
                     units::model(&session.model),
                     context_text(session)
                 ),
                 style::fg(theme().dim),
-            )]
-        } else {
-            Vec::new()
-        };
+            ));
+        }
+        if let Some((millicores, share)) = busy_cpu(agent) {
+            details.push(Span::styled(
+                format!("  {}", units::cores(millicores)),
+                style::fg(style::load(share)),
+            ));
+        }
         lines.push(title.style(selected_style(is_selected)));
         lines.push(spread(status, details, width).style(selected_style(is_selected)));
     }
@@ -145,6 +151,19 @@ fn state_text(session: &AgentSession, live: bool) -> (String, Color) {
         SessionState::Working { tool: None } => ("working".into(), theme().accent),
         SessionState::Idle => (format!("idle {since}"), theme().dim),
     }
+}
+
+fn busy_cpu(agent: &AgentRow<'_>) -> Option<(u32, f32)> {
+    let millicores = agent
+        .session
+        .usage?
+        .cpu
+        .filter(|cpu| *cpu >= BUSY_MILLICORES)?;
+    Some((millicores, cpu_share(millicores, agent.capacity.cores)))
+}
+
+fn cpu_share(millicores: u32, cores: usize) -> f32 {
+    millicores as f32 / (cores.max(1) * 1000) as f32
 }
 
 fn cost(session: &AgentSession) -> String {
@@ -274,6 +293,9 @@ pub fn render_detail(
             width,
         )),
     );
+    if let Some(usage) = session.usage {
+        resources(&mut cursor, frame, graphics, usage, agent.capacity, bar);
+    }
     cursor.skip();
     let tokens = session.tokens;
     cursor.line(frame, rule(icon("◇"), "Tokens", Vec::new(), width));
@@ -340,6 +362,65 @@ pub fn render_detail(
             style::fg(theme().faint),
         )),
     );
+}
+
+fn resources(
+    cursor: &mut Cursor,
+    frame: &mut Frame,
+    graphics: &mut Graphics,
+    usage: Usage,
+    capacity: Capacity,
+    bar: usize,
+) {
+    let width = cursor.area.width as usize;
+    cursor.skip();
+    cursor.line(
+        frame,
+        rule(
+            icon("◍"),
+            "Resources",
+            vec![Span::styled(
+                "with everything it started",
+                style::fg(theme().faint),
+            )],
+            width,
+        ),
+    );
+    let label = |text: &str| {
+        Span::styled(
+            format!("  {text:<width$}", width = LABEL - 2),
+            style::fg(theme().dim),
+        )
+    };
+    let mut cpu = Composed::of(vec![label("cpu")]);
+    match usage.cpu {
+        Some(millicores) => {
+            let share = cpu_share(millicores, capacity.cores);
+            cpu.bar(bar, share, style::load(share), "detail-cpu".into());
+            cpu.push(Span::styled(
+                format!(
+                    "  {:.1} of {} cores",
+                    f64::from(millicores) / 1000.0,
+                    capacity.cores
+                ),
+                style::fg(theme().text),
+            ));
+        }
+        None => cpu.push(Span::styled("measuring…", style::fg(theme().dim))),
+    }
+    cursor.composed(frame, graphics, cpu);
+    let share = usage.memory as f32 / capacity.memory.max(1) as f32;
+    let mut memory = Composed::of(vec![label("memory")]);
+    memory.bar(bar, share, style::load(share), "detail-memory".into());
+    memory.push(Span::styled(
+        format!(
+            "  {} of {}",
+            units::bytes(usage.memory),
+            units::bytes(capacity.memory)
+        ),
+        style::fg(theme().text),
+    ));
+    cursor.composed(frame, graphics, memory);
 }
 
 fn until(epoch_secs: u64) -> String {

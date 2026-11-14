@@ -4,10 +4,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::Board;
 use super::registry::{self, Registry, Status};
-use super::rex::Panes;
 use super::transcript::Transcript;
+use super::{Board, Found};
 use crate::proto::{Agent, AgentSession, BasisPoints, SessionState, Tokens, Waiting};
 
 const FIND_TRANSCRIPT_EVERY: Duration = Duration::from_secs(10);
@@ -28,7 +27,7 @@ pub struct ClaudeSessions {
 }
 
 pub struct Polled {
-    pub sessions: Vec<AgentSession>,
+    pub sessions: Vec<Found>,
     pub notice: Option<String>,
 }
 
@@ -120,7 +119,6 @@ impl ClaudeSessions {
     pub fn poll(
         &mut self,
         board: &Board,
-        panes: &mut Panes,
         now: Instant,
         now_ms: u64,
         budget: &mut u64,
@@ -178,10 +176,10 @@ impl ClaudeSessions {
                 });
                 tracked.follow(&projects, &session.id, now, budget, &mut self.claims);
                 let context = board.context(&session.id);
-                let pane = session.pid.and_then(|pid| panes.find(pid, now));
-                AgentSession {
-                    pane,
-                    ..describe(session, tracked, context)
+                let pid = session.pid;
+                Found {
+                    session: describe(session, tracked, context),
+                    pid,
                 }
             })
             .collect();
@@ -328,6 +326,7 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
             .all(|transcript| !transcript.state.ledger.unpriced),
         age_secs: session.age_secs,
         pane: None,
+        usage: None,
     }
 }
 
@@ -397,7 +396,6 @@ mod tests {
         let polled = claude
             .poll(
                 &Board::default(),
-                &mut Panes::default(),
                 Instant::now(),
                 now_ms,
                 &mut u64::MAX.clone(),
@@ -405,12 +403,12 @@ mod tests {
             .unwrap();
         assert_eq!(polled.notice.as_deref(), Some(FORMAT_CHANGED));
         assert_eq!(polled.sessions.len(), 2);
-        let exact = &polled.sessions[0];
+        let exact = &polled.sessions[0].session;
         assert_eq!(
             (exact.id.as_str(), &exact.state),
             ("def", &SessionState::Waiting(Waiting::Permission(None)))
         );
-        let session = &polled.sessions[1];
+        let session = &polled.sessions[1].session;
         assert_eq!(
             (session.id.as_str(), session.project.as_str()),
             ("abc", "magi")

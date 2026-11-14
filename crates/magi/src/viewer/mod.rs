@@ -410,6 +410,7 @@ mod tests {
             cost_complete: true,
             age_secs: 0,
             pane,
+            usage: None,
         };
         let sample = Sample {
             sessions: vec![session],

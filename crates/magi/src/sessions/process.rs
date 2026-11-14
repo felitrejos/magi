@@ -36,6 +36,11 @@ pub fn open_files(name: &str) -> Vec<(i32, PathBuf)> {
 }
 
 #[cfg(target_os = "macos")]
+pub fn pids() -> Vec<i32> {
+    macos::pids()
+}
+
+#[cfg(target_os = "macos")]
 mod macos {
     use std::ffi::CStr;
     use std::mem::{MaybeUninit, size_of};

@@ -52,6 +52,7 @@ fn agent(title: &str, state: SessionState, context_used: Option<u16>) -> AgentSe
         cost_complete: true,
         age_secs: 7_900,
         pane: None,
+        usage: None,
     }
 }
 
@@ -515,4 +516,43 @@ fn truncated_text_never_draws_wider_than_its_room() {
         }
     }
     assert_eq!(truncate("👨‍👩‍👧 family", 3), "👨‍👩‍👧…");
+}
+
+#[test]
+fn a_session_shows_what_it_and_everything_it_started_use() {
+    let now = Instant::now();
+    let mut model = fleet(1, now);
+    let mut busy = sample(0.5, 12);
+    busy.sessions[0].usage = Some(crate::proto::Usage {
+        cpu: Some(2_500),
+        memory: 3 << 30,
+    });
+    busy.sessions[1].usage = Some(crate::proto::Usage {
+        cpu: None,
+        memory: 1 << 20,
+    });
+    model.apply(Endpoint::Local, LinkUpdate::Sample(Box::new(busy)), now);
+    let first_agent = model.rows(now).len();
+    let titles: Vec<String> = model
+        .agents(now)
+        .iter()
+        .map(|agent| agent.session.title.clone())
+        .collect();
+    let with_usage = titles
+        .iter()
+        .position(|title| title.starts_with("refactor"))
+        .unwrap();
+    model.selected = first_agent + with_usage;
+    let screen = draw(&model, 160, 50, now);
+    assert!(screen.contains("2.5 cores"), "{screen}");
+    assert!(screen.contains("2.5 of 12 cores"), "{screen}");
+    assert!(screen.contains("with everything it started"), "{screen}");
+    assert!(screen.contains("3.0G of 32G"), "{screen}");
+    let waiting = titles
+        .iter()
+        .position(|title| title == "deploy fix")
+        .unwrap();
+    model.selected = first_agent + waiting;
+    let screen = draw(&model, 160, 50, now);
+    assert!(screen.contains("measuring…"), "{screen}");
 }
