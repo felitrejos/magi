@@ -8,8 +8,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::collect::{self, Collector, SystemInfo};
+use crate::handoff;
 use crate::net::{self, Conn};
-use crate::proto::{self, AgentMessage, Hello, Identity, PROTOCOL_VERSION, StatusReport, Welcome};
+use crate::proto::{
+    self, AgentMessage, Hello, Identity, PROTOCOL_VERSION, Reply, Request, StatusReport, Welcome,
+};
 use crate::sessions::{Board, Sessions, Snapshot};
 use crate::{log, tailscale};
 
@@ -22,6 +25,7 @@ const MAX_CONNECTIONS: usize = 32;
 const FRAME_BACKLOG: usize = 4;
 const HELLO_MAX_BYTES: usize = 8;
 const STATUS_MAX_BYTES: usize = 4096;
+const REQUEST_MAX_BYTES: usize = 4096;
 const STATUS_RETRY: Duration = Duration::from_millis(10);
 const STATUS_READ_TIMEOUT: Duration = Duration::from_secs(1);
 const SESSIONS_EVERY: Duration = Duration::from_secs(1);
@@ -313,7 +317,11 @@ fn accept_tailnet(listener: &TcpListener, watch: &Arc<TailnetWatch>, agent: &Arc
     }
 }
 
-fn admit_tailnet(mut stream: TcpStream, watch: &TailnetWatch, agent: &Agent) -> io::Result<()> {
+fn admit_tailnet(
+    mut stream: TcpStream,
+    watch: &TailnetWatch,
+    agent: &Arc<Agent>,
+) -> io::Result<()> {
     let peer = stream.peer_addr()?;
     stream.set_nodelay(true)?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
@@ -360,7 +368,7 @@ enum Origin {
     Tailnet(SocketAddr),
 }
 
-fn serve(conn: &mut dyn Conn, agent: &Agent, origin: Origin) -> io::Result<()> {
+fn serve(conn: &mut dyn Conn, agent: &Arc<Agent>, origin: Origin) -> io::Result<()> {
     let hello: Hello = read_limited(conn, HELLO_MAX_BYTES, Instant::now() + HANDSHAKE_TIMEOUT)?;
     if hello.version != PROTOCOL_VERSION {
         let reason = format!(
@@ -374,10 +382,63 @@ fn serve(conn: &mut dyn Conn, agent: &Agent, origin: Origin) -> io::Result<()> {
         Origin::Local => log::info("viewer on this machine connected"),
         Origin::Tailnet(peer) => log::info(format!("viewer {peer} connected")),
     }
-    for frame in agent.hub.subscribe() {
+    let (replies, frames) = agent.hub.subscribe_with_replies();
+    spawn_requests(conn.try_clone()?, replies, Arc::clone(agent))?;
+    for frame in frames {
         conn.write_all(&frame)?;
     }
     Ok(())
+}
+
+fn spawn_requests(
+    mut conn: Box<dyn Conn>,
+    replies: SyncSender<Frame>,
+    agent: Arc<Agent>,
+) -> io::Result<()> {
+    conn.set_read_timeout(None)?;
+    thread::Builder::new()
+        .name("requests".into())
+        .spawn(move || {
+            let mut buf = Vec::new();
+            while let Ok(request) =
+                proto::read_frame_within::<Request, _>(&mut *conn, &mut buf, REQUEST_MAX_BYTES)
+            {
+                answer(request, &agent, &replies);
+            }
+        })?;
+    Ok(())
+}
+
+fn answer(request: Request, agent: &Agent, replies: &SyncSender<Frame>) {
+    match request {
+        Request::Move { session, to } => {
+            let found = agent
+                .sessions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .sessions
+                .iter()
+                .find(|known| known.id == session)
+                .cloned();
+            let Some(found) = found else {
+                return reply(replies, false, "that session has ended".into());
+            };
+            let later = replies.clone();
+            let started = handoff::start(&found, &to, move |outcome| {
+                reply(&later, outcome.ok, outcome.text);
+            });
+            match started {
+                Ok(text) => reply(replies, true, text),
+                Err(text) => reply(replies, false, text),
+            }
+        }
+    }
+}
+
+fn reply(replies: &SyncSender<Frame>, ok: bool, text: String) {
+    if let Ok(frame) = proto::encode_frame(&AgentMessage::Reply(Reply { ok, text })) {
+        let _ = replies.send(frame.into());
+    }
 }
 
 fn accept_status(listener: &UnixListener, agent: &Agent) {
@@ -457,14 +518,19 @@ struct Hub {
 }
 
 impl Hub {
+    #[cfg(test)]
     fn subscribe(&self) -> Receiver<Frame> {
+        self.subscribe_with_replies().1
+    }
+
+    fn subscribe_with_replies(&self) -> (SyncSender<Frame>, Receiver<Frame>) {
         let (sender, receiver) = mpsc::sync_channel(FRAME_BACKLOG);
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(sender);
+            .push(sender.clone());
         self.joined.notify_all();
-        receiver
+        (sender, receiver)
     }
 
     fn is_idle(&self) -> bool {
@@ -559,6 +625,39 @@ mod tests {
         proto::write_frame(&mut stream, &Hello { version }).unwrap();
         let reply = proto::read_frame(&mut stream, &mut Vec::new()).unwrap();
         (stream, reply)
+    }
+
+    #[test]
+    fn a_viewer_asking_to_move_a_session_that_ended_is_told_so_alongside_its_samples() {
+        let agent = start_local_agent("requests", Duration::from_millis(100));
+        let (mut stream, reply) = connect(&agent, PROTOCOL_VERSION);
+        assert!(matches!(reply, AgentMessage::Welcome(_)), "{reply:?}");
+        proto::write_frame(
+            &mut stream,
+            &Request::Move {
+                session: "gone".into(),
+                to: "homelab".into(),
+            },
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        let reply = (0..50)
+            .find_map(
+                |_| match proto::read_frame(&mut stream, &mut buf).unwrap() {
+                    AgentMessage::Reply(reply) => Some(reply),
+                    _ => None,
+                },
+            )
+            .expect("a reply among the samples");
+        assert_eq!(
+            reply,
+            Reply {
+                ok: false,
+                text: "that session has ended".into()
+            }
+        );
+        let next: AgentMessage = proto::read_frame(&mut stream, &mut buf).unwrap();
+        assert!(matches!(next, AgentMessage::Sample(_)), "{next:?}");
     }
 
     #[test]

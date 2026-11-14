@@ -2,16 +2,16 @@ use std::io;
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use super::Event;
 use super::model::{Endpoint, LinkUpdate};
 use crate::net::Conn;
-use crate::proto::{self, AgentMessage, Hello, PROTOCOL_VERSION};
+use crate::proto::{self, AgentMessage, Hello, PROTOCOL_VERSION, Request};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
@@ -42,6 +42,19 @@ impl Dial {
 
 pub struct LinkHandle {
     stop: Arc<AtomicBool>,
+    writer: Writer,
+}
+
+type Writer = Arc<Mutex<Option<Box<dyn Conn>>>>;
+
+impl LinkHandle {
+    pub fn request(&self, request: &Request) -> io::Result<()> {
+        let mut writer = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let conn = writer
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "not connected"))?;
+        proto::write_frame(&mut **conn, request)
+    }
 }
 
 impl Drop for LinkHandle {
@@ -57,14 +70,17 @@ pub fn spawn(
     events: SyncSender<Event>,
 ) -> io::Result<LinkHandle> {
     let stop = Arc::new(AtomicBool::new(false));
+    let writer = Writer::default();
     let handle = LinkHandle {
         stop: Arc::clone(&stop),
+        writer: Arc::clone(&writer),
     };
     let link = Link {
         endpoint,
         generation,
         events,
         stop,
+        writer,
     };
     thread::Builder::new()
         .name(format!("link {endpoint:?}"))
@@ -77,6 +93,7 @@ struct Link {
     generation: u64,
     events: SyncSender<Event>,
     stop: Arc<AtomicBool>,
+    writer: Writer,
 }
 
 enum Ended {
@@ -89,7 +106,9 @@ impl Link {
     fn maintain(&self, dial: &Dial) {
         let mut backoff = MIN_BACKOFF;
         loop {
-            let (update, wait) = match self.session(dial) {
+            let ended = self.session(dial);
+            *self.writer.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            let (update, wait) = match ended {
                 Ended::Stopped => return,
                 Ended::Rejected(reason) => (LinkUpdate::Rejected(reason), REJECTED_BACKOFF),
                 Ended::Lost { reason, was_live } => {
@@ -134,9 +153,9 @@ impl Link {
         let welcome = match proto::read_frame::<AgentMessage, _>(&mut *conn, &mut buf) {
             Ok(AgentMessage::Welcome(welcome)) => welcome,
             Ok(AgentMessage::Rejected(reason)) => return Ended::Rejected(reason),
-            Ok(AgentMessage::Sample(_)) => {
+            Ok(AgentMessage::Sample(_) | AgentMessage::Reply(_)) => {
                 return lost(
-                    io::Error::other("agent sent a sample before its welcome"),
+                    io::Error::other("agent sent something before its welcome"),
                     false,
                 );
             }
@@ -147,12 +166,19 @@ impl Link {
         if let Err(error) = conn.set_read_timeout(Some(silence)) {
             return lost(error, false);
         }
+        match conn.try_clone() {
+            Ok(writer) => {
+                *self.writer.lock().unwrap_or_else(PoisonError::into_inner) = Some(writer)
+            }
+            Err(error) => return lost(error, false),
+        }
         if !self.send(LinkUpdate::Welcome(Box::new(welcome))) {
             return Ended::Stopped;
         }
         loop {
             let update = match proto::read_frame::<AgentMessage, _>(&mut *conn, &mut buf) {
                 Ok(AgentMessage::Sample(sample)) => LinkUpdate::Sample(Box::new(sample)),
+                Ok(AgentMessage::Reply(reply)) => LinkUpdate::Reply(reply),
                 Ok(AgentMessage::Rejected(reason)) => return Ended::Rejected(reason),
                 Ok(AgentMessage::Welcome(_)) => {
                     return lost(io::Error::other("agent sent a second welcome"), true);

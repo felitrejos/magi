@@ -11,7 +11,7 @@ use super::{
 };
 use crate::proto::{AgentSession, FULL, Plan, SessionState, Usage, Waiting};
 use crate::viewer::graphics::Graphics;
-use crate::viewer::model::{AgentRow, Capacity, Model};
+use crate::viewer::model::{AgentRow, Capacity, Model, MoveTarget};
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
 
@@ -192,6 +192,7 @@ pub fn render_detail(
     frame: &mut Frame,
     area: Rect,
     agent: &AgentRow<'_>,
+    suggestion: Option<&MoveTarget>,
     plans: &[&Plan],
     graphics: &mut Graphics,
 ) {
@@ -243,6 +244,26 @@ pub fn render_detail(
         ));
     }
     cursor.line(frame, Line::from(clip(status, width)));
+    if let Some(target) = suggestion {
+        cursor.line(
+            frame,
+            Line::from(clip(
+                vec![
+                    Span::styled("⇢ ", style::bold(theme().warn)),
+                    Span::styled(
+                        format!(
+                            "{} is busy and {} is at {}. Press m to move this session there.",
+                            agent.machine,
+                            target.machine,
+                            units::percent(target.cpu).trim()
+                        ),
+                        style::fg(theme().warn),
+                    ),
+                ],
+                width,
+            )),
+        );
+    }
     cursor.skip();
 
     let bar = width.saturating_sub(LABEL + 30).clamp(6, 40);

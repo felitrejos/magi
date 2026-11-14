@@ -26,6 +26,9 @@ pub enum Key {
     Last,
     Alerts,
     Open,
+    Move,
+    Yes,
+    No,
 }
 
 #[derive(Default)]
@@ -128,6 +131,9 @@ fn plain_key(byte: u8) -> Option<Key> {
         b'g' => Some(Key::First),
         b'G' => Some(Key::Last),
         b'a' => Some(Key::Alerts),
+        b'm' => Some(Key::Move),
+        b'y' => Some(Key::Yes),
+        b'n' => Some(Key::No),
         b'\r' | b'\n' => Some(Key::Open),
         _ => None,
     }

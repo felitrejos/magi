@@ -1,6 +1,7 @@
 mod agent;
 mod cmd;
 mod collect;
+mod handoff;
 mod log;
 mod net;
 mod proto;

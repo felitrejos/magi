@@ -3,12 +3,17 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
-use crate::proto::{AgentSession, FULL, Identity, Plan, Sample, SessionState, Welcome};
+use crate::proto::{
+    Agent, AgentSession, FULL, Identity, Plan, Reply, Sample, SessionState, Welcome,
+};
 use crate::tailscale::Peer;
 
 pub const HISTORY: usize = 300;
 const SEARCH_GRACE: Duration = Duration::from_secs(8);
 const FLASH_FOR: Duration = Duration::from_secs(5);
+const HEAVY_SESSION_MILLICORES: u32 = 1_000;
+const BUSY_MACHINE: f32 = 0.8;
+const IDLE_MACHINE: f32 = 0.5;
 const CPU_SMOOTHING_SAMPLES: usize = 5;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -24,6 +29,7 @@ pub enum LinkUpdate {
     Sample(Box<Sample>),
     Lost(String),
     Rejected(String),
+    Reply(Reply),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -157,6 +163,7 @@ pub enum Presence<'a> {
 }
 
 pub struct Row<'a> {
+    pub endpoint: Endpoint,
     pub name: String,
     pub here: bool,
     pub presence: Presence<'a>,
@@ -237,6 +244,7 @@ pub enum Focus {
 }
 
 pub struct AgentRow<'a> {
+    pub endpoint: Endpoint,
     pub machine: String,
     pub session: &'a AgentSession,
     pub live: bool,
@@ -271,8 +279,30 @@ pub struct Model {
     pub showing_alerts: bool,
     focus: Option<Focus>,
     started: Instant,
-    flash: Option<(String, Instant)>,
+    flash: Option<Flash>,
     pub opening: bool,
+    pub pending_move: Option<PendingMove>,
+}
+
+struct Flash {
+    text: String,
+    good: bool,
+    at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingMove {
+    pub endpoint: Endpoint,
+    pub session: String,
+    pub title: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveTarget {
+    pub machine: String,
+    pub cpu: f32,
 }
 
 impl Model {
@@ -288,10 +318,15 @@ impl Model {
             started: now,
             flash: None,
             opening: false,
+            pending_move: None,
         }
     }
 
     pub fn apply(&mut self, endpoint: Endpoint, update: LinkUpdate, now: Instant) {
+        if let LinkUpdate::Reply(reply) = update {
+            self.flash(reply.text, reply.ok, now);
+            return;
+        }
         let Some(link) = self.links.get_mut(&endpoint) else {
             return;
         };
@@ -327,6 +362,7 @@ impl Model {
                 link.state = LinkState::Lost { since, reason };
             }
             LinkUpdate::Rejected(reason) => link.state = LinkState::Rejected(reason),
+            LinkUpdate::Reply(_) => unreachable!("replies are flashed before a link is looked up"),
         }
     }
 
@@ -356,6 +392,7 @@ impl Model {
             _ => Presence::NoAgent,
         };
         let mut rows = vec![Row {
+            endpoint: Endpoint::Local,
             name: local_name,
             here: true,
             presence: local_presence,
@@ -372,6 +409,7 @@ impl Model {
                     (None, _) => return None,
                 };
                 Some(Row {
+                    endpoint: *endpoint,
                     name,
                     here: false,
                     presence: Presence::Agent(link),
@@ -427,7 +465,9 @@ impl Model {
                     cores: sample.cores.len(),
                     memory: sample.memory.total,
                 };
+                let endpoint = row.endpoint;
                 Some(sample.sessions.iter().map(move |session| AgentRow {
+                    endpoint,
                     machine: row.name.clone(),
                     session,
                     live,
@@ -478,15 +518,53 @@ impl Model {
             .collect()
     }
 
-    pub fn flash(&mut self, message: String, now: Instant) {
-        self.flash = Some((message, now));
+    pub fn flash(&mut self, text: String, good: bool, now: Instant) {
+        self.flash = Some(Flash {
+            text,
+            good,
+            at: now,
+        });
     }
 
-    pub fn flashed(&self, now: Instant) -> Option<&str> {
+    pub fn flashed(&self, now: Instant) -> Option<(&str, bool)> {
         self.flash
             .as_ref()
-            .filter(|(_, at)| now.duration_since(*at) < FLASH_FOR)
-            .map(|(message, _)| message.as_str())
+            .filter(|flash| now.duration_since(flash.at) < FLASH_FOR)
+            .map(|flash| (flash.text.as_str(), flash.good))
+    }
+
+    pub fn move_target(&self, agent: &AgentRow<'_>, now: Instant) -> Option<MoveTarget> {
+        self.rows(now)
+            .into_iter()
+            .filter(|row| row.name != agent.machine && row.state() == Some(&LinkState::Live))
+            .filter_map(|row| {
+                let machine = row.machine()?;
+                machine.latest.as_ref()?;
+                Some(MoveTarget {
+                    machine: row.name.clone(),
+                    cpu: machine.smoothed_cpu(),
+                })
+            })
+            .min_by(|a, b| a.cpu.total_cmp(&b.cpu))
+    }
+
+    pub fn move_suggestion(&self, agent: &AgentRow<'_>, now: Instant) -> Option<MoveTarget> {
+        if agent.session.agent != Agent::ClaudeCode || !agent.live {
+            return None;
+        }
+        let heavy = agent
+            .session
+            .usage
+            .and_then(|usage| usage.cpu)
+            .is_some_and(|cpu| cpu >= HEAVY_SESSION_MILLICORES);
+        let busy = self
+            .rows(now)
+            .iter()
+            .find(|row| row.name == agent.machine)
+            .and_then(Row::machine)
+            .is_some_and(|machine| machine.smoothed_cpu() >= BUSY_MACHINE);
+        let target = self.move_target(agent, now)?;
+        (heavy && busy && target.cpu < IDLE_MACHINE).then_some(target)
     }
 
     pub fn selected_agent(&self, now: Instant) -> Option<AgentRow<'_>> {

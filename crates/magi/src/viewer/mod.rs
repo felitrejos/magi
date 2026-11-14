@@ -26,7 +26,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 
-use crate::{log, net};
+use crate::{log, net, proto};
 use graphics::Graphics;
 use input::{Input, Key};
 use link::{Dial, LinkHandle};
@@ -127,6 +127,13 @@ impl Links {
         Ok(())
     }
 
+    fn request(&self, endpoint: Endpoint, request: &proto::Request) -> io::Result<()> {
+        let (handle, _) = self.handles.get(&endpoint).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "that machine isn't connected")
+        })?;
+        handle.request(request)
+    }
+
     fn is_current(&self, endpoint: Endpoint, generation: u64) -> bool {
         self.handles
             .get(&endpoint)
@@ -199,7 +206,7 @@ fn open_selected(model: &mut Model, links: &Links, now: Instant) -> io::Result<(
     };
     let Some(pane) = agent.session.pane.clone() else {
         let reason = format!("{} isn't running in a Rex pane", agent.session.title);
-        model.flash(reason, now);
+        model.flash(reason, false, now);
         return Ok(());
     };
     model.opening = true;
@@ -208,6 +215,45 @@ fn open_selected(model: &mut Model, links: &Links, now: Instant) -> io::Result<(
         let _ = sender.send(Event::Opened(rex::open(&pane)));
     })?;
     Ok(())
+}
+
+fn propose_move(model: &mut Model, now: Instant) {
+    let Some(agent) = model.selected_agent(now) else {
+        return;
+    };
+    if agent.session.agent != proto::Agent::ClaudeCode {
+        let reason = format!(
+            "{} is a {} session; cielago moves Claude Code sessions",
+            agent.session.title,
+            agent.session.agent.name()
+        );
+        return model.flash(reason, false, now);
+    }
+    if !agent.live {
+        return model.flash(format!("{} isn't answering", agent.machine), false, now);
+    }
+    let Some(target) = model.move_target(&agent, now) else {
+        return model.flash("no other machine is answering".into(), false, now);
+    };
+    let pending = model::PendingMove {
+        endpoint: agent.endpoint,
+        session: agent.session.id.clone(),
+        title: agent.session.title.clone(),
+        from: agent.machine.clone(),
+        to: target.machine,
+    };
+    model.pending_move = Some(pending);
+}
+
+fn confirm_move(model: &mut Model, links: &Links, pending: model::PendingMove, now: Instant) {
+    let request = proto::Request::Move {
+        session: pending.session,
+        to: pending.to.clone(),
+    };
+    if let Err(error) = links.request(pending.endpoint, &request) {
+        let reason = format!("couldn't ask {} to move it: {error}", pending.from);
+        model.flash(reason, false, now);
+    }
 }
 
 fn write_terminal(sequence: &[u8]) -> io::Result<()> {
@@ -240,6 +286,11 @@ fn handle_batch(
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
     let now = Instant::now();
     match event {
+        Event::Input(Input::Key(key)) if let Some(pending) = model.pending_move.take() => {
+            if key == Key::Yes {
+                confirm_move(model, links, pending, now);
+            }
+        }
         Event::Input(Input::Key(key)) => match key {
             Key::Quit => return Ok(Flow::Quit),
             Key::Up => model.move_selection(-1, now),
@@ -248,11 +299,13 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Key::Last => model.move_selection(isize::MAX, now),
             Key::Alerts => model.showing_alerts = !model.showing_alerts,
             Key::Open => open_selected(model, links, now)?,
+            Key::Move => propose_move(model, now),
+            Key::Yes | Key::No => {}
         },
         Event::Opened(result) => {
             model.opening = false;
             if let Err(reason) = result {
-                model.flash(reason, now);
+                model.flash(reason, false, now);
             }
         }
         Event::Input(Input::Recheck) => write_terminal(terminal::COLOURS)?,
@@ -442,7 +495,7 @@ mod tests {
         handle_batch([key(Key::Open)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(
             model.flashed(Instant::now()),
-            Some("fix login isn't running in a Rex pane")
+            Some(("fix login isn't running in a Rex pane", false))
         );
         assert!(footer(&model).contains("fix login isn't running in a Rex pane"));
     }
@@ -460,5 +513,125 @@ mod tests {
         assert!(footer(&model).contains("↵ open"), "{}", footer(&model));
         model.selected = 0;
         assert!(!footer(&model).contains("↵ open"));
+    }
+
+    fn live_sample(cpu: u16, session: Option<AgentSession>) -> LinkUpdate {
+        LinkUpdate::Sample(Box::new(Sample {
+            cpu,
+            cores: vec![0; 8],
+            sessions: session.into_iter().collect(),
+            ..Sample::default()
+        }))
+    }
+
+    fn claude(id: &str, millicores: u32) -> AgentSession {
+        AgentSession {
+            agent: crate::proto::Agent::ClaudeCode,
+            id: id.into(),
+            title: "run the tests".into(),
+            project: "api".into(),
+            state: SessionState::Working { tool: None },
+            state_secs: 0,
+            model: String::new(),
+            context_tokens: 0,
+            context_used: None,
+            tokens: Tokens::default(),
+            cost_micros: 0,
+            cost_complete: true,
+            age_secs: 0,
+            pane: None,
+            usage: Some(crate::proto::Usage {
+                cpu: Some(millicores),
+                memory: 0,
+            }),
+        }
+    }
+
+    #[test]
+    fn m_proposes_the_least_busy_other_machine_and_only_y_sends_it() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(9_500, Some(claude("s1", 3_000))),
+            now,
+        );
+        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
+        let nas = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 3));
+        model.apply(homelab, live_sample(4_000, None), now);
+        model.apply(nas, live_sample(300, None), now);
+        model.selected = 3;
+        let agent = model.selected_agent(now).unwrap();
+        assert_eq!(
+            model
+                .move_suggestion(&agent, now)
+                .map(|target| target.machine),
+            Some("nas".into())
+        );
+        handle_batch([key(Key::Move)].into_iter(), &mut model, &mut links).unwrap();
+        let pending = model.pending_move.clone().unwrap();
+        assert_eq!((pending.from.as_str(), pending.to.as_str()), ("mac", "nas"));
+        assert!(footer(&model).contains("Move run the tests from mac to nas?"));
+        handle_batch([key(Key::No)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.pending_move, None);
+        assert_eq!(model.flashed(now), None);
+        handle_batch(
+            [key(Key::Move), key(Key::Yes)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        assert_eq!(model.pending_move, None);
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some((
+                "couldn't ask mac to move it: that machine isn't connected",
+                false
+            ))
+        );
+    }
+
+    #[test]
+    fn a_move_is_only_suggested_for_a_heavy_session_on_a_busy_machine_with_room_elsewhere() {
+        let suggestion = |machine_cpu: u16, session_millicores: u32, other_cpu: u16| {
+            let (mut model, _) = fleet();
+            let now = Instant::now();
+            model.apply(
+                Endpoint::Local,
+                live_sample(machine_cpu, Some(claude("s1", session_millicores))),
+                now,
+            );
+            model.apply(
+                Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2)),
+                live_sample(other_cpu, None),
+                now,
+            );
+            model.selected = 3;
+            let agent = model.selected_agent(now).unwrap();
+            model.move_suggestion(&agent, now).is_some()
+        };
+        assert!(suggestion(9_000, 2_000, 1_000));
+        assert!(!suggestion(5_000, 2_000, 1_000));
+        assert!(!suggestion(9_000, 500, 1_000));
+        assert!(!suggestion(9_000, 2_000, 6_000));
+    }
+
+    #[test]
+    fn replies_from_an_agent_show_in_the_footer_in_their_own_colour() {
+        let (mut model, _) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            LinkUpdate::Reply(crate::proto::Reply {
+                ok: true,
+                text: "moving run the tests to nas…".into(),
+            }),
+            now,
+        );
+        assert_eq!(
+            model.flashed(now),
+            Some(("moving run the tests to nas…", true))
+        );
+        assert!(footer(&model).contains("moving run the tests to nas…"));
     }
 }

@@ -75,7 +75,15 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     } else if let Some(row) = rows.get(model.selected) {
         machines::render_detail(frame, detail_area, row, model.port, now, graphics);
     } else if let Some(agent) = agents.get(model.selected - rows.len()) {
-        agents::render_detail(frame, detail_area, agent, &plans, graphics);
+        let suggestion = model.move_suggestion(agent, now);
+        agents::render_detail(
+            frame,
+            detail_area,
+            agent,
+            suggestion.as_ref(),
+            &plans,
+            graphics,
+        );
     }
 }
 
@@ -383,17 +391,44 @@ fn short_name(agent: Agent) -> &'static str {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
-    let active = model.alerts.active().count();
     let key = |text: &str| Span::styled(text.to_string(), style::fg(theme().text));
     let label = |text: &str| Span::styled(text.to_string(), style::fg(theme().faint));
+    let width = area.width as usize;
+    if let Some(pending) = &model.pending_move {
+        let question = vec![
+            Span::styled(
+                format!(
+                    "Move {} from {} to {}?",
+                    pending.title, pending.from, pending.to
+                ),
+                style::bold(theme().text),
+            ),
+            label("   "),
+            key("y"),
+            label(" move   "),
+            key("n"),
+            label(" cancel"),
+        ];
+        let line = Line::from(clip(question, width)).alignment(Alignment::Center);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+    let selected = model.selected_agent(now);
     let mut keys = vec![key("↑↓"), label(" select   ")];
-    if model
-        .selected_agent(now)
+    if selected
+        .as_ref()
         .is_some_and(|agent| agent.session.pane.is_some())
     {
         keys.extend([key("↵"), label(" open   ")]);
     }
+    if selected
+        .as_ref()
+        .is_some_and(|agent| agent.live && agent.session.agent == Agent::ClaudeCode)
+    {
+        keys.extend([key("m"), label(" move   ")]);
+    }
     keys.extend([key("a"), label(" alerts")]);
+    let active = model.alerts.active().count();
     if active > 0 {
         keys.push(Span::styled(
             format!(" {active}"),
@@ -403,21 +438,24 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
     keys.push(label("   "));
     keys.push(key("q"));
     keys.push(label(" quit"));
-    let problem = model
+    let message = model
         .flashed(now)
-        .map(str::to_string)
-        .or_else(|| model.topology.problem.clone())
-        .or_else(|| model.alerts.problem().map(str::to_string))
-        .or_else(|| model.notices(now).into_iter().next());
-    let width = area.width as usize;
-    let line = match problem {
-        Some(problem) => {
+        .map(|(text, good)| (text.to_string(), good))
+        .or_else(|| {
+            model
+                .topology
+                .problem
+                .clone()
+                .or_else(|| model.alerts.problem().map(str::to_string))
+                .or_else(|| model.notices(now).into_iter().next())
+                .map(|problem| (problem, false))
+        });
+    let line = match message {
+        Some((text, good)) => {
             let room = width.saturating_sub(spans_width(&keys) + 2);
+            let color = if good { theme().accent } else { theme().warn };
             spread(
-                vec![Span::styled(
-                    truncate(&problem, room),
-                    style::fg(theme().warn),
-                )],
+                vec![Span::styled(truncate(&text, room), style::fg(color))],
                 keys,
                 width,
             )

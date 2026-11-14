@@ -16,6 +16,7 @@ const KEEPALIVE_PROBES: libc::c_int = 3;
 pub trait Conn: Read + Write + Send {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+    fn try_clone(&self) -> io::Result<Box<dyn Conn>>;
 }
 
 impl Conn for TcpStream {
@@ -26,6 +27,10 @@ impl Conn for TcpStream {
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         TcpStream::set_write_timeout(self, timeout)
     }
+
+    fn try_clone(&self) -> io::Result<Box<dyn Conn>> {
+        Ok(Box::new(TcpStream::try_clone(self)?))
+    }
 }
 
 impl Conn for UnixStream {
@@ -35,6 +40,10 @@ impl Conn for UnixStream {
 
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         UnixStream::set_write_timeout(self, timeout)
+    }
+
+    fn try_clone(&self) -> io::Result<Box<dyn Conn>> {
+        Ok(Box::new(UnixStream::try_clone(self)?))
     }
 }
 

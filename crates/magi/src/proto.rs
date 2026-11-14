@@ -143,6 +143,18 @@ pub enum AgentMessage {
     Welcome(Welcome),
     Sample(Sample),
     Rejected(String),
+    Reply(Reply),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum Request {
+    Move { session: String, to: String },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Reply {
+    pub ok: bool,
+    pub text: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -225,12 +237,20 @@ pub fn read_frame<T: DeserializeOwned, R: Read + ?Sized>(
     reader: &mut R,
     buf: &mut Vec<u8>,
 ) -> io::Result<T> {
+    read_frame_within(reader, buf, MAX_FRAME_BYTES)
+}
+
+pub fn read_frame_within<T: DeserializeOwned, R: Read + ?Sized>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    max: usize,
+) -> io::Result<T> {
     let mut len = [0u8; 4];
     reader.read_exact(&mut len)?;
     let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_FRAME_BYTES {
+    if len > max {
         return Err(invalid_data(format!(
-            "frame of {len} bytes exceeds the {MAX_FRAME_BYTES} byte limit"
+            "frame of {len} bytes exceeds the {max} byte limit"
         )));
     }
     buf.resize(len, 0);
