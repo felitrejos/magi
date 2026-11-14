@@ -134,10 +134,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let program = dir.join("magiprobe");
-        std::fs::copy("/bin/sleep", &program).unwrap();
+        std::fs::copy("/bin/sh", &program).unwrap();
         let held = dir.join("held.jsonl");
         let mut child = std::process::Command::new(&program)
-            .arg("30")
+            .args(["-c", "sleep 30; :"])
             .stdout(File::create(&held).unwrap())
             .spawn()
             .unwrap();
