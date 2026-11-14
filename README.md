@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/cielago.jpeg" alt="cielago" width="180">
+  <img src="assets/cielago.jpeg" alt="cielago" width="80">
 </p>
 
 <h1 align="center">cielago</h1>
