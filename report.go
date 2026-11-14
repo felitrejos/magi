@@ -180,6 +180,13 @@ func describeMachines(view fleetView) string {
 	if view.FleetErr != nil {
 		fmt.Fprintf(&b, "Live load is unknown: %v. Without magi, cielago picks the first configured machine that answers.\n\n", view.FleetErr)
 	}
+	if plans := describePlans(view.Plans, time.Now()); plans != "" {
+		fmt.Fprintf(&b, "%s\n", plans)
+		if v := checkPlan(view.Plans, "claude", time.Now()); v.Refuse != "" {
+			b.WriteString("delegate, start_session and task_reply won't start Claude work until it resets, unless the user says to go ahead anyway.\n")
+		}
+		b.WriteString("\n")
+	}
 	if view.Here != nil {
 		fmt.Fprintf(&b, "This machine (%s): %s\n\n", view.Here.Name, view.Here.describe())
 	}
@@ -197,6 +204,9 @@ func describeMachines(view fleetView) string {
 		}
 		if m.Fleet != nil {
 			fmt.Fprintf(&b, "; %s", strings.TrimSpace(m.Fleet.OS+" "+m.Fleet.describe()))
+			if load := m.Fleet.sessionLoad(); load != "" {
+				fmt.Fprintf(&b, "; %s", load)
+			}
 		} else if view.FleetErr == nil {
 			b.WriteString("; magi doesn't report it, so its load is unknown")
 		}

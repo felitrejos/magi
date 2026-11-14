@@ -161,7 +161,7 @@ func doctor(names []string, out io.Writer) error {
 	if fleet, err := readFleet(ctx); err != nil {
 		c.warn("magi doesn't report machine load ("+err.Error()+")", "tasks sent to other machines go to the first configured host that answers; with a magi that has magi fleet, cielago picks the least loaded one.")
 	} else {
-		c.pass(fmt.Sprintf("magi reports load for %d machine(s)", len(fleet)))
+		c.pass(fmt.Sprintf("magi reports load for %d machine(s)", len(fleet.Machines)))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

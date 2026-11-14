@@ -15,6 +15,7 @@
   <a href="#how-it-works">How it works</a> ·
   <a href="#what-moves">What moves</a> ·
   <a href="#send-work-to-another-machine">Send work elsewhere</a> ·
+  <a href="#with-magi">With magi</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#configure">Configure</a> ·
   <a href="#questions">Questions</a>
@@ -218,8 +219,31 @@ before you approve. Rules in that machine's Claude Code settings apply too.
 `permission_mode` can also be `dontAsk`, for only what's allowed, or `auto`,
 Claude Code's auto mode. It never runs with permission checks bypassed.
 
+**Your plan.** A delegated Claude or a new session uses the same Claude plan
+as everything else on your account, whichever machine runs it. When magi
+reports a plan window 90% used or more, `delegate`, `start_session` and
+`task_reply` don't start, and say when it resets; Claude starts them anyway
+only if you say so. From 75% they start with a heads-up.
+
 `cielago tasks` lists tasks from the terminal; `cielago tasks show <id>`,
 `cancel <id>` and `clean` do what the tools do.
+
+## With magi
+
+[magi](https://github.com/felitrejos/magi) shows your machines and the agents
+on them, live, in one Rex pane: where there's room, and what each session
+costs in CPU and memory. cielago acts on it. It moves sessions and sends work
+to where there's room:
+
+- Press magi's handoff key on a session and it runs `cielago move`, which
+  hands that session to the machine you pick, now or when its turn ends, and
+  shows the outcome in magi's footer.
+- When Claude sends work elsewhere, cielago reads `magi fleet` to see which
+  machine has room, how much each agent is using, and how much of your plan
+  is left.
+
+Neither needs the other. Without magi, cielago tries your hosts in order;
+without cielago, magi still shows everything.
 
 ## Install
 

@@ -33,7 +33,20 @@ type fleetMachine struct {
 		Waiting int `json:"waiting"`
 		Idle    int `json:"idle"`
 	} `json:"agents"`
-	Error *string `json:"error"`
+	Error    *string        `json:"error"`
+	Sessions []agentSession `json:"sessions"`
+}
+
+type agentSession struct {
+	Agent  string  `json:"agent"`
+	State  string  `json:"state"`
+	CPU    float64 `json:"cpu"`
+	Memory float64 `json:"memory"`
+}
+
+type fleetData struct {
+	Machines []fleetMachine `json:"machines"`
+	Plans    []plan         `json:"plans"`
 }
 
 func (m fleetMachine) busy() float64 {
@@ -72,27 +85,25 @@ func (m fleetMachine) describe() string {
 
 var errNoMagi = errors.New("magi isn't installed here")
 
-func readFleet(ctx context.Context) ([]fleetMachine, error) {
+func readFleet(ctx context.Context) (fleetData, error) {
+	var fleet fleetData
 	path, err := exec.LookPath("magi")
 	if err != nil {
-		return nil, errNoMagi
+		return fleet, errNoMagi
 	}
 	ctx, cancel := context.WithTimeout(ctx, fleetWait)
 	defer cancel()
 	out, err := run(ctx, path, "fleet", "--json")
 	if err != nil {
-		return nil, fmt.Errorf("magi fleet failed: %w", err)
-	}
-	var fleet struct {
-		Machines []fleetMachine `json:"machines"`
+		return fleet, fmt.Errorf("magi fleet failed: %w", err)
 	}
 	if err := json.Unmarshal(out, &fleet); err != nil {
-		return nil, fmt.Errorf("magi fleet: %w", err)
+		return fleetData{}, fmt.Errorf("magi fleet: %w", err)
 	}
 	if len(fleet.Machines) == 0 {
-		return nil, errors.New("magi fleet listed no machines")
+		return fleet, errors.New("magi fleet listed no machines")
 	}
-	return fleet.Machines, nil
+	return fleet, nil
 }
 
 func hostAliases(name string, h Host) []string {
@@ -129,6 +140,7 @@ type fleetView struct {
 	Here      *fleetMachine
 	Unmatched []fleetMachine
 	FleetErr  error
+	Plans     []plan
 }
 
 func reachable(ctx context.Context, h Host) error {
@@ -144,8 +156,9 @@ func reachable(ctx context.Context, h Host) error {
 
 func surveyFleet(ctx context.Context, cfg Config, probe, agents bool) fleetView {
 	var view fleetView
-	fleet, err := readFleet(ctx)
-	view.FleetErr = err
+	data, err := readFleet(ctx)
+	fleet := data.Machines
+	view.FleetErr, view.Plans = err, data.Plans
 	used := map[int]bool{}
 	tasks, _ := listTasks()
 	now := time.Now()
@@ -219,20 +232,26 @@ func (view fleetView) candidates() (picks []choice, skipped []string) {
 	return picks, skipped
 }
 
-func chooseHosts(ctx context.Context, requested string, agents bool) ([]choice, []string, error) {
+func chooseHosts(ctx context.Context, requested string, agents bool) ([]choice, []string, []plan, error) {
 	cfg, path, err := loadConfig()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if len(cfg.Hosts) == 0 {
-		return nil, nil, fmt.Errorf("no hosts in %s; run cielago init", path)
+		return nil, nil, nil, fmt.Errorf("no hosts in %s; run cielago init", path)
 	}
 	if requested != "" {
 		if _, err := loadHost(requested); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return []choice{{Host: requested, Why: "the machine you asked for"}}, nil, nil
+		var plans []plan
+		if agents {
+			data, _ := readFleet(ctx)
+			plans = data.Plans
+		}
+		return []choice{{Host: requested, Why: "the machine you asked for"}}, nil, plans, nil
 	}
-	picks, skipped := surveyFleet(ctx, cfg, false, agents).candidates()
-	return picks, skipped, nil
+	view := surveyFleet(ctx, cfg, false, agents)
+	picks, skipped := view.candidates()
+	return picks, skipped, view.Plans, nil
 }

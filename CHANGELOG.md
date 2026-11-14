@@ -21,6 +21,10 @@
   A delegate's copy now stays after `task_result` for follow-ups;
   `cancel_task` removes it, and `cielago tasks clean` removes copies idle for
   a day, with the delegate's transcript there.
+- When magi reports the Claude plan window 90% or more used, `delegate`,
+  `start_session` and `task_reply` don't start, and say when it resets, unless
+  the user says to go ahead anyway; from 75% they warn. `machines` shows the
+  plan's windows and what each machine's agent sessions use.
 
 ## 0.4.0
 
