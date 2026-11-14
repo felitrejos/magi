@@ -14,6 +14,8 @@ use crate::viewer::model::{
 };
 use crate::viewer::style::{self, ACCENT, CRIT, DIM, FAINT, LAVENDER, TEXT};
 use crate::viewer::units;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 const GUTTER: u16 = 9;
 
@@ -228,14 +230,8 @@ pub fn render_detail(
         cursor.line(frame, Line::from(status_span(row, port, now, width)));
         return;
     };
-    cursor.skip();
-
     let disks: Vec<_> = sample.filesystems.iter().take(3).collect();
-    let fixed_lines = 3 * 3 + 1 + disks.len() as u16;
-    let room = cursor.left().saturating_sub(fixed_lines);
-    let cpu_rows = (room * 3 / 8).max(2);
-    let memory_rows = (room / 4).max(2);
-    let network_rows = room.saturating_sub(cpu_rows + memory_rows).max(2);
+    let plan = Plan::fit(cursor.left().saturating_sub(1 + disks.len() as u16));
     let plot_width = (width.saturating_sub(GUTTER as usize)).max(1);
     let window = (plot_width * graphics.samples_per_cell()).min(HISTORY);
     let stretches = graphics.stretches_history();
@@ -246,6 +242,7 @@ pub fn render_detail(
         )
     };
 
+    let mut sections = Vec::with_capacity(3);
     let cpu = machine.smoothed_cpu();
     let busiest = sample
         .cores
@@ -253,45 +250,40 @@ pub fn render_detail(
         .map(|core| f32::from(*core) / f32::from(FULL))
         .fold(0.0, f32::max);
     let cpu_history = machine.cpu.tail(window);
-    chart_section(
-        &mut cursor,
-        frame,
-        graphics,
-        ChartSection {
-            icon: "◉",
-            title: "CPU",
-            short: vec![Span::styled(
+    sections.push(ChartSection {
+        icon: "◉",
+        title: "CPU",
+        short: vec![Span::styled(
+            units::percent(cpu).trim().to_string(),
+            style::bold(level_text(cpu, Subsystem::Cpu)),
+        )],
+        value: vec![
+            Span::styled(
                 units::percent(cpu).trim().to_string(),
                 style::bold(level_text(cpu, Subsystem::Cpu)),
-            )],
-            value: vec![
-                Span::styled(
-                    units::percent(cpu).trim().to_string(),
-                    style::bold(level_text(cpu, Subsystem::Cpu)),
+            ),
+            Span::styled(
+                format!(
+                    " · busiest core {} · load {:.2}",
+                    units::percent(busiest).trim(),
+                    sample.load[0]
                 ),
-                Span::styled(
-                    format!(
-                        " · busiest core {} · load {:.2}",
-                        units::percent(busiest).trim(),
-                        sample.load[0]
-                    ),
-                    style::fg(DIM),
-                ),
-            ],
-            rows: cpu_rows,
-            slot: "cpu",
-            chart: Chart {
-                kind: Kind::Area,
-                max: 1.0,
-                series: vec![Series {
-                    values: &cpu_history,
-                    color: ACCENT,
-                }],
-            },
-            scale: percent_scale(),
-            shown: shown(cpu_history.len()),
+                style::fg(DIM),
+            ),
+        ],
+        slot: "cpu",
+        chart: Chart {
+            kind: Kind::Area,
+            max: 1.0,
+            guide: false,
+            series: vec![Series {
+                values: &cpu_history,
+                color: ACCENT,
+            }],
         },
-    );
+        scale: percent_scale(),
+        shown: shown(cpu_history.len()),
+    });
 
     let memory = machine.memory_fraction();
     let mut memory_value = vec![
@@ -315,89 +307,88 @@ pub fn render_detail(
         ));
     }
     let memory_history = machine.memory.tail(window);
-    chart_section(
-        &mut cursor,
-        frame,
-        graphics,
-        ChartSection {
-            icon: "◫",
-            title: "Memory",
-            short: memory_value[..2].to_vec(),
-            value: memory_value,
-            rows: memory_rows,
-            slot: "memory",
-            chart: Chart {
-                kind: Kind::Area,
-                max: 1.0,
-                series: vec![Series {
-                    values: &memory_history,
-                    color: LAVENDER,
-                }],
-            },
-            scale: percent_scale(),
-            shown: shown(memory_history.len()),
+    sections.push(ChartSection {
+        icon: "◫",
+        title: "Memory",
+        short: memory_value[..2].to_vec(),
+        value: memory_value,
+        slot: "memory",
+        chart: Chart {
+            kind: Kind::Area,
+            max: 1.0,
+            guide: false,
+            series: vec![Series {
+                values: &memory_history,
+                color: LAVENDER,
+            }],
         },
-    );
+        scale: percent_scale(),
+        shown: shown(memory_history.len()),
+    });
 
     let rx = machine.rx.tail(window);
     let tx = machine.tx.tail(window);
     let peak = rx.iter().chain(&tx).copied().fold(1.0, f32::max) * 1.1;
-    chart_section(
-        &mut cursor,
-        frame,
-        graphics,
-        ChartSection {
-            icon: "⇅",
-            title: "Network",
-            short: vec![
-                Span::styled(
-                    format!("↓ {}", units::rate(sample.network.rx_per_sec)),
-                    style::fg(ACCENT),
-                ),
-                Span::styled(
-                    format!("  ↑ {}", units::rate(sample.network.tx_per_sec)),
-                    style::fg(LAVENDER),
-                ),
+    sections.push(ChartSection {
+        icon: "◎",
+        title: "Network",
+        short: vec![
+            Span::styled(
+                format!("↓ {}", units::rate(sample.network.rx_per_sec)),
+                style::fg(ACCENT),
+            ),
+            Span::styled(
+                format!("  ↑ {}", units::rate(sample.network.tx_per_sec)),
+                style::fg(LAVENDER),
+            ),
+        ],
+        value: vec![
+            Span::styled(
+                format!("↓ download {}", units::rate(sample.network.rx_per_sec)),
+                style::fg(ACCENT),
+            ),
+            Span::styled(
+                format!("   ↑ upload {}", units::rate(sample.network.tx_per_sec)),
+                style::fg(LAVENDER),
+            ),
+        ],
+        slot: "network",
+        chart: Chart {
+            kind: Kind::Area,
+            max: peak,
+            guide: false,
+            series: vec![
+                Series {
+                    values: &rx,
+                    color: ACCENT,
+                },
+                Series {
+                    values: &tx,
+                    color: LAVENDER,
+                },
             ],
-            value: vec![
-                Span::styled(
-                    format!("↓ download {}", units::rate(sample.network.rx_per_sec)),
-                    style::fg(ACCENT),
-                ),
-                Span::styled(
-                    format!("   ↑ upload {}", units::rate(sample.network.tx_per_sec)),
-                    style::fg(LAVENDER),
-                ),
-            ],
-            rows: network_rows,
-            slot: "network",
-            chart: Chart {
-                kind: Kind::Area,
-                max: peak,
-                series: vec![
-                    Series {
-                        values: &rx,
-                        color: ACCENT,
-                    },
-                    Series {
-                        values: &tx,
-                        color: LAVENDER,
-                    },
-                ],
-            },
-            scale: Scale {
-                top: units::rate(peak as u64),
-                middle: Some(units::rate((peak / 2.0) as u64)),
-                bottom: "0".into(),
-            },
-            shown: shown(rx.len()),
         },
-    );
+        scale: Scale {
+            top: units::rate(peak as u64),
+            middle: Some(units::rate((peak / 2.0) as u64)),
+            bottom: "0".into(),
+        },
+        shown: shown(rx.len()),
+    });
 
+    for (section, rows) in sections.into_iter().zip(plan.rows).take(plan.charts) {
+        if plan.gap {
+            cursor.skip();
+        }
+        chart_section(&mut cursor, frame, graphics, section, rows, plan.axis);
+    }
+    if plan.gap {
+        cursor.skip();
+    }
     cursor.line(
         frame,
         super::rule(
-            icon("▥"),
+            icon("◧"),
             "Storage",
             vec![Span::styled(
                 format!(
@@ -419,9 +410,7 @@ pub fn render_detail(
             units::bytes(fs.used),
             units::bytes(fs.total)
         );
-        let bar = width
-            .saturating_sub(label_width + 1 + size.chars().count())
-            .min(28);
+        let bar = width.saturating_sub(label_width + 1 + size.width()).min(28);
         let mut line = Composed::of(vec![Span::styled(
             pad(&truncate_left(&fs.mount, label_width), label_width + 1),
             style::fg(DIM),
@@ -448,7 +437,6 @@ struct ChartSection<'a> {
     title: &'static str,
     value: Vec<Span<'static>>,
     short: Vec<Span<'static>>,
-    rows: u16,
     slot: &'static str,
     chart: Chart<'a>,
     scale: Scale,
@@ -460,20 +448,21 @@ fn chart_section(
     frame: &mut Frame,
     graphics: &mut Graphics,
     section: ChartSection,
+    rows: u16,
+    axis: bool,
 ) {
     let ChartSection {
         icon: symbol,
         title,
         value,
         short,
-        rows,
         slot,
-        chart,
+        mut chart,
         scale,
         shown,
     } = section;
     let width = cursor.area.width as usize;
-    let fits = title.chars().count() + spans_width(&value) + 12 <= width;
+    let fits = title.width() + spans_width(&value) + 12 <= width;
     cursor.line(
         frame,
         super::rule(icon(symbol), title, if fits { value } else { short }, width),
@@ -494,12 +483,13 @@ fn chart_section(
             Rect::new(x, y, GUTTER, 1),
         );
     };
-    place(top, &scale.top);
+    if rows > 1 {
+        place(top, &scale.top);
+        place(bottom, &scale.bottom);
+    }
     if let Some(middle) = scale.middle.filter(|_| rows >= 5 && rows % 2 == 1) {
         place(top + rows / 2, &middle);
-    }
-    if bottom > top {
-        place(bottom, &scale.bottom);
+        chart.guide = true;
     }
     graphics.chart(
         frame.buffer_mut(),
@@ -508,6 +498,9 @@ fn chart_section(
         &chart,
     );
     cursor.y += rows;
+    if !axis {
+        return;
+    }
     let axis = width.saturating_sub(GUTTER as usize);
     cursor.line(
         frame,
@@ -523,7 +516,57 @@ fn chart_section(
             Span::styled("now", style::fg(FAINT)),
         ]),
     );
-    cursor.skip();
+}
+
+struct Plan {
+    charts: usize,
+    rows: [u16; 3],
+    axis: bool,
+    gap: bool,
+}
+
+impl Plan {
+    const WEIGHTS: [u16; 3] = [3, 2, 3];
+
+    fn fit(room: u16) -> Self {
+        for charts in (1..=3u16).rev() {
+            for (gap, axis, least) in [
+                (true, true, 2),
+                (false, true, 2),
+                (false, false, 2),
+                (false, false, 1),
+            ] {
+                let fixed = charts * (1 + u16::from(axis) + least) + u16::from(gap) * (charts + 1);
+                let Some(extra) = room.checked_sub(fixed) else {
+                    continue;
+                };
+                let weights = &Self::WEIGHTS[..charts as usize];
+                let total: u16 = weights.iter().sum();
+                let mut rows = [0; 3];
+                let mut given = 0;
+                for (row, weight) in rows.iter_mut().zip(weights) {
+                    let share = extra * weight / total;
+                    *row = least + share;
+                    given += share;
+                }
+                for row in rows.iter_mut().take((extra - given) as usize) {
+                    *row += 1;
+                }
+                return Self {
+                    charts: charts as usize,
+                    rows,
+                    axis,
+                    gap,
+                };
+            }
+        }
+        Self {
+            charts: 0,
+            rows: [0; 3],
+            axis: false,
+            gap: false,
+        }
+    }
 }
 
 fn percent_scale() -> Scale {
@@ -539,10 +582,7 @@ pub fn span(samples: usize, interval: Duration) -> Duration {
 }
 
 fn facts(machine: &Machine) -> Vec<Span<'static>> {
-    let mut details = vec![
-        short_os(&machine.identity.os).to_string(),
-        machine.identity.cpu_model.clone(),
-    ];
+    let mut details = vec![short_os(&machine.identity.os).to_string()];
     if let Some(sample) = &machine.latest {
         details.push(format!("{} cores", sample.cores.len()));
         details.push(units::bytes(sample.memory.total));
@@ -551,6 +591,7 @@ fn facts(machine: &Machine) -> Vec<Span<'static>> {
             units::duration(Duration::from_secs(sample.uptime_secs))
         ));
     }
+    details.push(machine.identity.cpu_model.clone());
     vec![Span::styled(
         details
             .into_iter()
@@ -561,11 +602,18 @@ fn facts(machine: &Machine) -> Vec<Span<'static>> {
     )]
 }
 
-fn truncate_left(text: &str, width: usize) -> String {
-    let len = text.chars().count();
-    if len <= width {
+pub fn truncate_left(text: &str, width: usize) -> String {
+    if text.width() <= width {
         return text.to_string();
     }
-    let tail: String = text.chars().skip(len - width.saturating_sub(1)).collect();
+    let tail: Vec<&str> = text
+        .graphemes(true)
+        .rev()
+        .scan(0, |used, cluster| {
+            *used += cluster.width();
+            (*used < width).then_some(cluster)
+        })
+        .collect();
+    let tail: String = tail.into_iter().rev().collect();
     format!("…{tail}")
 }

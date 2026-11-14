@@ -14,6 +14,7 @@ use crate::proto::{
 use crate::viewer::alerts::Alerts;
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{Endpoint, Link, LinkUpdate};
+use unicode_width::UnicodeWidthStr;
 
 fn welcome(node: &str) -> LinkUpdate {
     LinkUpdate::Welcome(Box::new(Welcome {
@@ -223,8 +224,8 @@ fn every_chart_says_its_scale_its_time_span_and_what_its_lines_are() {
         "↑ upload",
         "◉ CPU",
         "◫ Memory",
-        "⇅ Network",
-        "▥ Storage",
+        "◎ Network",
+        "◧ Storage",
     ] {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");
     }
@@ -479,4 +480,38 @@ fn bench_viewer() {
         "terminal bytes at 120x40: first frame {first}, then {} per update",
         (written.get() - first) / frames
     );
+}
+
+#[test]
+fn storage_and_every_disk_stay_on_screen_when_the_pane_is_short() {
+    let now = Instant::now();
+    let model = fleet(2, now);
+    for (width, height) in [(80, 24), (80, 30), (120, 24), (120, 30)] {
+        let screen = draw(&model, width, height, now);
+        assert!(screen.contains("◧ Storage"), "{width}x{height}\n{screen}");
+        for n in 0..3 {
+            assert!(
+                screen.contains(&format!("long-name-{n} ")),
+                "{width}x{height} lost disk {n}\n{screen}"
+            );
+        }
+    }
+}
+
+#[test]
+fn truncated_text_never_draws_wider_than_its_room() {
+    for text in [
+        "❤️❤️❤️❤️x",
+        "👨‍👩‍👧 family",
+        "日本語のテキスト",
+        "plain ascii text",
+    ] {
+        for width in 1..8 {
+            let cut = truncate(text, width);
+            assert!(cut.width() <= width, "{text:?} at {width} -> {cut:?}");
+            let left = machines::truncate_left(text, width);
+            assert!(left.width() <= width, "{text:?} at {width} -> {left:?}");
+        }
+    }
+    assert_eq!(truncate("👨‍👩‍👧 family", 3), "👨‍👩‍👧…");
 }

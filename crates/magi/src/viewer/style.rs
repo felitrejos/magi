@@ -13,7 +13,6 @@ pub const GUIDE: Color = Color::Rgb(60, 60, 62);
 pub const SELECTED: Color = Color::Rgb(38, 38, 44);
 pub const ACCENT: Color = Color::Rgb(165, 214, 167);
 pub const LAVENDER: Color = Color::Rgb(199, 159, 215);
-pub const GOOD: Color = Color::Rgb(165, 214, 167);
 pub const WARN: Color = Color::Rgb(255, 215, 95);
 pub const WARN_TINT: Color = Color::Rgb(58, 50, 24);
 pub const CRIT: Color = Color::Rgb(236, 112, 112);

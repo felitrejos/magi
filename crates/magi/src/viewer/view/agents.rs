@@ -12,7 +12,7 @@ use super::{
 use crate::proto::{AgentSession, FULL, Plan, SessionState, Waiting};
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Model};
-use crate::viewer::style::{self, ACCENT, DIM, FAINT, GOOD, TEXT, WARN, WARN_TINT};
+use crate::viewer::style::{self, ACCENT, DIM, FAINT, TEXT, WARN, WARN_TINT};
 use crate::viewer::units;
 
 const LABEL: usize = 14;
@@ -130,8 +130,8 @@ fn state_text(session: &AgentSession, live: bool) -> (String, Color) {
         }
         SessionState::Waiting(Waiting::Permission(None)) => ("needs you · approve".into(), WARN),
         SessionState::Waiting(Waiting::Input(reason)) => (format!("needs you · {reason}"), WARN),
-        SessionState::Working { tool: Some(tool) } => (format!("working · {tool}"), GOOD),
-        SessionState::Working { tool: None } => ("working".into(), GOOD),
+        SessionState::Working { tool: Some(tool) } => (format!("working · {tool}"), ACCENT),
+        SessionState::Working { tool: None } => ("working".into(), ACCENT),
         SessionState::Idle => (format!("idle {since}"), DIM),
     }
 }

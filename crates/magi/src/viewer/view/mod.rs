@@ -12,10 +12,12 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::graphics::Graphics;
 use super::model::{AgentRow, Level, LinkState, Model, Row, Strain};
-use super::style::{self, BORDER, CRIT, DIM, FAINT, GOOD, LAVENDER, RULE, TEXT, WARN, WARN_TINT};
+use super::style::{self, ACCENT, BORDER, CRIT, DIM, FAINT, LAVENDER, RULE, TEXT, WARN, WARN_TINT};
 use super::units;
 use crate::log;
 use crate::proto::{Agent, FULL, Plan, SessionState};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 const WIDE: u16 = 110;
 
@@ -324,7 +326,7 @@ fn health(strains: &[Strain; 3], rows: &[Row<'_>]) -> Vec<Span<'static>> {
             ),
             style::fg(style::level(strain.level)),
         )],
-        None => vec![Span::styled("  all normal", style::fg(GOOD))],
+        None => vec![Span::styled("  all normal", style::fg(ACCENT))],
     }
 }
 
@@ -407,7 +409,7 @@ fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> 
 }
 
 fn spans_width(spans: &[Span<'_>]) -> usize {
-    spans.iter().map(|span| span.content.chars().count()).sum()
+    spans.iter().map(Span::width).sum()
 }
 
 fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
@@ -418,7 +420,7 @@ fn clip(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     let mut room = width;
     let mut clipped = Vec::new();
     for span in spans {
-        let len = span.content.chars().count();
+        let len = span.width();
         if len <= room {
             room -= len;
             clipped.push(span);
@@ -433,7 +435,7 @@ fn clip(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
 }
 
 fn pad(text: &str, width: usize) -> String {
-    let len = text.chars().count();
+    let len = text.width();
     if len >= width {
         truncate(text, width)
     } else {
@@ -442,14 +444,24 @@ fn pad(text: &str, width: usize) -> String {
 }
 
 fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    if text.width() <= width {
         return text.to_string();
     }
-    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    let mut out = fit(text.graphemes(true), width.saturating_sub(1));
     if width > 0 {
         out.push('…');
     }
     out
+}
+
+fn fit<'a>(clusters: impl Iterator<Item = &'a str>, room: usize) -> String {
+    let mut used = 0;
+    clusters
+        .take_while(|cluster| {
+            used += cluster.width();
+            used <= room
+        })
+        .collect()
 }
 
 fn selected_style(selected: bool) -> Style {
