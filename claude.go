@@ -25,56 +25,82 @@ func projectSlug(dir string) (string, error) {
 	return slug.String(), nil
 }
 
-func transcriptFiles(transcriptPath string) (dir string, files []string, err error) {
+func sessionFiles(m Machine, transcriptPath string) (dir string, files []string, err error) {
 	dir = filepath.Dir(transcriptPath)
 	name := filepath.Base(transcriptPath)
-	files = []string{name}
 	sidecar := strings.TrimSuffix(name, ".jsonl")
-	_, err = os.Stat(filepath.Join(dir, sidecar))
-	if os.IsNotExist(err) {
-		return dir, files, nil
+	out, err := sh(m, "cd "+quote(dir)+" && [ -f "+quote(name)+" ] && if [ -d "+quote(sidecar)+" ]; then echo sidecar; fi")
+	if err != nil {
+		return "", nil, err
 	}
-	return dir, append(files, sidecar), err
+	files = []string{name}
+	if strings.TrimSpace(string(out)) == "sidecar" {
+		files = append(files, sidecar)
+	}
+	return dir, files, nil
 }
 
 type liveSession struct {
+	PID             int     `json:"pid"`
 	SessionID       string  `json:"sessionId"`
+	Cwd             string  `json:"cwd"`
+	Status          string  `json:"status"`
 	StartedAt       int64   `json:"startedAt"`
 	BridgeSessionID *string `json:"bridgeSessionId"`
 }
 
-func waitForRemoteControl(r *Remote, sessionID string, launchedAt time.Time) error {
-	script := `for f in "$HOME"/.claude/sessions/*.json; do [ -f "$f" ] && cat "$f" && printf '\0'; done; true`
+func liveSessions(m Machine) ([]liveSession, error) {
+	out, err := sh(m, `for f in "$HOME"/.claude/sessions/*.json; do [ -f "$f" ] && cat "$f" && printf '\0'; done; true`)
+	if err != nil {
+		return nil, err
+	}
+	var sessions []liveSession
+	for _, file := range splitNull(out) {
+		var s liveSession
+		if json.Unmarshal([]byte(file), &s) == nil {
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions, nil
+}
+
+func splitNull(out []byte) []string {
+	var items []string
+	for _, item := range strings.Split(string(out), "\x00") {
+		if item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func waitForRemoteControl(m Machine, sessionID string, launchedAt time.Time) error {
 	notBefore := launchedAt.Add(-10 * time.Second).UnixMilli()
 	for {
-		out, err := r.sh(script)
+		sessions, err := liveSessions(m)
 		if err != nil {
 			return err
 		}
-		for _, file := range splitNull(out) {
-			var s liveSession
-			if json.Unmarshal([]byte(file), &s) != nil {
-				continue
-			}
+		for _, s := range sessions {
 			if s.SessionID == sessionID && s.StartedAt >= notBefore && s.BridgeSessionID != nil {
 				return nil
 			}
 		}
 		select {
-		case <-r.ctx.Done():
-			return fmt.Errorf("the session did not come up with Remote Control on %s in time", r.host)
+		case <-m.Context().Done():
+			return fmt.Errorf("the session did not come up with Remote Control on %s in time", m.Name())
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }
 
-func stopRemoteSession(r *Remote, sessionID string) error {
-	_, err := r.sh("pkill -TERM -f -- " + quote("[-]-resume "+sessionID) + "; true")
+func stopSession(m Machine, sessionID string) error {
+	_, err := sh(m, "pkill -TERM -f -- "+quote("[-]-resume "+sessionID)+"; true")
 	return err
 }
 
-func isTrusted(r *Remote, dir string) (bool, error) {
-	out, err := r.sh(`cat "$HOME"/.claude.json`)
+func isTrusted(m Machine, dir string) (bool, error) {
+	out, err := sh(m, `cat "$HOME"/.claude.json`)
 	if err != nil {
 		return false, err
 	}
@@ -84,7 +110,7 @@ func isTrusted(r *Remote, dir string) (bool, error) {
 		} `json:"projects"`
 	}
 	if err := json.Unmarshal(out, &state); err != nil {
-		return false, fmt.Errorf("read ~/.claude.json on %s: %w", r.host, err)
+		return false, fmt.Errorf("read ~/.claude.json on %s: %w", m.Name(), err)
 	}
 	for d := dir; ; d = filepath.Dir(d) {
 		if state.Projects[d].Trusted {
@@ -125,31 +151,36 @@ func handoffPrompt(p Prompt) string {
 	return b.String()
 }
 
-func syncMemory(r *Remote, localDir, remoteDir string) error {
-	entries, err := os.ReadDir(localDir)
-	if os.IsNotExist(err) {
-		return nil
-	}
+func syncMemory(local *Local, from Machine, fromDir string, to Machine, toDir string) error {
+	listing, err := sh(from, "if [ -d "+quote(fromDir)+" ]; then cd "+quote(fromDir)+` && for f in * .[!.]*; do [ -e "$f" ] && printf '%s\0' "$f"; done; fi; true`)
 	if err != nil {
 		return err
 	}
 	var files []string
-	for _, e := range entries {
-		if e.Name() != memoryIndex {
-			files = append(files, e.Name())
+	hasIndex := false
+	for _, f := range splitNull(listing) {
+		if f == memoryIndex {
+			hasIndex = true
+			continue
 		}
+		files = append(files, f)
 	}
-	if err := r.copy(Archive{Dir: localDir, Paths: files, KeepNewer: true}, remoteDir); err != nil {
+	if err := transfer(from, fromDir, Archive{Paths: files, KeepNewer: true}, to, toDir); err != nil {
 		return err
 	}
-	local, err := os.ReadFile(filepath.Join(localDir, memoryIndex))
-	if os.IsNotExist(err) {
+	if !hasIndex {
 		return nil
 	}
+	read := func(m Machine, dir string) (string, error) {
+		path := quote(dir + "/" + memoryIndex)
+		out, err := sh(m, "if [ -f "+path+" ]; then cat "+path+"; fi")
+		return string(out), err
+	}
+	incoming, err := read(from, fromDir)
 	if err != nil {
 		return err
 	}
-	remote, err := r.sh("if [ -f " + quote(remoteDir+"/"+memoryIndex) + " ]; then cat " + quote(remoteDir+"/"+memoryIndex) + "; fi")
+	existing, err := read(to, toDir)
 	if err != nil {
 		return err
 	}
@@ -158,10 +189,10 @@ func syncMemory(r *Remote, localDir, remoteDir string) error {
 		return err
 	}
 	defer os.RemoveAll(staging)
-	if err := os.WriteFile(filepath.Join(staging, memoryIndex), []byte(mergeMemoryIndex(string(local), string(remote))), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(staging, memoryIndex), []byte(mergeMemoryIndex(incoming, existing)), 0o600); err != nil {
 		return err
 	}
-	return r.copy(Archive{Dir: staging, Paths: []string{memoryIndex}}, remoteDir)
+	return transfer(local, staging, Archive{Paths: []string{memoryIndex}}, to, toDir)
 }
 
 const memoryIndex = "MEMORY.md"

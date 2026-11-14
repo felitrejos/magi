@@ -13,14 +13,25 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
+
+var version = "dev"
 
 const usage = `cielago moves a Claude Code session to another machine.
 
 Usage:
+  cielago init                          set up this machine and a machine to hand off to
+  cielago doctor [host...]              check that everything a handoff needs is in place
+  cielago pull <host> [session-id]      bring a session back from <host> and continue it here
+  cielago status                        recent handoffs and parked checkouts
+  cielago unpark [dir]                  stop treating a checkout as parked
+  cielago version
+
+Used by the Claude Code plugin:
   cielago arm <host> <session-id> [-]   hand this session off when its turn ends;
                                         with -, read a note on what was running from stdin
-  cielago hook stop                 Claude Code Stop hook (reads the hook JSON on stdin)
+  cielago hook stop                     the plugin's Stop hook (reads the hook JSON on stdin)
 `
 
 var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -45,6 +56,22 @@ func main() {
 		}
 	case len(args) == 2 && args[0] == "hook" && args[1] == "stop":
 		err = stopHook(os.Stdin, os.Stdout)
+	case len(args) == 1 && args[0] == "init":
+		err = initConfig(os.Stdin, os.Stdout)
+	case len(args) >= 1 && args[0] == "doctor":
+		err = doctor(args[1:], os.Stdout)
+	case (len(args) == 2 || len(args) == 3) && args[0] == "pull":
+		err = pullCommand(args[1], strings.Join(args[2:], ""))
+	case len(args) == 1 && args[0] == "status":
+		err = status(os.Stdout)
+	case len(args) <= 2 && len(args) >= 1 && args[0] == "unpark":
+		dir := "."
+		if len(args) == 2 {
+			dir = args[1]
+		}
+		err = unpark(dir, os.Stdout)
+	case len(args) == 1 && (args[0] == "version" || args[0] == "--version"):
+		fmt.Println("cielago", version)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -136,16 +163,19 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if err := retire(a, input.TranscriptPath); err != nil {
 		return err
 	}
+	if logErr := appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}); logErr != nil {
+		res.ParkNote = errors.Join(res.ParkNote, logErr)
+	}
 	return json.NewEncoder(out).Encode(handedOff(a, res))
 }
 
 func handedOff(a armed, res Result) map[string]string {
-	where := "It runs with Remote Control, so it's in every Claude app on your account"
+	where := fmt.Sprintf("It's running %s, and with Remote Control it's in every Claude app on your account", res.Where)
 	if len(res.ShownOn) > 0 {
-		where = fmt.Sprintf("It's open in Rex on %s, and with Remote Control it's in every Claude app on your account", strings.Join(res.ShownOn, ", "))
+		where = fmt.Sprintf("It's open in %s, and with Remote Control it's in every Claude app on your account", strings.Join(res.ShownOn, ", "))
 	}
-	if res.RexNote != nil {
-		where += fmt.Sprintf(" (%v)", res.RexNote)
+	if res.ShowNote != nil {
+		where += fmt.Sprintf(" (%v)", res.ShowNote)
 	}
 	if res.NewFolder != "" {
 		where += fmt.Sprintf(". %s didn't have this project yet, so it now lives at %s", a.Host, res.NewFolder)
@@ -176,7 +206,7 @@ func isAncestor(pid int) (bool, error) {
 		if p == pid {
 			return true, nil
 		}
-		out, err := run(context.Background(), "", nil, "ps", "-o", "ppid=", "-p", strconv.Itoa(p))
+		out, err := run(context.Background(), "ps", "-o", "ppid=", "-p", strconv.Itoa(p))
 		if err != nil {
 			return false, err
 		}
@@ -216,4 +246,30 @@ func retire(a armed, transcriptPath string) error {
 	cmd := exec.Command("sh", "-c", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()
+}
+
+func pullCommand(hostName, sessionID string) error {
+	host, err := loadHost(hostName)
+	if err != nil {
+		return err
+	}
+	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Out: os.Stdout}.Run()
+	if err != nil {
+		return err
+	}
+	local, err := newLocal(context.Background())
+	if err != nil {
+		return err
+	}
+	if logErr := appendLog(logEntry{Time: time.Now(), Kind: "pull", Session: res.Session, From: hostName, To: local.Name(), FromDir: res.FromDir, ToDir: res.ToDir}); logErr != nil {
+		res.ParkNote = errors.Join(res.ParkNote, logErr)
+	}
+	fmt.Printf("Pulled the session back from %s in %s.\n", hostName, res.Summary())
+	if res.NewFolder != "" {
+		fmt.Printf("This machine didn't have the project yet, so it now lives at %s.\n", res.NewFolder)
+	}
+	if res.ParkNote != nil {
+		fmt.Printf("Note: %v\n", res.ParkNote)
+	}
+	return resumeHere(res.ToDir, res.Session, res.Name, res.Prompt)
 }

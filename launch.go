@@ -7,20 +7,42 @@ import (
 	"strings"
 )
 
-type Launch struct {
-	Host    Host
-	Remote  *Remote
-	Group   string
-	Name    string
-	Dir     string
-	Command []string
-}
-
-type RexTab struct {
+type Tab struct {
 	Session        string
 	Window         string
 	Pane           string
 	SessionCreated bool
+}
+
+type Launcher interface {
+	Start(group, label, dir string, command []string) (Tab, error)
+	Show(tab Tab) (shownOn []string, err error)
+	Discard(tab Tab) error
+	OpenProjectTab(tab Tab, name, dir, command string) error
+	Where(group string) string
+}
+
+func newLauncher(h Host, remote *Remote) Launcher {
+	if h.Launcher == "tmux" {
+		return Tmux{remote: remote}
+	}
+	return Rex{server: h.RexServer, remote: remote}
+}
+
+func shellIn(dir string, command ...string) []string {
+	if len(command) == 0 {
+		return []string{"sh", "-c", "cd " + quote(dir) + ` && exec "$SHELL" -l`}
+	}
+	return []string{"sh", "-c", "cd " + quote(dir) + " && exec " + quoteAll(command)}
+}
+
+func claudeTabLabel(name string) string {
+	return name + " · claude"
+}
+
+type Rex struct {
+	server string
+	remote *Remote
 }
 
 type rexSession struct {
@@ -34,12 +56,12 @@ type rexWindow struct {
 	BlockIDs []string `json:"block_ids"`
 }
 
-func (l Launch) rex(args ...string) ([]byte, error) {
-	return run(l.Remote.ctx, "", nil, "rex", append([]string{"-S", l.Host.RexServer}, args...)...)
+func (x Rex) rex(args ...string) ([]byte, error) {
+	return run(x.remote.Context(), "rex", append([]string{"-S", x.server}, args...)...)
 }
 
-func (l Launch) rexJSON(into any, args ...string) error {
-	out, err := l.rex(args...)
+func (x Rex) rexJSON(into any, args ...string) error {
+	out, err := x.rex(args...)
 	if err != nil {
 		return err
 	}
@@ -49,48 +71,36 @@ func (l Launch) rexJSON(into any, args ...string) error {
 	return nil
 }
 
-func shellIn(dir string, command ...string) []string {
-	if len(command) == 0 {
-		return []string{"sh", "-c", "cd " + quote(dir) + ` && exec "$SHELL" -l`}
-	}
-	return []string{"sh", "-c", "cd " + quote(dir) + " && exec " + quoteAll(command)}
-}
-
-func (l Launch) tabLabel() string {
-	return l.Name + " · claude"
-}
-
-func (l Launch) groupSession() (string, error) {
+func (x Rex) groupSession(group string) (string, error) {
 	var listing struct {
 		Sessions []rexSession `json:"sessions"`
 	}
-	if err := l.rexJSON(&listing, "ls", "--json"); err != nil {
+	if err := x.rexJSON(&listing, "ls", "--json"); err != nil {
 		return "", err
 	}
 	for _, s := range listing.Sessions {
-		if s.Label == l.Group {
+		if s.Label == group {
 			return s.ID, nil
 		}
 	}
 	return "", nil
 }
 
-func (l Launch) start() (RexTab, error) {
-	session, err := l.groupSession()
+func (x Rex) Start(group, label, dir string, command []string) (Tab, error) {
+	session, err := x.groupSession(group)
 	if err != nil {
-		return RexTab{}, err
+		return Tab{}, err
 	}
-	claude := shellIn(l.Dir, l.Command...)
+	claude := shellIn(dir, command...)
 	if session == "" {
 		var created struct {
 			ID      string      `json:"session_id"`
 			Windows []rexWindow `json:"initial_windows"`
 		}
-		args := append([]string{"session", "new", l.Group, "--window", l.tabLabel(), "--json", "--"}, claude...)
-		if err := l.rexJSON(&created, args...); err != nil {
-			return RexTab{}, err
+		if err := x.rexJSON(&created, append([]string{"session", "new", group, "--window", label, "--json", "--"}, claude...)...); err != nil {
+			return Tab{}, err
 		}
-		tab := RexTab{Session: created.ID, SessionCreated: true}
+		tab := Tab{Session: created.ID, SessionCreated: true}
 		if len(created.Windows) == 0 || len(created.Windows[0].BlockIDs) == 0 {
 			return tab, errors.New("rex session new returned no tab")
 		}
@@ -98,11 +108,10 @@ func (l Launch) start() (RexTab, error) {
 		return tab, nil
 	}
 	var created rexWindow
-	args := append([]string{"window", "new", "-s", session, l.tabLabel(), "--json", "--"}, claude...)
-	if err := l.rexJSON(&created, args...); err != nil {
-		return RexTab{}, err
+	if err := x.rexJSON(&created, append([]string{"window", "new", "-s", session, label, "--json", "--"}, claude...)...); err != nil {
+		return Tab{}, err
 	}
-	tab := RexTab{Session: session, Window: created.ID}
+	tab := Tab{Session: session, Window: created.ID}
 	if len(created.BlockIDs) == 0 {
 		return tab, errors.New("rex window new returned no pane")
 	}
@@ -110,34 +119,33 @@ func (l Launch) start() (RexTab, error) {
 	return tab, nil
 }
 
-func (l Launch) openProjectTab(tab RexTab, projectDir, command string) error {
+func (x Rex) OpenProjectTab(tab Tab, name, dir, command string) error {
 	var windows struct {
 		Windows []rexWindow `json:"windows"`
 	}
-	if err := l.rexJSON(&windows, "window", "ls", "-s", tab.Session, "--json"); err != nil {
+	if err := x.rexJSON(&windows, "window", "ls", "-s", tab.Session, "--json"); err != nil {
 		return err
 	}
 	for _, w := range windows.Windows {
-		if w.Label == l.Name {
+		if w.Label == name {
 			return nil
 		}
 	}
 	var created rexWindow
-	args := append([]string{"window", "new", "-s", tab.Session, l.Name, "--focus=false", "--json", "--"}, shellIn(projectDir)...)
-	if err := l.rexJSON(&created, args...); err != nil {
+	if err := x.rexJSON(&created, append([]string{"window", "new", "-s", tab.Session, name, "--focus=false", "--json", "--"}, shellIn(dir)...)...); err != nil {
 		return err
 	}
 	if len(created.BlockIDs) == 0 {
 		return errors.New("rex window new returned no pane")
 	}
-	if _, err := l.rex("send", "-s", tab.Session, "-b", created.BlockIDs[0], command); err != nil {
+	if _, err := x.rex("send", "-s", tab.Session, "-b", created.BlockIDs[0], command); err != nil {
 		return err
 	}
-	_, err := l.rex("send-key", "-s", tab.Session, "-b", created.BlockIDs[0], "enter")
+	_, err := x.rex("send-key", "-s", tab.Session, "-b", created.BlockIDs[0], "enter")
 	return err
 }
 
-func (l Launch) show(tab RexTab) ([]string, error) {
+func (x Rex) Show(tab Tab) ([]string, error) {
 	var listing struct {
 		Clients []struct {
 			ID    string `json:"client_id"`
@@ -148,10 +156,10 @@ func (l Launch) show(tab RexTab) ([]string, error) {
 			} `json:"info"`
 		} `json:"clients"`
 	}
-	if err := l.rexJSON(&listing, "client", "ls", "--json"); err != nil {
+	if err := x.rexJSON(&listing, "client", "ls", "--json"); err != nil {
 		return nil, err
 	}
-	if _, err := l.rex("focus", "-s", tab.Session, tab.Pane); err != nil {
+	if _, err := x.rex("focus", "-s", tab.Session, tab.Pane); err != nil {
 		return nil, err
 	}
 	var shownOn, refused []string
@@ -159,11 +167,11 @@ func (l Launch) show(tab RexTab) ([]string, error) {
 		if c.Info.Kind != "app" || c.State != "connected" {
 			continue
 		}
-		if _, err := l.rex("-C", c.ID, "do", "session.select", "session_id="+tab.Session, "window_id="+tab.Window); err != nil {
+		if _, err := x.rex("-C", c.ID, "do", "session.select", "session_id="+tab.Session, "window_id="+tab.Window); err != nil {
 			refused = append(refused, fmt.Sprintf("%s (%v)", c.Info.Label, err))
 			continue
 		}
-		shownOn = append(shownOn, c.Info.Label)
+		shownOn = append(shownOn, "Rex on "+c.Info.Label)
 	}
 	if len(refused) > 0 {
 		return shownOn, fmt.Errorf("Rex couldn't switch %s to it; turn on Remote Control in Rex's settings to allow that", strings.Join(refused, ", "))
@@ -171,13 +179,84 @@ func (l Launch) show(tab RexTab) ([]string, error) {
 	return shownOn, nil
 }
 
-func (l Launch) discard(tab RexTab) error {
+func (x Rex) Discard(tab Tab) error {
 	var err error
 	switch {
 	case tab.SessionCreated:
-		_, err = l.rex("kill", tab.Session)
+		_, err = x.rex("kill", tab.Session)
 	case tab.Window != "":
-		_, err = l.rex("window", "close", "-s", tab.Session, tab.Window)
+		_, err = x.rex("window", "close", "-s", tab.Session, tab.Window)
 	}
 	return err
+}
+
+func (x Rex) Where(group string) string {
+	return fmt.Sprintf("in Rex on %s, session %s", x.remote.Name(), group)
+}
+
+type Tmux struct {
+	remote *Remote
+}
+
+var tmuxName = strings.NewReplacer(".", "_", ":", "_").Replace
+
+func (t Tmux) session(group string) (string, error) {
+	out, err := sh(t.remote, `tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null || :`)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if id, name, ok := strings.Cut(line, " "); ok && name == tmuxName(group) {
+			return id, nil
+		}
+	}
+	return "", nil
+}
+
+func (t Tmux) Start(group, label, dir string, command []string) (Tab, error) {
+	session, err := t.session(group)
+	if err != nil {
+		return Tab{}, err
+	}
+	argv := quoteAll(shellIn(dir, command...))
+	script := "tmux new-session -d -P -F '#{session_id} #{window_id} #{pane_id}' -s " + quote(tmuxName(group)) + " -n " + quote(label) + " " + argv
+	if session != "" {
+		script = "tmux new-window -P -F '#{session_id} #{window_id} #{pane_id}' -t " + quote(session+":") + " -n " + quote(label) + " " + argv
+	}
+	out, err := sh(t.remote, script)
+	if err != nil {
+		return Tab{}, err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) != 3 {
+		return Tab{}, fmt.Errorf("unexpected tmux output %q", out)
+	}
+	return Tab{SessionCreated: session == "", Session: fields[0], Window: fields[1], Pane: fields[2]}, nil
+}
+
+func (t Tmux) OpenProjectTab(tab Tab, name, dir, command string) error {
+	_, err := sh(t.remote, `set -e; if ! tmux list-windows -t `+quote(tab.Session)+` -F '#{window_name}' | grep -qxF -- `+quote(name)+`; then `+
+		`p=$(tmux new-window -d -P -F '#{pane_id}' -t `+quote(tab.Session+":")+` -n `+quote(name)+` -c `+quote(dir)+`); `+
+		`tmux send-keys -t "$p" -l `+quote(command)+`; tmux send-keys -t "$p" Enter; fi`)
+	return err
+}
+
+func (t Tmux) Show(tab Tab) ([]string, error) {
+	_, err := sh(t.remote, "tmux select-window -t "+quote(tab.Window))
+	return nil, err
+}
+
+func (t Tmux) Discard(tab Tab) error {
+	var err error
+	switch {
+	case tab.SessionCreated:
+		_, err = sh(t.remote, "tmux kill-session -t "+quote(tab.Session))
+	case tab.Window != "":
+		_, err = sh(t.remote, "tmux kill-window -t "+quote(tab.Window))
+	}
+	return err
+}
+
+func (t Tmux) Where(group string) string {
+	return fmt.Sprintf("in tmux on %s (ssh -t %s tmux attach -t %s)", t.remote.Name(), t.remote.Name(), quote("="+tmuxName(group)))
 }

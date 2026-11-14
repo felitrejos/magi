@@ -22,6 +22,7 @@ type Host struct {
 	Claude        string   `toml:"claude"`
 	Roots         []string `toml:"roots"`
 	Secrets       []string `toml:"secrets"`
+	Launcher      string   `toml:"launcher"`
 	RexServer     string   `toml:"rex_server"`
 	NewTabCommand string   `toml:"new_tab_command"`
 	LocalRoots    []string `toml:"-"`
@@ -40,13 +41,9 @@ func configPath() (string, error) {
 }
 
 func loadHost(name string) (Host, error) {
-	path, err := configPath()
+	cfg, path, err := loadConfig()
 	if err != nil {
 		return Host{}, err
-	}
-	var cfg Config
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
-		return Host{}, fmt.Errorf("read %s: %w", path, err)
 	}
 	host, ok := cfg.Hosts[name]
 	if !ok {
@@ -69,8 +66,10 @@ func (h Host) validate(name string) error {
 		return missing("claude")
 	case len(h.Roots) == 0:
 		return missing("roots")
-	case h.RexServer == "":
+	case h.Launcher == "rex" && h.RexServer == "":
 		return missing("rex_server")
+	case h.Launcher != "rex" && h.Launcher != "tmux":
+		return fmt.Errorf("host %q: launcher must be \"rex\" or \"tmux\", got %q", name, h.Launcher)
 	}
 	for _, root := range h.Roots {
 		if !strings.HasPrefix(root, "/") && !strings.HasPrefix(root, "~/") {
@@ -78,4 +77,16 @@ func (h Host) validate(name string) error {
 		}
 	}
 	return nil
+}
+
+func loadConfig() (Config, string, error) {
+	path, err := configPath()
+	if err != nil {
+		return Config{}, "", err
+	}
+	var cfg Config
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return Config{}, path, fmt.Errorf("read %s: %w", path, err)
+	}
+	return cfg, path, nil
 }

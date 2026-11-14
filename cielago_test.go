@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -107,9 +108,20 @@ func (f *fixture) remoteHost() *Remote {
 	return r
 }
 
+func (f *fixture) machine() *Local {
+	f.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	f.t.Cleanup(cancel)
+	l, err := newLocal(ctx)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return l
+}
+
 func (f *fixture) workspace(dir string) Workspace {
 	f.t.Helper()
-	ws, err := readWorkspace(context.Background(), dir, []string{".env", ".env.*"})
+	ws, err := readWorkspace(f.machine(), dir, []string{".env", ".env.*"})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -139,7 +151,7 @@ func TestHandoffReproducesCommitsStagingAndTheWorkingTree(t *testing.T) {
 	f := newFixture(t)
 	f.messUp(f.local)
 	ws := f.workspace(f.local)
-	if err := syncGit(f.remoteHost(), ws, f.remote); err != nil {
+	if err := pushGit(f.machine(), f.remoteHost(), ws, f.remote); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := f.git(f.remote, "rev-parse", "HEAD"), f.git(f.local, "rev-parse", "HEAD"); got != want {
@@ -161,7 +173,7 @@ func TestHandoffReproducesCommitsStagingAndTheWorkingTree(t *testing.T) {
 func TestHandoffRefusesAHostWithItsOwnUncommittedWork(t *testing.T) {
 	f := newFixture(t)
 	f.write(f.remote, "edited.txt", "host-only edit")
-	err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote)
+	err := pushGit(f.machine(), f.remoteHost(), f.workspace(f.local), f.remote)
 	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
 		t.Fatalf("err = %v, want an uncommitted changes refusal", err)
 	}
@@ -174,17 +186,17 @@ func TestSessionCanComeBackToTheCheckoutItLeft(t *testing.T) {
 	f := newFixture(t)
 	f.messUp(f.local)
 	out := f.workspace(f.local)
-	if err := syncGit(f.remoteHost(), out, f.remote); err != nil {
+	if err := pushGit(f.machine(), f.remoteHost(), out, f.remote); err != nil {
 		t.Fatal(err)
 	}
-	if err := park(context.Background(), out); err != nil {
+	if err := park(f.machine(), out); err != nil {
 		t.Fatal(err)
 	}
 
 	f.write(f.remote, "edited.txt", "continued on the host")
 	f.write(f.remote, "host-new.txt", "made on the host")
 	back := f.workspace(f.remote)
-	if err := syncGit(f.remoteHost(), back, f.local); err != nil {
+	if err := pushGit(f.machine(), f.remoteHost(), back, f.local); err != nil {
 		t.Fatalf("handing back to the parked laptop failed: %v", err)
 	}
 	if got, want := f.git(f.local, "status", "--porcelain"), f.git(f.remote, "status", "--porcelain"); got != want {
@@ -202,15 +214,15 @@ func TestSessionCannotComeBackOverWorkDoneAfterLeaving(t *testing.T) {
 	f := newFixture(t)
 	f.messUp(f.local)
 	out := f.workspace(f.local)
-	if err := syncGit(f.remoteHost(), out, f.remote); err != nil {
+	if err := pushGit(f.machine(), f.remoteHost(), out, f.remote); err != nil {
 		t.Fatal(err)
 	}
-	if err := park(context.Background(), out); err != nil {
+	if err := park(f.machine(), out); err != nil {
 		t.Fatal(err)
 	}
 	f.write(f.local, "kept.txt", "edited on the laptop after the handoff")
 
-	err := syncGit(f.remoteHost(), f.workspace(f.remote), f.local)
+	err := pushGit(f.machine(), f.remoteHost(), f.workspace(f.remote), f.local)
 	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
 		t.Fatalf("err = %v, want a refusal", err)
 	}
@@ -223,10 +235,10 @@ func TestARetryAfterAFailedHandoffIsAccepted(t *testing.T) {
 	f := newFixture(t)
 	f.messUp(f.local)
 	ws := f.workspace(f.local)
-	if err := syncGit(f.remoteHost(), ws, f.remote); err != nil {
+	if err := pushGit(f.machine(), f.remoteHost(), ws, f.remote); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote); err != nil {
+	if err := pushGit(f.machine(), f.remoteHost(), f.workspace(f.local), f.remote); err != nil {
 		t.Fatalf("a second attempt with the same changes was refused: %v", err)
 	}
 	if got, want := f.git(f.remote, "status", "--porcelain"), f.git(f.local, "status", "--porcelain"); got != want {
@@ -239,7 +251,7 @@ func TestHiddenUntrackedFilesOnTheHostAreNotOverwritten(t *testing.T) {
 	f.git(f.remote, "config", "status.showUntrackedFiles", "no")
 	f.write(f.remote, "committed.txt", "HOST ONLY DATA")
 	f.messUp(f.local)
-	if err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote); err == nil {
+	if err := pushGit(f.machine(), f.remoteHost(), f.workspace(f.local), f.remote); err == nil {
 		t.Fatal("handoff went ahead over an untracked file that status hides")
 	}
 	if got := f.read(f.remote, "committed.txt"); got != "HOST ONLY DATA" {
@@ -252,7 +264,7 @@ func TestIgnoredFilesOnTheHostAreNotOverwritten(t *testing.T) {
 	f.write(f.remote, ".git/info/exclude", "scratch.md\n")
 	f.write(f.remote, "scratch.md", "host notes")
 	f.write(f.local, "scratch.md", "laptop notes")
-	err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote)
+	err := pushGit(f.machine(), f.remoteHost(), f.workspace(f.local), f.remote)
 	if err == nil || !strings.Contains(err.Error(), "would be overwritten") {
 		t.Fatalf("err = %v, want a refusal", err)
 	}
@@ -265,14 +277,14 @@ func TestAFileAddedOnTheParkedMachineIsNotCleanedAway(t *testing.T) {
 	f := newFixture(t)
 	f.messUp(f.local)
 	out := f.workspace(f.local)
-	if err := syncGit(f.remoteHost(), out, f.remote); err != nil {
+	if err := pushGit(f.machine(), f.remoteHost(), out, f.remote); err != nil {
 		t.Fatal(err)
 	}
-	if err := park(context.Background(), out); err != nil {
+	if err := park(f.machine(), out); err != nil {
 		t.Fatal(err)
 	}
 	f.write(f.local, "written-after.txt", "keep me")
-	if err := syncGit(f.remoteHost(), f.workspace(f.remote), f.local); err == nil {
+	if err := pushGit(f.machine(), f.remoteHost(), f.workspace(f.remote), f.local); err == nil {
 		t.Fatal("handoff back went ahead although the laptop gained a file after parking")
 	}
 	if got := f.read(f.local, "written-after.txt"); got != "keep me" {
@@ -288,7 +300,7 @@ func TestReadWorkspaceRefusesAMergeInProgress(t *testing.T) {
 	f.git(f.local, "commit", "-q", "-m", "side")
 	f.git(f.local, "checkout", "-q", "main")
 	f.git(f.local, "merge", "--no-commit", "--no-ff", "-q", "side")
-	if _, err := readWorkspace(context.Background(), f.local, nil); err == nil || !strings.Contains(err.Error(), "in progress") {
+	if _, err := readWorkspace(f.machine(), f.local, nil); err == nil || !strings.Contains(err.Error(), "in progress") {
 		t.Fatalf("err = %v, want a merge-in-progress refusal", err)
 	}
 }
@@ -322,8 +334,8 @@ func TestPlainFolderStateTellsNewOwnAndForeignFoldersApart(t *testing.T) {
 		f.remote:                             "git",
 		filepath.Join(f.home, "nope", "new"): "new",
 	} {
-		if got, err := remoteFolderState(r, path); err != nil || got != want {
-			t.Errorf("remoteFolderState(%s) = %q, %v; want %q", path, got, err, want)
+		if got, err := folderState(r, path); err != nil || got != want {
+			t.Errorf("folderState(%s) = %q, %v; want %q", path, got, err, want)
 		}
 	}
 	if got := f.read(f.home, ".cielago/folders"); got != ours+"\n" {
@@ -341,7 +353,7 @@ func TestHandoffRefusesADivergedBranchWithoutRunningItsName(t *testing.T) {
 	f.git(f.remote, "add", "host.txt")
 	f.git(f.remote, "commit", "-q", "-m", "host only")
 
-	err := syncGit(f.remoteHost(), f.workspace(f.local), f.remote)
+	err := pushGit(f.machine(), f.remoteHost(), f.workspace(f.local), f.remote)
 	if err == nil || !strings.Contains(err.Error(), "has commits this machine does not") {
 		t.Fatalf("err = %v, want divergence refusal", err)
 	}
@@ -357,7 +369,7 @@ func TestHandoffCreatesACloneForAProjectTheHostDoesNotHave(t *testing.T) {
 	f.messUp(f.local)
 	r := f.remoteHost()
 	ws := f.workspace(f.local)
-	_, clones, err := listClones(r, []string{"~/developer"})
+	clones, err := listClones(r, []string{"~/developer"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +381,7 @@ func TestHandoffCreatesACloneForAProjectTheHostDoesNotHave(t *testing.T) {
 	if err := createClone(r, dir, ws.Git.Origin); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncGit(r, ws, dir); err != nil {
+	if err := pushGit(f.machine(), r, ws, dir); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := f.git(dir, "status", "--porcelain"), f.git(f.local, "status", "--porcelain"); got != want {
@@ -385,7 +397,7 @@ func TestMatchCloneFindsARepoWithNoRemoteByItsFirstCommit(t *testing.T) {
 	f.git(f.local, "remote", "remove", "origin")
 	f.git(f.remote, "remote", "remove", "origin")
 	r := f.remoteHost()
-	_, clones, err := listClones(r, []string{"~/developer"})
+	clones, err := listClones(r, []string{"~/developer"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +418,7 @@ func TestPlainFolderIsCopiedWithoutExcludedPaths(t *testing.T) {
 		t.Fatalf("workspace = %+v, want a plain folder", ws)
 	}
 	dest := filepath.Join(f.home, "developer", "notes", "notes")
-	if err := f.remoteHost().copy(Archive{Dir: ws.Root, Paths: []string{"."}, Exclude: []string{"node_modules"}}, dest); err != nil {
+	if err := transfer(f.machine(), ws.Root, Archive{Paths: []string{"."}, Exclude: []string{"node_modules"}}, f.remoteHost(), dest); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.read(dest, "todo.md") + "|" + f.read(dest, "drafts/idea.md"); got != "ship it|idea" {
@@ -432,7 +444,7 @@ func TestMemoryIsMergedNotReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := syncMemory(f.remoteHost(), local, remote); err != nil {
+	if err := syncMemory(f.machine(), f.machine(), local, f.remoteHost(), remote); err != nil {
 		t.Fatal(err)
 	}
 	want := "- [Deploys](deploys.md) — laptop wording\n- [Style](style.md) — tabs\n- [Hosts](hosts.md) — names\n"
@@ -464,7 +476,7 @@ func TestWaitForRemoteControlIgnoresBrokenAndStaleSessionFiles(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	r := f.remoteHost()
-	r.ctx = ctx
+	r.SetContext(ctx)
 	if err := waitForRemoteControl(r, "s1", launched); err == nil {
 		t.Fatal("a stale session file from an earlier run counted as the new session")
 	}
@@ -480,7 +492,7 @@ func TestWaitForRemoteControlWorksWithNoSessionFiles(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 	defer cancel()
 	r := f.remoteHost()
-	r.ctx = ctx
+	r.SetContext(ctx)
 	err := waitForRemoteControl(r, "s1", time.Now())
 	if err == nil || !strings.Contains(err.Error(), "in time") {
 		t.Fatalf("err = %v, want a timeout rather than a script failure", err)
@@ -508,7 +520,7 @@ func TestStopRemoteSessionStopsTheSessionWithoutKillingItself(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- fake.Wait() }()
-	if err := stopRemoteSession(f.remoteHost(), sessionID); err != nil {
+	if err := stopSession(f.remoteHost(), sessionID); err != nil {
 		t.Fatalf("stopRemoteSession failed: %v", err)
 	}
 	select {
@@ -533,13 +545,13 @@ func TestReadWorkspaceRefusesARepositoryWithoutCommits(t *testing.T) {
 	f := newFixture(t)
 	empty := filepath.Join(f.home, "laptop", "empty")
 	f.git(f.home, "init", "-q", empty)
-	if _, err := readWorkspace(context.Background(), empty, nil); err == nil || !strings.Contains(err.Error(), "first commit") {
+	if _, err := readWorkspace(f.machine(), empty, nil); err == nil || !strings.Contains(err.Error(), "first commit") {
 		t.Fatalf("err = %v, want a first-commit error", err)
 	}
 }
 
 func TestHostRejectsRelativeRoots(t *testing.T) {
-	h := Host{SSH: "s", Claude: "c", RexServer: "r", Roots: []string{"developer"}}
+	h := Host{SSH: "s", Claude: "c", Launcher: "rex", RexServer: "r", Roots: []string{"developer"}}
 	if err := h.validate("server"); err == nil {
 		t.Fatal("a relative root was accepted")
 	}
@@ -699,5 +711,227 @@ func TestHandedOffAsksDesktopSessionsToArchiveThemselves(t *testing.T) {
 	terminal := handedOff(armed{Host: "server"}, Result{ShownOn: []string{"Laptop"}})
 	if _, blocks := terminal["decision"]; blocks || terminal["systemMessage"] == "" {
 		t.Errorf("terminal output = %v", terminal)
+	}
+}
+
+func TestPullBringsWorkDoneOnTheServerBackToTheParkedLaptop(t *testing.T) {
+	f := newFixture(t)
+	f.messUp(f.local)
+	out := f.workspace(f.local)
+	if err := pushGit(f.machine(), f.remoteHost(), out, f.remote); err != nil {
+		t.Fatal(err)
+	}
+	if err := park(f.machine(), out); err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.remote, "edited.txt", "finished on the server")
+	f.git(f.remote, "add", "edited.txt")
+	f.write(f.remote, "server-new.txt", "new on the server")
+
+	back, err := readWorkspace(f.remoteHost(), f.remote, []string{".env"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pullGit(f.remoteHost(), f.machine(), back, f.local); err != nil {
+		t.Fatalf("pulling back into the parked laptop failed: %v", err)
+	}
+	if got, want := f.git(f.local, "status", "--porcelain"), f.git(f.remote, "status", "--porcelain"); got != want {
+		t.Errorf("laptop status after pulling:\n%s\nwant:\n%s", got, want)
+	}
+	if got := f.read(f.local, "edited.txt") + "|" + f.read(f.local, "server-new.txt"); got != "finished on the server|new on the server" {
+		t.Errorf("laptop files after pulling = %q", got)
+	}
+	if refs := f.git(f.remote, "for-each-ref", "refs/cielago"); refs != "" {
+		t.Errorf("the server kept refs after the pull: %s", refs)
+	}
+}
+
+func TestLogFindsTheLastSessionSentToAHost(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if _, err := lastHandoffTo("server"); err == nil {
+		t.Fatal("found a session in an empty log")
+	}
+	for _, e := range []logEntry{
+		{Time: time.Now(), Kind: "push", Session: "11111111-0000-0000-0000-000000000000", From: "laptop", To: "server", FromDir: "/a", ToDir: "/b"},
+		{Time: time.Now(), Kind: "push", Session: "22222222-0000-0000-0000-000000000000", From: "laptop", To: "other", FromDir: "/a", ToDir: "/c"},
+		{Time: time.Now(), Kind: "push", Session: "33333333-0000-0000-0000-000000000000", From: "laptop", To: "server", FromDir: "/d", ToDir: "/e"},
+	} {
+		if err := appendLog(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := lastHandoffTo("server")
+	if err != nil || got != "33333333-0000-0000-0000-000000000000" {
+		t.Fatalf("lastHandoffTo = %q, %v", got, err)
+	}
+	var out strings.Builder
+	if err := status(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "33333333") || !strings.Contains(out.String(), "laptop:/d → server:/e") {
+		t.Errorf("status output:\n%s", out.String())
+	}
+}
+
+func TestClaudeVersionCheckFailsOldAndWarnsNew(t *testing.T) {
+	for text, want := range map[string]string{
+		"2.1.1 (Claude Code)":              "✗",
+		testedClaude[1] + " (Claude Code)": "✓",
+		"9.0.0 (Claude Code)":              "!",
+	} {
+		var out strings.Builder
+		c := &checks{out: &out}
+		c.claudeVersion("here", text)
+		if !strings.HasPrefix(strings.TrimSpace(out.String()), want) {
+			t.Errorf("%s gave %q, want %s", text, out.String(), want)
+		}
+	}
+}
+
+func TestTmuxLauncherOpensItsOwnWindowAndCleansUp(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux isn't installed")
+	}
+	f := newFixture(t)
+	sockets, err := os.MkdirTemp("", "tm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockets) })
+	t.Setenv("TMUX_TMPDIR", sockets)
+	t.Setenv("TMUX", "")
+	t.Cleanup(func() { exec.Command("tmux", "kill-server").Run() })
+	tm := Tmux{remote: f.remoteHost()}
+
+	first, err := tm.Start("my.group", "api · claude", f.remote, []string{"sleep", "60"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.SessionCreated || !strings.HasPrefix(first.Session, "$") || !strings.HasPrefix(first.Window, "@") || !strings.HasPrefix(first.Pane, "%") {
+		t.Fatalf("first tab = %+v", first)
+	}
+	second, err := tm.Start("my.group", "web · claude", f.remote, []string{"sleep", "60"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SessionCreated || second.Session != first.Session {
+		t.Fatalf("second tab = %+v, want a window in the same session", second)
+	}
+	if err := tm.OpenProjectTab(second, "web", f.remote, "echo ready"); err != nil {
+		t.Fatal(err)
+	}
+	windows, _ := exec.Command("tmux", "list-windows", "-t", first.Session, "-F", "#{window_name}").Output()
+	if got := strings.Fields(strings.ReplaceAll(string(windows), " · ", "·")); strings.Join(got, ",") != "api·claude,web·claude,web" {
+		t.Errorf("windows = %q", windows)
+	}
+	if err := tm.Discard(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.Discard(first); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := exec.Command("tmux", "list-sessions").CombinedOutput(); strings.Contains(string(out), "my.group") {
+		t.Errorf("session left behind: %s", out)
+	}
+}
+
+func TestACloneAtTheSamePathOnBothMachinesIsFound(t *testing.T) {
+	f := newFixture(t)
+	r := f.remoteHost()
+	clones, err := listClones(r, []string{f.home + "/laptop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := matchClone(clones, f.workspace(f.local), r.Name()); err != nil || got != f.local {
+		t.Fatalf("matchClone = %q, %v; want the clone at the same path", got, err)
+	}
+}
+
+func TestTheSameRootListedTwiceCountsOnce(t *testing.T) {
+	f := newFixture(t)
+	alias := filepath.Join(f.home, "dev-alias")
+	if err := os.Symlink(filepath.Join(f.home, "developer"), alias); err != nil {
+		t.Fatal(err)
+	}
+	clones, err := listClones(f.remoteHost(), []string{"~/developer", "~/dev-alias"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := matchClone(clones, f.workspace(f.local), "server"); err != nil || got != f.remote {
+		t.Fatalf("matchClone = %q, %v; want one clone", got, err)
+	}
+}
+
+func TestFindRemoteSessionPrefersTheNewestRecordAndRejectsBadIDs(t *testing.T) {
+	f := newFixture(t)
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	f.write(f.home, ".claude/projects/-x/"+id+".jsonl", `{"cwd":"/old"}`+"\n")
+	f.write(f.home, ".claude/sessions/1.json", `{"pid":1,"sessionId":"`+id+`","cwd":"/stale","startedAt":100}`)
+	f.write(f.home, ".claude/sessions/2.json", `{"pid":2,"sessionId":"`+id+`","cwd":"/live","startedAt":200}`)
+	s, err := findRemoteSession(f.remoteHost(), "server", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Live == nil || s.Live.PID != 2 || s.Cwd != "/live" {
+		t.Errorf("session = %+v, want the newest record", s)
+	}
+	if _, err := findRemoteSession(f.remoteHost(), "server", "*"); err == nil || !strings.Contains(err.Error(), "not a Claude session id") {
+		t.Errorf("err = %v, want an invalid id refusal", err)
+	}
+}
+
+func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
+	f := newFixture(t)
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	fake := exec.Command("sh", "-c", "sleep 30; : claude --resume "+id)
+	if err := fake.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- fake.Wait() }()
+	pid := strconv.Itoa(fake.Process.Pid)
+	f.write(f.home, ".claude/sessions/"+pid+".json", `{"pid":`+pid+`,"sessionId":"`+id+`","status":"busy"}`)
+	go func() {
+		time.Sleep(2500 * time.Millisecond)
+		f.write(f.home, ".claude/sessions/"+pid+".json", `{"pid":`+pid+`,"sessionId":"`+id+`","status":"idle"}`)
+	}()
+	var out strings.Builder
+	started := time.Now()
+	if err := stopAtTurnEnd(f.remoteHost(), remoteSession{ID: id, Live: &liveSession{PID: fake.Process.Pid}}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) < 2*time.Second || !strings.Contains(out.String(), "Waiting") {
+		t.Errorf("stopped before the turn ended (%s, %q)", time.Since(started), out.String())
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		fake.Process.Kill()
+		t.Fatal("the session process wasn't stopped")
+	}
+
+	other := exec.Command("sleep", "30")
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer other.Process.Kill()
+	if err := stopAtTurnEnd(f.remoteHost(), remoteSession{ID: id, Live: &liveSession{PID: other.Process.Pid}}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Error("a process that isn't Claude was stopped")
+	}
+}
+
+func TestPullRefusesALocalCheckoutWithItsOwnChangesBeforeStoppingAnything(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.local, "kept.txt", "laptop edit")
+	ws := f.workspace(f.remote)
+	if err := localCheckoutAccepts(f.machine(), Placement{Root: f.local}, ws); err == nil {
+		t.Fatal("a laptop checkout with its own changes was accepted")
+	}
+	f.git(f.local, "checkout", "-q", "--", "kept.txt")
+	if err := localCheckoutAccepts(f.machine(), Placement{Root: f.local}, ws); err != nil {
+		t.Fatalf("a clean checkout was refused: %v", err)
 	}
 }
