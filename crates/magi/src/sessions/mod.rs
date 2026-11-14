@@ -11,7 +11,7 @@ mod usage;
 
 use std::collections::HashMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -81,11 +81,13 @@ pub struct Snapshot {
     pub plans: Vec<Plan>,
     pub notices: Vec<String>,
     pub panes: HashMap<String, rex::Location>,
+    pub transcripts: HashMap<String, (Agent, PathBuf)>,
 }
 
 pub struct Found {
     pub session: AgentSession,
     pub pid: Option<i32>,
+    pub transcript: Option<PathBuf>,
 }
 
 pub struct Sessions {
@@ -131,7 +133,17 @@ impl Sessions {
         }
         let pids: Vec<i32> = found.iter().filter_map(|found| found.pid).collect();
         let usage = self.meter.measure(&pids, now);
-        for Found { session, pid } in found {
+        for Found {
+            session,
+            pid,
+            transcript,
+        } in found
+        {
+            if let Some(path) = transcript {
+                snapshot
+                    .transcripts
+                    .insert(session.id.clone(), (session.agent, path));
+            }
             let pane = pid.and_then(|pid| self.panes.find(pid, now));
             let pane = pane.map(|(pane, location)| {
                 snapshot.panes.insert(session.id.clone(), location);

@@ -18,6 +18,8 @@ pub struct Transcript {
     pub state: Summary,
 }
 
+const SUBAGENT_TOOLS: [&str; 2] = ["Agent", "Task"];
+
 #[derive(Default)]
 pub struct Summary {
     pub ledger: Ledger,
@@ -25,7 +27,21 @@ pub struct Summary {
     pub context_tokens: u64,
     pub ended_turn: bool,
     pub cwd: Option<String>,
-    open_tools: Vec<(String, String)>,
+    open_tools: Vec<OpenTool>,
+}
+
+struct OpenTool {
+    id: String,
+    name: String,
+    subagent: Option<Subagent>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct Subagent {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub subagent_type: String,
 }
 
 struct Feed<'a> {
@@ -67,6 +83,8 @@ struct Block {
     name: Option<String>,
     #[serde(default)]
     tool_use_id: Option<String>,
+    #[serde(default)]
+    input: Option<Subagent>,
 }
 
 #[derive(Deserialize, Default)]
@@ -141,7 +159,14 @@ impl Transcript {
     }
 
     pub fn running_tool(&self) -> Option<&str> {
-        self.state.open_tools.last().map(|(_, name)| name.as_str())
+        self.state.open_tools.last().map(|open| open.name.as_str())
+    }
+
+    pub fn running_subagents(&self) -> impl Iterator<Item = &Subagent> {
+        self.state
+            .open_tools
+            .iter()
+            .filter_map(|open| open.subagent.as_ref())
     }
 
     pub fn release(&self, claims: &mut HashSet<String>) {
@@ -191,7 +216,15 @@ impl Lines for Feed<'_> {
                     .filter(|block| block.kind == "tool_use")
                 {
                     if let (Some(id), Some(name)) = (&block.id, &block.name) {
-                        state.open_tools.push((id.clone(), name.clone()));
+                        let subagent = SUBAGENT_TOOLS
+                            .contains(&name.as_str())
+                            .then(|| block.input.clone())
+                            .flatten();
+                        state.open_tools.push(OpenTool {
+                            id: id.clone(),
+                            name: name.clone(),
+                            subagent,
+                        });
                     }
                 }
                 state.ended_turn = message.stop_reason.as_deref() == Some("end_turn");
@@ -208,7 +241,7 @@ impl Lines for Feed<'_> {
                     .filter(|block| block.kind == "tool_result")
                     .filter_map(|block| block.tool_use_id.as_ref())
                 {
-                    state.open_tools.retain(|(open, _)| open != id);
+                    state.open_tools.retain(|open| open.id != *id);
                 }
             }
             _ => {}
@@ -325,6 +358,44 @@ mod tests {
         append(&path, &format!("{}\n", result("toolu_1")));
         read(&mut transcript);
         assert_eq!(transcript.running_tool(), None);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn open_subagent_calls_are_the_running_subagents_until_their_results_arrive() {
+        let path = temp("subagents");
+        let explore = r#"{"type":"tool_use","id":"toolu_a","name":"Agent","input":{"description":"Find the parser","subagent_type":"Explore","prompt":"a long prompt that is not kept"}}"#;
+        let legacy = r#"{"type":"tool_use","id":"toolu_t","name":"Task","input":{"description":"Run the tests"}}"#;
+        let write = r#"{"type":"tool_use","id":"toolu_w","name":"Write","input":{"file_path":"/x","content":"…"}}"#;
+        append(
+            &path,
+            &format!(
+                "{}\n",
+                assistant(
+                    "msg_s",
+                    &format!("{explore},{legacy},{write}"),
+                    10,
+                    "tool_use",
+                    NOW
+                )
+            ),
+        );
+        let mut transcript = Transcript::new(path.clone());
+        read(&mut transcript);
+        let running: Vec<(String, String)> = transcript
+            .running_subagents()
+            .map(|subagent| (subagent.description.clone(), subagent.subagent_type.clone()))
+            .collect();
+        assert_eq!(
+            running,
+            [
+                ("Find the parser".into(), "Explore".into()),
+                ("Run the tests".into(), String::new())
+            ]
+        );
+        append(&path, &format!("{}\n", result("toolu_a")));
+        read(&mut transcript);
+        assert_eq!(transcript.running_subagents().count(), 1);
         fs::remove_file(path).unwrap();
     }
 

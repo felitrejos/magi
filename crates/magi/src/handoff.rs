@@ -178,6 +178,7 @@ mod tests {
             age_secs: 0,
             pane: None,
             usage: None,
+            children: Vec::new(),
         }
     }
 

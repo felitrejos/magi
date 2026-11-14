@@ -8,10 +8,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::collect::{self, Collector, SystemInfo};
+use crate::conversation::Reader;
 use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
-    self, AgentMessage, Hello, Identity, PROTOCOL_VERSION, Reply, Request, Run, Screen,
+    self, AgentMessage, Hello, Identity, PROTOCOL_VERSION, Reply, Request, Run, Screen, Source,
     StatusReport, Welcome,
 };
 use crate::screen::Capturer;
@@ -99,6 +100,12 @@ fn spawn_identity_refresh(info: SystemInfo, agent: Arc<Agent>) -> io::Result<()>
     Ok(())
 }
 
+#[derive(Default)]
+struct Watcher {
+    screen: Capturer,
+    conversation: Reader,
+}
+
 struct Agent {
     identity: RwLock<Identity>,
     interval: Duration,
@@ -110,16 +117,26 @@ struct Agent {
 }
 
 impl Agent {
-    fn capture(&self, session: &str, capturer: &mut Capturer) -> Result<Vec<Vec<Run>>, String> {
-        let pane = self
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .panes
-            .get(session)
-            .cloned()
-            .ok_or("that session isn't in a Rex pane on this machine")?;
-        capturer.capture(&pane, Instant::now())
+    fn capture(
+        &self,
+        session: &str,
+        watcher: &mut Watcher,
+    ) -> (Source, Result<Vec<Vec<Run>>, String>) {
+        let (pane, transcript) = {
+            let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+            (
+                snapshot.panes.get(session).cloned(),
+                snapshot.transcripts.get(session).cloned(),
+            )
+        };
+        match (pane, transcript) {
+            (Some(pane), _) => (Source::Pane, watcher.screen.capture(&pane, Instant::now())),
+            (None, Some((agent, path))) => (
+                Source::Conversation,
+                watcher.conversation.read(&path, agent),
+            ),
+            (None, None) => (Source::Conversation, Err("that session has ended".into())),
+        }
     }
 
     fn new(identity: Identity, interval: Duration) -> Self {
@@ -446,13 +463,15 @@ fn spawn_watcher(
         .name("screen".into())
         .spawn(move || {
             let mut watching = first;
-            let mut capturer = Capturer::default();
+            let mut capturer = Watcher::default();
             let mut last: Option<Screen> = None;
             loop {
                 if let Some(session) = &watching {
+                    let (source, view) = agent.capture(session, &mut capturer);
                     let screen = Screen {
                         session: session.clone(),
-                        view: agent.capture(session, &mut capturer),
+                        source,
+                        view,
                     };
                     if last.as_ref() != Some(&screen) {
                         let Ok(frame) = proto::encode_frame(&AgentMessage::Screen(screen.clone()))
@@ -734,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn watching_a_session_outside_rex_says_why_there_is_no_screen() {
+    fn watching_a_session_the_agent_does_not_know_says_it_has_ended() {
         let agent = start_local_agent("watch", Duration::from_millis(100));
         let (mut stream, reply) = connect(&agent, PROTOCOL_VERSION);
         assert!(matches!(reply, AgentMessage::Welcome(_)), "{reply:?}");
@@ -758,7 +777,8 @@ mod tests {
             screen,
             Screen {
                 session: "elsewhere".into(),
-                view: Err("that session isn't in a Rex pane on this machine".into()),
+                source: Source::Conversation,
+                view: Err("that session has ended".into()),
             }
         );
         proto::write_frame(&mut stream, &Request::Watch { session: None }).unwrap();

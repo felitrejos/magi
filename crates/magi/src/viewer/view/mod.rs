@@ -11,11 +11,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::graphics::Graphics;
-use super::model::{AgentRow, Level, LinkState, Model, Row, Strain};
+use super::model::{AgentRow, Entry, Level, LinkState, Model, Row, Strain};
 use super::style::{self, theme};
 use super::units;
 use crate::log;
-use crate::proto::{Agent, FULL, Plan, SessionState};
+use crate::proto::{Agent, FULL, Plan, SessionState, Source};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -68,32 +68,47 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         (machines, agents_area, detail, false)
     };
     machines::render_list(frame, machine_area, model, &rows, wide, now, graphics);
-    agents::render_list(frame, agent_area, model, &agents, rows.len());
+    let listed = model.listed(now);
+    let total = (
+        agents.iter().map(|agent| agent.session.cost_micros).sum(),
+        agents.iter().all(|agent| agent.session.cost_complete),
+    );
+    agents::render_list(frame, agent_area, model, &listed, total, rows.len());
 
     if model.showing_alerts {
         history::render(frame, detail_area, &model.alerts);
     } else if let Some(row) = rows.get(model.selected) {
         machines::render_detail(frame, detail_area, row, model.port, now, graphics);
-    } else if let Some(agent) = agents.get(model.selected - rows.len()) {
-        let suggestion = model.move_suggestion(agent, now);
-        let preview = model
-            .watching
-            .as_ref()
-            .filter(|(_, watched)| *watched == agent.session.id)
-            .map(|_| match model.screen(&agent.session.id) {
-                None => agents::Preview::Waiting,
-                Some(Ok(rows)) => agents::Preview::Ready(rows),
-                Some(Err(reason)) => agents::Preview::Failed(reason),
-            });
-        agents::render_detail(
-            frame,
-            detail_area,
-            agent,
-            suggestion.as_ref(),
-            preview,
-            &plans,
-            graphics,
-        );
+    } else if let Some(item) = listed.get(model.selected - rows.len()) {
+        match &item.entry {
+            Entry::Session(agent) => {
+                let suggestion = model.move_suggestion(agent, now);
+                let source = if agent.session.pane.is_some() {
+                    Source::Pane
+                } else {
+                    Source::Conversation
+                };
+                let preview = match model.screen(&agent.session.id) {
+                    None if agent.live => agents::Preview::Waiting(source),
+                    None => agents::Preview::Gone,
+                    Some(screen) => match &screen.view {
+                        Ok(rows) => agents::Preview::Ready(screen.source, rows),
+                        Err(reason) => agents::Preview::Failed(screen.source, reason),
+                    },
+                };
+                agents::render_detail(
+                    frame,
+                    detail_area,
+                    agent,
+                    suggestion.as_ref(),
+                    preview,
+                    graphics,
+                );
+            }
+            Entry::Fold { machine, count, .. } => {
+                agents::render_fold(frame, detail_area, machine, *count);
+            }
+        }
     }
 }
 
@@ -436,17 +451,6 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         .is_some_and(|agent| agent.live && agent.session.agent == Agent::ClaudeCode)
     {
         keys.extend([key("m"), label(" move   ")]);
-    }
-    if selected
-        .as_ref()
-        .is_some_and(|agent| agent.live && agent.session.pane.is_some())
-    {
-        let other = if model.show_details {
-            " screen   "
-        } else {
-            " details   "
-        };
-        keys.extend([key("s"), label(other)]);
     }
     keys.extend([key("a"), label(" alerts")]);
     let active = model.alerts.active().count();

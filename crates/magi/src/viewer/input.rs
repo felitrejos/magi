@@ -29,7 +29,6 @@ pub enum Key {
     Move,
     Yes,
     No,
-    Screen,
 }
 
 #[derive(Default)]
@@ -135,7 +134,6 @@ fn plain_key(byte: u8) -> Option<Key> {
         b'm' => Some(Key::Move),
         b'y' => Some(Key::Yes),
         b'n' => Some(Key::No),
-        b's' => Some(Key::Screen),
         b'\r' | b'\n' => Some(Key::Open),
         _ => None,
     }

@@ -22,11 +22,12 @@
 - For each agent process it reads that process's CPU time and memory, and
   from its environment only `REX_SESSION`, `REX_BLOCK`, `REX_SERVER` and
   `REX_BIN_DIR`. Nothing else in the environment is kept or sent.
-- When a viewer selects a session that runs in a Rex pane, the agent captures
-  that pane's visible screen through Rex and sends it to that viewer only,
-  until it selects something else. This is the one time screen text, which
-  can include the conversation, leaves the machine, and only to a viewer
-  signed in as you.
+- When a viewer selects a session, the agent sends that one session's live
+  view to that viewer only, until it selects something else: the visible
+  screen of its Rex pane, or for a session outside Rex, such as one in the
+  Claude desktop app, its latest messages and tool calls from the end of its
+  transcript. This is the only time conversation text leaves the machine, and
+  only to a viewer signed in as you.
 - A viewer can ask an agent to do two things: watch a pane, or move a Claude
   Code session with [cielago](https://github.com/felitrejos/cielago). The
   agent acts only on sessions it found itself, checks the machine name, and

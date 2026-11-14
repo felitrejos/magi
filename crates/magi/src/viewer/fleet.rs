@@ -255,6 +255,7 @@ mod tests {
                 cpu: Some(2500),
                 memory: 1 << 30,
             }),
+            children: Vec::new(),
         };
         assert_eq!(
             session(&busy),

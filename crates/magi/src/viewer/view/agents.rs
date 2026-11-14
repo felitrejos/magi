@@ -6,39 +6,38 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{
-    Composed, Cursor, clip, icon, panel, rule, selected_style, short_name, spread, truncate,
-};
+use super::{Composed, Cursor, clip, icon, panel, rule, selected_style, spread};
 use crate::proto::{
-    AgentSession, BOLD, DIM, FULL, INVERSE, ITALIC, Plan, Run, SessionState, Shade, UNDERLINE,
-    Usage, Waiting,
+    AgentSession, BOLD, Child, DIM, FULL, INVERSE, ITALIC, Run, SessionState, Shade, Source,
+    UNDERLINE, Waiting,
 };
 use crate::viewer::graphics::Graphics;
-use crate::viewer::model::{AgentRow, Capacity, Model, MoveTarget};
+use crate::viewer::model::{AgentRow, Entry, Group, Listed, Model, MoveTarget};
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const LABEL: usize = 14;
 const BUSY_MILLICORES: u32 = 500;
 const IDLE_MILLICORES: u32 = 50;
+const METER: usize = 12;
 
 pub fn render_list(
     frame: &mut Frame,
     area: Rect,
     model: &Model,
-    agents: &[AgentRow<'_>],
+    listed: &[Listed<'_>],
+    total: (u64, bool),
     offset: usize,
 ) {
-    let total: u64 = agents.iter().map(|agent| agent.session.cost_micros).sum();
-    let complete = agents.iter().all(|agent| agent.session.cost_complete);
+    let (cost_total, complete) = total;
     let block = panel(
         vec![Span::styled("Agents", style::bold(theme().text))],
-        (!agents.is_empty()).then(|| {
+        (!listed.is_empty()).then(|| {
             vec![Span::styled(
                 format!(
                     "{}{} in total",
                     if complete { "" } else { "≥" },
-                    units::dollars(total)
+                    units::dollars(cost_total)
                 ),
                 style::fg(theme().dim),
             )]
@@ -47,7 +46,7 @@ pub fn render_list(
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let width = inner.width as usize;
-    if agents.is_empty() {
+    if listed.is_empty() {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
@@ -63,66 +62,134 @@ pub fn render_list(
         );
         return;
     }
-    let visible = (inner.height as usize / 2).max(1);
     let selected = model.selected.checked_sub(offset);
-    let first = selected
-        .unwrap_or(0)
-        .min(agents.len())
-        .saturating_sub(visible - 1);
-    let mut lines = Vec::new();
-    for (index, agent) in agents.iter().enumerate().skip(first).take(visible) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut selected_end = 0;
+    let mut group = None;
+    for (index, item) in listed.iter().enumerate() {
+        if group != Some(&item.group) {
+            if group.is_some() {
+                lines.push(Line::default());
+            }
+            lines.push(heading(&item.group));
+            group = Some(&item.group);
+        }
         let is_selected = selected == Some(index);
-        let session = agent.session;
-        let (mark, color) = style::agent(session.agent);
-        let title = spread(
-            vec![
-                Span::styled(
-                    if is_selected { "▎" } else { " " },
-                    style::fg(theme().accent),
-                ),
-                Span::styled(format!("{mark} "), style::fg(color)),
-                Span::styled(
-                    session.title.clone(),
-                    if is_selected {
-                        style::bold(theme().text)
-                    } else {
-                        style::fg(theme().text)
-                    },
-                ),
-            ],
-            vec![Span::styled(cost(session), style::fg(theme().text))],
-            width,
-        );
-        let mut status = vec![Span::raw("   "), state_span(session, agent.live)];
-        let place: Vec<&str> = [session.project.as_str(), agent.machine.as_str()]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect();
-        status.push(Span::styled(
-            format!("  {}", place.join(" · ")),
+        match &item.entry {
+            Entry::Session(agent) => {
+                let away = item.group == Group::NeedsYou;
+                lines.push(session_line(agent, is_selected, away, width));
+                lines.extend(
+                    agent
+                        .session
+                        .children
+                        .iter()
+                        .map(|child| child_line(child, width)),
+                );
+            }
+            Entry::Fold { count, open, .. } => {
+                lines.push(fold_line(*count, *open, is_selected, width));
+            }
+        }
+        if is_selected {
+            selected_end = lines.len();
+        }
+    }
+    let visible = inner.height as usize;
+    let first = selected_end.saturating_sub(visible);
+    let shown: Vec<Line<'static>> = lines.into_iter().skip(first).take(visible).collect();
+    frame.render_widget(Paragraph::new(shown), inner);
+}
+
+fn heading(group: &Group) -> Line<'static> {
+    match group {
+        Group::NeedsYou => Line::from(Span::styled(" Needs you", style::bold(theme().warn))),
+        Group::Machine(name) => {
+            Line::from(Span::styled(format!(" {name}"), style::fg(theme().dim)))
+        }
+    }
+}
+
+fn session_line(
+    agent: &AgentRow<'_>,
+    is_selected: bool,
+    away: bool,
+    width: usize,
+) -> Line<'static> {
+    let session = agent.session;
+    let (mark, color) = style::agent(session.agent);
+    let mut right = vec![state_span(session, agent.live)];
+    if let Some((millicores, share)) = busy_cpu(agent) {
+        right.push(Span::styled(
+            format!("  {}", units::cores(millicores)),
+            style::fg(style::load(share)),
+        ));
+    }
+    right.push(Span::styled(
+        format!("  {:>7}", cost(session)),
+        style::fg(theme().text),
+    ));
+    spread(
+        vec![
+            Span::styled(
+                if is_selected { "▎" } else { " " },
+                style::fg(theme().accent),
+            ),
+            Span::styled(format!("{mark} "), style::fg(color)),
+            Span::styled(
+                session.title.clone(),
+                if is_selected {
+                    style::bold(theme().text)
+                } else {
+                    style::fg(theme().text)
+                },
+            ),
+            Span::styled(
+                if away {
+                    format!(" · {}", agent.machine)
+                } else {
+                    String::new()
+                },
+                style::fg(theme().faint),
+            ),
+        ],
+        right,
+        width,
+    )
+    .style(selected_style(is_selected))
+}
+
+fn child_line(child: &Child, width: usize) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("     ↳ ", style::fg(theme().faint)),
+        Span::styled(child.label.clone(), style::fg(theme().dim)),
+    ];
+    if !child.detail.is_empty() {
+        spans.push(Span::styled(
+            format!(" · {}", child.detail),
             style::fg(theme().faint),
         ));
-        let mut details = Vec::new();
-        if width >= 56 {
-            details.push(Span::styled(
-                format!(
-                    "{}  {}",
-                    units::model(&session.model),
-                    context_text(session)
-                ),
-                style::fg(theme().dim),
-            ));
-        }
-        if let Some((millicores, share)) = busy_cpu(agent) {
-            details.push(Span::styled(
-                format!("  {}", units::cores(millicores)),
-                style::fg(style::load(share)),
-            ));
-        }
-        lines.push(title.style(selected_style(is_selected)));
-        lines.push(spread(status, details, width).style(selected_style(is_selected)));
     }
-    frame.render_widget(Paragraph::new(lines), inner);
+    Line::from(clip(spans, width))
+}
+
+fn fold_line(count: usize, open: bool, is_selected: bool, width: usize) -> Line<'static> {
+    let text = if open {
+        "▾ idle for a day or more".to_string()
+    } else {
+        format!("▸ {count} idle for a day or more")
+    };
+    Line::from(clip(
+        vec![
+            Span::styled(
+                if is_selected { "▎" } else { " " },
+                style::fg(theme().accent),
+            ),
+            Span::styled(format!(" {text}"), style::fg(theme().dim)),
+        ],
+        width,
+    ))
+    .style(selected_style(is_selected))
 }
 
 fn state_span(session: &AgentSession, live: bool) -> Span<'static> {
@@ -179,26 +246,12 @@ fn cost(session: &AgentSession) -> String {
     }
 }
 
-fn context_text(session: &AgentSession) -> String {
-    match session.context_used {
-        Some(used) => format!(
-            "ctx {}",
-            units::percent(f32::from(used) / f32::from(FULL)).trim()
-        ),
-        None if session.context_tokens > 0 => {
-            format!("ctx {}", units::count(session.context_tokens))
-        }
-        None => String::new(),
-    }
-}
-
 pub fn render_detail(
     frame: &mut Frame,
     area: Rect,
     agent: &AgentRow<'_>,
     suggestion: Option<&MoveTarget>,
-    preview: Option<Preview<'_>>,
-    plans: &[&Plan],
+    preview: Preview<'_>,
     graphics: &mut Graphics,
 ) {
     let session = agent.session;
@@ -212,18 +265,33 @@ pub fn render_detail(
     }
     let width = inner.width as usize;
     let mut cursor = Cursor::new(inner);
+    let mut state = vec![state_span(session, agent.live)];
+    if agent.live && !matches!(session.state, SessionState::Idle) {
+        let since = units::duration(Duration::from_secs(u64::from(session.state_secs)));
+        let separator = if matches!(session.state, SessionState::Waiting(_)) {
+            " "
+        } else {
+            " · "
+        };
+        state.push(Span::styled(
+            format!("{separator}{since}"),
+            style::fg(theme().dim),
+        ));
+    }
     cursor.line(
         frame,
-        rule(
-            Span::styled(mark.to_string(), style::fg(color)),
-            &truncate(&session.title, width / 2),
-            vec![Span::styled(session.agent.name(), style::fg(color))],
+        spread(
+            vec![
+                Span::styled(format!("{mark} "), style::fg(color)),
+                Span::styled(session.title.clone(), style::bold(theme().text)),
+            ],
+            state,
             width,
         ),
     );
-    let facts: Vec<String> = [
+    let place: Vec<String> = [
         session.project.clone(),
-        format!("on {}", agent.machine),
+        agent.machine.clone(),
         units::model(&session.model),
         format!(
             "running {}",
@@ -236,19 +304,11 @@ pub fn render_detail(
     cursor.line(
         frame,
         Line::from(clip(
-            vec![Span::styled(facts.join(" · "), style::fg(theme().dim))],
+            vec![Span::styled(place.join(" · "), style::fg(theme().dim))],
             width,
         )),
     );
-    let mut status = vec![state_span(session, agent.live)];
-    if agent.live && !matches!(session.state, SessionState::Idle) {
-        let since = units::duration(Duration::from_secs(u64::from(session.state_secs)));
-        status.push(Span::styled(
-            format!("  for {since}"),
-            style::fg(theme().dim),
-        ));
-    }
-    cursor.line(frame, Line::from(clip(status, width)));
+    cursor.composed(frame, graphics, measures(agent));
     if let Some(target) = suggestion {
         cursor.line(
             frame,
@@ -270,210 +330,159 @@ pub fn render_detail(
         );
     }
     cursor.skip();
-    if let Some(preview) = preview {
-        return live_screen(&mut cursor, frame, agent, preview, width);
-    }
+    live_view(&mut cursor, frame, preview, width);
+}
 
-    let bar = width.saturating_sub(LABEL + 30).clamp(6, 40);
-    let label = |text: &str| Span::styled(format!("{text:<LABEL$}"), style::bold(theme().text));
-    if let Some(used) = session.context_used {
-        let fraction = f32::from(used) / f32::from(FULL);
-        let mut line = Composed::of(vec![label("Context")]);
-        line.bar(bar, fraction, style::load(fraction), "context".into());
-        line.push(Span::styled(
-            format!(
-                "  {} · {} tokens",
-                units::percent(fraction).trim(),
-                units::count(session.context_tokens)
-            ),
-            style::fg(theme().text),
-        ));
-        cursor.composed(frame, graphics, line);
-    } else if session.context_tokens > 0 {
-        cursor.line(
-            frame,
-            Line::from(clip(
-                vec![
-                    label("Context"),
-                    Span::styled(
-                        format!("{} tokens", units::count(session.context_tokens)),
-                        style::fg(theme().text),
-                    ),
-                ],
-                width,
-            )),
-        );
-    }
-    cursor.line(
-        frame,
-        Line::from(clip(
-            vec![
-                label("Cost"),
-                Span::styled(cost(session), style::bold(theme().text)),
-                Span::styled(
-                    if session.cost_complete {
-                        "  at API list prices, subagents included"
-                    } else {
-                        "  so far; a model or tier without a known price is left out"
-                    },
-                    style::fg(theme().faint),
-                ),
-            ],
-            width,
-        )),
-    );
-    if let Some(usage) = session.usage {
-        resources(&mut cursor, frame, graphics, usage, agent.capacity, bar);
-    }
-    cursor.skip();
-    let tokens = session.tokens;
-    cursor.line(frame, rule(icon("◇"), "Tokens", Vec::new(), width));
-    for (name, value) in [
-        ("output", tokens.output),
-        ("input", tokens.input),
-        ("cache read", tokens.cache_read),
-        ("cache write", tokens.cache_write),
-    ] {
-        cursor.line(
-            frame,
-            Line::from(clip(
-                vec![
-                    Span::styled(
-                        format!("  {name:<width$}", width = LABEL - 2),
-                        style::fg(theme().dim),
-                    ),
-                    Span::styled(units::count(value), style::fg(theme().text)),
-                ],
-                width,
-            )),
-        );
-    }
-
-    if let Some(plan) = plans.iter().find(|plan| plan.agent == session.agent) {
-        cursor.skip();
-        cursor.line(
-            frame,
-            rule(
-                icon("◔"),
-                &format!("{} plan", short_name(plan.agent)),
-                Vec::new(),
-                width,
-            ),
-        );
-        for window in &plan.windows {
-            let fraction = f32::from(window.used) / f32::from(FULL);
-            let mut line = Composed::of(vec![Span::styled(
-                format!("  {:<width$}", window.long_label(), width = LABEL - 2),
-                style::fg(theme().dim),
-            )]);
-            line.bar(
-                bar,
-                fraction,
-                style::load(fraction),
-                format!("detail-plan:{}", window.minutes),
-            );
+fn measures(agent: &AgentRow<'_>) -> Composed {
+    let session = agent.session;
+    let gap = || Span::raw("    ");
+    let mut line = Composed::of(Vec::new());
+    match session.context_used {
+        Some(used) => {
+            let fraction = f32::from(used) / f32::from(FULL);
+            line.push(Span::styled("context ", style::fg(theme().dim)));
+            line.bar(METER, fraction, style::load(fraction), "context".into());
             line.push(Span::styled(
-                format!(
-                    "  {} · resets in {}",
-                    units::percent(fraction).trim(),
-                    until(window.resets_at)
-                ),
+                format!(" {}", units::percent(fraction).trim()),
                 style::fg(theme().text),
             ));
-            cursor.composed(frame, graphics, line);
+            line.push(gap());
         }
+        None if session.context_tokens > 0 => {
+            line.push(Span::styled(
+                format!("context {} tokens", units::count(session.context_tokens)),
+                style::fg(theme().dim),
+            ));
+            line.push(gap());
+        }
+        None => {}
     }
-    cursor.skip();
-    cursor.line(
-        frame,
-        Line::from(Span::styled(
-            truncate(&format!("session {}", session.id), width),
-            style::fg(theme().faint),
-        )),
-    );
+    line.push(Span::styled(cost(session), style::bold(theme().text)));
+    if let Some(usage) = session.usage {
+        line.push(gap());
+        let cpu = match usage.cpu {
+            Some(millicores) if millicores < IDLE_MILLICORES => "cpu idle".to_string(),
+            Some(millicores) => units::cores(millicores),
+            None => "measuring".to_string(),
+        };
+        let share = usage.cpu.map_or(0.0, |millicores| {
+            cpu_share(millicores, agent.capacity.cores)
+        });
+        line.push(Span::styled(cpu, style::fg(style::load(share))));
+        line.push(Span::styled(
+            format!(" · {}", units::bytes(usage.memory)),
+            style::fg(theme().dim),
+        ));
+    }
+    line
 }
 
 pub enum Preview<'a> {
-    Waiting,
-    Ready(&'a [Vec<Run>]),
-    Failed(&'a str),
+    Waiting(Source),
+    Ready(Source, &'a [Vec<Run>]),
+    Failed(Source, &'a str),
+    Gone,
 }
 
-fn live_screen(
-    cursor: &mut Cursor,
-    frame: &mut Frame,
-    agent: &AgentRow<'_>,
-    preview: Preview<'_>,
-    width: usize,
-) {
-    let session = agent.session;
-    let mut summary = Vec::new();
-    match session.context_used {
-        Some(used) => summary.push(format!(
-            "context {}",
-            units::percent(f32::from(used) / f32::from(FULL)).trim()
-        )),
-        None if session.context_tokens > 0 => summary.push(format!(
-            "context {} tokens",
-            units::count(session.context_tokens)
-        )),
-        None => {}
-    }
-    summary.push(format!("cost {}", cost(session)));
-    if let Some(usage) = session.usage {
-        match usage.cpu {
-            Some(millicores) if millicores < IDLE_MILLICORES => summary.push("cpu idle".into()),
-            Some(millicores) => summary.push(format!("cpu {}", units::cores(millicores))),
-            None => {}
-        }
-        summary.push(format!("memory {}", units::bytes(usage.memory)));
-    }
-    cursor.line(
-        frame,
-        Line::from(clip(
-            vec![Span::styled(summary.join(" · "), style::fg(theme().dim))],
-            width,
-        )),
-    );
-    cursor.skip();
+fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width: usize) {
+    let source = match preview {
+        Preview::Waiting(source) | Preview::Ready(source, _) | Preview::Failed(source, _) => source,
+        Preview::Gone => Source::Conversation,
+    };
+    let (title, symbol, hint) = match source {
+        Source::Pane => ("Screen", "▣", "live from Rex · ↵ to open"),
+        Source::Conversation => ("Conversation", "▤", "latest messages"),
+    };
     cursor.line(
         frame,
         rule(
-            icon("▣"),
-            "Screen",
-            vec![Span::styled(
-                "live from Rex · s for details",
-                style::fg(theme().faint),
-            )],
+            icon(symbol),
+            title,
+            vec![Span::styled(hint, style::fg(theme().faint))],
             width,
         ),
     );
+    let note = |cursor: &mut Cursor, frame: &mut Frame, text: &str, color| {
+        cursor.line(
+            frame,
+            Line::from(clip(
+                vec![Span::styled(text.to_string(), style::fg(color))],
+                width,
+            )),
+        );
+    };
     let rows = match preview {
-        Preview::Ready(rows) => rows,
-        Preview::Waiting => {
-            return cursor.line(
-                frame,
-                Line::from(Span::styled(
-                    "connecting to the pane…",
-                    style::fg(theme().faint),
-                )),
-            );
+        Preview::Ready(_, rows) => rows,
+        Preview::Waiting(Source::Pane) => {
+            return note(cursor, frame, "connecting to the pane…", theme().faint);
         }
-        Preview::Failed(reason) => {
-            return cursor.line(
-                frame,
-                Line::from(clip(
-                    vec![Span::styled(reason.to_string(), style::fg(theme().warn))],
-                    width,
-                )),
-            );
+        Preview::Waiting(Source::Conversation) => {
+            return note(cursor, frame, "reading the conversation…", theme().faint);
+        }
+        Preview::Failed(_, reason) => return note(cursor, frame, reason, theme().warn),
+        Preview::Gone => {
+            return note(cursor, frame, "its machine isn't answering", theme().faint);
         }
     };
+    let lines: Vec<Line<'static>> = match source {
+        Source::Pane => rows
+            .iter()
+            .map(|row| Line::from(clip(row.iter().map(run_span).collect(), width)))
+            .collect(),
+        Source::Conversation => rows.iter().flat_map(|row| wrap(row, width)).collect(),
+    };
     let room = cursor.left() as usize;
-    for row in &rows[rows.len().saturating_sub(room)..] {
-        let spans = row.iter().map(run_span).collect();
-        cursor.line(frame, Line::from(clip(spans, width)));
+    for line in lines
+        .into_iter()
+        .rev()
+        .take(room)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        cursor.line(frame, line);
     }
+}
+
+fn wrap(row: &[Run], width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for run in row {
+        let style = run_span(run).style;
+        for word in run.text.split_inclusive(' ') {
+            let word_width = word.trim_end().width();
+            if used > 0 && used + word_width > width {
+                lines.push(Line::from(std::mem::take(&mut line)));
+                used = 0;
+            }
+            let mut rest = word;
+            while used == 0 && rest.trim_end().width() > width {
+                let cut = split_at_width(rest, width);
+                line.push(Span::styled(rest[..cut].to_string(), style));
+                lines.push(Line::from(std::mem::take(&mut line)));
+                rest = &rest[cut..];
+            }
+            if !(used == 0 && rest.trim().is_empty() && !lines.is_empty()) {
+                line.push(Span::styled(rest.to_string(), style));
+                used += rest.width();
+            }
+        }
+    }
+    lines.push(Line::from(line));
+    lines
+}
+
+fn split_at_width(text: &str, width: usize) -> usize {
+    let mut used = 0;
+    for (index, c) in text.char_indices() {
+        used += c.width().unwrap_or(0);
+        if used > width {
+            return index.max(c.len_utf8());
+        }
+    }
+    text.len()
 }
 
 fn run_span(run: &Run) -> Span<'static> {
@@ -501,67 +510,72 @@ fn run_span(run: &Run) -> Span<'static> {
     )
 }
 
-fn resources(
-    cursor: &mut Cursor,
-    frame: &mut Frame,
-    graphics: &mut Graphics,
-    usage: Usage,
-    capacity: Capacity,
-    bar: usize,
-) {
-    let width = cursor.area.width as usize;
-    cursor.skip();
-    cursor.line(
-        frame,
-        rule(
-            icon("◍"),
-            "Resources",
-            vec![Span::styled(
-                "with everything it started",
-                style::fg(theme().faint),
-            )],
-            width,
-        ),
-    );
-    let label = |text: &str| {
-        Span::styled(
-            format!("  {text:<width$}", width = LABEL - 2),
-            style::fg(theme().dim),
-        )
-    };
-    let mut cpu = Composed::of(vec![label("cpu")]);
-    match usage.cpu {
-        Some(millicores) => {
-            let share = cpu_share(millicores, capacity.cores);
-            cpu.bar(bar, share, style::load(share), "detail-cpu".into());
-            cpu.push(Span::styled(
-                format!(
-                    "  {:.1} of {} cores",
-                    f64::from(millicores) / 1000.0,
-                    capacity.cores
-                ),
+pub fn render_fold(frame: &mut Frame, area: Rect, machine: &str, count: usize) {
+    let inner = area.inner(Margin {
+        horizontal: 2,
+        vertical: 0,
+    });
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!("{count} sessions on {machine} have been idle for a day or more."),
                 style::fg(theme().text),
-            ));
-        }
-        None => cpu.push(Span::styled("measuring…", style::fg(theme().dim))),
-    }
-    cursor.composed(frame, graphics, cpu);
-    let share = usage.memory as f32 / capacity.memory.max(1) as f32;
-    let mut memory = Composed::of(vec![label("memory")]);
-    memory.bar(bar, share, style::load(share), "detail-memory".into());
-    memory.push(Span::styled(
-        format!(
-            "  {} of {}",
-            units::bytes(usage.memory),
-            units::bytes(capacity.memory)
-        ),
-        style::fg(theme().text),
-    ));
-    cursor.composed(frame, graphics, memory);
+            )),
+            Line::from(Span::styled(
+                "They stay folded so the busy ones stand out. Move down to look at one.",
+                style::fg(theme().faint),
+            )),
+        ]),
+        inner,
+    );
 }
 
-fn until(epoch_secs: u64) -> String {
-    units::duration(Duration::from_secs(
-        epoch_secs.saturating_sub(crate::log::now_secs()),
-    ))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn plain(text: &str) -> Run {
+        Run {
+            text: text.into(),
+            fg: Shade::Default,
+            bg: Shade::Default,
+            flags: 0,
+        }
+    }
+
+    #[test]
+    fn conversation_text_wraps_between_words_and_only_splits_words_wider_than_the_panel() {
+        assert_eq!(
+            texts(&wrap(&[plain("the agent side builds now")], 12)),
+            ["the agent ", "side builds ", "now"]
+        );
+        assert_eq!(
+            texts(&wrap(&[plain("ab abcdefghijkl")], 5)),
+            ["ab ", "abcde", "fghij", "kl"]
+        );
+        assert_eq!(texts(&wrap(&[plain("short")], 40)), ["short"]);
+        let styled = wrap(
+            &[
+                plain("› "),
+                Run {
+                    flags: BOLD,
+                    ..plain("run it")
+                },
+            ],
+            40,
+        );
+        assert_eq!(texts(&styled), ["› run it"]);
+    }
 }

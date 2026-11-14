@@ -62,15 +62,6 @@ impl Window {
             minutes => format!("{minutes}m"),
         }
     }
-
-    pub fn long_label(&self) -> String {
-        match self.minutes {
-            ONE_WEEK => "week".into(),
-            minutes if minutes % (24 * 60) == 0 => format!("{}-day", minutes / (24 * 60)),
-            minutes if minutes % 60 == 0 => format!("{}-hour", minutes / 60),
-            minutes => format!("{minutes}-minute"),
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -90,6 +81,20 @@ pub struct AgentSession {
     pub age_secs: u32,
     pub pane: Option<RexPane>,
     pub usage: Option<Usage>,
+    pub children: Vec<Child>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Child {
+    pub kind: ChildKind,
+    pub label: String,
+    pub detail: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildKind {
+    Subagent,
+    Task,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -156,7 +161,16 @@ pub enum Request {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Screen {
     pub session: String,
-    pub view: Result<Vec<Vec<Run>>, String>,
+    pub source: Source,
+    pub view: View,
+}
+
+pub type View = Result<Vec<Vec<Run>>, String>;
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Pane,
+    Conversation,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -390,18 +404,6 @@ mod tests {
                 label(90)
             ],
             ["5h", "wk", "2d", "90m"]
-        );
-        let long = |minutes| {
-            Window {
-                minutes,
-                used: 0,
-                resets_at: 0,
-            }
-            .long_label()
-        };
-        assert_eq!(
-            [long(FIVE_HOURS), long(ONE_WEEK), long(2 * 24 * 60)],
-            ["5-hour", "week", "2-day"]
         );
     }
 

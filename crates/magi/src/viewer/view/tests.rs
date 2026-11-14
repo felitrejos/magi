@@ -53,6 +53,7 @@ fn agent(title: &str, state: SessionState, context_used: Option<u16>) -> AgentSe
         age_secs: 7_900,
         pane: None,
         usage: None,
+        children: Vec::new(),
     }
 }
 
@@ -336,17 +337,18 @@ fn agents_that_need_you_come_first_and_show_in_the_header() {
     let model = fleet(2, now);
     let screen = draw(&model, 160, 40, now);
     assert!(screen.contains("2 need you"), "{screen}");
-    let agent_lines: Vec<&str> = screen
-        .lines()
-        .filter(|line| line.contains("opus 5.5"))
-        .collect();
+    let lines: Vec<&str> = screen.lines().collect();
+    let at = |text: &str| lines.iter().position(|line| line.contains(text));
+    let needs_you = at(" Needs you").expect("a Needs you group");
+    let first_idle = at("idle 12m").expect("an idle session");
+    assert!(needs_you < first_idle, "{screen}");
     assert!(
-        agent_lines[0].contains("needs you · Bash"),
-        "{agent_lines:?}"
+        lines[needs_you + 1].contains("needs you · Bash"),
+        "{screen}"
     );
     assert!(
-        agent_lines.last().unwrap().contains("idle 12m"),
-        "{agent_lines:?}"
+        !screen.contains("opus 5.5  ctx"),
+        "model and context stay in the detail\n{screen}"
     );
     assert!(screen.contains("Claude 5h"), "{screen}");
     assert!(
@@ -365,15 +367,18 @@ fn selecting_an_agent_shows_its_detail_and_keeps_the_machines_visible() {
     for text in [
         "host-0",
         "needs you · Bash",
-        "for 12m",
-        "at API list prices",
+        "12m",
         "$51.38",
-        "149M",
-        "5-hour",
-        "Claude Code",
-        "cache write 1.6M",
+        "opus 5.5",
+        "running 2h 11m",
+        "context 831K tokens",
+        "Conversation",
+        "reading the conversation",
     ] {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");
+    }
+    for gone in ["cache write", "at API list prices", "session deploy fix"] {
+        assert!(!screen.contains(gone), "still shows {gone:?}\n{screen}");
     }
 }
 
@@ -544,15 +549,13 @@ fn a_session_shows_what_it_and_everything_it_started_use() {
         .unwrap();
     model.selected = first_agent + with_usage;
     let screen = draw(&model, 160, 50, now);
-    assert!(screen.contains("2.5 cores"), "{screen}");
-    assert!(screen.contains("2.5 of 12 cores"), "{screen}");
-    assert!(screen.contains("with everything it started"), "{screen}");
-    assert!(screen.contains("3.0G of 32G"), "{screen}");
+    assert_eq!(screen.matches("2.5 cores").count(), 2, "{screen}");
+    assert!(screen.contains("2.5 cores · 3.0G"), "{screen}");
     let waiting = titles
         .iter()
         .position(|title| title == "deploy fix")
         .unwrap();
     model.selected = first_agent + waiting;
     let screen = draw(&model, 160, 50, now);
-    assert!(screen.contains("measuring…"), "{screen}");
+    assert!(screen.contains("measuring · 1.0M"), "{screen}");
 }

@@ -318,7 +318,6 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Key::Alerts => model.showing_alerts = !model.showing_alerts,
             Key::Open => open_selected(model, links, now)?,
             Key::Move => propose_move(model, now),
-            Key::Screen => model.show_details = !model.show_details,
             Key::Yes | Key::No => {}
         },
         Event::Opened(result) => {
@@ -483,6 +482,7 @@ mod tests {
             age_secs: 0,
             pane,
             usage: None,
+            children: Vec::new(),
         };
         let sample = Sample {
             sessions: vec![session],
@@ -563,6 +563,7 @@ mod tests {
                 cpu: Some(millicores),
                 memory: 0,
             }),
+            children: Vec::new(),
         }
     }
 
@@ -655,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_rex_session_is_watched_and_its_screen_shown_until_s_switches_to_details() {
+    fn the_selected_rex_session_is_watched_and_its_screen_shown_until_the_selection_moves() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         let mut session = claude("s1", 0);
@@ -670,10 +671,10 @@ mod tests {
             Some((Endpoint::Local, "s1".to_string()))
         );
         model.watch(model.wanted_watch(now));
-        assert!(footer(&model).contains("s details"));
         let screen = |text: &str| {
             LinkUpdate::Screen(crate::proto::Screen {
                 session: "s1".into(),
+                source: crate::proto::Source::Pane,
                 view: Ok(vec![vec![crate::proto::Run {
                     text: text.into(),
                     fg: crate::proto::Shade::Rgb(217, 119, 87),
@@ -697,12 +698,10 @@ mod tests {
         let shown = draw(&model);
         assert!(shown.contains("Screen"), "{shown}");
         assert!(shown.contains("> run the tests"), "{shown}");
-        handle_batch([key(Key::Screen)].into_iter(), &mut model, &mut links).unwrap();
-        assert!(model.show_details);
+        handle_batch([key(Key::First)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.wanted_watch(now), None);
         assert_eq!(model.watching, None);
         assert!(!draw(&model).contains("> run the tests"));
-        assert!(footer(&model).contains("s screen"));
     }
 
     #[test]
@@ -714,6 +713,7 @@ mod tests {
             Endpoint::Local,
             LinkUpdate::Screen(crate::proto::Screen {
                 session: "other".into(),
+                source: crate::proto::Source::Pane,
                 view: Err("old".into()),
             }),
             now,
@@ -737,5 +737,63 @@ mod tests {
             now,
         );
         assert_eq!(model.watching, None);
+    }
+
+    #[test]
+    fn a_session_outside_rex_shows_its_conversation_wrapped_to_the_panel() {
+        let (mut model, _) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(claude("s1", 0))),
+            now,
+        );
+        model.selected = 3;
+        assert_eq!(
+            model.wanted_watch(now),
+            Some((Endpoint::Local, "s1".to_string()))
+        );
+        model.watch(model.wanted_watch(now));
+        let long = "word ".repeat(60);
+        model.apply(
+            Endpoint::Local,
+            LinkUpdate::Screen(crate::proto::Screen {
+                session: "s1".into(),
+                source: crate::proto::Source::Conversation,
+                view: Ok(vec![
+                    vec![crate::proto::Run {
+                        text: "› run the tests".into(),
+                        fg: crate::proto::Shade::Default,
+                        bg: crate::proto::Shade::Default,
+                        flags: crate::proto::BOLD,
+                    }],
+                    vec![crate::proto::Run {
+                        text: long.trim().into(),
+                        fg: crate::proto::Shade::Default,
+                        bg: crate::proto::Shade::Default,
+                        flags: 0,
+                    }],
+                ]),
+            }),
+            now,
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
+        terminal
+            .draw(|frame| view::render(frame, &model, Instant::now(), &mut Graphics::cells_only()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen: Vec<String> = (0..30)
+            .map(|y| (0..140).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let joined = screen.join("\n");
+        assert!(joined.contains("Conversation"), "{joined}");
+        assert!(joined.contains("latest messages"), "{joined}");
+        assert!(joined.contains("› run the tests"), "{joined}");
+        let wrapped = screen
+            .iter()
+            .filter(|line| line.contains("word word"))
+            .count();
+        assert!(wrapped >= 3, "long replies wrap\n{joined}");
     }
 }

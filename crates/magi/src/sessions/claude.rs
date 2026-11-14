@@ -7,7 +7,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use super::registry::{self, Registry, Status};
 use super::transcript::Transcript;
 use super::{Board, Found};
-use crate::proto::{Agent, AgentSession, BasisPoints, SessionState, Tokens, Waiting};
+use crate::proto::{
+    Agent, AgentSession, BasisPoints, Child, ChildKind, SessionState, Tokens, Waiting,
+};
 
 const FIND_TRANSCRIPT_EVERY: Duration = Duration::from_secs(10);
 const ACTIVE_WITHIN: Duration = Duration::from_secs(30 * 60);
@@ -177,9 +179,14 @@ impl ClaudeSessions {
                 tracked.follow(&projects, &session.id, now, budget, &mut self.claims);
                 let context = board.context(&session.id);
                 let pid = session.pid;
+                let transcript = tracked
+                    .transcript
+                    .as_ref()
+                    .map(|transcript| transcript.path().to_path_buf());
                 Found {
                     session: describe(session, tracked, context),
                     pid,
+                    transcript,
                 }
             })
             .collect();
@@ -327,6 +334,19 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
         age_secs: session.age_secs,
         pane: None,
         usage: None,
+        children: main
+            .into_iter()
+            .flat_map(Transcript::running_subagents)
+            .map(|subagent| Child {
+                kind: ChildKind::Subagent,
+                label: if subagent.description.is_empty() {
+                    "subagent".into()
+                } else {
+                    subagent.description.chars().take(MAX_TITLE_CHARS).collect()
+                },
+                detail: subagent.subagent_type.clone(),
+            })
+            .collect(),
     }
 }
 

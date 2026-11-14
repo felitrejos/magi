@@ -217,6 +217,7 @@ impl Codex {
                 sessions.push(Found {
                     session,
                     pid: Some(*pid),
+                    transcript: Some(path.clone()),
                 });
             }
         }
@@ -444,6 +445,7 @@ fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<Agent
         age_secs: (now_ms.saturating_sub(state.started_ms) / 1000) as u32,
         pane: None,
         usage: None,
+        children: Vec::new(),
     })
 }
 

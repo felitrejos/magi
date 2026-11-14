@@ -4,13 +4,15 @@ use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
 use crate::proto::{
-    Agent, AgentSession, FULL, Identity, Plan, Reply, Run, Sample, Screen, SessionState, Welcome,
+    Agent, AgentSession, FULL, Identity, Plan, Reply, Sample, Screen, SessionState, Welcome,
 };
 use crate::tailscale::Peer;
 
 pub const HISTORY: usize = 300;
 const SEARCH_GRACE: Duration = Duration::from_secs(8);
 const FLASH_FOR: Duration = Duration::from_secs(5);
+const FOLD_AFTER_SECS: u32 = 24 * 60 * 60;
+const FOLD_AT_LEAST: usize = 2;
 const HEAVY_SESSION_MILLICORES: u32 = 1_000;
 const BUSY_MACHINE: f32 = 0.8;
 const IDLE_MACHINE: f32 = 0.5;
@@ -242,6 +244,27 @@ pub fn grade(subsystem: Subsystem, value: f32) -> Level {
 pub enum Focus {
     Machine(String),
     Agent(String),
+    Fold(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Group {
+    NeedsYou,
+    Machine(String),
+}
+
+pub enum Entry<'a> {
+    Session(AgentRow<'a>),
+    Fold {
+        machine: String,
+        count: usize,
+        open: bool,
+    },
+}
+
+pub struct Listed<'a> {
+    pub group: Group,
+    pub entry: Entry<'a>,
 }
 
 pub struct AgentRow<'a> {
@@ -255,7 +278,13 @@ pub struct AgentRow<'a> {
 #[derive(Clone, Copy)]
 pub struct Capacity {
     pub cores: usize,
-    pub memory: u64,
+}
+
+fn focus_of(entry: &Entry<'_>) -> Focus {
+    match entry {
+        Entry::Session(agent) => Focus::Agent(agent.session.id.clone()),
+        Entry::Fold { machine, .. } => Focus::Fold(machine.clone()),
+    }
 }
 
 fn urgency(agent: &AgentRow<'_>) -> (u8, i64) {
@@ -283,9 +312,8 @@ pub struct Model {
     flash: Option<Flash>,
     pub opening: bool,
     pub pending_move: Option<PendingMove>,
-    pub show_details: bool,
     pub watching: Option<(Endpoint, String)>,
-    screens: HashMap<String, Result<Vec<Vec<Run>>, String>>,
+    screens: HashMap<String, Screen>,
 }
 
 struct Flash {
@@ -323,7 +351,6 @@ impl Model {
             flash: None,
             opening: false,
             pending_move: None,
-            show_details: false,
             watching: None,
             screens: HashMap::new(),
         }
@@ -338,7 +365,7 @@ impl Model {
                     .as_ref()
                     .is_some_and(|(_, id)| *id == screen.session)
                 {
-                    self.screens.insert(screen.session, screen.view);
+                    self.screens.insert(screen.session.clone(), screen);
                 }
                 return;
             }
@@ -491,7 +518,6 @@ impl Model {
                 let sample = machine.latest.as_ref()?;
                 let capacity = Capacity {
                     cores: sample.cores.len(),
-                    memory: sample.memory.total,
                 };
                 let endpoint = row.endpoint;
                 Some(sample.sessions.iter().map(move |session| AgentRow {
@@ -561,16 +587,17 @@ impl Model {
             .map(|flash| (flash.text.as_str(), flash.good))
     }
 
-    pub fn screen(&self, session: &str) -> Option<&Result<Vec<Vec<Run>>, String>> {
+    pub fn screen(&self, session: &str) -> Option<&Screen> {
         self.screens.get(session)
     }
 
     pub fn wanted_watch(&self, now: Instant) -> Option<(Endpoint, String)> {
-        if self.showing_alerts || self.show_details {
+        if self.showing_alerts {
             return None;
         }
         let agent = self.selected_agent(now)?;
-        (agent.live && agent.session.pane.is_some())
+        agent
+            .live
             .then(|| (agent.endpoint, agent.session.id.clone()))
     }
 
@@ -617,7 +644,78 @@ impl Model {
     pub fn selected_agent(&self, now: Instant) -> Option<AgentRow<'_>> {
         let machines = self.rows(now).len();
         let index = self.selected.checked_sub(machines)?;
-        self.agents(now).into_iter().nth(index)
+        match self.listed(now).into_iter().nth(index)?.entry {
+            Entry::Session(agent) => Some(agent),
+            Entry::Fold { .. } => None,
+        }
+    }
+
+    pub fn listed(&self, now: Instant) -> Vec<Listed<'_>> {
+        let mut needs_you = Vec::new();
+        let mut by_machine: Vec<(String, Vec<AgentRow<'_>>)> = Vec::new();
+        for agent in self.agents(now) {
+            if agent.live && matches!(agent.session.state, SessionState::Waiting(_)) {
+                needs_you.push(agent);
+                continue;
+            }
+            match by_machine
+                .iter_mut()
+                .find(|(machine, _)| *machine == agent.machine)
+            {
+                Some((_, agents)) => agents.push(agent),
+                None => by_machine.push((agent.machine.clone(), vec![agent])),
+            }
+        }
+        let order: Vec<String> = self.rows(now).into_iter().map(|row| row.name).collect();
+        by_machine.sort_by_key(|(machine, _)| order.iter().position(|name| name == machine));
+        let mut listed: Vec<Listed<'_>> = needs_you
+            .into_iter()
+            .map(|agent| Listed {
+                group: Group::NeedsYou,
+                entry: Entry::Session(agent),
+            })
+            .collect();
+        for (machine, agents) in by_machine {
+            let group = Group::Machine(machine.clone());
+            let (asleep, awake): (Vec<_>, Vec<_>) = agents.into_iter().partition(|agent| {
+                agent.live
+                    && agent.session.state == SessionState::Idle
+                    && agent.session.state_secs >= FOLD_AFTER_SECS
+            });
+            let awake_entries = awake.into_iter().map(Entry::Session);
+            if asleep.len() < FOLD_AT_LEAST {
+                listed.extend(
+                    awake_entries
+                        .chain(asleep.into_iter().map(Entry::Session))
+                        .map(|entry| Listed {
+                            group: group.clone(),
+                            entry,
+                        }),
+                );
+                continue;
+            }
+            let open = match &self.focus {
+                Some(Focus::Fold(folded)) => *folded == machine,
+                Some(Focus::Agent(id)) => asleep.iter().any(|agent| agent.session.id == *id),
+                _ => false,
+            };
+            let fold = Entry::Fold {
+                machine,
+                count: asleep.len(),
+                open,
+            };
+            let folded = asleep.into_iter().filter(|_| open).map(Entry::Session);
+            listed.extend(
+                awake_entries
+                    .chain(std::iter::once(fold))
+                    .chain(folded)
+                    .map(|entry| Listed {
+                        group: group.clone(),
+                        entry,
+                    }),
+            );
+        }
+        listed
     }
 
     pub fn selection(&self, now: Instant) -> Option<Focus> {
@@ -625,27 +723,29 @@ impl Model {
         match rows.get(self.selected) {
             Some(row) => Some(Focus::Machine(row.name.clone())),
             None => self
-                .agents(now)
-                .get(self.selected - rows.len())
-                .map(|agent| Focus::Agent(agent.session.id.clone())),
+                .listed(now)
+                .into_iter()
+                .nth(self.selected - rows.len())
+                .map(|listed| focus_of(&listed.entry)),
         }
     }
 
     pub fn move_selection(&mut self, delta: isize, now: Instant) {
-        let count = self.rows(now).len() + self.agents(now).len();
+        let count = self.rows(now).len() + self.listed(now).len();
         self.select(delta, count);
         self.focus = self.selection(now);
+        self.reselect(now);
     }
 
     pub fn reselect(&mut self, now: Instant) {
         let rows = self.rows(now);
-        let agents = self.agents(now);
-        let count = rows.len() + agents.len();
+        let listed = self.listed(now);
+        let count = rows.len() + listed.len();
         let found = match &self.focus {
             Some(Focus::Machine(name)) => rows.iter().position(|row| &row.name == name),
-            Some(Focus::Agent(id)) => agents
+            Some(focus) => listed
                 .iter()
-                .position(|agent| &agent.session.id == id)
+                .position(|listed| focus_of(&listed.entry) == *focus)
                 .map(|index| rows.len() + index),
             None => None,
         };
@@ -863,6 +963,7 @@ mod tests {
             age_secs: 0,
             pane: None,
             usage: None,
+            children: Vec::new(),
         };
         let mac = Sample {
             sessions: vec![

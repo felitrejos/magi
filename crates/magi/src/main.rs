@@ -1,6 +1,7 @@
 mod agent;
 mod cmd;
 mod collect;
+mod conversation;
 mod handoff;
 mod log;
 mod net;

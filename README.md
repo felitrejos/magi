@@ -45,8 +45,12 @@ view, so a glance answers "is anything stuck, and what is it costing?".
 - **Agents first.** Sessions waiting on you rise to the top with the tool
   they want to run; the rest show what they're doing, their model, context and
   cost.
-- **Watch any agent.** Select a session running in a Rex pane and its screen
-  shows live beside the list, from whichever machine it's on.
+- **Watch any agent.** Select a session and it shows live beside the list,
+  from whichever machine it's on: its screen if it runs in Rex, its latest
+  messages if it runs elsewhere, such as the Claude desktop app.
+- **Calm by default.** Sessions waiting on you come first, the rest sit under
+  their machine with what they started nested beneath, and sessions idle for
+  a day fold away.
 - **What each one uses.** CPU and memory for every session and everything it
   started, such as test runs and builds.
 - **Plan limits.** Your Claude and Codex 5-hour and weekly windows, with when
@@ -146,8 +150,8 @@ Needs [Tailscale](https://tailscale.com) with its CLI on every machine.
 
 Flags: `--port` (default 2015) for the viewer and agent, and `--interval`
 (100–60000 ms, default 1000) for `magi agent install`. Keys: `↑`/`↓` or `j`/`k`,
-`g`/`G`, `Enter` to open an agent's Rex tab, `s` to switch between its screen
-and details, `m` to move it, `a` for alerts, `q` to quit.
+`g`/`G`, `Enter` to open an agent's Rex tab, `m` to move it, `a` for alerts,
+`q` to quit.
 
 `magi fleet --json` prints every machine's load, each session's CPU and
 memory, and your plan windows once, for scripts and tools that pick where to
