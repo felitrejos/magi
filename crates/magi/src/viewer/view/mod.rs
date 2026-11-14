@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::graphics::Graphics;
 use super::model::{AgentRow, Level, LinkState, Model, Row, Strain};
-use super::style::{self, ACCENT, BORDER, CRIT, DIM, FAINT, LAVENDER, RULE, TEXT, WARN, WARN_TINT};
+use super::style::{self, theme};
 use super::units;
 use crate::log;
 use crate::proto::{Agent, FULL, Plan, SessionState};
@@ -25,7 +25,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     let full = frame.area();
     if full.width < 28 || full.height < 8 {
         frame.render_widget(
-            Paragraph::new("magi · enlarge the pane").style(style::fg(DIM)),
+            Paragraph::new("magi · enlarge the pane").style(style::fg(theme().dim)),
             full,
         );
         return;
@@ -85,7 +85,7 @@ fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Block<'a> {
     title.push(Span::raw(" "));
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(style::fg(BORDER))
+        .border_style(style::fg(theme().border))
         .title(Line::from(title));
     if let Some(mut right) = right {
         right.insert(0, Span::raw(" "));
@@ -104,14 +104,14 @@ fn rule(
     let head = vec![
         icon,
         Span::raw(" "),
-        Span::styled(title.to_string(), style::bold(LAVENDER)),
+        Span::styled(title.to_string(), style::bold(theme().second)),
         Span::raw("  "),
     ];
     let right_width = spans_width(&right);
     let gap = if right_width > 0 { 2 } else { 0 };
     let fill = width.saturating_sub(spans_width(&head) + right_width + gap);
     let mut spans = head;
-    spans.push(Span::styled("╌".repeat(fill), style::fg(RULE)));
+    spans.push(Span::styled("╌".repeat(fill), style::fg(theme().rule)));
     if right_width > 0 {
         spans.push(Span::raw(" ".repeat(gap)));
         spans.extend(right);
@@ -120,7 +120,7 @@ fn rule(
 }
 
 fn icon(symbol: &str) -> Span<'static> {
-    Span::styled(symbol.to_string(), style::fg(LAVENDER))
+    Span::styled(symbol.to_string(), style::fg(theme().second))
 }
 
 struct Bar {
@@ -247,7 +247,7 @@ fn render_header(
 ) {
     let width = area.width as usize;
     let mut left = vec![
-        Span::styled("magi", style::bold(LAVENDER)),
+        Span::styled("magi", style::bold(theme().second)),
         Span::styled(
             format!(
                 "  {} {} · {} {}",
@@ -256,7 +256,7 @@ fn render_header(
                 agents.len(),
                 plural(agents.len(), "agent", "agents")
             ),
-            style::fg(DIM),
+            style::fg(theme().dim),
         ),
     ];
     let waiting = agents
@@ -267,7 +267,7 @@ fn render_header(
         left.push(Span::raw("  "));
         left.push(Span::styled(
             format!(" {waiting} {} you ", plural(waiting, "needs", "need")),
-            style::pill(WARN, WARN_TINT),
+            style::pill(theme().warn, theme().warn_tint),
         ));
     }
     let lost = rows
@@ -280,12 +280,15 @@ fn render_header(
         })
         .count();
     if lost > 0 {
-        left.push(Span::styled(format!("  {lost} lost"), style::bold(CRIT)));
+        left.push(Span::styled(
+            format!("  {lost} lost"),
+            style::bold(theme().crit),
+        ));
     }
     left.extend(health(&Model::strains(rows), rows));
 
     let clock = log::clock();
-    let clock = Span::styled(format!("  {}", &clock[..5]), style::fg(DIM));
+    let clock = Span::styled(format!("  {}", &clock[..5]), style::fg(theme().dim));
     let room = width.saturating_sub(spans_width(&left) + 6 + 2);
     let mut right = plans_line(plans, true);
     if right.width() > room {
@@ -326,7 +329,7 @@ fn health(strains: &[Strain; 3], rows: &[Row<'_>]) -> Vec<Span<'static>> {
             ),
             style::fg(style::level(strain.level)),
         )],
-        None => vec![Span::styled("  all normal", style::fg(ACCENT))],
+        None => vec![Span::styled("  all normal", style::fg(theme().accent))],
     }
 }
 
@@ -346,7 +349,10 @@ fn plans_line(plans: &[&Plan], meters: bool) -> Composed {
             if index > 0 {
                 line.push(Span::raw("  "));
             }
-            line.push(Span::styled(format!("{} ", window.label()), style::fg(DIM)));
+            line.push(Span::styled(
+                format!("{} ", window.label()),
+                style::fg(theme().dim),
+            ));
             if meters {
                 line.bar(
                     6,
@@ -358,7 +364,11 @@ fn plans_line(plans: &[&Plan], meters: bool) -> Composed {
             }
             line.push(Span::styled(
                 units::percent(fraction).trim().to_string(),
-                style::fg(if fraction >= 0.85 { CRIT } else { TEXT }),
+                style::fg(if fraction >= 0.85 {
+                    theme().crit
+                } else {
+                    theme().text
+                }),
             ));
         }
     }
@@ -374,11 +384,14 @@ fn short_name(agent: Agent) -> &'static str {
 
 fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
     let active = model.alerts.active().count();
-    let key = |text: &str| Span::styled(text.to_string(), style::fg(TEXT));
-    let label = |text: &str| Span::styled(text.to_string(), style::fg(FAINT));
+    let key = |text: &str| Span::styled(text.to_string(), style::fg(theme().text));
+    let label = |text: &str| Span::styled(text.to_string(), style::fg(theme().faint));
     let mut keys = vec![key("↑↓"), label(" select   "), key("a"), label(" alerts")];
     if active > 0 {
-        keys.push(Span::styled(format!(" {active}"), style::bold(WARN)));
+        keys.push(Span::styled(
+            format!(" {active}"),
+            style::bold(theme().warn),
+        ));
     }
     keys.push(label("   "));
     keys.push(key("q"));
@@ -394,7 +407,10 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         Some(problem) => {
             let room = width.saturating_sub(spans_width(&keys) + 2);
             spread(
-                vec![Span::styled(truncate(&problem, room), style::fg(WARN))],
+                vec![Span::styled(
+                    truncate(&problem, room),
+                    style::fg(theme().warn),
+                )],
                 keys,
                 width,
             )
@@ -466,7 +482,7 @@ fn fit<'a>(clusters: impl Iterator<Item = &'a str>, room: usize) -> String {
 
 fn selected_style(selected: bool) -> Style {
     if selected {
-        Style::new().bg(style::SELECTED)
+        Style::new().bg(theme().selected)
     } else {
         Style::new()
     }

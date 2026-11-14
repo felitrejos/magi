@@ -64,7 +64,7 @@ magi runs in other terminals too. Charts and meters are drawn with the
 placed through its Unicode placeholders, so they stay pixel-sharp wherever that
 part is supported. magi asks the terminal when it starts and uses block
 characters if not. iTerm2 and WezTerm show kitty images but not placeholders,
-so they get blocks.
+so they get blocks. Colours come from your terminal's theme, light or dark.
 
 | | Rex | Ghostty, kitty 0.28+ | Other terminals |
 |---|---|---|---|

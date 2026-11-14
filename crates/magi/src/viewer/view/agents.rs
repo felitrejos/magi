@@ -12,7 +12,7 @@ use super::{
 use crate::proto::{AgentSession, FULL, Plan, SessionState, Waiting};
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Model};
-use crate::viewer::style::{self, ACCENT, DIM, FAINT, TEXT, WARN, WARN_TINT};
+use crate::viewer::style::{self, theme};
 use crate::viewer::units;
 
 const LABEL: usize = 14;
@@ -27,7 +27,7 @@ pub fn render_list(
     let total: u64 = agents.iter().map(|agent| agent.session.cost_micros).sum();
     let complete = agents.iter().all(|agent| agent.session.cost_complete);
     let block = panel(
-        vec![Span::styled("Agents", style::bold(TEXT))],
+        vec![Span::styled("Agents", style::bold(theme().text))],
         (!agents.is_empty()).then(|| {
             vec![Span::styled(
                 format!(
@@ -35,7 +35,7 @@ pub fn render_list(
                     if complete { "" } else { "≥" },
                     units::dollars(total)
                 ),
-                style::fg(DIM),
+                style::fg(theme().dim),
             )]
         }),
     );
@@ -45,10 +45,13 @@ pub fn render_list(
     if agents.is_empty() {
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from(Span::styled("No coding agents running.", style::fg(DIM))),
+                Line::from(Span::styled(
+                    "No coding agents running.",
+                    style::fg(theme().dim),
+                )),
                 Line::from(Span::styled(
                     "Claude Code and Codex sessions show up here.",
-                    style::fg(FAINT),
+                    style::fg(theme().faint),
                 )),
             ]),
             inner,
@@ -68,18 +71,21 @@ pub fn render_list(
         let (mark, color) = style::agent(session.agent);
         let title = spread(
             vec![
-                Span::styled(if is_selected { "▎" } else { " " }, style::fg(ACCENT)),
+                Span::styled(
+                    if is_selected { "▎" } else { " " },
+                    style::fg(theme().accent),
+                ),
                 Span::styled(format!("{mark} "), style::fg(color)),
                 Span::styled(
                     session.title.clone(),
                     if is_selected {
-                        style::bold(TEXT)
+                        style::bold(theme().text)
                     } else {
-                        style::fg(TEXT)
+                        style::fg(theme().text)
                     },
                 ),
             ],
-            vec![Span::styled(cost(session), style::fg(TEXT))],
+            vec![Span::styled(cost(session), style::fg(theme().text))],
             width,
         );
         let mut status = vec![Span::raw("   "), state_span(session, agent.live)];
@@ -89,7 +95,7 @@ pub fn render_list(
             .collect();
         status.push(Span::styled(
             format!("  {}", place.join(" · ")),
-            style::fg(FAINT),
+            style::fg(theme().faint),
         ));
         let details = if width >= 56 {
             vec![Span::styled(
@@ -98,7 +104,7 @@ pub fn render_list(
                     units::model(&session.model),
                     context_text(session)
                 ),
-                style::fg(DIM),
+                style::fg(theme().dim),
             )]
         } else {
             Vec::new()
@@ -112,27 +118,32 @@ pub fn render_list(
 fn state_span(session: &AgentSession, live: bool) -> Span<'static> {
     let (text, color) = state_text(session, live);
     match session.state {
-        SessionState::Waiting(_) if live => {
-            Span::styled(format!(" {text} "), style::pill(WARN, WARN_TINT))
-        }
+        SessionState::Waiting(_) if live => Span::styled(
+            format!(" {text} "),
+            style::pill(theme().warn, theme().warn_tint),
+        ),
         _ => Span::styled(text, style::fg(color)),
     }
 }
 
 fn state_text(session: &AgentSession, live: bool) -> (String, Color) {
     if !live {
-        return ("machine lost".into(), FAINT);
+        return ("machine lost".into(), theme().faint);
     }
     let since = units::duration(Duration::from_secs(u64::from(session.state_secs)));
     match &session.state {
         SessionState::Waiting(Waiting::Permission(Some(tool))) => {
-            (format!("needs you · {tool}"), WARN)
+            (format!("needs you · {tool}"), theme().warn)
         }
-        SessionState::Waiting(Waiting::Permission(None)) => ("needs you · approve".into(), WARN),
-        SessionState::Waiting(Waiting::Input(reason)) => (format!("needs you · {reason}"), WARN),
-        SessionState::Working { tool: Some(tool) } => (format!("working · {tool}"), ACCENT),
-        SessionState::Working { tool: None } => ("working".into(), ACCENT),
-        SessionState::Idle => (format!("idle {since}"), DIM),
+        SessionState::Waiting(Waiting::Permission(None)) => {
+            ("needs you · approve".into(), theme().warn)
+        }
+        SessionState::Waiting(Waiting::Input(reason)) => {
+            (format!("needs you · {reason}"), theme().warn)
+        }
+        SessionState::Working { tool: Some(tool) } => (format!("working · {tool}"), theme().accent),
+        SessionState::Working { tool: None } => ("working".into(), theme().accent),
+        SessionState::Idle => (format!("idle {since}"), theme().dim),
     }
 }
 
@@ -200,20 +211,23 @@ pub fn render_detail(
     cursor.line(
         frame,
         Line::from(clip(
-            vec![Span::styled(facts.join(" · "), style::fg(DIM))],
+            vec![Span::styled(facts.join(" · "), style::fg(theme().dim))],
             width,
         )),
     );
     let mut status = vec![state_span(session, agent.live)];
     if agent.live && !matches!(session.state, SessionState::Idle) {
         let since = units::duration(Duration::from_secs(u64::from(session.state_secs)));
-        status.push(Span::styled(format!("  for {since}"), style::fg(DIM)));
+        status.push(Span::styled(
+            format!("  for {since}"),
+            style::fg(theme().dim),
+        ));
     }
     cursor.line(frame, Line::from(clip(status, width)));
     cursor.skip();
 
     let bar = width.saturating_sub(LABEL + 30).clamp(6, 40);
-    let label = |text: &str| Span::styled(format!("{text:<LABEL$}"), style::bold(TEXT));
+    let label = |text: &str| Span::styled(format!("{text:<LABEL$}"), style::bold(theme().text));
     if let Some(used) = session.context_used {
         let fraction = f32::from(used) / f32::from(FULL);
         let mut line = Composed::of(vec![label("Context")]);
@@ -224,7 +238,7 @@ pub fn render_detail(
                 units::percent(fraction).trim(),
                 units::count(session.context_tokens)
             ),
-            style::fg(TEXT),
+            style::fg(theme().text),
         ));
         cursor.composed(frame, graphics, line);
     } else if session.context_tokens > 0 {
@@ -235,7 +249,7 @@ pub fn render_detail(
                     label("Context"),
                     Span::styled(
                         format!("{} tokens", units::count(session.context_tokens)),
-                        style::fg(TEXT),
+                        style::fg(theme().text),
                     ),
                 ],
                 width,
@@ -247,14 +261,14 @@ pub fn render_detail(
         Line::from(clip(
             vec![
                 label("Cost"),
-                Span::styled(cost(session), style::bold(TEXT)),
+                Span::styled(cost(session), style::bold(theme().text)),
                 Span::styled(
                     if session.cost_complete {
                         "  at API list prices, subagents included"
                     } else {
                         "  so far; a model or tier without a known price is left out"
                     },
-                    style::fg(FAINT),
+                    style::fg(theme().faint),
                 ),
             ],
             width,
@@ -275,9 +289,9 @@ pub fn render_detail(
                 vec![
                     Span::styled(
                         format!("  {name:<width$}", width = LABEL - 2),
-                        style::fg(DIM),
+                        style::fg(theme().dim),
                     ),
-                    Span::styled(units::count(value), style::fg(TEXT)),
+                    Span::styled(units::count(value), style::fg(theme().text)),
                 ],
                 width,
             )),
@@ -299,7 +313,7 @@ pub fn render_detail(
             let fraction = f32::from(window.used) / f32::from(FULL);
             let mut line = Composed::of(vec![Span::styled(
                 format!("  {:<width$}", window.long_label(), width = LABEL - 2),
-                style::fg(DIM),
+                style::fg(theme().dim),
             )]);
             line.bar(
                 bar,
@@ -313,7 +327,7 @@ pub fn render_detail(
                     units::percent(fraction).trim(),
                     until(window.resets_at)
                 ),
-                style::fg(TEXT),
+                style::fg(theme().text),
             ));
             cursor.composed(frame, graphics, line);
         }
@@ -323,7 +337,7 @@ pub fn render_detail(
         frame,
         Line::from(Span::styled(
             truncate(&format!("session {}", session.id), width),
-            style::fg(FAINT),
+            style::fg(theme().faint),
         )),
     );
 }

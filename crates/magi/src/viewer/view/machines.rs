@@ -12,7 +12,7 @@ use crate::viewer::graphics::{Chart, Graphics, Kind, Series};
 use crate::viewer::model::{
     self, HISTORY, Level, LinkState, Machine, Model, Presence, Row, Subsystem,
 };
-use crate::viewer::style::{self, ACCENT, CRIT, DIM, FAINT, LAVENDER, TEXT};
+use crate::viewer::style::{self, theme};
 use crate::viewer::units;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -28,7 +28,10 @@ pub fn render_list(
     now: Instant,
     graphics: &mut Graphics,
 ) {
-    let block = panel(vec![Span::styled("Machines", style::bold(TEXT))], None);
+    let block = panel(
+        vec![Span::styled("Machines", style::bold(theme().text))],
+        None,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -48,11 +51,11 @@ pub fn render_list(
             break;
         }
         let selected = index == model.selected;
-        let marker = Span::styled(if selected { "▎" } else { " " }, style::fg(ACCENT));
+        let marker = Span::styled(if selected { "▎" } else { " " }, style::fg(theme().accent));
         let name_style = if selected {
-            style::bold(TEXT)
+            style::bold(theme().text)
         } else {
-            style::fg(TEXT)
+            style::fg(theme().text)
         };
         let live = row
             .machine()
@@ -66,7 +69,7 @@ pub fn render_list(
                         short_os(&machine.identity.os),
                         units::duration(Duration::from_secs(sample.uptime_secs))
                     ),
-                    style::fg(FAINT),
+                    style::fg(theme().faint),
                 )]
             });
             Composed::of(vec![
@@ -113,7 +116,7 @@ fn gauges(line: &mut Composed, machine: &Machine, index: usize, width: usize) {
         ("cpu", machine.smoothed_cpu(), Subsystem::Cpu),
         ("mem", machine.memory_fraction(), Subsystem::Memory),
     ] {
-        line.push(Span::styled(format!("{label} "), style::fg(DIM)));
+        line.push(Span::styled(format!("{label} "), style::fg(theme().dim)));
         line.bar(
             bar,
             value,
@@ -122,11 +125,11 @@ fn gauges(line: &mut Composed, machine: &Machine, index: usize, width: usize) {
         );
         line.push(Span::styled(
             format!("{:>5}  ", units::percent(value).trim()),
-            style::fg(TEXT),
+            style::fg(theme().text),
         ));
     }
     let disk = machine.fullest_filesystem();
-    line.push(Span::styled("disk ", style::fg(DIM)));
+    line.push(Span::styled("disk ", style::fg(theme().dim)));
     line.push(Span::styled(
         units::percent(disk).trim().to_string(),
         style::fg(level_text(disk, Subsystem::Storage)),
@@ -135,7 +138,7 @@ fn gauges(line: &mut Composed, machine: &Machine, index: usize, width: usize) {
 
 fn level_text(value: f32, subsystem: Subsystem) -> Color {
     match model::grade(subsystem, value) {
-        Level::Normal => TEXT,
+        Level::Normal => theme().text,
         level => style::level(level),
     }
 }
@@ -143,7 +146,7 @@ fn level_text(value: f32, subsystem: Subsystem) -> Color {
 fn compact_gauges(machine: &Machine, room: usize) -> Vec<Span<'static>> {
     let text = |label: &str, value: f32, subsystem| {
         vec![
-            Span::styled(format!("{label} "), style::fg(DIM)),
+            Span::styled(format!("{label} "), style::fg(theme().dim)),
             Span::styled(
                 format!("{:<5}", units::percent(value).trim()),
                 style::fg(level_text(value, subsystem)),
@@ -168,8 +171,8 @@ fn short_os(os: &str) -> &str {
 
 fn status_span(row: &Row<'_>, port: u16, now: Instant, room: usize) -> Span<'static> {
     let color = match row.state() {
-        Some(LinkState::Lost { .. } | LinkState::Rejected(_)) => CRIT,
-        _ => DIM,
+        Some(LinkState::Lost { .. } | LinkState::Rejected(_)) => theme().crit,
+        _ => theme().dim,
     };
     Span::styled(truncate(&status(row, port, now), room), style::fg(color))
 }
@@ -207,18 +210,18 @@ pub fn render_detail(
     let width = area.width as usize;
     let mut cursor = Cursor::new(area);
     let mut header = vec![
-        Span::styled(row.name.clone(), style::bold(TEXT)),
+        Span::styled(row.name.clone(), style::bold(theme().text)),
         Span::styled(
             if row.here {
                 "  this machine"
             } else {
                 "  on your tailnet"
             },
-            style::fg(DIM),
+            style::fg(theme().dim),
         ),
     ];
     if let Some(machine) = row.machine() {
-        header.push(Span::styled("  ·  ", style::fg(FAINT)));
+        header.push(Span::styled("  ·  ", style::fg(theme().faint)));
         header.extend(facts(machine));
     }
     cursor.line(frame, Line::from(clip(header, width)));
@@ -268,7 +271,7 @@ pub fn render_detail(
                     units::percent(busiest).trim(),
                     sample.load[0]
                 ),
-                style::fg(DIM),
+                style::fg(theme().dim),
             ),
         ],
         slot: "cpu",
@@ -278,7 +281,7 @@ pub fn render_detail(
             guide: false,
             series: vec![Series {
                 values: &cpu_history,
-                color: ACCENT,
+                color: theme().accent,
             }],
         },
         scale: percent_scale(),
@@ -297,13 +300,13 @@ pub fn render_detail(
                 units::bytes(sample.memory.used),
                 units::bytes(sample.memory.total)
             ),
-            style::fg(DIM),
+            style::fg(theme().dim),
         ),
     ];
     if sample.memory.swap_used > 0 {
         memory_value.push(Span::styled(
             format!(" · swap {}", units::bytes(sample.memory.swap_used)),
-            style::fg(DIM),
+            style::fg(theme().dim),
         ));
     }
     let memory_history = machine.memory.tail(window);
@@ -319,7 +322,7 @@ pub fn render_detail(
             guide: false,
             series: vec![Series {
                 values: &memory_history,
-                color: LAVENDER,
+                color: theme().second,
             }],
         },
         scale: percent_scale(),
@@ -335,21 +338,21 @@ pub fn render_detail(
         short: vec![
             Span::styled(
                 format!("↓ {}", units::rate(sample.network.rx_per_sec)),
-                style::fg(ACCENT),
+                style::fg(theme().accent),
             ),
             Span::styled(
                 format!("  ↑ {}", units::rate(sample.network.tx_per_sec)),
-                style::fg(LAVENDER),
+                style::fg(theme().second),
             ),
         ],
         value: vec![
             Span::styled(
                 format!("↓ download {}", units::rate(sample.network.rx_per_sec)),
-                style::fg(ACCENT),
+                style::fg(theme().accent),
             ),
             Span::styled(
                 format!("   ↑ upload {}", units::rate(sample.network.tx_per_sec)),
-                style::fg(LAVENDER),
+                style::fg(theme().second),
             ),
         ],
         slot: "network",
@@ -360,11 +363,11 @@ pub fn render_detail(
             series: vec![
                 Series {
                     values: &rx,
-                    color: ACCENT,
+                    color: theme().accent,
                 },
                 Series {
                     values: &tx,
-                    color: LAVENDER,
+                    color: theme().second,
                 },
             ],
         },
@@ -396,7 +399,7 @@ pub fn render_detail(
                     units::rate(sample.disk.read_per_sec),
                     units::rate(sample.disk.write_per_sec)
                 ),
-                style::fg(DIM),
+                style::fg(theme().dim),
             )],
             width,
         ),
@@ -413,7 +416,7 @@ pub fn render_detail(
         let bar = width.saturating_sub(label_width + 1 + size.width()).min(28);
         let mut line = Composed::of(vec![Span::styled(
             pad(&truncate_left(&fs.mount, label_width), label_width + 1),
-            style::fg(DIM),
+            style::fg(theme().dim),
         )]);
         line.bar(
             bar,
@@ -421,7 +424,7 @@ pub fn render_detail(
             style::level(model::grade(Subsystem::Storage, used)),
             format!("disk:{}", fs.mount),
         );
-        line.push(Span::styled(size, style::fg(TEXT)));
+        line.push(Span::styled(size, style::fg(theme().text)));
         cursor.composed(frame, graphics, line);
     }
 }
@@ -478,7 +481,7 @@ fn chart_section(
         frame.render_widget(
             Paragraph::new(Span::styled(
                 format!("{text:>width$} ", width = GUTTER as usize - 1),
-                style::fg(FAINT),
+                style::fg(theme().faint),
             )),
             Rect::new(x, y, GUTTER, 1),
         );
@@ -511,9 +514,9 @@ fn chart_section(
                     &format!("{} ago", units::duration(shown)),
                     axis.saturating_sub(3),
                 ),
-                style::fg(FAINT),
+                style::fg(theme().faint),
             ),
-            Span::styled("now", style::fg(FAINT)),
+            Span::styled("now", style::fg(theme().faint)),
         ]),
     );
 }
@@ -598,7 +601,7 @@ fn facts(machine: &Machine) -> Vec<Span<'static>> {
             .filter(|detail| !detail.is_empty())
             .collect::<Vec<_>>()
             .join(" · "),
-        style::fg(DIM),
+        style::fg(theme().dim),
     )]
 }
 

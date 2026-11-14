@@ -6,6 +6,7 @@ mod graphics;
 mod link;
 mod model;
 mod style;
+mod terminal;
 mod topology;
 mod units;
 mod view;
@@ -53,7 +54,9 @@ pub fn run(config: Config) -> io::Result<()> {
     };
     let alerts = alerts::Alerts::open(net::state_dir()?.join("alerts.jsonl"), Instant::now())?;
     let mut terminal = ratatui::try_init()?;
-    let mut graphics = Graphics::detect(&mut io::stdout())?;
+    let reply = terminal::probe(&mut io::stdout())?;
+    style::init(&reply);
+    let mut graphics = Graphics::from_reply(&reply);
     topology::spawn(sender.clone())?;
     spawn_input(sender)?;
     let result = write_status(alerts::CLEAR_ALL).and_then(|()| {

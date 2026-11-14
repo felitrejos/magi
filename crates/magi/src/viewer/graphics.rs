@@ -2,8 +2,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
-use std::os::fd::AsRawFd;
-use std::time::{Duration, Instant};
 
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
@@ -15,18 +13,16 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use super::base64;
 use super::chart;
 use super::diacritics::DIACRITICS;
-use super::style::{GUIDE, TRACK};
+use super::style::theme;
 
 const PLACEHOLDER: char = '\u{10EEEE}';
 const CHUNK: usize = 4096;
-const DETECT_TIMEOUT: Duration = Duration::from_secs(1);
 const OVERSAMPLE: f32 = 2.0;
 const MAX_PIXELS: f32 = 1_000_000.0;
 const FILL_ALPHA: u8 = 56;
 const FIRST_ID: u32 = 0x4d_0001;
 const LAST_ID: u32 = 0xff_fff0;
 const EIGHTHS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-const QUERY: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[>q\x1b[c";
 const PLACEHOLDER_TERMINALS: [&str; 2] = ["rex ", "ghostty "];
 const KITTY_PLACEHOLDERS_SINCE: (u32, u32) = (0, 28);
 
@@ -84,11 +80,8 @@ impl Graphics {
         }
     }
 
-    pub fn detect(out: &mut impl Write) -> io::Result<Self> {
-        out.write_all(QUERY)?;
-        out.flush()?;
-        let reply = read_reply(Instant::now() + DETECT_TIMEOUT)?;
-        Ok(Self::new(parse_reply(&reply)))
+    pub fn from_reply(reply: &[u8]) -> Self {
+        Self::new(parse_reply(reply))
     }
 
     pub fn meter(
@@ -203,48 +196,6 @@ impl Graphics {
     }
 }
 
-fn read_reply(deadline: Instant) -> io::Result<Vec<u8>> {
-    let stdin = io::stdin();
-    let fd = stdin.as_raw_fd();
-    let mut reply = Vec::new();
-    let mut chunk = [0u8; 256];
-    while !answered(&reply) {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            break;
-        }
-        let mut poll = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ready = unsafe { libc::poll(&mut poll, 1, left.as_millis() as libc::c_int) };
-        if ready < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if ready == 0 {
-            break;
-        }
-        let read = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
-        if read <= 0 {
-            break;
-        }
-        reply.extend_from_slice(&chunk[..read as usize]);
-    }
-    Ok(reply)
-}
-
-fn answered(reply: &[u8]) -> bool {
-    reply
-        .windows(3)
-        .position(|window| window == b"\x1b[?")
-        .is_some_and(|start| reply[start..].contains(&b'c'))
-}
-
 fn parse_reply(reply: &[u8]) -> Option<(u32, u32)> {
     let text = String::from_utf8_lossy(reply);
     if !text.contains("_Gi=31;OK") || !places_unicode_placeholders(&text) {
@@ -334,7 +285,7 @@ fn render(chart: &Chart, width: u32, height: u32, density: f32) -> Option<Vec<u8
             Kind::Meter => {
                 let thickness = (h * 0.4).max(2.0);
                 let top = (h - thickness) / 2.0;
-                let (tr, tg, tb) = rgb(TRACK);
+                let (tr, tg, tb) = rgb(theme().track);
                 let mut track = Paint::default();
                 track.set_color_rgba8(tr, tg, tb, 255);
                 let fraction = finite(values[0]).clamp(0.0, 1.0);
@@ -391,7 +342,7 @@ fn render(chart: &Chart, width: u32, height: u32, density: f32) -> Option<Vec<u8
 }
 
 fn guide(pixmap: &mut Pixmap, y: f32, width: f32, density: f32) {
-    let (r, g, b) = rgb(GUIDE);
+    let (r, g, b) = rgb(theme().guide);
     let mut paint = Paint::default();
     paint.set_color_rgba8(r, g, b, 255);
     let dash = 4.0 * density;
@@ -522,7 +473,7 @@ fn draw_cells(buf: &mut Buffer, area: Rect, chart: &Chart) {
 fn draw_guide_cells(buf: &mut Buffer, area: Rect) {
     let y = area.y + area.height / 2;
     for x in area.x..area.x + area.width {
-        buf[(x, y)].set_char('┈').set_fg(GUIDE);
+        buf[(x, y)].set_char('┈').set_fg(theme().guide);
     }
 }
 
@@ -535,11 +486,11 @@ fn draw_meter_cells(buf: &mut Buffer, area: Rect, fraction: f32, color: Color) {
         let cell = &mut buf[(area.x + col as u16, area.y)];
         match eighths.saturating_sub(col * 8).min(8) {
             8 => cell.set_char('█').set_fg(color),
-            0 => cell.set_char('█').set_fg(TRACK),
+            0 => cell.set_char('█').set_fg(theme().track),
             partial => cell
                 .set_char(EIGHTHS[partial - 1])
                 .set_fg(color)
-                .set_bg(TRACK),
+                .set_bg(theme().track),
         };
     }
 }
@@ -591,8 +542,6 @@ mod tests {
             parse_reply(b"\x1b_Gi=31;OK\x1b\\\x1bP>|rex 0.1\x1b\\\x1b[?62c"),
             None
         );
-        assert!(answered(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c"));
-        assert!(!answered(b"\x1b_Gi=31;OK\x1b\\"));
     }
 
     #[test]
@@ -711,8 +660,8 @@ mod tests {
         graphics.meter(&mut meter, area, "m".into(), 0.56, BLUE);
         assert_eq!(meter[(0, 0)].symbol(), "█");
         assert_eq!(meter[(2, 0)].symbol(), "▎");
-        assert_eq!((meter[(2, 0)].fg, meter[(2, 0)].bg), (BLUE, TRACK));
-        assert_eq!(meter[(3, 0)].fg, TRACK);
+        assert_eq!((meter[(2, 0)].fg, meter[(2, 0)].bg), (BLUE, theme().track));
+        assert_eq!(meter[(3, 0)].fg, theme().track);
         let mut out = Vec::new();
         graphics.flush(&mut out).unwrap();
         assert!(out.is_empty());
@@ -731,7 +680,7 @@ mod tests {
                 },
                 Series {
                     values: &[0.0, 0.0],
-                    color: TRACK,
+                    color: theme().track,
                 },
             ],
         };
