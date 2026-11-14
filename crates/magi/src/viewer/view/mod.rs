@@ -386,7 +386,14 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
     let active = model.alerts.active().count();
     let key = |text: &str| Span::styled(text.to_string(), style::fg(theme().text));
     let label = |text: &str| Span::styled(text.to_string(), style::fg(theme().faint));
-    let mut keys = vec![key("↑↓"), label(" select   "), key("a"), label(" alerts")];
+    let mut keys = vec![key("↑↓"), label(" select   ")];
+    if model
+        .selected_agent(now)
+        .is_some_and(|agent| agent.session.pane.is_some())
+    {
+        keys.extend([key("↵"), label(" open   ")]);
+    }
+    keys.extend([key("a"), label(" alerts")]);
     if active > 0 {
         keys.push(Span::styled(
             format!(" {active}"),
@@ -397,9 +404,9 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
     keys.push(key("q"));
     keys.push(label(" quit"));
     let problem = model
-        .topology
-        .problem
-        .clone()
+        .flashed(now)
+        .map(str::to_string)
+        .or_else(|| model.topology.problem.clone())
         .or_else(|| model.alerts.problem().map(str::to_string))
         .or_else(|| model.notices(now).into_iter().next());
     let width = area.width as usize;

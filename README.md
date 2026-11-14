@@ -57,7 +57,8 @@ running on an always-on machine and lets you open that same pane from the Mac
 app, the iOS app or the web, already up to date. Alerts use Rex's
 [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status),
 so they show on Rex's session picker and tab headers on whichever device you
-have open, right beside the tabs your agents run in.
+have open, right beside the tabs your agents run in. Press `Enter` on an agent
+and Rex opens the tab it runs in, on whichever machine.
 
 magi runs in other terminals too. Charts and meters are drawn with the
 [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/),
@@ -124,7 +125,7 @@ Needs [Tailscale](https://tailscale.com) with its CLI on every machine.
 
 Flags: `--port` (default 2015) for the viewer and agent, and `--interval`
 (100–60000 ms, default 1000) for `magi agent install`. Keys: `↑`/`↓` or `j`/`k`,
-`g`/`G`, `a` for alerts, `q` to quit.
+`g`/`G`, `Enter` to open an agent's Rex tab, `a` for alerts, `q` to quit.
 
 ## Performance
 

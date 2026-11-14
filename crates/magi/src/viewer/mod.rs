@@ -6,6 +6,7 @@ mod graphics;
 mod input;
 mod link;
 mod model;
+mod rex;
 mod style;
 mod terminal;
 mod topology;
@@ -41,6 +42,7 @@ pub struct Config {
 
 pub enum Event {
     Input(input::Input),
+    Opened(Result<(), String>),
     Topology(Topology),
     Link(Endpoint, u64, LinkUpdate),
 }
@@ -185,6 +187,26 @@ fn event_loop(
     }
 }
 
+fn open_selected(model: &mut Model, links: &Links, now: Instant) -> io::Result<()> {
+    if model.opening {
+        return Ok(());
+    }
+    let Some(agent) = model.selected_agent(now) else {
+        return Ok(());
+    };
+    let Some(pane) = agent.session.pane.clone() else {
+        let reason = format!("{} isn't running in a Rex pane", agent.session.title);
+        model.flash(reason, now);
+        return Ok(());
+    };
+    model.opening = true;
+    let sender = links.sender.clone();
+    thread::Builder::new().name("open".into()).spawn(move || {
+        let _ = sender.send(Event::Opened(rex::open(&pane)));
+    })?;
+    Ok(())
+}
+
 fn write_terminal(sequence: &[u8]) -> io::Result<()> {
     let mut out = io::stdout().lock();
     out.write_all(sequence)?;
@@ -222,7 +244,14 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Key::First => model.move_selection(isize::MIN, now),
             Key::Last => model.move_selection(isize::MAX, now),
             Key::Alerts => model.showing_alerts = !model.showing_alerts,
+            Key::Open => open_selected(model, links, now)?,
         },
+        Event::Opened(result) => {
+            model.opening = false;
+            if let Err(reason) = result {
+                model.flash(reason, now);
+            }
+        }
         Event::Input(Input::Recheck) => write_terminal(terminal::COLOURS)?,
         Event::Input(Input::Theme(reply)) => {
             style::update(&reply);
@@ -266,7 +295,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::proto::{Identity, Welcome};
+    use crate::proto::{AgentSession, Identity, RexPane, Sample, SessionState, Tokens, Welcome};
 
     fn key(key: Key) -> Event {
         Event::Input(Input::Key(key))
@@ -360,5 +389,72 @@ mod tests {
         let (mut model, mut links) = fleet();
         let flow = handle_batch([key(Key::Quit)].into_iter(), &mut model, &mut links).unwrap();
         assert!(flow == Flow::Quit);
+    }
+
+    fn with_session(model: &mut Model, pane: Option<RexPane>) {
+        let session = AgentSession {
+            agent: crate::proto::Agent::ClaudeCode,
+            id: "s1".into(),
+            title: "fix login".into(),
+            project: "web".into(),
+            state: SessionState::Idle,
+            state_secs: 0,
+            model: String::new(),
+            context_tokens: 0,
+            context_used: None,
+            tokens: Tokens::default(),
+            cost_micros: 0,
+            cost_complete: true,
+            age_secs: 0,
+            pane,
+        };
+        let sample = Sample {
+            sessions: vec![session],
+            ..Sample::default()
+        };
+        model.apply(
+            Endpoint::Local,
+            LinkUpdate::Sample(Box::new(sample)),
+            Instant::now(),
+        );
+        model.selected = 3;
+    }
+
+    fn footer(model: &Model) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| view::render(frame, model, Instant::now(), &mut Graphics::cells_only()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..120).map(|x| buffer[(x, 29)].symbol()).collect()
+    }
+
+    #[test]
+    fn enter_explains_when_a_session_is_not_in_rex() {
+        let (mut model, mut links) = fleet();
+        with_session(&mut model, None);
+        assert!(!footer(&model).contains("open"));
+        handle_batch([key(Key::Open)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some("fix login isn't running in a Rex pane")
+        );
+        assert!(footer(&model).contains("fix login isn't running in a Rex pane"));
+    }
+
+    #[test]
+    fn the_footer_offers_to_open_a_session_that_is_in_rex() {
+        let (mut model, _) = fleet();
+        with_session(
+            &mut model,
+            Some(RexPane {
+                session: "session:1".into(),
+                window: "window:2".into(),
+            }),
+        );
+        assert!(footer(&model).contains("↵ open"), "{}", footer(&model));
+        model.selected = 0;
+        assert!(!footer(&model).contains("↵ open"));
     }
 }

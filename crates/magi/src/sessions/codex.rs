@@ -9,6 +9,7 @@ use serde::Deserialize;
 use super::ledger::{Counted, Ledger};
 use super::pricing::{self, OpenAiUsage};
 use super::process;
+use super::rex::Panes;
 use super::tail::{self, Lines, Tail};
 use crate::proto::{Agent, AgentSession, BasisPoints, FULL, Plan, SessionState, Tokens, Window};
 
@@ -31,7 +32,7 @@ const MARKS: [&[u8]; 9] = [
 pub struct Codex {
     home: PathBuf,
     found_at: Option<Instant>,
-    live: Vec<PathBuf>,
+    live: Vec<(PathBuf, i32)>,
     rollouts: HashMap<PathBuf, Rollout>,
     titles: Option<(Tail, Titles)>,
     claims: HashSet<String>,
@@ -165,6 +166,7 @@ impl Codex {
 
     pub fn poll(
         &mut self,
+        panes: &mut Panes,
         now: Instant,
         now_ms: u64,
         budget: &mut u64,
@@ -179,7 +181,7 @@ impl Codex {
         let live = &self.live;
         let claims = &mut self.claims;
         self.rollouts.retain(|path, rollout| {
-            let keep = live.contains(path);
+            let keep = live.iter().any(|(live, _)| live == path);
             if !keep {
                 rollout.state.ledger.release(claims);
             }
@@ -189,7 +191,7 @@ impl Codex {
             self.read_titles(budget);
         }
         let mut sessions = Vec::new();
-        for path in &self.live {
+        for (path, _) in &self.live {
             let rollout = self
                 .rollouts
                 .entry(path.clone())
@@ -207,29 +209,33 @@ impl Codex {
             rollout.state.ledger.adopt(&mut self.claims);
         }
         let titles = self.titles.as_ref().map(|(_, titles)| titles);
-        for path in &self.live {
+        for (path, pid) in &self.live {
             if let Some(session) = self
                 .rollouts
                 .get(path)
                 .and_then(|rollout| describe(&rollout.state, titles, now_ms))
             {
-                sessions.push(session);
+                sessions.push(AgentSession {
+                    pane: panes.find(*pid, now),
+                    ..session
+                });
             }
         }
         (sessions, self.plan(now_ms / 1000))
     }
 
-    fn find_live(&self) -> Vec<PathBuf> {
+    fn find_live(&self) -> Vec<(PathBuf, i32)> {
         let sessions = self.home.join("sessions");
         if !sessions.is_dir() {
             return Vec::new();
         }
-        let mut live: Vec<PathBuf> = process::open_files(PROCESS_NAME)
+        let mut live: Vec<(PathBuf, i32)> = process::open_files(PROCESS_NAME)
             .into_iter()
-            .filter(|path| path.starts_with(&sessions) && is_rollout(path))
+            .filter(|(_, path)| path.starts_with(&sessions) && is_rollout(path))
+            .map(|(pid, path)| (path, pid))
             .collect();
         live.sort();
-        live.dedup();
+        live.dedup_by(|a, b| a.0 == b.0);
         live.truncate(MAX_SESSIONS);
         live
     }
@@ -437,6 +443,7 @@ fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<Agent
         cost_micros: state.ledger.cost_micros,
         cost_complete: !state.ledger.unpriced,
         age_secs: (now_ms.saturating_sub(state.started_ms) / 1000) as u32,
+        pane: None,
     })
 }
 

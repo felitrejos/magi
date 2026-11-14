@@ -4,6 +4,7 @@ mod ledger;
 mod pricing;
 mod process;
 mod registry;
+mod rex;
 mod tail;
 mod transcript;
 
@@ -83,6 +84,7 @@ pub struct Snapshot {
 pub struct Sessions {
     claude: ClaudeSessions,
     codex: Option<Codex>,
+    panes: rex::Panes,
 }
 
 impl Sessions {
@@ -91,6 +93,7 @@ impl Sessions {
         Ok(Self {
             claude: ClaudeSessions::new(Path::new(&home).join(".claude")),
             codex: Codex::for_this_user(),
+            panes: rex::Panes::default(),
         })
     }
 
@@ -101,7 +104,10 @@ impl Sessions {
             .map_or(0, |since| since.as_millis() as u64);
         let mut budget = READ_BUDGET_PER_POLL;
         let mut snapshot = Snapshot::default();
-        match self.claude.poll(board, now, now_ms, &mut budget) {
+        match self
+            .claude
+            .poll(board, &mut self.panes, now, now_ms, &mut budget)
+        {
             Ok(polled) => {
                 snapshot.sessions = polled.sessions;
                 snapshot.notices.extend(polled.notice);
@@ -112,7 +118,7 @@ impl Sessions {
         }
         snapshot.plans.extend(board.plan(now_ms / 1000));
         if let Some(codex) = &mut self.codex {
-            let (sessions, plan) = codex.poll(now, now_ms, &mut budget);
+            let (sessions, plan) = codex.poll(&mut self.panes, now, now_ms, &mut budget);
             snapshot.sessions.extend(sessions);
             snapshot.plans.extend(plan);
         }

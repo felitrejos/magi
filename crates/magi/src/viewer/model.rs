@@ -8,6 +8,7 @@ use crate::tailscale::Peer;
 
 pub const HISTORY: usize = 300;
 const SEARCH_GRACE: Duration = Duration::from_secs(8);
+const FLASH_FOR: Duration = Duration::from_secs(5);
 const CPU_SMOOTHING_SAMPLES: usize = 5;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -263,6 +264,8 @@ pub struct Model {
     pub showing_alerts: bool,
     focus: Option<Focus>,
     started: Instant,
+    flash: Option<(String, Instant)>,
+    pub opening: bool,
 }
 
 impl Model {
@@ -276,6 +279,8 @@ impl Model {
             showing_alerts: false,
             focus: None,
             started: now,
+            flash: None,
+            opening: false,
         }
     }
 
@@ -459,6 +464,23 @@ impl Model {
                     .map(move |notice| format!("{}: {notice}", row.name))
             })
             .collect()
+    }
+
+    pub fn flash(&mut self, message: String, now: Instant) {
+        self.flash = Some((message, now));
+    }
+
+    pub fn flashed(&self, now: Instant) -> Option<&str> {
+        self.flash
+            .as_ref()
+            .filter(|(_, at)| now.duration_since(*at) < FLASH_FOR)
+            .map(|(message, _)| message.as_str())
+    }
+
+    pub fn selected_agent(&self, now: Instant) -> Option<AgentRow<'_>> {
+        let machines = self.rows(now).len();
+        let index = self.selected.checked_sub(machines)?;
+        self.agents(now).into_iter().nth(index)
     }
 
     pub fn selection(&self, now: Instant) -> Option<Focus> {
@@ -702,6 +724,7 @@ mod tests {
             cost_micros: 0,
             cost_complete: true,
             age_secs: 0,
+            pane: None,
         };
         let mac = Sample {
             sessions: vec![

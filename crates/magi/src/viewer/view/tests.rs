@@ -51,6 +51,7 @@ fn agent(title: &str, state: SessionState, context_used: Option<u16>) -> AgentSe
         cost_micros: 51_380_000,
         cost_complete: true,
         age_secs: 7_900,
+        pane: None,
     }
 }
 

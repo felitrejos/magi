@@ -1,16 +1,20 @@
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
-pub fn open_files(name: &str) -> Vec<PathBuf> {
+pub fn open_files(name: &str) -> Vec<(i32, PathBuf)> {
     macos::pids()
         .into_iter()
         .filter(|pid| macos::name(*pid).as_deref() == Some(name))
-        .flat_map(macos::open_files)
+        .flat_map(|pid| {
+            macos::open_files(pid)
+                .into_iter()
+                .map(move |path| (pid, path))
+        })
         .collect()
 }
 
 #[cfg(target_os = "linux")]
-pub fn open_files(name: &str) -> Vec<PathBuf> {
+pub fn open_files(name: &str) -> Vec<(i32, PathBuf)> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
@@ -21,11 +25,12 @@ pub fn open_files(name: &str) -> Vec<PathBuf> {
             std::fs::read_to_string(format!("/proc/{pid}/comm"))
                 .is_ok_and(|comm| comm.trim_end() == name)
         })
-        .filter_map(|pid| std::fs::read_dir(format!("/proc/{pid}/fd")).ok())
-        .flat_map(|fds| {
+        .filter_map(|pid| Some((pid, std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?)))
+        .flat_map(|(pid, fds)| {
             fds.flatten()
                 .filter_map(|fd| std::fs::read_link(fd.path()).ok())
                 .filter(|path| path.is_absolute())
+                .map(move |path| (pid, path))
         })
         .collect()
 }
@@ -153,10 +158,11 @@ mod tests {
             .spawn()
             .unwrap();
         let held = std::fs::canonicalize(&held).unwrap();
-        let holds = |files: &[PathBuf]| {
-            files
-                .iter()
-                .any(|file| std::fs::canonicalize(file).is_ok_and(|file| file == held))
+        let child_pid = child.id() as i32;
+        let holds = |files: &[(i32, PathBuf)]| {
+            files.iter().any(|(pid, file)| {
+                *pid == child_pid && std::fs::canonicalize(file).is_ok_and(|file| file == held)
+            })
         };
         let mut found = Vec::new();
         for _ in 0..50 {

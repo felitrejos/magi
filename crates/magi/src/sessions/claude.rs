@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::Board;
 use super::registry::{self, Registry, Status};
+use super::rex::Panes;
 use super::transcript::Transcript;
 use crate::proto::{Agent, AgentSession, BasisPoints, SessionState, Tokens, Waiting};
 
@@ -39,6 +40,7 @@ struct Tracked {
 
 struct Seen {
     id: String,
+    pid: Option<i32>,
     cwd: Option<String>,
     name: Option<String>,
     state: SessionState,
@@ -118,6 +120,7 @@ impl ClaudeSessions {
     pub fn poll(
         &mut self,
         board: &Board,
+        panes: &mut Panes,
         now: Instant,
         now_ms: u64,
         budget: &mut u64,
@@ -134,6 +137,7 @@ impl ClaudeSessions {
                 cwd: Some(session.cwd),
                 name: session.name,
                 id: session.session_id,
+                pid: Some(session.pid),
             })
             .collect();
         let notice = (!scan.unknown.is_empty()).then(|| FORMAT_CHANGED.to_string());
@@ -174,7 +178,11 @@ impl ClaudeSessions {
                 });
                 tracked.follow(&projects, &session.id, now, budget, &mut self.claims);
                 let context = board.context(&session.id);
-                describe(session, tracked, context)
+                let pane = session.pid.and_then(|pid| panes.find(pid, now));
+                AgentSession {
+                    pane,
+                    ..describe(session, tracked, context)
+                }
             })
             .collect();
         Ok(Polled { sessions, notice })
@@ -213,6 +221,7 @@ impl ClaudeSessions {
         let ended = tracked.is_some_and(|transcript| transcript.state.ended_turn);
         Seen {
             id,
+            pid: None,
             cwd: None,
             name: None,
             state: if quiet < WORKING_IF_WRITTEN_WITHIN && !ended {
@@ -318,6 +327,7 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
             .transcripts()
             .all(|transcript| !transcript.state.ledger.unpriced),
         age_secs: session.age_secs,
+        pane: None,
     }
 }
 
@@ -387,6 +397,7 @@ mod tests {
         let polled = claude
             .poll(
                 &Board::default(),
+                &mut Panes::default(),
                 Instant::now(),
                 now_ms,
                 &mut u64::MAX.clone(),

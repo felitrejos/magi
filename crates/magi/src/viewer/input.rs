@@ -25,6 +25,7 @@ pub enum Key {
     First,
     Last,
     Alerts,
+    Open,
 }
 
 #[derive(Default)]
@@ -127,6 +128,7 @@ fn plain_key(byte: u8) -> Option<Key> {
         b'g' => Some(Key::First),
         b'G' => Some(Key::Last),
         b'a' => Some(Key::Alerts),
+        b'\r' | b'\n' => Some(Key::Open),
         _ => None,
     }
 }
@@ -137,6 +139,7 @@ fn final_key(byte: u8) -> Option<Key> {
         b'B' => Some(Key::Down),
         b'H' => Some(Key::First),
         b'F' => Some(Key::Last),
+        b'M' => Some(Key::Open),
         _ => None,
     }
 }
@@ -254,7 +257,7 @@ mod tests {
     #[test]
     fn keys_in_every_encoding_map_to_the_same_action() {
         assert_eq!(
-            parse(&[b"jk\x1b[A\x1bOB\x1b[1;5A\x1b[H\x1b[1~\x1b[F\x1b[8~gGaq\x03"]),
+            parse(&[b"jk\x1b[A\x1bOB\x1b[1;5A\x1b[H\x1b[1~\x1b[F\x1b[8~gGa\r\x1bOMq\x03"]),
             [
                 Key::Down,
                 Key::Up,
@@ -268,6 +271,8 @@ mod tests {
                 Key::First,
                 Key::Last,
                 Key::Alerts,
+                Key::Open,
+                Key::Open,
                 Key::Quit,
                 Key::Quit,
             ]
