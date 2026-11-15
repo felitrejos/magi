@@ -58,10 +58,21 @@ impl Parser {
     }
 
     pub fn idle(&mut self, out: &mut Vec<Input>) {
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && !self.pasting {
             return;
         }
         self.waited = self.waited.saturating_add(1);
+        if self.pasting {
+            if self.waited >= PATIENCE {
+                if !self.pending.is_empty() {
+                    let text = String::from_utf8_lossy(&self.pending).into_owned();
+                    out.push(Input::Key(Key::Paste(text)));
+                }
+                self.pending.clear();
+                self.pasting = false;
+            }
+            return;
+        }
         if self.pending.len() > 2 && self.waited < PATIENCE {
             return;
         }
@@ -128,7 +139,13 @@ impl Parser {
                 self.pasting = false;
                 (&rest[..end], end + PASTE_END.len())
             }
-            None if rest.len() > LONGEST => (rest, rest.len()),
+            None if rest.len() > LONGEST => {
+                let mut cut = rest.len() - (PASTE_END.len() - 1);
+                while cut > 0 && rest[cut] & 0xc0 == 0x80 {
+                    cut -= 1;
+                }
+                (&rest[..cut], cut)
+            }
             None => return None,
         };
         out.push(Input::Key(Key::Paste(
@@ -339,12 +356,51 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_escape_quits_only_once_nothing_follows_it() {
+    fn a_lone_escape_counts_only_once_nothing_follows_it() {
         assert_eq!(parse(&[b"\x1b"]), [Input::Key(Key::Escape)]);
         assert_eq!(parse(&[b"\x1b", b"[B"]), [Input::Key(Key::Down)]);
         assert_eq!(
             parse(&[b"\x1b\x1b"]),
             [Input::Key(Key::Escape), Input::Key(Key::Escape)]
+        );
+    }
+
+    #[test]
+    fn a_long_paste_keeps_its_end_marker_and_characters_whole_across_reads() {
+        let body = "é".repeat(LONGEST);
+        let mut parser = Parser::default();
+        let mut out = Vec::new();
+        parser.feed(b"\x1b[200~", &mut out);
+        parser.feed(body.as_bytes(), &mut out);
+        parser.feed(b"\x1b[20", &mut out);
+        parser.feed(b"1~q", &mut out);
+        let pasted: String = out
+            .iter()
+            .map(|input| match input {
+                Input::Key(Key::Paste(text)) => text.as_str(),
+                other => panic!("{other:?}"),
+            })
+            .take(out.len() - 1)
+            .collect();
+        assert_eq!(pasted, body);
+        assert_eq!(out.last(), Some(&Input::Key(Key::Char('q'))));
+    }
+
+    #[test]
+    fn a_paste_that_never_ends_gives_the_keys_back() {
+        let mut parser = Parser::default();
+        let mut out = Vec::new();
+        parser.feed(b"\x1b[200~half a paste", &mut out);
+        for _ in 0..PATIENCE {
+            parser.idle(&mut out);
+        }
+        parser.feed(b"q", &mut out);
+        assert_eq!(
+            out,
+            [
+                Input::Key(Key::Paste("half a paste".into())),
+                Input::Key(Key::Char('q'))
+            ]
         );
     }
 

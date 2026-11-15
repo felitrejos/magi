@@ -1,14 +1,22 @@
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
 use crate::bounded;
-use crate::proto::{Agent, AgentSession, MAX_PROMPT_CHARS, SessionState, Waiting};
+use crate::proto::{AgentSession, MAX_PROMPT_CHARS, SessionState, Waiting};
 use crate::sessions::rex::Location;
 
 const REX_LIMIT: Duration = Duration::from_secs(3);
 const SUBMIT_AFTER: Duration = Duration::from_millis(300);
 const ALLOW: &str = "1";
 const DENY: &str = "\x1b";
+
+static TYPING: Mutex<()> = Mutex::new(());
+
+pub struct Seen {
+    pub tool: Option<String>,
+    pub waiting_secs: u32,
+}
 
 pub fn prompt(
     session: &AgentSession,
@@ -18,6 +26,7 @@ pub fn prompt(
     let pane = pane.ok_or_else(|| not_in_rex(session))?;
     let text = prompt_text(text)?;
     ready_for_prompt(session)?;
+    let _typing = TYPING.lock().unwrap_or_else(PoisonError::into_inner);
     send(pane, &text)?;
     thread::sleep(SUBMIT_AFTER);
     send(pane, "\r")?;
@@ -28,15 +37,30 @@ pub fn answer(
     session: &AgentSession,
     pane: Option<&Location>,
     allow: bool,
+    seen: &Seen,
 ) -> Result<String, String> {
     let pane = pane.ok_or_else(|| not_in_rex(session))?;
-    let SessionState::Waiting(Waiting::Permission(tool)) = &session.state else {
-        return Err(format!("{} isn't asking for permission now", session.title));
-    };
+    let tool = same_prompt(session, seen)?;
+    let _typing = TYPING.lock().unwrap_or_else(PoisonError::into_inner);
     send(pane, if allow { ALLOW } else { DENY })?;
     let what = tool.as_deref().unwrap_or("it");
     let verb = if allow { "Allowed" } else { "Denied" };
     Ok(format!("{verb} {what} in {}", session.title))
+}
+
+fn same_prompt<'a>(session: &'a AgentSession, seen: &Seen) -> Result<&'a Option<String>, String> {
+    match &session.state {
+        SessionState::Waiting(Waiting::Permission(tool))
+            if *tool == seen.tool && session.state_secs + 1 >= seen.waiting_secs =>
+        {
+            Ok(tool)
+        }
+        SessionState::Waiting(Waiting::Permission(_)) => Err(format!(
+            "{} is asking something new: look again before answering",
+            session.title
+        )),
+        _ => Err(format!("{} isn't asking for permission now", session.title)),
+    }
 }
 
 fn not_in_rex(session: &AgentSession) -> String {
@@ -64,17 +88,17 @@ fn prompt_text(text: &str) -> Result<String, String> {
 }
 
 fn ready_for_prompt(session: &AgentSession) -> Result<(), String> {
-    match (&session.state, session.agent) {
-        (SessionState::Idle, _) | (SessionState::Working { .. }, Agent::ClaudeCode) => Ok(()),
-        (SessionState::Working { .. }, Agent::Codex) => Err(format!(
-            "{} is still working; send it when it's idle",
+    match &session.state {
+        SessionState::Idle => Ok(()),
+        SessionState::Working { .. } => Err(format!(
+            "{} is still working: send it when it's idle",
             session.title
         )),
-        (SessionState::Waiting(Waiting::Permission(_)), _) => Err(format!(
+        SessionState::Waiting(Waiting::Permission(_)) => Err(format!(
             "{} is asking for permission: allow or deny it first",
             session.title
         )),
-        (SessionState::Waiting(Waiting::Input(_)), _) => Err(format!(
+        SessionState::Waiting(Waiting::Input(_)) => Err(format!(
             "{} is waiting on a question in its pane: open it to answer",
             session.title
         )),
@@ -106,6 +130,7 @@ fn send(pane: &Location, text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::Agent;
 
     fn session(agent: Agent, state: SessionState) -> AgentSession {
         AgentSession {
@@ -140,31 +165,53 @@ mod tests {
     }
 
     #[test]
-    fn claude_takes_prompts_while_working_codex_only_when_idle_and_neither_while_asking() {
-        let working = SessionState::Working { tool: None };
-        let ready = |agent, state| ready_for_prompt(&session(agent, state)).is_ok();
-        assert!(ready(Agent::ClaudeCode, SessionState::Idle));
-        assert!(ready(Agent::ClaudeCode, working.clone()));
-        assert!(ready(Agent::Codex, SessionState::Idle));
-        assert!(!ready(Agent::Codex, working));
-        assert!(!ready(
-            Agent::ClaudeCode,
-            SessionState::Waiting(Waiting::Permission(None))
-        ));
-        assert!(!ready(
-            Agent::ClaudeCode,
-            SessionState::Waiting(Waiting::Input("question".into()))
-        ));
+    fn only_an_idle_session_takes_a_message() {
+        let ready = |state| ready_for_prompt(&session(Agent::ClaudeCode, state)).is_ok();
+        assert!(ready(SessionState::Idle));
+        assert!(!ready(SessionState::Working { tool: None }));
+        assert!(!ready(SessionState::Waiting(Waiting::Permission(None))));
+        assert!(!ready(SessionState::Waiting(Waiting::Input(
+            "question".into()
+        ))));
     }
 
     #[test]
-    fn nothing_is_typed_into_a_session_outside_rex_or_not_asking() {
+    fn an_answer_goes_only_to_the_prompt_the_viewer_saw() {
+        let mut asking = session(
+            Agent::ClaudeCode,
+            SessionState::Waiting(Waiting::Permission(Some("Bash".into()))),
+        );
+        asking.state_secs = 9;
+        let seen = |tool: &str, waiting_secs| Seen {
+            tool: Some(tool.into()),
+            waiting_secs,
+        };
+        assert!(same_prompt(&asking, &seen("Bash", 10)).is_ok());
+        assert!(same_prompt(&asking, &seen("Bash", 7)).is_ok());
+        assert_eq!(
+            same_prompt(&asking, &seen("Edit", 9)),
+            Err("fix the build is asking something new: look again before answering".into())
+        );
+        assert!(same_prompt(&asking, &seen("Bash", 30)).is_err());
+        let idle = session(Agent::ClaudeCode, SessionState::Idle);
+        assert_eq!(
+            same_prompt(&idle, &seen("Bash", 0)),
+            Err("fix the build isn't asking for permission now".into())
+        );
+    }
+
+    #[test]
+    fn nothing_is_typed_into_a_session_outside_rex() {
         let asking = session(
             Agent::ClaudeCode,
             SessionState::Waiting(Waiting::Permission(Some("Bash".into()))),
         );
+        let seen = Seen {
+            tool: Some("Bash".into()),
+            waiting_secs: 0,
+        };
         assert_eq!(
-            answer(&asking, None, true),
+            answer(&asking, None, true, &seen),
             Err("fix the build isn't in a Rex pane, so magi can't type into it".into())
         );
         assert_eq!(

@@ -5,20 +5,20 @@ use ratatui::layout::{Margin, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{clip, icon, rule};
+use super::{clip, panel};
 use crate::log;
 use crate::viewer::alerts::{Alerts, Event, Severity};
 use crate::viewer::style::{self, theme};
 
 pub fn render(frame: &mut Frame, area: Rect, alerts: &Alerts) {
     let active = alerts.active().count();
-    let inner = area.inner(Margin {
-        horizontal: 2,
-        vertical: 0,
-    });
-    if inner.height == 0 || inner.width < 12 {
+    if area.height < 3 || area.width < 16 {
         return;
     }
+    let inner = area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
     let mut right = vec![Span::styled(
         format!("{active} active"),
         if active > 0 {
@@ -34,14 +34,11 @@ pub fn render(frame: &mut Frame, area: Rect, alerts: &Alerts) {
         ));
     }
     frame.render_widget(
-        Paragraph::new(rule(icon("●"), "Alerts", right, inner.width as usize)),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
-    let inner = Rect::new(
-        inner.x,
-        inner.y + 2,
-        inner.width,
-        inner.height.saturating_sub(2),
+        panel(
+            vec![Span::styled("Alerts", style::bold(theme().text))],
+            Some(right),
+        ),
+        area,
     );
     let width = inner.width as usize;
     let mut lines = Vec::new();

@@ -378,7 +378,6 @@ fn selecting_an_agent_shows_its_detail_and_keeps_the_machines_visible() {
         "opus 5.5",
         "running 2h 11m",
         "context 831K tokens",
-        "Conversation",
         "reading the conversation",
     ] {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");

@@ -6,7 +6,6 @@ use super::model::Level;
 use crate::proto::Agent;
 
 const CLAUDE: Rgb = Rgb(217, 119, 87);
-const BLACK: Rgb = Rgb(0, 0, 0);
 const FALLBACK: Palette = Palette {
     foreground: Rgb(228, 228, 232),
     background: Rgb(12, 12, 14),
@@ -30,7 +29,6 @@ pub struct Theme {
     pub track: Color,
     pub guide: Color,
     pub selected: Color,
-    pub surface: Color,
     pub accent: Color,
     pub second: Color,
     pub warn: Color,
@@ -80,7 +78,6 @@ impl From<Palette> for Theme {
             track: toward_background(0.84),
             guide: toward_background(0.78),
             selected: toward_background(0.88),
-            surface: palette.surface(),
             accent: palette.green.into(),
             second: palette.magenta.into(),
             warn: palette.yellow.into(),
@@ -93,16 +90,6 @@ impl From<Palette> for Theme {
 }
 
 impl Palette {
-    fn surface(self) -> Color {
-        let Rgb(r, g, b) = self.background;
-        let lightness = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
-        if lightness < 128 {
-            self.background.mix(self.foreground, 0.055)
-        } else {
-            self.background.mix(BLACK, 0.035)
-        }
-    }
-
     fn parse(reply: &[u8], base: Self) -> Self {
         let text = String::from_utf8_lossy(reply);
         let mut palette = base;
@@ -224,20 +211,6 @@ mod tests {
         assert_eq!(Rgb::parse("ff/00/00/00"), None);
         assert_eq!(Rgb::parse("fffff/0/0"), None);
         assert_eq!(Rgb::parse("zz/00/00"), None);
-    }
-
-    #[test]
-    fn the_surface_is_a_step_lighter_on_dark_themes_and_darker_on_light_ones() {
-        let surface = |background| {
-            Palette {
-                background,
-                ..FALLBACK
-            }
-            .surface()
-        };
-        assert_eq!(surface(Rgb(13, 17, 23)), Color::Rgb(25, 29, 34));
-        assert_eq!(surface(Rgb(0, 0, 0)), Color::Rgb(13, 13, 13));
-        assert_eq!(surface(Rgb(255, 255, 255)), Color::Rgb(246, 246, 246));
     }
 
     #[test]

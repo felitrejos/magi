@@ -247,6 +247,7 @@ fn propose_move(model: &mut Model, now: Instant) {
 
 enum Action {
     Quit,
+    Back,
     Up,
     Down,
     First,
@@ -261,7 +262,8 @@ enum Action {
 
 fn action(key: &Key) -> Option<Action> {
     Some(match key {
-        Key::Char('q') | Key::Escape | Key::Interrupt => Action::Quit,
+        Key::Char('q') | Key::Interrupt => Action::Quit,
+        Key::Escape => Action::Back,
         Key::Char('k') | Key::Up => Action::Up,
         Key::Char('j') | Key::Down => Action::Down,
         Key::Char('g') | Key::First => Action::First,
@@ -298,22 +300,13 @@ fn start_draft(model: &mut Model, now: Instant) {
     });
 }
 
-fn edit_draft(model: &mut Model, links: &Links, key: Key, now: Instant) {
-    let Some(draft) = model.draft.as_mut() else {
-        return;
-    };
+fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Key, now: Instant) {
     match key {
         Key::Char(c) => draft.type_in(c.encode_utf8(&mut [0; 4])),
         Key::Paste(text) => draft.type_in(&text),
-        Key::Backspace => {
-            draft.text.pop();
-        }
-        Key::Escape | Key::Interrupt => model.draft = None,
-        Key::Enter if draft.text.trim().is_empty() => {}
-        Key::Enter => {
-            let Some(draft) = model.draft.take() else {
-                return;
-            };
+        Key::Backspace => draft.erase(),
+        Key::Escape | Key::Interrupt => return,
+        Key::Enter if !draft.text.trim().is_empty() => {
             let request = proto::Request::Prompt {
                 session: draft.session,
                 text: draft.text,
@@ -321,21 +314,21 @@ fn edit_draft(model: &mut Model, links: &Links, key: Key, now: Instant) {
             if let Err(error) = links.request(draft.endpoint, &request) {
                 model.flash(format!("couldn't send it: {error}"), false, now);
             }
+            return;
         }
-        Key::Up | Key::Down | Key::First | Key::Last => {}
+        Key::Enter | Key::Up | Key::Down | Key::First | Key::Last => {}
     }
+    model.draft = Some(draft);
 }
 
 fn answer(model: &mut Model, links: &Links, allow: bool, now: Instant) {
     let Some(agent) = model.selected_agent(now) else {
         return;
     };
-    if !matches!(
-        agent.session.state,
-        proto::SessionState::Waiting(proto::Waiting::Permission(_))
-    ) {
+    let proto::SessionState::Waiting(proto::Waiting::Permission(tool)) = &agent.session.state
+    else {
         return;
-    }
+    };
     if agent.session.pane.is_none() {
         let reason = format!(
             "{} isn't in a Rex pane: answer it where it runs",
@@ -346,6 +339,8 @@ fn answer(model: &mut Model, links: &Links, allow: bool, now: Instant) {
     let request = proto::Request::Answer {
         session: agent.session.id.clone(),
         allow,
+        tool: tool.clone(),
+        waiting_secs: agent.session.state_secs,
     };
     if let Err(error) = links.request(agent.endpoint, &request) {
         model.flash(format!("couldn't answer it: {error}"), false, now);
@@ -381,10 +376,17 @@ fn handle_batch(
     model: &mut Model,
     links: &mut Links,
 ) -> io::Result<Flow> {
+    let mut drafted = false;
     for event in events {
+        let is_key = matches!(event, Event::Input(Input::Key(_)));
+        if drafted && is_key {
+            continue;
+        }
+        let drafting = model.draft.is_some();
         if handle(event, model, links)? == Flow::Quit {
             return Ok(Flow::Quit);
         }
+        drafted |= drafting && model.draft.is_none();
     }
     model.reselect(Instant::now());
     sync_watch(model, links);
@@ -411,8 +413,8 @@ fn sync_watch(model: &mut Model, links: &Links) {
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
     let now = Instant::now();
     match event {
-        Event::Input(Input::Key(key)) if model.draft.is_some() => {
-            edit_draft(model, links, key, now)
+        Event::Input(Input::Key(key)) if let Some(draft) = model.draft.take() => {
+            edit_draft(model, links, draft, key, now);
         }
         Event::Input(Input::Key(key)) if let Some(pending) = model.pending_move.take() => {
             if key == Key::Char('y') {
@@ -421,6 +423,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
         }
         Event::Input(Input::Key(key)) => match action(&key) {
             Some(Action::Quit) => return Ok(Flow::Quit),
+            Some(Action::Back) => model.showing_alerts = false,
             Some(Action::Up) => model.move_selection(-1, now),
             Some(Action::Down) => model.move_selection(1, now),
             Some(Action::First) => model.move_selection(isize::MIN, now),
@@ -811,7 +814,6 @@ mod tests {
         assert!(draw(&model).contains("connecting to the pane"));
         model.apply(Endpoint::Local, screen("> run the tests"), now);
         let shown = draw(&model);
-        assert!(shown.contains("Screen"), "{shown}");
         assert!(shown.contains("> run the tests"), "{shown}");
         handle_batch([key(Key::First)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.wanted_watch(now), None);
@@ -890,8 +892,6 @@ mod tests {
             .map(|y| (0..140).map(|x| buffer[(x, y)].symbol()).collect())
             .collect();
         let joined = screen.join("\n");
-        assert!(joined.contains("Conversation"), "{joined}");
-        assert!(joined.contains("latest messages"), "{joined}");
         assert!(joined.contains("› run the tests"), "{joined}");
         let wrapped = screen
             .iter()
@@ -1045,5 +1045,34 @@ mod tests {
             model.flashed(Instant::now()),
             Some(("couldn't answer it: that machine isn't connected", false))
         );
+    }
+
+    #[test]
+    fn keys_in_the_same_burst_as_a_sent_message_are_dropped_and_escape_never_quits() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
+            now,
+        );
+        model.selected = 3;
+        let pasted = [
+            key(Key::Char('i')),
+            key(Key::Char('h')),
+            key(Key::Enter),
+            key(Key::Char('q')),
+            key(Key::Char('m')),
+        ];
+        let flow = handle_batch(pasted.into_iter(), &mut model, &mut links).unwrap();
+        assert!(flow == Flow::Continue);
+        assert_eq!(model.pending_move, None);
+        let flow = handle_batch(
+            [key(Key::Escape), key(Key::Escape)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        assert!(flow == Flow::Continue);
     }
 }

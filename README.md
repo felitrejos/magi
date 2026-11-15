@@ -52,8 +52,9 @@ message or move a session without leaving it.
   messages if it runs elsewhere, such as the Claude desktop app. Messages are
   drawn as Markdown with highlighted code in your terminal's colours, and each
   tool call is one line, with the lines an edit added and removed.
-- **Talk to it.** For a session in Rex, press `i` to send it a message, and
-  `y` or `n` to answer the permission prompt it's waiting on, from any machine.
+- **Talk to it.** For a session in Rex, press `i` to send it a message once
+  it's idle, and `y` or `n` to answer the permission prompt it's waiting on,
+  from any machine.
 - **Spread the load.** Each machine's CPU, memory and disks sit next to what
   every session uses. When one machine is busy and another idle, magi suggests
   moving the heavy session, and cielago moves it.
@@ -197,7 +198,7 @@ backup.
 **Can magi tell when Codex needs approval?** Not yet: Codex doesn't write
 approval prompts to its session files, so its sessions show working or idle,
 and you answer its prompts in its pane. You can still message a Codex session
-in Rex once it's idle.
+in Rex.
 
 **How accurate is a session's CPU?** It counts the session and every process
 it started that's alive when magi looks, once a second. Very short ones, such

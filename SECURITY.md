@@ -37,10 +37,12 @@
   limit after which it and anything it started are stopped.
 - A message is typed only into the session's own Rex pane, as one line of at
   most 2,000 characters with control characters removed, and only while the
-  session can take it: idle, or working for Claude Code. An answer is a single
-  key (`1` to allow, `Esc` to deny), sent only while magi sees that session
-  waiting on a permission prompt. Since a message can ask the agent to do
-  anything, only viewers signed in as you can send one, like everything else.
+  session is idle, so it can't land in a prompt that opened meanwhile. An
+  answer is a single key (`1` to allow, `Esc` to deny), sent only while that
+  session still waits on the same prompt the viewer saw: same tool, waiting
+  as long. Messages and answers to one machine are typed one at a time. Since
+  a message can ask the agent to do anything, only viewers signed in as you
+  can send one, like everything else.
 - `magi statusline install` edits only `statusLine` in
   `~/.claude/settings.json`, writes atomically, keeps the file's permissions
   and leaves a backup with the same permissions.

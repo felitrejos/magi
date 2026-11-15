@@ -4,9 +4,9 @@ use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
-use super::{Composed, Cursor, clip, icon, markdown, panel, rule, selected_style, spread};
+use super::{Composed, Cursor, clip, markdown, panel, selected_style, spans_width, spread};
 use crate::proto::{
     AgentSession, BOLD, Child, Content, DIM, FULL, INVERSE, ITALIC, Run, SessionState, Shade,
     UNDERLINE, Waiting,
@@ -138,10 +138,6 @@ fn session_line(
             style::fg(style::load(share)),
         ));
     }
-    right.push(Span::styled(
-        format!("  {:>7}", cost(session)),
-        style::fg(theme().text),
-    ));
     spread(
         vec![
             Span::styled(
@@ -269,42 +265,21 @@ pub fn render_detail(
 ) {
     let session = agent.session;
     let (mark, color) = style::agent(session.agent);
-    let inner = area.inner(Margin {
-        horizontal: 2,
-        vertical: 0,
-    });
-    if inner.height == 0 || inner.width < 12 {
+    if area.height < 3 || area.width < 16 {
         return;
     }
-    let width = inner.width as usize;
-    let mut cursor = Cursor::new(inner);
-    let mut state = vec![state_span(session, agent.live)];
-    if agent.live && !matches!(session.state, SessionState::Idle) {
-        let since = units::duration(Duration::from_secs(u64::from(session.state_secs)));
-        let separator = if matches!(session.state, SessionState::Waiting(_)) {
-            " "
-        } else {
-            " · "
-        };
-        state.push(Span::styled(
-            format!("{separator}{since}"),
-            style::fg(theme().dim),
-        ));
-    }
-    cursor.line(
-        frame,
-        spread(
-            vec![
-                Span::styled(format!("{mark} "), style::fg(color)),
-                Span::styled(session.title.clone(), style::bold(theme().text)),
-            ],
-            state,
-            width,
-        ),
+    let state = state_spans(agent);
+    let room = (area.width as usize).saturating_sub(spans_width(&state) + 10);
+    let title = clip(
+        vec![
+            Span::styled(format!("{mark} "), style::fg(color)),
+            Span::styled(session.title.clone(), style::bold(theme().text)),
+        ],
+        room,
     );
+    frame.render_widget(panel(title, Some(state)), area);
     let place: Vec<String> = [
         session.project.clone(),
-        agent.machine.clone(),
         units::model(&session.model),
         format!(
             "running {}",
@@ -314,14 +289,28 @@ pub fn render_detail(
     .into_iter()
     .filter(|part| !part.is_empty())
     .collect();
-    cursor.line(
-        frame,
-        Line::from(clip(
-            vec![Span::styled(place.join(" · "), style::fg(theme().dim))],
-            width,
-        )),
-    );
-    cursor.composed(frame, graphics, measures(agent));
+    let footing = Rect::new(area.x + 2, area.y + area.height - 1, area.width - 4, 1);
+    let mut facts = measures(agent);
+    facts.spans.insert(0, Span::raw(" "));
+    facts.bars.iter_mut().for_each(|bar| bar.offset += 1);
+    facts.push(Span::raw(" "));
+    Composed::of(vec![Span::styled(
+        format!(" {} ", place.join(" · ")),
+        style::fg(theme().dim),
+    )])
+    .spread_by(
+        facts,
+        footing.width as usize,
+        "─",
+        style::fg(theme().border),
+    )
+    .draw(frame, graphics, footing, Style::new());
+    let inner = area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    let width = inner.width as usize;
+    let mut cursor = Cursor::new(inner);
     if let Some(target) = suggestion {
         cursor.line(
             frame,
@@ -341,14 +330,32 @@ pub fn render_detail(
                 width,
             )),
         );
+        cursor.skip();
     }
-    cursor.skip();
     live_view(&mut cursor, frame, preview, width);
+}
+
+fn state_spans(agent: &AgentRow<'_>) -> Vec<Span<'static>> {
+    let session = agent.session;
+    let mut state = vec![state_span(session, agent.live)];
+    if agent.live && !matches!(session.state, SessionState::Idle) {
+        let since = units::duration(Duration::from_secs(u64::from(session.state_secs)));
+        let separator = if matches!(session.state, SessionState::Waiting(_)) {
+            " "
+        } else {
+            " · "
+        };
+        state.push(Span::styled(
+            format!("{separator}{since}"),
+            style::fg(theme().dim),
+        ));
+    }
+    state
 }
 
 fn measures(agent: &AgentRow<'_>) -> Composed {
     let session = agent.session;
-    let gap = || Span::raw("    ");
+    let gap = || Span::styled(" · ", style::fg(theme().faint));
     let mut line = Composed::of(Vec::new());
     match session.context_used {
         Some(used) => {
@@ -399,39 +406,11 @@ pub enum Source {
 pub enum Preview<'a> {
     Waiting(Source),
     Ready(&'a Content),
-    Failed(Source, &'a str),
+    Failed(&'a str),
     Gone,
 }
 
 fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width: usize) {
-    let source = match preview {
-        Preview::Waiting(source) | Preview::Failed(source, _) => source,
-        Preview::Ready(Content::Screen(_)) => Source::Pane,
-        Preview::Ready(Content::Conversation(_)) | Preview::Gone => Source::Conversation,
-    };
-    let (title, symbol, hint) = match source {
-        Source::Pane => ("Screen", "▣", "live from Rex · ↵ to open"),
-        Source::Conversation => ("Conversation", "▤", "latest messages"),
-    };
-    cursor.line(
-        frame,
-        rule(
-            icon(symbol),
-            title,
-            vec![Span::styled(hint, style::fg(theme().faint))],
-            width,
-        ),
-    );
-    let surface = Rect::new(cursor.area.x, cursor.y, cursor.area.width, cursor.left());
-    frame.render_widget(
-        Block::new().style(Style::new().bg(theme().surface).fg(theme().text)),
-        surface,
-    );
-    let cursor = &mut Cursor::new(surface.inner(Margin {
-        horizontal: 1,
-        vertical: 0,
-    }));
-    let width = width.saturating_sub(2);
     let note = |cursor: &mut Cursor, frame: &mut Frame, text: &str, color| {
         cursor.line(
             frame,
@@ -455,7 +434,7 @@ fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width
         Preview::Waiting(Source::Conversation) => {
             return note(cursor, frame, "reading the conversation…", theme().faint);
         }
-        Preview::Failed(_, reason) => return note(cursor, frame, reason, theme().warn),
+        Preview::Failed(reason) => return note(cursor, frame, reason, theme().warn),
         Preview::Gone => {
             return note(cursor, frame, "its machine isn't answering", theme().faint);
         }
@@ -506,9 +485,16 @@ fn run_span(run: &Run) -> Span<'static> {
 }
 
 pub fn render_fold(frame: &mut Frame, area: Rect, machine: &str, count: usize) {
+    frame.render_widget(
+        panel(
+            vec![Span::styled(machine.to_string(), style::bold(theme().text))],
+            None,
+        ),
+        area,
+    );
     let inner = area.inner(Margin {
         horizontal: 2,
-        vertical: 0,
+        vertical: 1,
     });
     frame.render_widget(
         Paragraph::new(vec![

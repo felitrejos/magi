@@ -8,6 +8,7 @@ use crate::proto::{
     SessionState, Welcome,
 };
 use crate::tailscale::Peer;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub const HISTORY: usize = 300;
 const SEARCH_GRACE: Duration = Duration::from_secs(8);
@@ -334,6 +335,11 @@ pub struct Draft {
 }
 
 impl Draft {
+    pub fn erase(&mut self) {
+        let last = self.text.grapheme_indices(true).next_back();
+        self.text.truncate(last.map_or(0, |(start, _)| start));
+    }
+
     pub fn type_in(&mut self, text: &str) {
         let room = MAX_PROMPT_CHARS.saturating_sub(self.text.chars().count());
         self.text.extend(

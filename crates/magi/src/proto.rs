@@ -155,10 +155,23 @@ pub enum AgentMessage {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum Request {
-    Move { session: String, to: String },
-    Watch { session: Option<String> },
-    Prompt { session: String, text: String },
-    Answer { session: String, allow: bool },
+    Move {
+        session: String,
+        to: String,
+    },
+    Watch {
+        session: Option<String>,
+    },
+    Prompt {
+        session: String,
+        text: String,
+    },
+    Answer {
+        session: String,
+        allow: bool,
+        tool: Option<String>,
+        waiting_secs: u32,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

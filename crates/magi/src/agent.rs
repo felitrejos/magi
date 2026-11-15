@@ -445,9 +445,15 @@ fn spawn_requests(
                             typing::prompt(found, pane, &text)
                         });
                     }
-                    Request::Answer { session, allow } => {
+                    Request::Answer {
+                        session,
+                        allow,
+                        tool,
+                        waiting_secs,
+                    } => {
+                        let seen = typing::Seen { tool, waiting_secs };
                         type_into(&session, &agent, &replies, |found, pane| {
-                            typing::answer(found, pane, allow)
+                            typing::answer(found, pane, allow, &seen)
                         });
                     }
                     Request::Watch { session } => {

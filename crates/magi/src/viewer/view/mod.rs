@@ -43,7 +43,9 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     let (machine_area, agent_area, detail_area, wide) = if body.width >= WIDE && body.height >= 14 {
         let left_width = (u32::from(body.width) * 42 / 100).clamp(46, 70) as u16;
         let [left, right] =
-            Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)]).areas(body);
+            Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
+                .spacing(1)
+                .areas(body);
         let machines_height = (rows.len() as u16 + 2).min(left.height / 2);
         let [machines, agents_area] =
             Layout::vertical([Constraint::Length(machines_height), Constraint::Min(0)]).areas(left);
@@ -98,7 +100,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                     None => agents::Preview::Gone,
                     Some(screen) => match &screen.view {
                         Ok(content) => agents::Preview::Ready(content),
-                        Err(reason) => agents::Preview::Failed(source, reason),
+                        Err(reason) => agents::Preview::Failed(reason),
                     },
                 };
                 agents::render_detail(
@@ -202,12 +204,16 @@ impl Composed {
         spans_width(&self.spans)
     }
 
-    fn spread(mut self, right: Composed, width: usize) -> Composed {
+    fn spread(self, right: Composed, width: usize) -> Composed {
+        self.spread_by(right, width, " ", Style::new())
+    }
+
+    fn spread_by(mut self, right: Composed, width: usize, fill: &str, style: Style) -> Composed {
         let room = width.saturating_sub(right.width() + 1);
         self.spans = clip(self.spans, room);
         self.bars.retain(|bar| bar.offset + bar.width <= room);
         let gap = width.saturating_sub(self.width() + right.width());
-        self.spans.push(Span::raw(" ".repeat(gap)));
+        self.spans.push(Span::styled(fill.repeat(gap), style));
         let shift = self.width();
         self.spans.extend(right.spans);
         self.bars.extend(right.bars.into_iter().map(|bar| Bar {
@@ -325,35 +331,44 @@ fn short_name(agent: Agent) -> &'static str {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
-    let key = |text: &str| Span::styled(text.to_string(), style::fg(theme().text));
-    let label = |text: &str| Span::styled(text.to_string(), style::fg(theme().faint));
+    let area = area.inner(Margin {
+        horizontal: 2,
+        vertical: 0,
+    });
     let width = area.width as usize;
-    if let Some(pending) = &model.pending_move {
-        let question = vec![
-            Span::styled(
-                format!(
-                    "Move {} from {} to {}?",
-                    pending.title, pending.from, pending.to
-                ),
+    let keys = |pairs: &[(&str, &str)]| -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        for (index, (key, label)) in pairs.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::raw("   "));
+            }
+            spans.push(Span::styled(key.to_string(), style::bold(theme().text)));
+            spans.push(Span::styled(format!(" {label}"), style::fg(theme().faint)));
+        }
+        spans
+    };
+    let line = if let Some(pending) = &model.pending_move {
+        let question = format!(
+            "Move {} from {} to {}?",
+            pending.title, pending.from, pending.to
+        );
+        let answers = keys(&[("y", "move"), ("n", "cancel")]);
+        let room = width.saturating_sub(spans_width(&answers) + 3);
+        spread(
+            vec![Span::styled(
+                truncate(&question, room),
                 style::bold(theme().text),
-            ),
-            label("   "),
-            key("y"),
-            label(" move   "),
-            key("n"),
-            label(" cancel"),
-        ];
-        let line = Line::from(clip(question, width)).alignment(Alignment::Center);
-        frame.render_widget(Paragraph::new(line), area);
-        return;
-    }
-    if let Some(draft) = &model.draft {
-        let hints = vec![key("↵"), label(" send   "), key("esc"), label(" cancel")];
+            )],
+            answers,
+            width,
+        )
+    } else if let Some(draft) = &model.draft {
+        let hints = keys(&[("↵", "send"), ("esc", "cancel")]);
         let lead = format!("Message {} › ", draft.title);
         let room = width.saturating_sub(spans_width(&hints) + 3);
         let lead = truncate(&lead, room / 2);
         let typed = tail(&draft.text, room.saturating_sub(lead.width() + 1));
-        let line = spread(
+        spread(
             vec![
                 Span::styled(lead, style::fg(theme().dim)),
                 Span::styled(typed, style::fg(theme().text)),
@@ -361,75 +376,67 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
             ],
             hints,
             width,
-        );
-        frame.render_widget(Paragraph::new(line), area);
-        return;
-    }
-    let selected = model.selected_agent(now);
-    let mut keys = vec![key("↑↓"), label(" select   ")];
-    if let Some(agent) = &selected
-        && agent.session.pane.is_some()
+        )
+    } else {
+        let mut global = keys(&[("a", "alerts")]);
+        let active = model.alerts.active().count();
+        if active > 0 {
+            global.push(Span::styled(
+                format!(" {active}"),
+                style::bold(theme().warn),
+            ));
+        }
+        global.push(Span::raw("   "));
+        global.extend(keys(&[("q", "quit")]));
+        let room = width.saturating_sub(spans_width(&global) + 3);
+        let message = model
+            .flashed(now)
+            .map(|(text, good)| (text.to_string(), good))
+            .or_else(|| {
+                model
+                    .topology
+                    .problem
+                    .clone()
+                    .or_else(|| model.alerts.problem().map(str::to_string))
+                    .or_else(|| model.notices(now).into_iter().next())
+                    .map(|problem| (problem, false))
+            });
+        let left = match message {
+            Some((text, good)) => {
+                let color = if good { theme().accent } else { theme().warn };
+                vec![Span::styled(truncate(&text, room), style::fg(color))]
+            }
+            None => clip(keys(&actions(model, now)), room),
+        };
+        spread(left, global, width)
+    };
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
+    let Some(agent) = model.selected_agent(now) else {
+        return Vec::new();
+    };
+    let in_rex = agent.session.pane.is_some();
+    let mut actions = Vec::new();
+    if in_rex
         && matches!(
             agent.session.state,
             SessionState::Waiting(Waiting::Permission(_))
         )
     {
-        keys.extend([key("y"), label(" allow   "), key("n"), label(" deny   ")]);
+        actions.extend([("y", "allow"), ("n", "deny")]);
     }
-    if selected
-        .as_ref()
-        .is_some_and(|agent| agent.live && agent.session.pane.is_some())
-    {
-        keys.extend([key("i"), label(" message   ")]);
+    if in_rex && agent.live {
+        actions.push(("i", "message"));
     }
-    if selected
-        .as_ref()
-        .is_some_and(|agent| agent.session.pane.is_some())
-    {
-        keys.extend([key("↵"), label(" open   ")]);
+    if in_rex {
+        actions.push(("↵", "open"));
     }
-    if selected
-        .as_ref()
-        .is_some_and(|agent| agent.live && agent.session.agent == Agent::ClaudeCode)
-    {
-        keys.extend([key("m"), label(" move   ")]);
+    if agent.live && agent.session.agent == Agent::ClaudeCode {
+        actions.push(("m", "move"));
     }
-    keys.extend([key("a"), label(" alerts")]);
-    let active = model.alerts.active().count();
-    if active > 0 {
-        keys.push(Span::styled(
-            format!(" {active}"),
-            style::bold(theme().warn),
-        ));
-    }
-    keys.push(label("   "));
-    keys.push(key("q"));
-    keys.push(label(" quit"));
-    let message = model
-        .flashed(now)
-        .map(|(text, good)| (text.to_string(), good))
-        .or_else(|| {
-            model
-                .topology
-                .problem
-                .clone()
-                .or_else(|| model.alerts.problem().map(str::to_string))
-                .or_else(|| model.notices(now).into_iter().next())
-                .map(|problem| (problem, false))
-        });
-    let line = match message {
-        Some((text, good)) => {
-            let room = width.saturating_sub(spans_width(&keys) + 2);
-            let color = if good { theme().accent } else { theme().warn };
-            spread(
-                vec![Span::styled(truncate(&text, room), style::fg(color))],
-                keys,
-                width,
-            )
-        }
-        None => Line::from(keys).alignment(Alignment::Center),
-    };
-    frame.render_widget(Paragraph::new(line), area);
+    actions
 }
 
 fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {

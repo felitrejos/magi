@@ -181,31 +181,30 @@ pub fn render_detail(
     now: Instant,
     graphics: &mut Graphics,
 ) {
-    let area = area.inner(Margin {
-        horizontal: 2,
-        vertical: 0,
-    });
-    if area.height < 2 || area.width < 12 {
+    if area.height < 4 || area.width < 16 {
         return;
     }
+    let place = if row.here {
+        "this machine"
+    } else {
+        "on your tailnet"
+    };
+    frame.render_widget(
+        panel(
+            vec![Span::styled(row.name.clone(), style::bold(theme().text))],
+            Some(vec![Span::styled(place, style::fg(theme().dim))]),
+        ),
+        area,
+    );
+    let area = area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
     let width = area.width as usize;
     let mut cursor = Cursor::new(area);
-    let mut header = vec![
-        Span::styled(row.name.clone(), style::bold(theme().text)),
-        Span::styled(
-            if row.here {
-                "  this machine"
-            } else {
-                "  on your tailnet"
-            },
-            style::fg(theme().dim),
-        ),
-    ];
     if let Some(machine) = row.machine() {
-        header.push(Span::styled("  ·  ", style::fg(theme().faint)));
-        header.extend(facts(machine));
+        cursor.line(frame, Line::from(clip(facts(machine), width)));
     }
-    cursor.line(frame, Line::from(clip(header, width)));
     let Some((machine, sample)) = row
         .machine()
         .filter(|_| row.state() == Some(&LinkState::Live))
