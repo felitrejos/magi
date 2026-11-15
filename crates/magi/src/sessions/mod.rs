@@ -6,6 +6,7 @@ mod process;
 mod registry;
 pub mod rex;
 mod tail;
+mod tasks;
 mod transcript;
 mod usage;
 
@@ -95,6 +96,7 @@ pub struct Sessions {
     codex: Option<Codex>,
     panes: rex::Panes,
     meter: usage::Meter,
+    tasks: Option<tasks::Tasks>,
 }
 
 impl Sessions {
@@ -105,6 +107,7 @@ impl Sessions {
             codex: Codex::for_this_user(),
             panes: rex::Panes::default(),
             meter: usage::Meter::default(),
+            tasks: tasks::Tasks::for_this_user(),
         })
     }
 
@@ -149,9 +152,14 @@ impl Sessions {
                 snapshot.panes.insert(session.id.clone(), location);
                 pane
             });
+            let mut children = session.children;
+            if let (Some(pid), Some(tasks)) = (pid, &mut self.tasks) {
+                children.extend(tasks.started_by(pid, now));
+            }
             snapshot.sessions.push(AgentSession {
                 pane,
                 usage: pid.and_then(|pid| usage.get(&pid).copied()),
+                children,
                 ..session
             });
         }

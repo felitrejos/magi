@@ -189,7 +189,7 @@ fn parse_utc_ctime(text: &str) -> Option<i64> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_start_secs(pid: i32) -> Option<i64> {
+pub fn process_start_secs(pid: i32) -> Option<i64> {
     let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
     let written = unsafe {
@@ -208,7 +208,7 @@ fn process_start_secs(pid: i32) -> Option<i64> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_start_secs(pid: i32) -> Option<i64> {
+pub fn process_start_secs(pid: i32) -> Option<i64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let ticks: i64 = stat
         .rsplit_once(')')?
