@@ -1,0 +1,4 @@
+bin/
+dist/
+/cielago
+.DS_Store

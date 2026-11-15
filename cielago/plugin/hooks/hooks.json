@@ -1,0 +1,16 @@
+{
+  "description": "Runs an armed cielago handoff once the turn has ended",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cielago hook stop",
+            "timeout": 150
+          }
+        ]
+      }
+    ]
+  }
+}
