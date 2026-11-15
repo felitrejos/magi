@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
+
+Pairs with magi 0.5.0: its `m` key moves a session through
+`cielago move --json`, it shows tasks under the session that started them,
+and its `magi fleet --json` now reports `sessions` and `plans`, which cielago
+uses to choose machines and check plan headroom.
 
 - `cielago move <session-id> <host>` moves a Claude Code session running on
   this machine from outside it, for tools such as magi. An idle session is
@@ -19,8 +24,9 @@
   turn. It resumes the same headless session in the same copy, so it keeps
   its context, and its changes move the branch `cielago/task-<id>` forward.
   A delegate's copy now stays after `task_result` for follow-ups;
-  `cancel_task` removes it, and `cielago tasks clean` removes copies idle for
-  a day, with the delegate's transcript there.
+  `cancel_task` removes it, and copies idle for a day are removed, with the
+  delegate's transcript there, the next time a task tool or
+  `cielago tasks clean` runs.
 - When magi reports the Claude plan window 90% or more used, `delegate`,
   `start_session` and `task_reply` don't start, and say when it resets, unless
   the user says to go ahead anyway; from 75% they warn. `machines` shows the
