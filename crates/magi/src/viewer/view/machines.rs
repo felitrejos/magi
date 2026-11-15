@@ -6,7 +6,9 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{Composed, Cursor, clip, icon, pad, panel, selected_style, spans_width, truncate};
+use super::{
+    Composed, Cursor, clip, draw_panel, icon, pad, panel, selected_style, spans_width, truncate,
+};
 use crate::proto::FULL;
 use crate::viewer::graphics::{Chart, Graphics, Kind, Series};
 use crate::viewer::model::{
@@ -36,7 +38,7 @@ pub fn render_list(
         None,
     );
     let inner = block.inner(area);
-    frame.render_widget(block, area);
+    draw_panel(frame, area, block);
     if inner.height == 0 {
         return;
     }
@@ -189,12 +191,13 @@ pub fn render_detail(
     } else {
         "on your tailnet"
     };
-    frame.render_widget(
+    draw_panel(
+        frame,
+        area,
         panel(
             vec![Span::styled(row.name.clone(), style::bold(theme().text))],
             Some(vec![Span::styled(place, style::fg(theme().dim))]),
         ),
-        area,
     );
     let area = area.inner(Margin {
         horizontal: 2,

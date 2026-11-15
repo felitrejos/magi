@@ -5,7 +5,7 @@ use ratatui::layout::{Margin, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{clip, panel};
+use super::{clip, draw_panel, panel};
 use crate::log;
 use crate::viewer::alerts::{Alerts, Event, Severity};
 use crate::viewer::style::{self, theme};
@@ -33,12 +33,13 @@ pub fn render(frame: &mut Frame, area: Rect, alerts: &Alerts) {
             style::fg(theme().faint),
         ));
     }
-    frame.render_widget(
+    draw_panel(
+        frame,
+        area,
         panel(
             vec![Span::styled("Alerts", style::bold(theme().text))],
             Some(right),
         ),
-        area,
     );
     let width = inner.width as usize;
     let mut lines = Vec::new();

@@ -9,7 +9,8 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::proto::{Agent, Change, Said};
 
-const TAIL_BYTES: u64 = 1024 * 1024;
+const TAIL_WINDOWS: [u64; 3] = [1 << 20, 4 << 20, 8 << 20];
+const SKIM_OVER: usize = 64 * 1024;
 const MAX_ENTRIES: usize = 80;
 const DIFF_LIMIT: Duration = Duration::from_millis(20);
 const MAX_TEXT_BYTES: usize = 6 * 1024;
@@ -42,17 +43,23 @@ impl Reader {
         {
             return Ok(said.clone());
         }
-        let tail =
-            tail(path, len).map_err(|error| format!("can't read the conversation: {error}"))?;
-        let said = said(&tail, agent);
+        let mut said = Vec::new();
+        for window in TAIL_WINDOWS {
+            let tail = tail(path, len, window)
+                .map_err(|error| format!("can't read the conversation: {error}"))?;
+            said = self::said(&tail, agent);
+            if said.len() >= MAX_ENTRIES || window >= len {
+                break;
+            }
+        }
         self.cached = Some((path.to_path_buf(), len, said.clone()));
         Ok(said)
     }
 }
 
-fn tail(path: &Path, len: u64) -> std::io::Result<String> {
+fn tail(path: &Path, len: u64, window: u64) -> std::io::Result<String> {
     let mut file = File::open(path)?;
-    let start = len.saturating_sub(TAIL_BYTES);
+    let start = len.saturating_sub(window);
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::with_capacity((len - start) as usize);
     file.read_to_end(&mut bytes)?;
@@ -71,6 +78,7 @@ fn said(text: &str, agent: Agent) -> Vec<Said> {
     let mut said = Vec::new();
     for value in text
         .lines()
+        .filter(|line| line.len() < SKIM_OVER || !line.contains("\"toolUseResult\""))
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
     {
         if let Some(seen) = value["cwd"]
@@ -437,7 +445,7 @@ mod tests {
             std::env::temp_dir().join(format!("magi-conversation-{}.jsonl", std::process::id()));
         let filler = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}"#;
         let mut body = String::new();
-        while body.len() < (TAIL_BYTES as usize) * 2 {
+        while body.len() < (TAIL_WINDOWS[2] as usize) * 2 {
             body.push_str(filler);
             body.push('\n');
         }
@@ -450,6 +458,36 @@ mod tests {
         assert!(said.len() <= MAX_ENTRIES);
         assert_eq!(reader.read(&path, Agent::ClaudeCode).unwrap(), said);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn huge_tool_results_make_the_reader_look_further_back() {
+        let path = std::env::temp_dir().join(format!(
+            "magi-conversation-wide-{}.jsonl",
+            std::process::id()
+        ));
+        let mut body = String::new();
+        for n in 0..MAX_ENTRIES {
+            body.push_str(&format!(
+                r#"{{"type":"user","message":{{"role":"user","content":"early {n}"}}}}"#
+            ));
+            body.push('\n');
+        }
+        let image = "A".repeat(700 * 1024);
+        for _ in 0..2 {
+            body.push_str(&format!(
+                r#"{{"type":"user","toolUseResult":{{}},"message":{{"content":[{{"type":"tool_result","content":"{image}"}}]}}}}"#
+            ));
+            body.push('\n');
+        }
+        body.push_str(r#"{"type":"user","message":{"role":"user","content":"latest"}}"#);
+        body.push('\n');
+        std::fs::write(&path, &body).unwrap();
+        let said = Reader::default().read(&path, Agent::ClaudeCode).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(said.len(), MAX_ENTRIES);
+        assert_eq!(said.last(), Some(&Said::You("latest".into())));
+        assert_eq!(said[0], Said::You("early 1".into()));
     }
 
     #[test]

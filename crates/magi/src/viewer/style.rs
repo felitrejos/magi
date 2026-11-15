@@ -29,6 +29,7 @@ pub struct Theme {
     pub track: Color,
     pub guide: Color,
     pub selected: Color,
+    pub panel: Color,
     pub accent: Color,
     pub second: Color,
     pub warn: Color,
@@ -78,6 +79,7 @@ impl From<Palette> for Theme {
             track: toward_background(0.84),
             guide: toward_background(0.78),
             selected: toward_background(0.88),
+            panel: palette.panel(),
             accent: palette.green.into(),
             second: palette.magenta.into(),
             warn: palette.yellow.into(),
@@ -90,6 +92,13 @@ impl From<Palette> for Theme {
 }
 
 impl Palette {
+    fn panel(self) -> Color {
+        let Rgb(r, g, b) = self.background;
+        let lightness = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
+        let lift = if lightness < 128 { 0.06 } else { 0.035 };
+        self.background.mix(self.foreground, lift)
+    }
+
     fn parse(reply: &[u8], base: Self) -> Self {
         let text = String::from_utf8_lossy(reply);
         let mut palette = base;
@@ -211,6 +220,22 @@ mod tests {
         assert_eq!(Rgb::parse("ff/00/00/00"), None);
         assert_eq!(Rgb::parse("fffff/0/0"), None);
         assert_eq!(Rgb::parse("zz/00/00"), None);
+    }
+
+    #[test]
+    fn panels_lift_a_little_toward_the_text_colour_on_dark_and_light_themes() {
+        let dark = Palette {
+            foreground: Rgb(230, 237, 243),
+            background: Rgb(13, 17, 23),
+            ..FALLBACK
+        };
+        assert_eq!(dark.panel(), Color::Rgb(26, 30, 36));
+        let light = Palette {
+            foreground: Rgb(30, 30, 30),
+            background: Rgb(250, 250, 250),
+            ..FALLBACK
+        };
+        assert_eq!(light.panel(), Color::Rgb(242, 242, 242));
     }
 
     #[test]

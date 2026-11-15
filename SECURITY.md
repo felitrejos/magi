@@ -50,6 +50,26 @@
   (`~/.local/state/magi/alerts.jsonl`) and your last plan windows
   (`~/.local/state/magi/plans.json`), both readable only by you.
 
+## Moving work with cielago
+
+- Everything travels over your own `ssh` connection: git objects with
+  `git push`/`git fetch`, files with `tar` over the same connection. cielago
+  runs no server and sends nothing anywhere else.
+- Only gitignored files matching your `secrets` patterns are copied, disk to
+  disk; their contents never enter the conversation, output or logs. The
+  transcript and Claude's memory move as files, so anything pasted into the
+  chat moves with them. Logins, ssh keys and credential stores never move.
+- On the receiving machine it recreates your branch and uncommitted work, but
+  refuses if that checkout has work or commits of its own, and only creates
+  folders that don't exist yet.
+- `run_elsewhere`, `delegate` and `start_session` work in a fresh copy under
+  `~/.cielago/tasks` there and never write to your checkouts. Claude proposes
+  the machine and the work, and you approve both. A delegated Claude runs in
+  `acceptEdits` mode with other prompts answered "no", never with permission
+  checks bypassed.
+- A project's `.cielago.toml` runs only after you approve that exact file with
+  `cielago allow`; any edit needs a new approval.
+
 ## Releases
 
 Release builds of magi and cielago come from GitHub Actions with actions

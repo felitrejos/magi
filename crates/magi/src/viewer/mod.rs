@@ -292,6 +292,10 @@ fn start_draft(model: &mut Model, now: Instant) {
     if !agent.live {
         return model.flash(format!("{} isn't answering", agent.machine), false, now);
     }
+    if agent.session.state != proto::SessionState::Idle {
+        let reason = format!("{} isn't idle: message it once it is", agent.session.title);
+        return model.flash(reason, false, now);
+    }
     model.draft = Some(model::Draft {
         endpoint: agent.endpoint,
         session: agent.session.id.clone(),
@@ -611,6 +615,23 @@ mod tests {
             Instant::now(),
         );
         model.selected = 3;
+    }
+
+    fn screen(model: &Model) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| view::render(frame, model, Instant::now(), &mut Graphics::cells_only()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..30)
+            .map(|y| {
+                (0..120)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn footer(model: &Model) -> String {
@@ -953,6 +974,7 @@ mod tests {
     }
 
     fn in_rex(mut session: AgentSession) -> AgentSession {
+        session.state = SessionState::Idle;
         session.pane = Some(RexPane {
             session: "session:1".into(),
             window: "window:2".into(),
@@ -970,7 +992,7 @@ mod tests {
             now,
         );
         model.selected = 3;
-        assert!(footer(&model).contains("i message"));
+        assert!(screen(&model).contains("Message this session"));
         let typed = "iqjmy\x01".chars().map(|c| key(Key::Char(c)));
         handle_batch(typed, &mut model, &mut links).unwrap();
         handle_batch(
@@ -980,7 +1002,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(model.draft.as_ref().unwrap().text, "qjmy one tw");
-        assert!(footer(&model).contains("Message run the tests › qjmy one tw▏"));
+        assert!(
+            screen(&model).contains("› qjmy one tw▏"),
+            "{}",
+            screen(&model)
+        );
         handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.draft, None);
         assert_eq!(
@@ -1006,7 +1032,8 @@ mod tests {
             now,
         );
         model.selected = 3;
-        assert!(!footer(&model).contains("i message"));
+        assert!(!screen(&model).contains("Message this session"));
+        assert!(screen(&model).contains("messages and approvals work for sessions in Rex"));
         handle_batch([key(Key::Char('i'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.draft, None);
         assert_eq!(
@@ -1028,7 +1055,7 @@ mod tests {
             now,
         );
         model.selected = 3;
-        assert!(!footer(&model).contains("allow"));
+        assert!(!screen(&model).contains("Allow Bash?"));
         handle_batch([key(Key::Char('y'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.flashed(Instant::now()), None);
         let mut asking = in_rex(claude("s1", 0));
@@ -1036,9 +1063,9 @@ mod tests {
             SessionState::Waiting(crate::proto::Waiting::Permission(Some("Bash".into())));
         model.apply(Endpoint::Local, live_sample(1_000, Some(asking)), now);
         assert!(
-            footer(&model).contains("y allow   n deny"),
+            screen(&model).contains("Allow Bash?") && screen(&model).contains("y allow   n deny"),
             "{}",
-            footer(&model)
+            screen(&model)
         );
         handle_batch([key(Key::Char('n'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(

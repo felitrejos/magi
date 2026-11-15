@@ -15,7 +15,7 @@ use super::graphics::Graphics;
 use super::model::{Entry, Model};
 use super::style::{self, theme};
 use super::units;
-use crate::proto::{Agent, FULL, Plan, SessionState, Waiting};
+use crate::proto::{Agent, FULL, Plan};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -109,7 +109,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                     agent,
                     suggestion.as_ref(),
                     preview,
-                    graphics,
+                    model.draft.as_ref(),
                 );
             }
             Entry::Fold { machine, count, .. } => {
@@ -125,6 +125,7 @@ fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Block<'a> {
     title.push(Span::raw(" "));
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
+        .style(Style::new().bg(theme().panel))
         .border_style(style::fg(theme().border))
         .title(Line::from(title));
     if let Some(mut right) = right {
@@ -133,6 +134,18 @@ fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Block<'a> {
         block = block.title(Line::from(right).alignment(Alignment::Right));
     }
     block
+}
+
+fn draw_panel(frame: &mut Frame, area: Rect, block: Block<'_>) {
+    frame.render_widget(block, area);
+    if area.width < 2 || area.height < 2 {
+        return;
+    }
+    let (left, right) = (area.x, area.x + area.width - 1);
+    let (top, bottom) = (area.y, area.y + area.height - 1);
+    for corner in [(left, top), (right, top), (left, bottom), (right, bottom)] {
+        frame.buffer_mut()[corner].set_bg(Color::Reset);
+    }
 }
 
 fn rule(
@@ -362,21 +375,6 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
             answers,
             width,
         )
-    } else if let Some(draft) = &model.draft {
-        let hints = keys(&[("↵", "send"), ("esc", "cancel")]);
-        let lead = format!("Message {} › ", draft.title);
-        let room = width.saturating_sub(spans_width(&hints) + 3);
-        let lead = truncate(&lead, room / 2);
-        let typed = tail(&draft.text, room.saturating_sub(lead.width() + 1));
-        spread(
-            vec![
-                Span::styled(lead, style::fg(theme().dim)),
-                Span::styled(typed, style::fg(theme().text)),
-                Span::styled("▏", style::fg(theme().accent)),
-            ],
-            hints,
-            width,
-        )
     } else {
         let mut global = keys(&[("a", "alerts")]);
         let active = model.alerts.active().count();
@@ -417,20 +415,8 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     let Some(agent) = model.selected_agent(now) else {
         return Vec::new();
     };
-    let in_rex = agent.session.pane.is_some();
     let mut actions = Vec::new();
-    if in_rex
-        && matches!(
-            agent.session.state,
-            SessionState::Waiting(Waiting::Permission(_))
-        )
-    {
-        actions.extend([("y", "allow"), ("n", "deny")]);
-    }
-    if in_rex && agent.live {
-        actions.push(("i", "message"));
-    }
-    if in_rex {
+    if agent.session.pane.is_some() {
         actions.push(("↵", "open"));
     }
     if agent.live && agent.session.agent == Agent::ClaudeCode {
