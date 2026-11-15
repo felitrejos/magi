@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,6 +52,10 @@ func forwardHome(t *testing.T) string {
 }
 
 func alive(pid int) bool {
+	if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		fields := strings.Fields(string(stat))
+		return len(fields) > 2 && fields[2] != "Z"
+	}
 	return syscall.Kill(pid, 0) == nil
 }
 
