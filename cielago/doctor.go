@@ -155,7 +155,7 @@ func doctor(names []string, out io.Writer) error {
 		if err == nil && strings.Contains(string(plugins), "cielago@") {
 			c.pass("the cielago plugin is installed")
 		} else {
-			c.fail("the cielago plugin isn't installed", "claude plugin marketplace add felitrejos/cielago && claude plugin install cielago@cielago")
+			c.fail("the cielago plugin isn't installed", "claude plugin marketplace add felitrejos/magi && claude plugin install cielago@magi")
 		}
 	}
 	if fleet, err := readFleet(ctx); err != nil {

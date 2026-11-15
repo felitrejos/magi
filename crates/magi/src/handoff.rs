@@ -39,7 +39,7 @@ pub fn start(
 ) -> Result<String, String> {
     check(session, to)?;
     let cielago = find("cielago", &search_dirs())
-        .ok_or("cielago isn't installed on that machine: see github.com/felitrejos/cielago")?;
+        .ok_or("cielago isn't installed on that machine: see github.com/felitrejos/magi")?;
     if MOVING.swap(true, Ordering::SeqCst) {
         return Err("a move is already running on that machine".into());
     }

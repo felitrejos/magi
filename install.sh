@@ -30,9 +30,11 @@ main() {
 
   tar -xzf "$work/$archive" -C "$work"
   mkdir -p "$dir"
-  install -m 755 "$work/magi" "$dir/magi.new"
-  mv "$dir/magi.new" "$dir/magi"
-  echo "Installed magi to $dir/magi"
+  for bin in magi cielago; do
+    install -m 755 "$work/$bin" "$dir/$bin.new"
+    mv "$dir/$bin.new" "$dir/$bin"
+  done
+  echo "Installed magi and cielago to $dir"
 
   case ":$PATH:" in
     *":$dir:"*) ;;
@@ -43,6 +45,7 @@ main() {
   printf '  magi agent install        run the agent on this machine in the background\n'
   printf "  magi statusline install   send Claude Code's context and plan limits to it\n"
   printf '  magi                      open the viewer, best kept in a Rex pane\n'
+  printf '  cielago init              set up moving sessions and work between machines\n'
 }
 
 main "$@"

@@ -1,4 +1,4 @@
-module github.com/felitrejos/cielago
+module github.com/felitrejos/magi/cielago
 
 go 1.27.1
 
