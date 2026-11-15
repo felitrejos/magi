@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -149,6 +150,9 @@ func findLocalSession(local *Local, id string) (remoteSession, error) {
 	}
 	if out, codexErr := sh(local, `find "$HOME/.codex/sessions" -name "rollout-*-$1.jsonl" -print 2>/dev/null | head -n 1`, id); codexErr == nil && len(out) > 0 {
 		return s, fmt.Errorf("%s is a Codex session; cielago moves Claude Code sessions only", id)
+	}
+	if live, _ := liveSessions(local); slices.ContainsFunc(live, func(l liveSession) bool { return l.SessionID == id }) {
+		return s, fmt.Errorf("session %s hasn't started a conversation yet, so there's nothing to move", shortID(id))
 	}
 	return s, fmt.Errorf("no Claude Code session %s on %s", id, local.Name())
 }

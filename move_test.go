@@ -64,7 +64,10 @@ func TestMoveRefusesCodexAndUnknownSessions(t *testing.T) {
 	f.moveHost()
 	codex := "01a1c7ca-8144-7e23-82c1-87dc991d71d6"
 	f.write(filepath.Join(f.home, ".codex", "sessions", "2026", "11", "11"), "rollout-2026-11-11T00-28-20-"+codex+".jsonl", "{}")
+	fresh := "0f0f0f0f-1111-2222-3333-eeeeeeeeeeee"
+	f.write(filepath.Join(f.home, ".claude", "sessions"), "4242.json", `{"pid":4242,"sessionId":"`+fresh+`","status":"idle"}`)
 	for id, want := range map[string]string{
+		fresh:                                  "session 0f0f0f0f hasn't started a conversation yet, so there's nothing to move",
 		codex:                                  "is a Codex session; cielago moves Claude Code sessions only",
 		"0f0f0f0f-1111-2222-3333-777777777777": "no Claude Code session 0f0f0f0f-1111-2222-3333-777777777777",
 		"not-an-id":                            "is not a Claude session id",
