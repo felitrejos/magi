@@ -15,9 +15,9 @@ use super::graphics::Graphics;
 use super::model::{Entry, Model};
 use super::style::{self, theme};
 use super::units;
-use crate::proto::{Agent, FULL, Plan};
+use crate::proto::{Agent, FULL, Plan, SessionState, Waiting};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const WIDE: u16 = 110;
 
@@ -347,8 +347,41 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         frame.render_widget(Paragraph::new(line), area);
         return;
     }
+    if let Some(draft) = &model.draft {
+        let hints = vec![key("↵"), label(" send   "), key("esc"), label(" cancel")];
+        let lead = format!("Message {} › ", draft.title);
+        let room = width.saturating_sub(spans_width(&hints) + 3);
+        let lead = truncate(&lead, room / 2);
+        let typed = tail(&draft.text, room.saturating_sub(lead.width() + 1));
+        let line = spread(
+            vec![
+                Span::styled(lead, style::fg(theme().dim)),
+                Span::styled(typed, style::fg(theme().text)),
+                Span::styled("▏", style::fg(theme().accent)),
+            ],
+            hints,
+            width,
+        );
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
     let selected = model.selected_agent(now);
     let mut keys = vec![key("↑↓"), label(" select   ")];
+    if let Some(agent) = &selected
+        && agent.session.pane.is_some()
+        && matches!(
+            agent.session.state,
+            SessionState::Waiting(Waiting::Permission(_))
+        )
+    {
+        keys.extend([key("y"), label(" allow   "), key("n"), label(" deny   ")]);
+    }
+    if selected
+        .as_ref()
+        .is_some_and(|agent| agent.live && agent.session.pane.is_some())
+    {
+        keys.extend([key("i"), label(" message   ")]);
+    }
     if selected
         .as_ref()
         .is_some_and(|agent| agent.session.pane.is_some())
@@ -401,6 +434,19 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
 
 fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
     Line::from(Composed::of(left).spread(Composed::of(right), width).spans)
+}
+
+fn tail(text: &str, width: usize) -> String {
+    let mut used = 0;
+    let start = text
+        .char_indices()
+        .rev()
+        .find(|(_, c)| {
+            used += c.width().unwrap_or(0);
+            used > width
+        })
+        .map_or(0, |(index, c)| index + c.len_utf8());
+    text[start..].to_string()
 }
 
 fn spans_width(spans: &[Span<'_>]) -> usize {

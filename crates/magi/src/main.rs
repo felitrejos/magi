@@ -12,6 +12,7 @@ mod service;
 mod sessions;
 mod statusline;
 mod tailscale;
+mod typing;
 mod viewer;
 
 use std::process::ExitCode;

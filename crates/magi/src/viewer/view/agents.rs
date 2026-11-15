@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 
 use super::{Composed, Cursor, clip, icon, markdown, panel, rule, selected_style, spread};
 use crate::proto::{
@@ -422,6 +422,16 @@ fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width
             width,
         ),
     );
+    let surface = Rect::new(cursor.area.x, cursor.y, cursor.area.width, cursor.left());
+    frame.render_widget(
+        Block::new().style(Style::new().bg(theme().surface).fg(theme().text)),
+        surface,
+    );
+    let cursor = &mut Cursor::new(surface.inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    }));
+    let width = width.saturating_sub(2);
     let note = |cursor: &mut Cursor, frame: &mut Frame, text: &str, color| {
         cursor.line(
             frame,
@@ -470,9 +480,9 @@ fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width
 
 fn run_span(run: &Run) -> Span<'static> {
     let color = |shade: Shade| match shade {
-        Shade::Default => Color::Reset,
-        Shade::Indexed(index) => Color::Indexed(index),
-        Shade::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        Shade::Default => None,
+        Shade::Indexed(index) => Some(Color::Indexed(index)),
+        Shade::Rgb(r, g, b) => Some(Color::Rgb(r, g, b)),
     };
     let modifiers = [
         (BOLD, Modifier::BOLD),
@@ -486,10 +496,12 @@ fn run_span(run: &Run) -> Span<'static> {
     .fold(Modifier::empty(), |all, (_, modifier)| all | modifier);
     Span::styled(
         run.text.clone(),
-        Style::new()
-            .fg(color(run.fg))
-            .bg(color(run.bg))
-            .add_modifier(modifiers),
+        Style {
+            fg: color(run.fg),
+            bg: color(run.bg),
+            ..Style::new()
+        }
+        .add_modifier(modifiers),
     )
 }
 

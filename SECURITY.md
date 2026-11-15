@@ -19,7 +19,7 @@
 - The agent reads Claude Code's and Codex's session files and transcripts. In
   its regular samples it sends counts, states, model names, session titles,
   the short description of each running subagent and the first line of each
-  [cielago](https://github.com/felitrejos/cielago) task's command or prompt,
+  [cielago](cielago) task's command or prompt,
   never message text.
 - For each agent process it reads that process's CPU time and memory, and
   from its environment only `REX_SESSION`, `REX_BLOCK`, `REX_SERVER` and
@@ -30,20 +30,28 @@
   Claude desktop app, its latest messages and tool calls from the end of its
   transcript. This is the only time conversation text leaves the machine, and
   only to a viewer signed in as you.
-- A viewer can ask an agent to do two things: watch a session, or move a
-  Claude Code session with cielago. The agent acts only on sessions it found
-  itself, checks the machine name, and runs `rex` and `cielago` with
-  arguments, never through a shell, each with a time limit after which it and
-  anything it started are stopped.
+- A viewer can ask an agent to watch a session, message it, answer its
+  permission prompt, or move a Claude Code session with cielago. The agent
+  acts only on sessions it found itself, checks the machine name, and runs
+  `rex` and `cielago` with arguments, never through a shell, each with a time
+  limit after which it and anything it started are stopped.
+- A message is typed only into the session's own Rex pane, as one line of at
+  most 2,000 characters with control characters removed, and only while the
+  session can take it: idle, or working for Claude Code. An answer is a single
+  key (`1` to allow, `Esc` to deny), sent only while magi sees that session
+  waiting on a permission prompt. Since a message can ask the agent to do
+  anything, only viewers signed in as you can send one, like everything else.
 - `magi statusline install` edits only `statusLine` in
   `~/.claude/settings.json`, writes atomically, keeps the file's permissions
   and leaves a backup with the same permissions.
-- The only file magi writes on its own is the alert history
-  (`~/.local/state/magi/alerts.jsonl`, readable only by you).
+- The only files magi writes on its own are the alert history
+  (`~/.local/state/magi/alerts.jsonl`) and your last plan windows
+  (`~/.local/state/magi/plans.json`), both readable only by you.
 
 ## Releases
 
-Release builds come from GitHub Actions with actions pinned to commit hashes.
+Release builds of magi and cielago come from GitHub Actions with actions
+pinned to commit hashes.
 `install.sh` downloads over HTTPS and checks each archive's SHA-256 before
 installing.
 

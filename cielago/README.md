@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/felitrejos/cielago/actions/workflows/ci.yml"><img src="https://github.com/felitrejos/cielago/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/felitrejos/magi/actions/workflows/ci.yml"><img src="https://github.com/felitrejos/magi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/Claude%20Code-plugin-D97757" alt="Claude Code plugin">
   <img src="https://img.shields.io/badge/macOS%20·%20Linux%20·%20Windows%20soon-black" alt="macOS and Linux, Windows soon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
@@ -131,7 +131,7 @@ that:
 
 | Tool | What it does |
 |---|---|
-| `machines` | Your machines, their live load from [magi](https://github.com/felitrejos/magi), and what's running there. |
+| `machines` | Your machines, their live load from [magi](../README.md), and what's running there. |
 | `run_elsewhere` | Runs a command, such as `go test ./...`, and returns its exit code and output. |
 | `delegate` | Gives a task to a background Claude there; you get its final message and its changes as a branch. |
 | `start_session` | Opens a new interactive session for the project there. |
@@ -166,25 +166,23 @@ instead, or not at all.
 
 ## With magi
 
-[magi](https://github.com/felitrejos/magi) shows your machines and their
+cielago is part of [magi](../README.md), which shows your machines and their
 agents live in one Rex pane: where there's room, and what each session costs.
-cielago acts on it. Press magi's handoff key on a session and `cielago move`
-sends it to the machine you pick; when Claude sends work elsewhere, cielago
-reads `magi fleet` for room, load and plan usage. Each works without the other.
+cielago acts on it. Press `m` on a session in magi and `cielago move` sends it
+to the machine you pick; when Claude sends work elsewhere, cielago reads
+`magi fleet` for room, load and plan usage. Each works without the other.
 
 ## Install
 
 ```bash
-go install github.com/felitrejos/cielago@latest
-claude plugin marketplace add felitrejos/cielago
-claude plugin install cielago@cielago
+curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh
+claude plugin marketplace add felitrejos/magi
+claude plugin install cielago@magi
 cielago init
 ```
 
-Prebuilt binaries are on the
-[releases page](https://github.com/felitrejos/cielago/releases); on macOS,
-clear a browser download's quarantine with
-`xattr -d com.apple.quarantine cielago`. Put `cielago` on your `PATH`.
+magi's install script puts `cielago` beside `magi` in `~/.local/bin`. From
+source: `go install github.com/felitrejos/magi/cielago@latest`.
 
 Do this on every machine you hand off from. Each needs git 2.31 or newer,
 `tar`, Claude Code logged in with `claude auth login`, and

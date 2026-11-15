@@ -8,6 +8,8 @@ const ESC: u8 = 0x1b;
 const WAKE: Duration = Duration::from_millis(100);
 const LONGEST: usize = 4096;
 const PATIENCE: u8 = 10;
+const PASTE_START: &[u8] = b"200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
 
 #[derive(Debug, PartialEq)]
 pub enum Input {
@@ -15,20 +17,21 @@ pub enum Input {
     Recheck,
     Theme(Vec<u8>),
     Resize,
+    Closed,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Key {
-    Quit,
+    Char(char),
+    Paste(String),
     Up,
     Down,
     First,
     Last,
-    Alerts,
-    Open,
-    Move,
-    Yes,
-    No,
+    Enter,
+    Escape,
+    Backspace,
+    Interrupt,
 }
 
 #[derive(Default)]
@@ -36,6 +39,7 @@ pub struct Parser {
     pending: Vec<u8>,
     colours: Vec<u8>,
     waited: u8,
+    pasting: bool,
 }
 
 impl Parser {
@@ -62,25 +66,29 @@ impl Parser {
             return;
         }
         if self.pending == [ESC] {
-            out.push(Input::Key(Key::Quit));
+            out.push(Input::Key(Key::Escape));
         }
         self.pending.clear();
     }
 
     fn next(&mut self, start: usize, out: &mut Vec<Input>) -> Option<usize> {
         let rest = &self.pending[start..];
+        if self.pasting {
+            return self.paste(start, out);
+        }
         if rest[0] != ESC {
-            if let Some(key) = plain_key(rest[0]) {
-                out.push(Input::Key(key));
-            }
-            return Some(1);
+            let (key, used) = plain_key(rest)?;
+            out.extend(key.map(Input::Key));
+            return Some(used);
         }
         match *rest.get(1)? {
             b'[' => {
                 let end = 2 + rest[2..]
                     .iter()
                     .position(|byte| (0x40..=0x7e).contains(byte))?;
-                if let Some(input) = csi(&mut self.colours, &rest[2..=end]) {
+                if &rest[2..=end] == PASTE_START {
+                    self.pasting = true;
+                } else if let Some(input) = csi(&mut self.colours, &rest[2..=end]) {
                     out.push(input);
                 }
                 Some(end + 1)
@@ -103,11 +111,30 @@ impl Parser {
                 Some(end + terminator)
             }
             ESC => {
-                out.push(Input::Key(Key::Quit));
+                out.push(Input::Key(Key::Escape));
                 Some(1)
             }
             _ => Some(2),
         }
+    }
+
+    fn paste(&mut self, start: usize, out: &mut Vec<Input>) -> Option<usize> {
+        let rest = &self.pending[start..];
+        let (text, used) = match rest
+            .windows(PASTE_END.len())
+            .position(|window| window == PASTE_END)
+        {
+            Some(end) => {
+                self.pasting = false;
+                (&rest[..end], end + PASTE_END.len())
+            }
+            None if rest.len() > LONGEST => (rest, rest.len()),
+            None => return None,
+        };
+        out.push(Input::Key(Key::Paste(
+            String::from_utf8_lossy(text).into_owned(),
+        )));
+        Some(used)
     }
 }
 
@@ -123,20 +150,28 @@ fn csi(colours: &mut Vec<u8>, body: &[u8]) -> Option<Input> {
     }
 }
 
-fn plain_key(byte: u8) -> Option<Key> {
-    match byte {
-        b'q' | 0x03 => Some(Key::Quit),
-        b'k' => Some(Key::Up),
-        b'j' => Some(Key::Down),
-        b'g' => Some(Key::First),
-        b'G' => Some(Key::Last),
-        b'a' => Some(Key::Alerts),
-        b'm' => Some(Key::Move),
-        b'y' => Some(Key::Yes),
-        b'n' => Some(Key::No),
-        b'\r' | b'\n' => Some(Key::Open),
-        _ => None,
-    }
+fn plain_key(rest: &[u8]) -> Option<(Option<Key>, usize)> {
+    let key = match rest[0] {
+        0x03 => Key::Interrupt,
+        b'\r' | b'\n' => Key::Enter,
+        0x7f | 0x08 => Key::Backspace,
+        byte @ 0x20..=0x7e => Key::Char(char::from(byte)),
+        0x00..=0x1f => return Some((None, 1)),
+        lead => {
+            let len = match lead {
+                0xc0..=0xdf => 2,
+                0xe0..=0xef => 3,
+                0xf0..=0xf7 => 4,
+                _ => return Some((None, 1)),
+            };
+            let bytes = rest.get(..len)?;
+            return Some(match std::str::from_utf8(bytes) {
+                Ok(text) => (text.chars().next().map(Key::Char), len),
+                Err(_) => (None, 1),
+            });
+        }
+    };
+    Some((Some(key), 1))
 }
 
 fn final_key(byte: u8) -> Option<Key> {
@@ -145,7 +180,7 @@ fn final_key(byte: u8) -> Option<Key> {
         b'B' => Some(Key::Down),
         b'H' => Some(Key::First),
         b'F' => Some(Key::Last),
-        b'M' => Some(Key::Open),
+        b'M' => Some(Key::Enter),
         _ => None,
     }
 }
@@ -236,7 +271,7 @@ mod tests {
         parser.feed(b"\x1b]", &mut out);
         parser.idle(&mut out);
         parser.feed(b"q", &mut out);
-        assert_eq!(out, [Input::Key(Key::Quit)]);
+        assert_eq!(out, [Input::Key(Key::Char('q'))]);
         let mut out = Vec::new();
         parser.feed(b"\x1b]11;rgb:0d0d", &mut out);
         for _ in 1..PATIENCE {
@@ -250,23 +285,21 @@ mod tests {
         let mut out = Vec::new();
         parser.feed(b"\x1b]10;rgb:1a1a\x03\x1b]11;rgb:0d", &mut out);
         parser.feed(b"0d\x1b[A\x1b[?62c", &mut out);
-        assert_eq!(out, [Input::Key(Key::Quit), Input::Key(Key::Up)]);
+        assert_eq!(out, [Input::Key(Key::Interrupt), Input::Key(Key::Up)]);
         let mut out = Vec::new();
         parser.feed(b"\x1bPstuck", &mut out);
         for _ in 0..PATIENCE {
             parser.idle(&mut out);
         }
         parser.feed(b"j", &mut out);
-        assert_eq!(out, [Input::Key(Key::Down)]);
+        assert_eq!(out, [Input::Key(Key::Char('j'))]);
     }
 
     #[test]
-    fn keys_in_every_encoding_map_to_the_same_action() {
+    fn keys_in_every_encoding_map_to_the_same_key() {
         assert_eq!(
-            parse(&[b"jk\x1b[A\x1bOB\x1b[1;5A\x1b[H\x1b[1~\x1b[F\x1b[8~gGa\r\x1bOMq\x03"]),
+            parse(&[b"\x1b[A\x1bOB\x1b[1;5A\x1b[H\x1b[1~\x1b[F\x1b[8~\r\x1bOM\x7f\x08\x03"]),
             [
-                Key::Down,
-                Key::Up,
                 Key::Up,
                 Key::Down,
                 Key::Up,
@@ -274,25 +307,44 @@ mod tests {
                 Key::First,
                 Key::Last,
                 Key::Last,
-                Key::First,
-                Key::Last,
-                Key::Alerts,
-                Key::Open,
-                Key::Open,
-                Key::Quit,
-                Key::Quit,
+                Key::Enter,
+                Key::Enter,
+                Key::Backspace,
+                Key::Backspace,
+                Key::Interrupt,
             ]
             .map(Input::Key)
         );
     }
 
     #[test]
+    fn letters_arrive_as_characters_even_when_split_across_reads() {
+        let bytes = "qé日".as_bytes();
+        assert_eq!(
+            parse(&[&bytes[..2], &bytes[2..4], &bytes[4..]]),
+            [Key::Char('q'), Key::Char('é'), Key::Char('日')].map(Input::Key)
+        );
+        assert_eq!(parse(&[b"\x01\xff"]), []);
+    }
+
+    #[test]
+    fn a_paste_arrives_whole_with_its_newlines_and_escapes_as_text() {
+        assert_eq!(
+            parse(&[b"\x1b[200~line one\n", b"q\x1b[A\x1b[201~j"]),
+            [
+                Input::Key(Key::Paste("line one\nq\x1b[A".into())),
+                Input::Key(Key::Char('j')),
+            ]
+        );
+    }
+
+    #[test]
     fn a_lone_escape_quits_only_once_nothing_follows_it() {
-        assert_eq!(parse(&[b"\x1b"]), [Input::Key(Key::Quit)]);
+        assert_eq!(parse(&[b"\x1b"]), [Input::Key(Key::Escape)]);
         assert_eq!(parse(&[b"\x1b", b"[B"]), [Input::Key(Key::Down)]);
         assert_eq!(
             parse(&[b"\x1b\x1b"]),
-            [Input::Key(Key::Quit), Input::Key(Key::Quit)]
+            [Input::Key(Key::Escape), Input::Key(Key::Escape)]
         );
     }
 
@@ -319,7 +371,7 @@ mod tests {
     fn other_terminal_answers_are_swallowed_whole() {
         assert_eq!(
             parse(&[b"\x1bP>|rex 0.1\x1b\\\x1b_Gi=7;ENOENT\x1b\\\x1b[6;16;8t\x1b[?2031;2$yq"]),
-            [Input::Key(Key::Quit)]
+            [Input::Key(Key::Char('q'))]
         );
     }
 }

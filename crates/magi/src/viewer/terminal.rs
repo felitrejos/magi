@@ -15,8 +15,8 @@ pub const COLOURS: &[u8] = concat!(
     "\x1b[c",
 )
 .as_bytes();
-pub const FOLLOW: &[u8] = b"\x1b[?1004h\x1b[?2031h";
-pub const UNFOLLOW: &[u8] = b"\x1b[?2031l\x1b[?1004l";
+pub const MODES: &[u8] = b"\x1b[?1004h\x1b[?2031h\x1b[?2004h";
+pub const RESET_MODES: &[u8] = b"\x1b[?2004l\x1b[?2031l\x1b[?1004l";
 
 pub fn probe(out: &mut impl Write) -> io::Result<Vec<u8>> {
     out.write_all(GRAPHICS)?;

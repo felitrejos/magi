@@ -64,7 +64,7 @@ pub fn run(config: Config) -> io::Result<()> {
     let reply = terminal::probe(&mut io::stdout())?;
     style::update(&reply);
     let mut graphics = Graphics::from_reply(&reply);
-    write_terminal(terminal::FOLLOW)?;
+    write_terminal(terminal::MODES)?;
     topology::spawn(sender.clone())?;
     spawn_input(sender, terminal::unanswered(&reply).to_vec())?;
     let result = write_status(alerts::CLEAR_ALL).and_then(|()| {
@@ -78,7 +78,7 @@ pub fn run(config: Config) -> io::Result<()> {
         )
     });
     let cleared = write_status(alerts::CLEAR_ALL)
-        .and_then(|()| write_terminal(terminal::UNFOLLOW))
+        .and_then(|()| write_terminal(terminal::RESET_MODES))
         .and_then(|()| graphics.clear(&mut io::stdout()));
     ratatui::restore();
     result.and(cleared)
@@ -87,7 +87,7 @@ pub fn run(config: Config) -> io::Result<()> {
 fn spawn_input(events: SyncSender<Event>, early: Vec<u8>) -> io::Result<()> {
     thread::Builder::new().name("input".into()).spawn(move || {
         let _ = input::read(&early, |input| events.send(Event::Input(input)).is_ok());
-        let _ = events.send(Event::Input(Input::Key(Key::Quit)));
+        let _ = events.send(Event::Input(Input::Closed));
     })?;
     Ok(())
 }
@@ -245,6 +245,113 @@ fn propose_move(model: &mut Model, now: Instant) {
     model.pending_move = Some(pending);
 }
 
+enum Action {
+    Quit,
+    Up,
+    Down,
+    First,
+    Last,
+    Alerts,
+    Open,
+    Move,
+    Message,
+    Allow,
+    Deny,
+}
+
+fn action(key: &Key) -> Option<Action> {
+    Some(match key {
+        Key::Char('q') | Key::Escape | Key::Interrupt => Action::Quit,
+        Key::Char('k') | Key::Up => Action::Up,
+        Key::Char('j') | Key::Down => Action::Down,
+        Key::Char('g') | Key::First => Action::First,
+        Key::Char('G') | Key::Last => Action::Last,
+        Key::Char('a') => Action::Alerts,
+        Key::Enter => Action::Open,
+        Key::Char('m') => Action::Move,
+        Key::Char('i') => Action::Message,
+        Key::Char('y') => Action::Allow,
+        Key::Char('n') => Action::Deny,
+        _ => return None,
+    })
+}
+
+fn start_draft(model: &mut Model, now: Instant) {
+    let Some(agent) = model.selected_agent(now) else {
+        return;
+    };
+    if agent.session.pane.is_none() {
+        let reason = format!(
+            "{} isn't in a Rex pane, so magi can't type into it",
+            agent.session.title
+        );
+        return model.flash(reason, false, now);
+    }
+    if !agent.live {
+        return model.flash(format!("{} isn't answering", agent.machine), false, now);
+    }
+    model.draft = Some(model::Draft {
+        endpoint: agent.endpoint,
+        session: agent.session.id.clone(),
+        title: agent.session.title.clone(),
+        text: String::new(),
+    });
+}
+
+fn edit_draft(model: &mut Model, links: &Links, key: Key, now: Instant) {
+    let Some(draft) = model.draft.as_mut() else {
+        return;
+    };
+    match key {
+        Key::Char(c) => draft.type_in(c.encode_utf8(&mut [0; 4])),
+        Key::Paste(text) => draft.type_in(&text),
+        Key::Backspace => {
+            draft.text.pop();
+        }
+        Key::Escape | Key::Interrupt => model.draft = None,
+        Key::Enter if draft.text.trim().is_empty() => {}
+        Key::Enter => {
+            let Some(draft) = model.draft.take() else {
+                return;
+            };
+            let request = proto::Request::Prompt {
+                session: draft.session,
+                text: draft.text,
+            };
+            if let Err(error) = links.request(draft.endpoint, &request) {
+                model.flash(format!("couldn't send it: {error}"), false, now);
+            }
+        }
+        Key::Up | Key::Down | Key::First | Key::Last => {}
+    }
+}
+
+fn answer(model: &mut Model, links: &Links, allow: bool, now: Instant) {
+    let Some(agent) = model.selected_agent(now) else {
+        return;
+    };
+    if !matches!(
+        agent.session.state,
+        proto::SessionState::Waiting(proto::Waiting::Permission(_))
+    ) {
+        return;
+    }
+    if agent.session.pane.is_none() {
+        let reason = format!(
+            "{} isn't in a Rex pane: answer it where it runs",
+            agent.session.title
+        );
+        return model.flash(reason, false, now);
+    }
+    let request = proto::Request::Answer {
+        session: agent.session.id.clone(),
+        allow,
+    };
+    if let Err(error) = links.request(agent.endpoint, &request) {
+        model.flash(format!("couldn't answer it: {error}"), false, now);
+    }
+}
+
 fn confirm_move(model: &mut Model, links: &Links, pending: model::PendingMove, now: Instant) {
     let request = proto::Request::Move {
         session: pending.session,
@@ -304,21 +411,27 @@ fn sync_watch(model: &mut Model, links: &Links) {
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
     let now = Instant::now();
     match event {
+        Event::Input(Input::Key(key)) if model.draft.is_some() => {
+            edit_draft(model, links, key, now)
+        }
         Event::Input(Input::Key(key)) if let Some(pending) = model.pending_move.take() => {
-            if key == Key::Yes {
+            if key == Key::Char('y') {
                 confirm_move(model, links, pending, now);
             }
         }
-        Event::Input(Input::Key(key)) => match key {
-            Key::Quit => return Ok(Flow::Quit),
-            Key::Up => model.move_selection(-1, now),
-            Key::Down => model.move_selection(1, now),
-            Key::First => model.move_selection(isize::MIN, now),
-            Key::Last => model.move_selection(isize::MAX, now),
-            Key::Alerts => model.showing_alerts = !model.showing_alerts,
-            Key::Open => open_selected(model, links, now)?,
-            Key::Move => propose_move(model, now),
-            Key::Yes | Key::No => {}
+        Event::Input(Input::Key(key)) => match action(&key) {
+            Some(Action::Quit) => return Ok(Flow::Quit),
+            Some(Action::Up) => model.move_selection(-1, now),
+            Some(Action::Down) => model.move_selection(1, now),
+            Some(Action::First) => model.move_selection(isize::MIN, now),
+            Some(Action::Last) => model.move_selection(isize::MAX, now),
+            Some(Action::Alerts) => model.showing_alerts = !model.showing_alerts,
+            Some(Action::Open) => open_selected(model, links, now)?,
+            Some(Action::Move) => propose_move(model, now),
+            Some(Action::Message) => start_draft(model, now),
+            Some(Action::Allow) => answer(model, links, true, now),
+            Some(Action::Deny) => answer(model, links, false, now),
+            None => {}
         },
         Event::Opened(result) => {
             model.opening = false;
@@ -331,6 +444,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             style::update(&reply);
         }
         Event::Input(Input::Resize) => {}
+        Event::Input(Input::Closed) => return Ok(Flow::Quit),
         Event::Topology(topology) => {
             let mut wanted: Vec<Endpoint> = std::iter::once(Endpoint::Local)
                 .chain(
@@ -461,7 +575,7 @@ mod tests {
     #[test]
     fn q_quits() {
         let (mut model, mut links) = fleet();
-        let flow = handle_batch([key(Key::Quit)].into_iter(), &mut model, &mut links).unwrap();
+        let flow = handle_batch([key(Key::Char('q'))].into_iter(), &mut model, &mut links).unwrap();
         assert!(flow == Flow::Quit);
     }
 
@@ -511,7 +625,7 @@ mod tests {
         let (mut model, mut links) = fleet();
         with_session(&mut model, None);
         assert!(!footer(&model).contains("open"));
-        handle_batch([key(Key::Open)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(
             model.flashed(Instant::now()),
             Some(("fix login isn't running in a Rex pane", false))
@@ -588,15 +702,15 @@ mod tests {
                 .map(|target| target.machine),
             Some("nas".into())
         );
-        handle_batch([key(Key::Move)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Char('m'))].into_iter(), &mut model, &mut links).unwrap();
         let pending = model.pending_move.clone().unwrap();
         assert_eq!((pending.from.as_str(), pending.to.as_str()), ("mac", "nas"));
         assert!(footer(&model).contains("Move run the tests from mac to nas?"));
-        handle_batch([key(Key::No)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Char('n'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.pending_move, None);
         assert_eq!(model.flashed(now), None);
         handle_batch(
-            [key(Key::Move), key(Key::Yes)].into_iter(),
+            [key(Key::Char('m')), key(Key::Char('y'))].into_iter(),
             &mut model,
             &mut links,
         )
@@ -836,5 +950,100 @@ mod tests {
         );
         handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
         assert_eq!(model.selected_agent(now).unwrap().session.id, "a");
+    }
+
+    fn in_rex(mut session: AgentSession) -> AgentSession {
+        session.pane = Some(RexPane {
+            session: "session:1".into(),
+            window: "window:2".into(),
+        });
+        session
+    }
+
+    #[test]
+    fn i_opens_a_message_box_that_types_letters_instead_of_running_keys() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
+            now,
+        );
+        model.selected = 3;
+        assert!(footer(&model).contains("i message"));
+        let typed = "iqjmy\x01".chars().map(|c| key(Key::Char(c)));
+        handle_batch(typed, &mut model, &mut links).unwrap();
+        handle_batch(
+            [key(Key::Paste("one\ntwo".into())), key(Key::Backspace)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        assert_eq!(model.draft.as_ref().unwrap().text, "qjmy one tw");
+        assert!(footer(&model).contains("Message run the tests › qjmy one tw▏"));
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.draft, None);
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some(("couldn't send it: that machine isn't connected", false))
+        );
+        handle_batch(
+            [key(Key::Char('i')), key(Key::Escape)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        assert_eq!(model.draft, None);
+    }
+
+    #[test]
+    fn a_session_outside_rex_cannot_be_messaged() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(claude("s1", 0))),
+            now,
+        );
+        model.selected = 3;
+        assert!(!footer(&model).contains("i message"));
+        handle_batch([key(Key::Char('i'))].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.draft, None);
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some((
+                "run the tests isn't in a Rex pane, so magi can't type into it",
+                false
+            ))
+        );
+    }
+
+    #[test]
+    fn y_and_n_answer_only_a_session_asking_for_permission() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
+            now,
+        );
+        model.selected = 3;
+        assert!(!footer(&model).contains("allow"));
+        handle_batch([key(Key::Char('y'))].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.flashed(Instant::now()), None);
+        let mut asking = in_rex(claude("s1", 0));
+        asking.state =
+            SessionState::Waiting(crate::proto::Waiting::Permission(Some("Bash".into())));
+        model.apply(Endpoint::Local, live_sample(1_000, Some(asking)), now);
+        assert!(
+            footer(&model).contains("y allow   n deny"),
+            "{}",
+            footer(&model)
+        );
+        handle_batch([key(Key::Char('n'))].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some(("couldn't answer it: that machine isn't connected", false))
+        );
     }
 }

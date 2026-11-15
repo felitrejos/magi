@@ -12,12 +12,13 @@ use crate::conversation::Reader;
 use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
-    self, AgentMessage, Content, Hello, Identity, PROTOCOL_VERSION, Reply, Request, Screen,
-    StatusReport, Welcome,
+    self, AgentMessage, AgentSession, Content, Hello, Identity, PROTOCOL_VERSION, Reply, Request,
+    Screen, StatusReport, Welcome,
 };
 use crate::screen::Capturer;
+use crate::sessions::rex::Location;
 use crate::sessions::{Board, Sessions, Snapshot};
-use crate::{log, tailscale};
+use crate::{log, tailscale, typing};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -28,7 +29,7 @@ const MAX_CONNECTIONS: usize = 32;
 const FRAME_BACKLOG: usize = 4;
 const HELLO_MAX_BYTES: usize = 8;
 const STATUS_MAX_BYTES: usize = 4096;
-const REQUEST_MAX_BYTES: usize = 4096;
+const REQUEST_MAX_BYTES: usize = 16 * 1024;
 const SCREEN_EVERY: Duration = Duration::from_millis(500);
 const STATUS_RETRY: Duration = Duration::from_millis(10);
 const STATUS_READ_TIMEOUT: Duration = Duration::from_secs(1);
@@ -439,6 +440,16 @@ fn spawn_requests(
             {
                 match request {
                     Request::Move { session, to } => move_session(&session, &to, &agent, &replies),
+                    Request::Prompt { session, text } => {
+                        type_into(&session, &agent, &replies, |found, pane| {
+                            typing::prompt(found, pane, &text)
+                        });
+                    }
+                    Request::Answer { session, allow } => {
+                        type_into(&session, &agent, &replies, |found, pane| {
+                            typing::answer(found, pane, allow)
+                        });
+                    }
                     Request::Watch { session } => {
                         let delivered = watcher
                             .as_ref()
@@ -522,6 +533,35 @@ fn move_session(session: &str, to: &str, agent: &Agent, replies: &SyncSender<Fra
         reply(&later, outcome.ok, outcome.text);
     });
     match started {
+        Ok(text) => reply(replies, true, text),
+        Err(text) => reply(replies, false, text),
+    }
+}
+
+fn type_into(
+    session: &str,
+    agent: &Agent,
+    replies: &SyncSender<Frame>,
+    act: impl FnOnce(&AgentSession, Option<&Location>) -> Result<String, String>,
+) {
+    let (found, pane) = {
+        let snapshot = agent
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (
+            snapshot
+                .sessions
+                .iter()
+                .find(|known| known.id == session)
+                .cloned(),
+            snapshot.panes.get(session).cloned(),
+        )
+    };
+    let Some(found) = found else {
+        return reply(replies, false, "that session has ended".into());
+    };
+    match act(&found, pane.as_ref()) {
         Ok(text) => reply(replies, true, text),
         Err(text) => reply(replies, false, text),
     }

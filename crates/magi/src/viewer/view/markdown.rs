@@ -112,7 +112,7 @@ fn tool(name: &str, detail: &str, change: Option<Change>, width: usize) -> Line<
     }
     let mut spans = vec![
         Span::styled("▸ ", style::fg(t.faint)),
-        Span::styled(name.to_string(), style::fg(t.dim)),
+        Span::styled(tool_name(name), style::fg(t.dim)),
     ];
     if !detail.is_empty() {
         spans.push(Span::styled(format!("  {detail}"), style::fg(t.faint)));
@@ -121,6 +121,16 @@ fn tool(name: &str, detail: &str, change: Option<Change>, width: usize) -> Line<
     let mut line = clip(spans, room);
     line.extend(counts);
     Line::from(line)
+}
+
+fn tool_name(name: &str) -> String {
+    match name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split_once("__"))
+    {
+        Some((_, tool)) if !tool.is_empty() => tool.replace('_', " "),
+        _ => name.to_string(),
+    }
 }
 
 pub fn markdown(text: &str, width: usize) -> Vec<Line<'static>> {
@@ -829,6 +839,17 @@ mod tests {
             texts(&conversation(&said, 40, 3)),
             ["", "reply 8", "", "reply 9"]
         );
+    }
+
+    #[test]
+    fn mcp_tools_show_by_their_own_name() {
+        assert_eq!(tool_name("mcp__ccd_turn__update_plan"), "update plan");
+        assert_eq!(
+            tool_name("mcp__plugin_cielago_cielago__run_elsewhere"),
+            "run elsewhere"
+        );
+        assert_eq!(tool_name("mcp__broken"), "mcp__broken");
+        assert_eq!(tool_name("Edit"), "Edit");
     }
 
     #[test]

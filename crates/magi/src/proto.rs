@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub const PROTOCOL_VERSION: u16 = 8;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
+pub const MAX_PROMPT_CHARS: usize = 2000;
 
 pub type BasisPoints = u16;
 pub const FULL: BasisPoints = 10_000;
@@ -156,6 +157,8 @@ pub enum AgentMessage {
 pub enum Request {
     Move { session: String, to: String },
     Watch { session: Option<String> },
+    Prompt { session: String, text: String },
+    Answer { session: String, allow: bool },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

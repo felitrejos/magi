@@ -5,8 +5,8 @@
 <h1 align="center">magi</h1>
 
 <p align="center">
-  <b>Your machines and your coding agents, live, in one Rex pane.</b><br>
-  CPU, memory, disks and network for every Mac and Linux box on your tailnet, next to every Claude Code and Codex session running on them.
+  <b>Run your coding agents across all your machines, from one Rex pane.</b><br>
+  Every Claude Code and Codex session on your tailnet, what each one costs and uses, a way to talk to them, and a way to move them to whichever machine has room.
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
   <a href="#why-rex">Why Rex</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#alerts">Alerts</a> ·
-  <a href="#with-cielago">With cielago</a> ·
+  <a href="#move-work-between-machines">Move work</a> ·
   <a href="#faq">FAQ</a> ·
   <a href="#roadmap">Roadmap</a>
 </p>
@@ -35,8 +35,10 @@
 </p>
 
 Agents now run on several machines at once, and each can stall on a prompt,
-fill its context or quietly spend. magi gathers all of that into one terminal
-view, so a glance answers "is anything stuck, and what is it costing?".
+fill its context or quietly spend. magi is a multiplexer for them: one view of
+every session and every machine's load, so a glance answers "is anything
+stuck, what is it costing, and where is there room?", and you can answer,
+message or move a session without leaving it.
 
 ## Highlights
 
@@ -50,6 +52,11 @@ view, so a glance answers "is anything stuck, and what is it costing?".
   messages if it runs elsewhere, such as the Claude desktop app. Messages are
   drawn as Markdown with highlighted code in your terminal's colours, and each
   tool call is one line, with the lines an edit added and removed.
+- **Talk to it.** For a session in Rex, press `i` to send it a message, and
+  `y` or `n` to answer the permission prompt it's waiting on, from any machine.
+- **Spread the load.** Each machine's CPU, memory and disks sit next to what
+  every session uses. When one machine is busy and another idle, magi suggests
+  moving the heavy session, and cielago moves it.
 - **Calm by default.** Sessions waiting on you come first, the rest sit under
   their machine with what they started nested beneath, and sessions idle for
   a day fold away.
@@ -104,6 +111,9 @@ The agent only reads what the coding agents already write:
 | `magi statusline` | Claude's context use and plan windows |
 | `~/.codex/sessions/` | Running Codex sessions with model, tokens, cost, context and plan windows |
 
+When you message a session or answer its prompt, the agent on that machine
+types it into the session's own Rex pane.
+
 Cost is priced from token counts at Anthropic's and OpenAI's list prices, the
 same figure Claude Code's `/cost` shows, and a forked session counts shared
 history once.
@@ -120,12 +130,12 @@ history once.
 Alerts clear themselves when the condition ends. Press `a` to see the last 200,
 kept in `~/.local/state/magi/alerts.jsonl`.
 
-## With cielago
+## Move work between machines
 
-[cielago](https://github.com/felitrejos/cielago) moves a Claude Code session to
-another machine, conversation and uncommitted work included, and lets Claude
-send work there. magi shows where there's room and what each session costs;
-cielago does the moving.
+[cielago](cielago) comes with magi. It moves a Claude Code session to another
+machine, conversation and uncommitted work included, and lets Claude send work
+there. magi shows where there's room and what each session costs; cielago does
+the moving.
 
 | In magi | With cielago |
 |---|---|
@@ -133,7 +143,9 @@ cielago does the moving.
 | Every machine's load and every session's CPU and memory, in `magi fleet --json` | Claude picks the lightest machine for `run_elsewhere`, `delegate` and `start_session`, and asks you first |
 | Your plan windows | cielago holds back new work when a window is nearly used |
 
-Without cielago, magi works the same and `m` explains how to get it.
+Run `cielago init` once per machine to set it up; see its
+[README](cielago/README.md). Without it, magi works the same and `m` explains
+how to get it.
 
 ## Install
 
@@ -142,18 +154,21 @@ curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.s
 magi agent install          # on every machine to monitor
 magi statusline install     # where you use Claude Code
 magi                        # in a Rex pane on an always-on machine
+cielago init                # optional: to move sessions and work between machines
 ```
 
 The script picks the build for your system (macOS arm64/x86_64, Linux
-x86_64/arm64), checks its SHA-256 and installs to `~/.local/bin`. From source:
-`cargo install --locked --git https://github.com/felitrejos/magi magi-monitor`.
+x86_64/arm64), checks its SHA-256 and installs `magi` and `cielago` to
+`~/.local/bin`. From source:
+`cargo install --locked --git https://github.com/felitrejos/magi magi-monitor`
+and `go install github.com/felitrejos/magi/cielago@latest`.
 
 Needs [Tailscale](https://tailscale.com) with its CLI on every machine.
 
 Flags: `--port` (default 2015) for the viewer and agent, and `--interval`
 (100–60000 ms, default 1000) for `magi agent install`. Keys: `↑`/`↓` or `j`/`k`,
-`g`/`G`, `Enter` to open an agent's Rex tab, `m` to move it, `a` for alerts,
-`q` to quit.
+`g`/`G`, `Enter` to open an agent's Rex tab, `i` to message it, `y`/`n` to
+allow or deny what it asks, `m` to move it, `a` for alerts, `q` to quit.
 
 `magi fleet --json` prints every machine's load, each session's CPU and
 memory, and your plan windows once, for scripts and tools that pick where to
@@ -180,7 +195,9 @@ the agent at most 300 ms. It only edits `statusLine` in
 backup.
 
 **Can magi tell when Codex needs approval?** Not yet: Codex doesn't write
-approval prompts to its session files, so its sessions show working or idle.
+approval prompts to its session files, so its sessions show working or idle,
+and you answer its prompts in its pane. You can still message a Codex session
+in Rex once it's idle.
 
 **How accurate is a session's CPU?** It counts the session and every process
 it started that's alive when magi looks, once a second. Very short ones, such
@@ -193,6 +210,8 @@ for the affected sessions.
 
 ## Roadmap
 
+- Sessions magi starts and runs itself, so you can message and approve any
+  session, not only those in Rex.
 - More agents: Gemini CLI, Cursor, Aider, OpenCode.
 - Alert thresholds you can set.
 
