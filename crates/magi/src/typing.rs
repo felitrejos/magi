@@ -48,6 +48,35 @@ pub fn answer(
     Ok(format!("{verb} {what} in {}", session.title))
 }
 
+pub fn choose(
+    session: &AgentSession,
+    pane: Option<&Location>,
+    option: u8,
+    waiting_secs: u32,
+) -> Result<String, String> {
+    let pane = pane.ok_or_else(|| not_in_rex(session))?;
+    same_question(session, option, waiting_secs)?;
+    let _typing = TYPING.lock().unwrap_or_else(PoisonError::into_inner);
+    send(pane, &option.to_string())?;
+    Ok(format!("Chose {option} in {}", session.title))
+}
+
+fn same_question(session: &AgentSession, option: u8, waiting_secs: u32) -> Result<(), String> {
+    if !(1..=9).contains(&option) {
+        return Err(format!("{option} isn't an option"));
+    }
+    match &session.state {
+        SessionState::Waiting(Waiting::Input(_)) if session.state_secs + 1 >= waiting_secs => {
+            Ok(())
+        }
+        SessionState::Waiting(Waiting::Input(_)) => Err(format!(
+            "{} is asking something new: look again before answering",
+            session.title
+        )),
+        _ => Err(format!("{} isn't asking anything now", session.title)),
+    }
+}
+
 fn same_prompt<'a>(session: &'a AgentSession, seen: &Seen) -> Result<&'a Option<String>, String> {
     match &session.state {
         SessionState::Waiting(Waiting::Permission(tool))
@@ -198,6 +227,21 @@ mod tests {
             same_prompt(&idle, &seen("Bash", 0)),
             Err("fix the build isn't asking for permission now".into())
         );
+    }
+
+    #[test]
+    fn a_choice_goes_only_to_the_question_the_viewer_saw() {
+        let mut asking = session(
+            Agent::ClaudeCode,
+            SessionState::Waiting(Waiting::Input("input needed".into())),
+        );
+        asking.state_secs = 9;
+        assert!(same_question(&asking, 2, 10).is_ok());
+        assert!(same_question(&asking, 0, 9).is_err());
+        assert!(same_question(&asking, 10, 9).is_err());
+        assert!(same_question(&asking, 1, 30).is_err());
+        let idle = session(Agent::ClaudeCode, SessionState::Idle);
+        assert!(same_question(&idle, 1, 0).is_err());
     }
 
     #[test]

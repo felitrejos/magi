@@ -258,6 +258,7 @@ enum Action {
     Message,
     Allow,
     Deny,
+    Choose(u8),
 }
 
 fn action(key: &Key) -> Option<Action> {
@@ -269,13 +270,28 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('g') | Key::First => Action::First,
         Key::Char('G') | Key::Last => Action::Last,
         Key::Char('a') => Action::Alerts,
-        Key::Enter => Action::Open,
+        Key::Enter => Action::Message,
+        Key::Char('o') => Action::Open,
         Key::Char('m') => Action::Move,
-        Key::Char('i') => Action::Message,
         Key::Char('y') => Action::Allow,
         Key::Char('n') => Action::Deny,
+        Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
         _ => return None,
     })
+}
+
+fn click(model: &mut Model, column: u16, row: u16, now: Instant) {
+    let Ok((width, height)) = ratatui::crossterm::terminal::size() else {
+        return;
+    };
+    let full = ratatui::layout::Rect::new(0, 0, width, height);
+    let areas = view::areas(full, model.rows(now).len(), model.agents(now).len());
+    let on_detail = areas
+        .detail
+        .contains(ratatui::layout::Position::new(column, row));
+    if on_detail && !model.showing_alerts && model.draft.is_none() {
+        start_draft(model, now);
+    }
 }
 
 fn start_draft(model: &mut Model, now: Instant) {
@@ -323,6 +339,27 @@ fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Ke
         Key::Enter | Key::Up | Key::Down | Key::First | Key::Last => {}
     }
     model.draft = Some(draft);
+}
+
+fn choose(model: &mut Model, links: &Links, option: u8, now: Instant) {
+    let Some(agent) = model.selected_agent(now) else {
+        return;
+    };
+    let asking = matches!(
+        agent.session.state,
+        proto::SessionState::Waiting(proto::Waiting::Input(_))
+    );
+    if !asking || agent.session.pane.is_none() {
+        return;
+    }
+    let request = proto::Request::Choose {
+        session: agent.session.id.clone(),
+        option,
+        waiting_secs: agent.session.state_secs,
+    };
+    if let Err(error) = links.request(agent.endpoint, &request) {
+        model.flash(format!("couldn't answer it: {error}"), false, now);
+    }
 }
 
 fn answer(model: &mut Model, links: &Links, allow: bool, now: Instant) {
@@ -438,6 +475,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Message) => start_draft(model, now),
             Some(Action::Allow) => answer(model, links, true, now),
             Some(Action::Deny) => answer(model, links, false, now),
+            Some(Action::Choose(option)) => choose(model, links, option, now),
             None => {}
         },
         Event::Opened(result) => {
@@ -452,6 +490,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
         }
         Event::Input(Input::Resize) => {}
         Event::Input(Input::Closed) => return Ok(Flow::Quit),
+        Event::Input(Input::Click { column, row }) => click(model, column, row, now),
         Event::Topology(topology) => {
             let mut wanted: Vec<Endpoint> = std::iter::once(Endpoint::Local)
                 .chain(
@@ -645,11 +684,11 @@ mod tests {
     }
 
     #[test]
-    fn enter_explains_when_a_session_is_not_in_rex() {
+    fn o_explains_when_a_session_is_not_in_rex() {
         let (mut model, mut links) = fleet();
         with_session(&mut model, None);
         assert!(!footer(&model).contains("open"));
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Char('o'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(
             model.flashed(Instant::now()),
             Some(("fix login isn't running in a Rex pane", false))
@@ -667,9 +706,13 @@ mod tests {
                 window: "window:2".into(),
             }),
         );
-        assert!(footer(&model).contains("↵ open"), "{}", footer(&model));
+        assert!(
+            footer(&model).contains("o open in Rex"),
+            "{}",
+            footer(&model)
+        );
         model.selected = 0;
-        assert!(!footer(&model).contains("↵ open"));
+        assert!(!footer(&model).contains("open in Rex"));
     }
 
     fn live_sample(cpu: u16, session: Option<AgentSession>) -> LinkUpdate {
@@ -794,10 +837,11 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_rex_session_is_watched_and_its_screen_shown_until_the_selection_moves() {
+    fn a_rex_session_asking_you_shows_its_screen_until_the_selection_moves() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         let mut session = claude("s1", 0);
+        session.state = SessionState::Waiting(crate::proto::Waiting::Permission(None));
         session.pane = Some(RexPane {
             session: "session:1".into(),
             window: "window:2".into(),
@@ -983,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn i_opens_a_message_box_that_types_letters_instead_of_running_keys() {
+    fn enter_opens_a_message_box_that_types_letters_instead_of_running_keys() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         model.apply(
@@ -993,7 +1037,8 @@ mod tests {
         );
         model.selected = 3;
         assert!(screen(&model).contains("Message this session"));
-        let typed = "iqjmy\x01".chars().map(|c| key(Key::Char(c)));
+        let typed =
+            std::iter::once(key(Key::Enter)).chain("qjmy\x01".chars().map(|c| key(Key::Char(c))));
         handle_batch(typed, &mut model, &mut links).unwrap();
         handle_batch(
             [key(Key::Paste("one\ntwo".into())), key(Key::Backspace)].into_iter(),
@@ -1014,7 +1059,7 @@ mod tests {
             Some(("couldn't send it: that machine isn't connected", false))
         );
         handle_batch(
-            [key(Key::Char('i')), key(Key::Escape)].into_iter(),
+            [key(Key::Enter), key(Key::Escape)].into_iter(),
             &mut model,
             &mut links,
         )
@@ -1034,7 +1079,7 @@ mod tests {
         model.selected = 3;
         assert!(!screen(&model).contains("Message this session"));
         assert!(screen(&model).contains("messages and approvals work for sessions in Rex"));
-        handle_batch([key(Key::Char('i'))].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.draft, None);
         assert_eq!(
             model.flashed(Instant::now()),
@@ -1085,7 +1130,7 @@ mod tests {
         );
         model.selected = 3;
         let pasted = [
-            key(Key::Char('i')),
+            key(Key::Enter),
             key(Key::Char('h')),
             key(Key::Enter),
             key(Key::Char('q')),

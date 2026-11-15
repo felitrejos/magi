@@ -120,22 +120,31 @@ struct Agent {
 
 impl Agent {
     fn capture(&self, session: &str, watcher: &mut Watcher) -> Result<Content, String> {
-        let (pane, transcript) = {
+        let (pane, transcript, asking) = {
             let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+            let asking = snapshot
+                .sessions
+                .iter()
+                .any(|found| found.id == session && found.state.is_waiting());
             (
                 snapshot.panes.get(session).cloned(),
                 snapshot.transcripts.get(session).cloned(),
+                asking,
             )
         };
         match (pane, transcript) {
-            (Some(pane), _) => watcher
+            (Some(pane), _) if asking => watcher
                 .screen
                 .capture(&pane, Instant::now())
                 .map(Content::Screen),
-            (None, Some((agent, path))) => watcher
+            (_, Some((agent, path))) => watcher
                 .conversation
                 .read(&path, agent)
                 .map(Content::Conversation),
+            (Some(pane), None) => watcher
+                .screen
+                .capture(&pane, Instant::now())
+                .map(Content::Screen),
             (None, None) => Err("that session has ended".into()),
         }
     }
@@ -454,6 +463,15 @@ fn spawn_requests(
                         let seen = typing::Seen { tool, waiting_secs };
                         type_into(&session, &agent, &replies, |found, pane| {
                             typing::answer(found, pane, allow, &seen)
+                        });
+                    }
+                    Request::Choose {
+                        session,
+                        option,
+                        waiting_secs,
+                    } => {
+                        type_into(&session, &agent, &replies, |found, pane| {
+                            typing::choose(found, pane, option, waiting_secs)
                         });
                     }
                     Request::Watch { session } => {

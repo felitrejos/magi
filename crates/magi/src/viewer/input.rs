@@ -18,6 +18,7 @@ pub enum Input {
     Theme(Vec<u8>),
     Resize,
     Closed,
+    Click { column: u16, row: u16 },
 }
 
 #[derive(Debug, PartialEq)]
@@ -163,7 +164,28 @@ fn csi(colours: &mut Vec<u8>, body: &[u8]) -> Option<Input> {
         ([b'1' | b'7'], b'~') => Some(Input::Key(Key::First)),
         ([b'4' | b'8'], b'~') => Some(Input::Key(Key::Last)),
         ([b'?', ..], _) => None,
+        ([b'<', mouse @ ..], b'M') => mouse_press(mouse),
+        ([b'<', ..], _) => None,
         _ => final_key(last).map(Input::Key),
+    }
+}
+
+fn mouse_press(params: &[u8]) -> Option<Input> {
+    let text = std::str::from_utf8(params).ok()?;
+    let mut numbers = text.split(';').map(str::parse::<u16>);
+    let (button, column, row) = (
+        numbers.next()?.ok()?,
+        numbers.next()?.ok()?,
+        numbers.next()?.ok()?,
+    );
+    match button {
+        0 => Some(Input::Click {
+            column: column.checked_sub(1)?,
+            row: row.checked_sub(1)?,
+        }),
+        64 => Some(Input::Key(Key::Up)),
+        65 => Some(Input::Key(Key::Down)),
+        _ => None,
     }
 }
 
@@ -400,6 +422,18 @@ mod tests {
             [
                 Input::Key(Key::Paste("half a paste".into())),
                 Input::Key(Key::Char('q'))
+            ]
+        );
+    }
+
+    #[test]
+    fn clicks_and_the_wheel_arrive_as_input_and_releases_are_ignored() {
+        assert_eq!(
+            parse(&[b"\x1b[<0;12;5M\x1b[<0;12;5m\x1b[<64;1;1M\x1b[<65;1;1M\x1b[<2;3;3M"]),
+            [
+                Input::Click { column: 11, row: 4 },
+                Input::Key(Key::Up),
+                Input::Key(Key::Down),
             ]
         );
     }

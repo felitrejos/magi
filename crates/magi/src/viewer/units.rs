@@ -65,17 +65,6 @@ pub fn rate(per_sec: u64) -> String {
     format!("{}/s", bytes(per_sec))
 }
 
-pub fn cores(millicores: u32) -> String {
-    let cores = f64::from(millicores) / 1000.0;
-    if (cores - 1.0).abs() < 0.05 {
-        "1 core".into()
-    } else if cores < 10.0 {
-        format!("{cores:.1} cores")
-    } else {
-        format!("{cores:.0} cores")
-    }
-}
-
 pub fn percent(fraction: f32) -> String {
     let percent = if fraction.is_finite() {
         (fraction * 100.0).clamp(0.0, 999.0)
@@ -99,14 +88,6 @@ pub fn duration(elapsed: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cores_read_like_a_person_would_say_them() {
-        assert_eq!(cores(250), "0.2 cores");
-        assert_eq!(cores(1000), "1 core");
-        assert_eq!(cores(2500), "2.5 cores");
-        assert_eq!(cores(11_600), "12 cores");
-    }
 
     #[test]
     fn bytes_are_compact_binary_units() {

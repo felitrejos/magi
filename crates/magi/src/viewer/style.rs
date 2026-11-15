@@ -95,7 +95,7 @@ impl Palette {
     fn panel(self) -> Color {
         let Rgb(r, g, b) = self.background;
         let lightness = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
-        let lift = if lightness < 128 { 0.06 } else { 0.035 };
+        let lift = if lightness < 128 { 0.035 } else { 0.03 };
         self.background.mix(self.foreground, lift)
     }
 
@@ -229,13 +229,13 @@ mod tests {
             background: Rgb(13, 17, 23),
             ..FALLBACK
         };
-        assert_eq!(dark.panel(), Color::Rgb(26, 30, 36));
+        assert_eq!(dark.panel(), Color::Rgb(21, 25, 31));
         let light = Palette {
             foreground: Rgb(30, 30, 30),
             background: Rgb(250, 250, 250),
             ..FALLBACK
         };
-        assert_eq!(light.panel(), Color::Rgb(242, 242, 242));
+        assert_eq!(light.panel(), Color::Rgb(243, 243, 243));
     }
 
     #[test]

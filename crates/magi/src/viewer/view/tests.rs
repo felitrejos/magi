@@ -528,12 +528,13 @@ fn truncated_text_never_draws_wider_than_its_room() {
 }
 
 #[test]
-fn a_heavy_session_shows_its_cpu_in_the_list_and_the_header() {
+fn only_a_session_using_much_of_its_machine_is_flagged_for_cpu() {
     let now = Instant::now();
     let mut model = fleet(1, now);
     let mut busy = sample(0.5, 12);
+    let cores = busy.cores.len() as u32;
     busy.sessions[0].usage = Some(crate::proto::Usage {
-        cpu: Some(2_500),
+        cpu: Some(cores * 500),
         memory: 3 << 30,
     });
     busy.sessions[1].usage = Some(crate::proto::Usage {
@@ -553,14 +554,15 @@ fn a_heavy_session_shows_its_cpu_in_the_list_and_the_header() {
         .unwrap();
     model.selected = first_agent + with_usage;
     let screen = draw(&model, 160, 50, now);
-    assert_eq!(screen.matches("2.5 cores").count(), 2, "{screen}");
+    assert_eq!(screen.matches("high CPU").count(), 1, "{screen}");
+    assert!(!screen.contains("cores"), "{screen}");
     let waiting = titles
         .iter()
         .position(|title| title == "deploy fix")
         .unwrap();
     model.selected = first_agent + waiting;
     let screen = draw(&model, 160, 50, now);
-    assert!(!screen.contains("cores ·"), "{screen}");
+    assert!(!screen.contains("high CPU"), "{screen}");
 }
 
 #[test]

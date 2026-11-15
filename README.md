@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="#install"><b>Install</b></a> ·
-  <a href="#move-work-between-machines">Move work</a> ·
+  <a href="#move-work-between-machines"><b>Move work</b></a> ·
+  <a href="#install">Install</a> ·
   <a href="#in-rex-and-other-terminals">Rex</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#faq">FAQ</a>
@@ -34,55 +34,35 @@
 
 Agents now run on several machines at once, and each can stall on a prompt,
 fill its context or quietly spend. magi is a multiplexer for them: one view of
-every session and every machine's load, so a glance answers "is anything
-stuck, what is it costing, and where is there room?", and you can answer,
-message or move a session without leaving it.
+every session and every machine's load, and the means to act on it. Answer a
+session, message it, or move it, with its conversation and uncommitted work,
+to the machine that has room.
 
 ## Highlights
 
+- **Move work to where there's room.** When one machine is busy and another
+  idle, magi suggests moving the heavy session, and `m` moves it, conversation,
+  branch and uncommitted work included, to continue there in seconds. Claude
+  can also send tests and side tasks to the lightest machine.
 - **Every session, every machine.** Each Mac and Linux box on your tailnet
   running a magi agent shows up on its own, with its load beside its sessions:
-  what each one is doing, costs and uses, and whether it's waiting on you. No
-  server or config file.
-- **Read and answer.** Select a session to watch it live: its Rex pane, or its
-  conversation drawn as Markdown with highlighted code. For a session in Rex,
-  `i` sends it a message and `y` or `n` answers its permission prompt.
-- **Spread the load.** When one machine is busy and another idle, magi
-  suggests moving the heavy session, and `m` moves it, conversation and
-  uncommitted work included. Claude can also send tests and side tasks to the
-  lightest machine.
+  what each one is doing and costs, and whether it's waiting on you. No server
+  or config file.
+- **Read and answer.** Select a session to read its conversation, drawn as
+  Markdown with highlighted code. For a session in Rex, `↵` writes to it, `y`
+  or `n` answers its permission prompt, and `1`–`9` picks an option when it
+  asks a question.
 - **Limits and alerts.** Your Claude and Codex 5-hour and weekly windows, and
   alerts when a session needs you, a machine goes quiet or a plan nearly runs
   out.
 - **Light and private.** The agent idles at 0% CPU, and only devices signed in
   to your tailnet as you can connect.
 
-## Install
-
-```bash
-curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh
-magi agent install    # on every machine
-magi                  # to look, best in a Rex pane on an always-on machine
-```
-
-The script installs `magi` and `cielago` to `~/.local/bin` for macOS or Linux,
-x86_64 or arm64, after checking their SHA-256. Every machine needs
-[Tailscale](https://tailscale.com). Two optional steps:
-
-- `magi statusline install` where you use Claude Code, for its context use and
-  plan windows.
-- To move sessions and work between machines, on each one:
-  `cielago init`, then
-  `claude plugin marketplace add felitrejos/magi && claude plugin install cielago@magi`.
-
-Keys: `↑↓` select, `↵` open in Rex, `i` message, `y`/`n` allow or deny, `m`
-move, `a` alerts, `q` quit. `magi fleet --json` prints the same picture once,
-for scripts.
-
 ## Move work between machines
 
-magi ships with **cielago**, a second command that does the moving. magi
-shows where there's room; cielago acts on it.
+This is what sets magi apart from a dashboard. It ships with **cielago**, a
+second command that does the moving: magi shows where there's room, cielago
+acts on it.
 
 - **Move a session.** Press `m` in magi, or tell Claude "hand this off to my
   homelab". When the turn ends, the conversation, your branch and uncommitted
@@ -104,6 +84,28 @@ projects live on each, and which files count as secrets; `cielago doctor`
 checks both ends. A project's
 `.cielago.toml` can name setup commands and services to start when it
 arrives, once you approve them with `cielago allow`.
+
+## Install
+
+```bash
+curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh
+magi agent install    # on every machine
+magi                  # to look, best in a Rex pane on an always-on machine
+```
+
+The script installs `magi` and `cielago` to `~/.local/bin` for macOS or Linux,
+x86_64 or arm64, after checking their SHA-256. Every machine needs
+[Tailscale](https://tailscale.com). Two optional steps:
+
+- `magi statusline install` where you use Claude Code, for its context use and
+  plan windows.
+- To move sessions and work between machines, on each one:
+  `cielago init`, then
+  `claude plugin marketplace add felitrejos/magi && claude plugin install cielago@magi`.
+
+Keys: `↑↓` select, `↵` or a click on the conversation to write, `y`/`n` allow
+or deny, `1`–`9` choose, `o` open in Rex, `m` move, `a` alerts, `q` quit. `magi fleet --json` prints the same picture once,
+for scripts.
 
 ## In Rex and other terminals
 

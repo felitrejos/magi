@@ -117,6 +117,12 @@ pub enum SessionState {
     Idle,
 }
 
+impl SessionState {
+    pub fn is_waiting(&self) -> bool {
+        matches!(self, Self::Waiting(_))
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum Waiting {
     Permission(Option<String>),
@@ -170,6 +176,11 @@ pub enum Request {
         session: String,
         allow: bool,
         tool: Option<String>,
+        waiting_secs: u32,
+    },
+    Choose {
+        session: String,
+        option: u8,
         waiting_secs: u32,
     },
 }

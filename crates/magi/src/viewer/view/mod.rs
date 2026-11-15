@@ -21,6 +21,56 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const WIDE: u16 = 110;
 
+pub struct Areas {
+    pub machines: Rect,
+    pub agents: Rect,
+    pub detail: Rect,
+    pub footer: Rect,
+    pub wide: bool,
+}
+
+pub fn areas(full: Rect, machines: usize, agents: usize) -> Areas {
+    let area = full.inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
+    let [body, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    if body.width >= WIDE && body.height >= 14 {
+        let left_width = (u32::from(body.width) * 42 / 100).clamp(46, 70) as u16;
+        let [left, right] =
+            Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
+                .spacing(1)
+                .areas(body);
+        let machines_height = (machines as u16 + 2).min(left.height / 2);
+        let [machines, agents] =
+            Layout::vertical([Constraint::Length(machines_height), Constraint::Min(0)]).areas(left);
+        return Areas {
+            machines,
+            agents,
+            detail: right,
+            footer,
+            wide: true,
+        };
+    }
+    let machines_height = (machines as u16 + 2).min(body.height / 4).max(3);
+    let agents_height = (agents.max(1) as u16 * 2 + 2)
+        .min(body.height * 2 / 5)
+        .max(3);
+    let [machines, agents, detail] = Layout::vertical([
+        Constraint::Length(machines_height),
+        Constraint::Length(agents_height),
+        Constraint::Min(0),
+    ])
+    .areas(body);
+    Areas {
+        machines,
+        agents,
+        detail,
+        footer,
+        wide: false,
+    }
+}
+
 pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Graphics) {
     let full = frame.area();
     if full.width < 28 || full.height < 8 {
@@ -30,39 +80,17 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         );
         return;
     }
-    let area = full.inner(Margin {
-        horizontal: 1,
-        vertical: 0,
-    });
     let rows = model.rows(now);
     let agents = model.agents(now);
     let plans = model.plans(now);
-    let [body, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let Areas {
+        machines: machine_area,
+        agents: agent_area,
+        detail: detail_area,
+        footer,
+        wide,
+    } = areas(full, rows.len(), agents.len());
     render_footer(frame, footer, model, now);
-
-    let (machine_area, agent_area, detail_area, wide) = if body.width >= WIDE && body.height >= 14 {
-        let left_width = (u32::from(body.width) * 42 / 100).clamp(46, 70) as u16;
-        let [left, right] =
-            Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
-                .spacing(1)
-                .areas(body);
-        let machines_height = (rows.len() as u16 + 2).min(left.height / 2);
-        let [machines, agents_area] =
-            Layout::vertical([Constraint::Length(machines_height), Constraint::Min(0)]).areas(left);
-        (machines, agents_area, right, true)
-    } else {
-        let machines_height = (rows.len() as u16 + 2).min(body.height / 4).max(3);
-        let agents_height = (agents.len().max(1) as u16 * 2 + 2)
-            .min(body.height * 2 / 5)
-            .max(3);
-        let [machines, agents_area, detail] = Layout::vertical([
-            Constraint::Length(machines_height),
-            Constraint::Length(agents_height),
-            Constraint::Min(0),
-        ])
-        .areas(body);
-        (machines, agents_area, detail, false)
-    };
     machines::render_list(frame, machine_area, model, &rows, wide, now, graphics);
     let listed = model.listed(now);
     let total = (
@@ -90,7 +118,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         match &item.entry {
             Entry::Session(agent) => {
                 let suggestion = model.move_suggestion(agent, now);
-                let source = if agent.session.pane.is_some() {
+                let source = if agent.session.pane.is_some() && agent.session.state.is_waiting() {
                     agents::Source::Pane
                 } else {
                     agents::Source::Conversation
@@ -417,7 +445,7 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     };
     let mut actions = Vec::new();
     if agent.session.pane.is_some() {
-        actions.push(("↵", "open"));
+        actions.push(("o", "open in Rex"));
     }
     if agent.live && agent.session.agent == Agent::ClaudeCode {
         actions.push(("m", "move"));

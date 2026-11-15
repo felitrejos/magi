@@ -19,7 +19,7 @@ use crate::viewer::style::{self, theme};
 use crate::viewer::units;
 use unicode_width::UnicodeWidthStr;
 
-const BUSY_MILLICORES: u32 = 500;
+const HIGH_CPU_SHARE: f32 = 0.4;
 const MIN_TITLE: usize = 28;
 
 pub struct Top {
@@ -133,13 +133,7 @@ fn session_line(
 ) -> Line<'static> {
     let session = agent.session;
     let (mark, color) = style::agent(session.agent);
-    let mut right = vec![state_span(session, agent.live)];
-    if let Some((millicores, share)) = busy_cpu(agent) {
-        right.push(Span::styled(
-            format!("  {}", units::cores(millicores)),
-            style::fg(style::load(share)),
-        ));
-    }
+    let right = vec![state_span(session, agent.live)];
     spread(
         vec![
             Span::styled(
@@ -235,17 +229,14 @@ fn state_text(session: &AgentSession, live: bool) -> (String, Color) {
     }
 }
 
-fn busy_cpu(agent: &AgentRow<'_>) -> Option<(u32, f32)> {
-    let millicores = agent
+fn high_cpu(agent: &AgentRow<'_>) -> bool {
+    agent
         .session
-        .usage?
-        .cpu
-        .filter(|cpu| *cpu >= BUSY_MILLICORES)?;
-    Some((millicores, cpu_share(millicores, agent.capacity.cores)))
-}
-
-fn cpu_share(millicores: u32, cores: usize) -> f32 {
-    millicores as f32 / (cores.max(1) * 1000) as f32
+        .usage
+        .and_then(|usage| usage.cpu)
+        .is_some_and(|millicores| {
+            millicores as f32 / (agent.capacity.cores.max(1) * 1000) as f32 >= HIGH_CPU_SHARE
+        })
 }
 
 fn cost(session: &AgentSession) -> String {
@@ -366,11 +357,8 @@ fn facts(agent: &AgentRow<'_>, shown: Facts) -> Vec<Span<'static>> {
         None => {}
     }
     facts.extend([Span::styled(cost(session), style::fg(theme().text)), dot()]);
-    if let Some((millicores, share)) = busy_cpu(agent) {
-        facts.extend([
-            Span::styled(units::cores(millicores), style::fg(style::load(share))),
-            dot(),
-        ]);
+    if high_cpu(agent) {
+        facts.extend([Span::styled("high CPU", style::bold(theme().warn)), dot()]);
     }
     facts.extend(state_spans(agent));
     facts
@@ -430,10 +418,13 @@ fn input_line(agent: &AgentRow<'_>, draft: Option<&Draft>, width: usize) -> Line
         ),
         SessionState::Waiting(Waiting::Input(_)) => spread(
             vec![
-                prompt(theme().faint),
-                hint("it's asking you something in its pane"),
+                prompt(theme().warn),
+                Span::styled(
+                    "Pick an option from the screen above",
+                    style::bold(theme().warn),
+                ),
             ],
-            keys(&[("↵", "open")]),
+            keys(&[("1–9", "choose"), ("o", "open")]),
             width,
         ),
         SessionState::Working { .. } => Line::from(vec![
@@ -442,7 +433,7 @@ fn input_line(agent: &AgentRow<'_>, draft: Option<&Draft>, width: usize) -> Line
         ]),
         SessionState::Idle => spread(
             vec![prompt(theme().faint), hint("Message this session")],
-            keys(&[("i", "write")]),
+            keys(&[("↵", "write")]),
             width,
         ),
     }
