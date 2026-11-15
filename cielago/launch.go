@@ -43,7 +43,7 @@ func claudeTabLabel(name string) string {
 
 type Rex struct {
 	server string
-	remote *Remote
+	remote Machine
 }
 
 type rexSession struct {
@@ -58,6 +58,9 @@ type rexWindow struct {
 }
 
 func (x Rex) rex(args ...string) ([]byte, error) {
+	if x.server == "" {
+		return run(x.remote.Context(), "rex", args...)
+	}
 	return run(x.remote.Context(), "rex", append([]string{"-S", x.server}, args...)...)
 }
 

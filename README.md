@@ -48,10 +48,11 @@ to the machine that has room.
   running a magi agent shows up on its own, with its load beside its sessions:
   what each one is doing and costs, and whether it's waiting on you. No server
   or config file.
-- **Read and answer.** Select a session to read its conversation, drawn as
-  Markdown with highlighted code. For a session in Rex, `↵` writes to it, `y`
-  or `n` answers its permission prompt, and `1`–`9` picks an option when it
-  asks a question.
+- **Start, read and answer.** `c` starts a Claude Code or Codex session in any
+  project on any machine, in that project's Rex tab. Select a session to read
+  its conversation, drawn as Markdown with highlighted code; `↵` writes to it,
+  `y` or `n` answers its permission prompt, `1`–`9` picks an option when it
+  asks a question, and `x` stops a turn.
 - **Limits and alerts.** Your Claude and Codex 5-hour and weekly windows, and
   alerts when a session needs you, a machine goes quiet or a plan nearly runs
   out.
@@ -116,8 +117,9 @@ x86_64 or arm64, after checking their SHA-256. Every machine needs
   `cielago init`, then
   `claude plugin marketplace add felitrejos/magi && claude plugin install cielago@magi`.
 
-Keys: `↑↓` select, `↵` or a click on the conversation to write, `y`/`n` allow
-or deny, `1`–`9` choose, `o` open in Rex, `m` move, `a` alerts, `q` quit. `magi fleet --json` prints the same picture once,
+Keys: `↑↓` select, `c` new session, `↵` or a click on the conversation to
+write, `y`/`n` allow or deny, `1`–`9` choose, `x` stop, `o` open in Rex, `m`
+move, `a` alerts, `q` quit. `magi fleet --json` prints the same picture once,
 for scripts.
 
 ## In Rex and other terminals
@@ -167,9 +169,9 @@ magi notices, says so, and falls back to what the transcripts show.
 
 ## Roadmap
 
-- Sessions magi starts itself, so any session can be messaged and approved,
-  not only those in Rex.
-- More agents: Gemini CLI, Cursor, Aider, OpenCode.
+Next: bringing Claude desktop sessions into Rex so magi can drive them, and
+using more of Rex, such as its event stream and floating panes. The full list
+is in [ROADMAP.md](ROADMAP.md).
 
 What magi and cielago read, send and change is in [SECURITY.md](SECURITY.md).
 Licensed [MIT](LICENSE).

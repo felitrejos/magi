@@ -18,7 +18,7 @@ use crate::proto::{
 use crate::screen::Capturer;
 use crate::sessions::rex::Location;
 use crate::sessions::{Board, Sessions, Snapshot};
-use crate::{log, tailscale, typing};
+use crate::{log, opener, tailscale, typing};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -475,6 +475,22 @@ fn spawn_requests(
                             typing::choose(found, pane, option, waiting_secs)
                         });
                     }
+                    Request::Stop { session } => {
+                        type_into(&session, &agent, &replies, typing::stop);
+                    }
+                    Request::Folders => match opener::folders() {
+                        Ok(folders) => {
+                            if let Ok(frame) = proto::encode_frame(&AgentMessage::Folders(folders))
+                            {
+                                let _ = replies.send(frame.into());
+                            }
+                        }
+                        Err(text) => reply(&replies, false, text),
+                    },
+                    Request::Open { dir, codex } => match opener::open(&dir, codex) {
+                        Ok(text) => reply(&replies, true, text),
+                        Err(text) => reply(&replies, false, text),
+                    },
                     Request::Watch { session } => {
                         let delivered = watcher
                             .as_ref()

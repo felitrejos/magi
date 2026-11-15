@@ -36,6 +36,7 @@ pub enum LinkUpdate {
     Rejected(String),
     Reply(Reply),
     Screen(Screen),
+    Folders(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -309,6 +310,8 @@ pub struct Model {
     pub pending_move: Option<PendingMove>,
     pub draft: Option<Draft>,
     following: Option<Following>,
+    pub picker: Option<Picker>,
+    awaiting: Option<Awaiting>,
     pub watching: Option<(Endpoint, String)>,
     screens: HashMap<String, Screen>,
 }
@@ -326,6 +329,51 @@ pub struct PendingMove {
     pub title: String,
     pub from: String,
     pub to: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Picker {
+    pub endpoint: Endpoint,
+    pub machine: String,
+    pub folders: Option<Vec<String>>,
+    pub filter: String,
+    pub selected: usize,
+    pub codex: bool,
+}
+
+impl Picker {
+    pub fn new(endpoint: Endpoint, machine: String) -> Self {
+        Self {
+            endpoint,
+            machine,
+            folders: None,
+            filter: String::new(),
+            selected: 0,
+            codex: false,
+        }
+    }
+
+    pub fn shown<'a>(&'a self, recent: &[String]) -> Vec<&'a str> {
+        let filter = self.filter.to_lowercase();
+        let mut shown: Vec<&str> = self
+            .folders
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|folder| folder.to_lowercase().contains(&filter))
+            .collect();
+        let name = |folder: &str| folder.rsplit('/').next().unwrap_or(folder).to_string();
+        shown.sort_by_key(|folder| (!recent.contains(&name(folder)), folder.to_lowercase()));
+        shown
+    }
+}
+
+#[derive(Clone)]
+struct Awaiting {
+    endpoint: Endpoint,
+    project: String,
+    known: Vec<String>,
+    since: Instant,
 }
 
 #[derive(Clone)]
@@ -382,6 +430,8 @@ impl Model {
             pending_move: None,
             draft: None,
             following: None,
+            picker: None,
+            awaiting: None,
             watching: None,
             screens: HashMap::new(),
         }
@@ -390,6 +440,16 @@ impl Model {
     pub fn apply(&mut self, endpoint: Endpoint, update: LinkUpdate, now: Instant) {
         let update = match update {
             LinkUpdate::Reply(reply) => return self.flash(reply.text, reply.ok, now),
+            LinkUpdate::Folders(folders) => {
+                if let Some(picker) = self
+                    .picker
+                    .as_mut()
+                    .filter(|picker| picker.endpoint == endpoint)
+                {
+                    picker.folders = Some(folders);
+                }
+                return;
+            }
             LinkUpdate::Screen(screen) => {
                 if self
                     .watching
@@ -446,8 +506,8 @@ impl Model {
                 link.state = LinkState::Lost { since, reason };
             }
             LinkUpdate::Rejected(reason) => link.state = LinkState::Rejected(reason),
-            LinkUpdate::Reply(_) | LinkUpdate::Screen(_) => {
-                unreachable!("replies and screens are handled before a link is looked up")
+            LinkUpdate::Reply(_) | LinkUpdate::Screen(_) | LinkUpdate::Folders(_) => {
+                unreachable!("replies, screens and folders are handled before a link is looked up")
             }
         }
     }
@@ -770,6 +830,53 @@ impl Model {
         self.reselect(now);
     }
 
+    pub fn recent_projects(&self, endpoint: Endpoint, now: Instant) -> Vec<String> {
+        self.agents(now)
+            .into_iter()
+            .filter(|agent| agent.endpoint == endpoint)
+            .map(|agent| agent.session.project.clone())
+            .collect()
+    }
+
+    pub fn await_session(&mut self, endpoint: Endpoint, dir: &str, now: Instant) {
+        let known = self
+            .agents(now)
+            .into_iter()
+            .map(|agent| agent.session.id.clone())
+            .collect();
+        self.awaiting = Some(Awaiting {
+            endpoint,
+            project: dir.rsplit('/').next().unwrap_or(dir).to_string(),
+            known,
+            since: now,
+        });
+    }
+
+    fn select_opened(&mut self, now: Instant) {
+        let Some(awaiting) = self.awaiting.clone() else {
+            return;
+        };
+        let opened = self
+            .listed(now)
+            .iter()
+            .find_map(|listed| match &listed.entry {
+                Entry::Session(agent)
+                    if agent.endpoint == awaiting.endpoint
+                        && agent.session.project == awaiting.project
+                        && !awaiting.known.contains(&agent.session.id) =>
+                {
+                    Some(agent.session.id.clone())
+                }
+                _ => None,
+            });
+        if let Some(session) = opened {
+            self.focus = Some(Focus::Agent(session));
+            self.awaiting = None;
+        } else if now.duration_since(awaiting.since) > FOLLOW_FOR {
+            self.awaiting = None;
+        }
+    }
+
     pub fn follow(&mut self, session: String, from: Endpoint, to: String, now: Instant) {
         self.following = Some(Following {
             session,
@@ -804,6 +911,7 @@ impl Model {
 
     pub fn reselect(&mut self, now: Instant) {
         self.follow_moved(now);
+        self.select_opened(now);
         let rows = self.rows(now);
         let listed = self.listed(now);
         let count = rows.len() + listed.len();

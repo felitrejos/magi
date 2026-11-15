@@ -153,7 +153,12 @@ impl Link {
         let welcome = match proto::read_frame::<AgentMessage, _>(&mut *conn, &mut buf) {
             Ok(AgentMessage::Welcome(welcome)) => welcome,
             Ok(AgentMessage::Rejected(reason)) => return Ended::Rejected(reason),
-            Ok(AgentMessage::Sample(_) | AgentMessage::Reply(_) | AgentMessage::Screen(_)) => {
+            Ok(
+                AgentMessage::Sample(_)
+                | AgentMessage::Reply(_)
+                | AgentMessage::Screen(_)
+                | AgentMessage::Folders(_),
+            ) => {
                 return lost(
                     io::Error::other("agent sent something before its welcome"),
                     false,
@@ -180,6 +185,7 @@ impl Link {
                 Ok(AgentMessage::Sample(sample)) => LinkUpdate::Sample(Box::new(sample)),
                 Ok(AgentMessage::Reply(reply)) => LinkUpdate::Reply(reply),
                 Ok(AgentMessage::Screen(screen)) => LinkUpdate::Screen(screen),
+                Ok(AgentMessage::Folders(folders)) => LinkUpdate::Folders(folders),
                 Ok(AgentMessage::Rejected(reason)) => return Ended::Rejected(reason),
                 Ok(AgentMessage::Welcome(_)) => {
                     return lost(io::Error::other("agent sent a second welcome"), true);

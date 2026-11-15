@@ -48,6 +48,16 @@ pub fn answer(
     Ok(format!("{verb} {what} in {}", session.title))
 }
 
+pub fn stop(session: &AgentSession, pane: Option<&Location>) -> Result<String, String> {
+    let pane = pane.ok_or_else(|| not_in_rex(session))?;
+    if !matches!(session.state, SessionState::Working { .. }) {
+        return Err(format!("{} isn't working on anything", session.title));
+    }
+    let _typing = TYPING.lock().unwrap_or_else(PoisonError::into_inner);
+    send(pane, DENY)?;
+    Ok(format!("Stopped {}", session.title))
+}
+
 pub fn choose(
     session: &AgentSession,
     pane: Option<&Location>,
@@ -242,6 +252,18 @@ mod tests {
         assert!(same_question(&asking, 1, 30).is_err());
         let idle = session(Agent::ClaudeCode, SessionState::Idle);
         assert!(same_question(&idle, 1, 0).is_err());
+    }
+
+    #[test]
+    fn only_a_working_session_in_rex_can_be_stopped() {
+        assert!(stop(&session(Agent::ClaudeCode, SessionState::Idle), None).is_err());
+        assert_eq!(
+            stop(
+                &session(Agent::ClaudeCode, SessionState::Working { tool: None }),
+                None
+            ),
+            Err("fix the build isn't in a Rex pane, so magi can't type into it".into())
+        );
     }
 
     #[test]

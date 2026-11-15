@@ -259,6 +259,8 @@ enum Action {
     Allow,
     Deny,
     Choose(u8),
+    New,
+    Stop,
 }
 
 fn action(key: &Key) -> Option<Action> {
@@ -275,6 +277,8 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('m') => Action::Move,
         Key::Char('y') => Action::Allow,
         Key::Char('n') => Action::Deny,
+        Key::Char('c') => Action::New,
+        Key::Char('x') => Action::Stop,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
         _ => return None,
     })
@@ -336,9 +340,111 @@ fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Ke
             }
             return;
         }
-        Key::Enter | Key::Up | Key::Down | Key::First | Key::Last => {}
+        Key::Enter | Key::Up | Key::Down | Key::First | Key::Last | Key::Tab => {}
     }
     model.draft = Some(draft);
+}
+
+fn target_machine(model: &Model, now: Instant) -> Option<(Endpoint, String)> {
+    if let Some(agent) = model.selected_agent(now) {
+        return Some((agent.endpoint, agent.machine.clone()));
+    }
+    let rows = model.rows(now);
+    let row = rows.get(model.selected)?;
+    Some((row.endpoint, row.name.clone()))
+}
+
+fn open_picker(model: &mut Model, links: &Links, now: Instant) {
+    let Some((endpoint, machine)) = target_machine(model, now) else {
+        return;
+    };
+    if let Err(error) = links.request(endpoint, &proto::Request::Folders) {
+        return model.flash(
+            format!("couldn't ask {machine} for its projects: {error}"),
+            false,
+            now,
+        );
+    }
+    model.picker = Some(model::Picker::new(endpoint, machine));
+}
+
+fn edit_picker(
+    model: &mut Model,
+    links: &Links,
+    mut picker: model::Picker,
+    key: Key,
+    now: Instant,
+) {
+    let recent = model.recent_projects(picker.endpoint, now);
+    let count = picker.shown(&recent).len();
+    match key {
+        Key::Char(c) if !c.is_control() => {
+            picker.filter.push(c);
+            picker.selected = 0;
+        }
+        Key::Paste(text) => {
+            picker
+                .filter
+                .extend(text.chars().filter(|c| !c.is_control()));
+            picker.selected = 0;
+        }
+        Key::Backspace => {
+            picker.filter.pop();
+            picker.selected = 0;
+        }
+        Key::Up => picker.selected = picker.selected.saturating_sub(1),
+        Key::Down => picker.selected = (picker.selected + 1).min(count.saturating_sub(1)),
+        Key::First => picker.selected = 0,
+        Key::Last => picker.selected = count.saturating_sub(1),
+        Key::Tab => picker.codex = !picker.codex,
+        Key::Escape | Key::Interrupt => return,
+        Key::Enter => {
+            let Some(dir) = picker
+                .shown(&recent)
+                .get(picker.selected)
+                .map(|dir| dir.to_string())
+            else {
+                model.picker = Some(picker);
+                return;
+            };
+            let request = proto::Request::Open {
+                dir: dir.clone(),
+                codex: picker.codex,
+            };
+            match links.request(picker.endpoint, &request) {
+                Ok(()) => {
+                    model.await_session(picker.endpoint, &dir, now);
+                    let agent = if picker.codex { "Codex" } else { "Claude" };
+                    let name = dir.rsplit('/').next().unwrap_or(&dir);
+                    model.flash(
+                        format!("Opening {agent} in {name} on {}…", picker.machine),
+                        true,
+                        now,
+                    );
+                }
+                Err(error) => model.flash(format!("couldn't open it: {error}"), false, now),
+            }
+            return;
+        }
+        Key::Char(_) => {}
+    }
+    model.picker = Some(picker);
+}
+
+fn stop(model: &mut Model, links: &Links, now: Instant) {
+    let Some(agent) = model.selected_agent(now) else {
+        return;
+    };
+    let working = matches!(agent.session.state, proto::SessionState::Working { .. });
+    if !working || agent.session.pane.is_none() {
+        return;
+    }
+    let request = proto::Request::Stop {
+        session: agent.session.id.clone(),
+    };
+    if let Err(error) = links.request(agent.endpoint, &request) {
+        model.flash(format!("couldn't stop it: {error}"), false, now);
+    }
 }
 
 fn choose(model: &mut Model, links: &Links, option: u8, now: Instant) {
@@ -457,6 +563,9 @@ fn sync_watch(model: &mut Model, links: &Links) {
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
     let now = Instant::now();
     match event {
+        Event::Input(Input::Key(key)) if let Some(picker) = model.picker.take() => {
+            edit_picker(model, links, picker, key, now);
+        }
         Event::Input(Input::Key(key)) if let Some(draft) = model.draft.take() => {
             edit_draft(model, links, draft, key, now);
         }
@@ -479,6 +588,8 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Allow) => answer(model, links, true, now),
             Some(Action::Deny) => answer(model, links, false, now),
             Some(Action::Choose(option)) => choose(model, links, option, now),
+            Some(Action::New) => open_picker(model, links, now),
+            Some(Action::Stop) => stop(model, links, now),
             None => {}
         },
         Event::Opened(result) => {
@@ -1211,5 +1322,52 @@ mod tests {
         let shown = screen(&model);
         assert!(shown.contains("localhost:3000 waiting"), "{shown}");
         assert!(!shown.contains("localhost:4000"), "{shown}");
+    }
+
+    #[test]
+    fn the_picker_lists_active_projects_first_filters_as_you_type_and_opens_the_choice() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let mut active = claude("s1", 0);
+        active.project = "web".into();
+        model.apply(Endpoint::Local, live_sample(1_000, Some(active)), now);
+        model.picker = Some(model::Picker::new(Endpoint::Local, "mac".into()));
+        model.apply(
+            Endpoint::Local,
+            LinkUpdate::Folders(vec![
+                "/home/me/api".into(),
+                "/home/me/docs".into(),
+                "/home/me/web".into(),
+            ]),
+            now,
+        );
+        let recent = model.recent_projects(Endpoint::Local, now);
+        assert_eq!(
+            model.picker.as_ref().unwrap().shown(&recent),
+            ["/home/me/web", "/home/me/api", "/home/me/docs"]
+        );
+        let keys = [
+            key(Key::Char('d')),
+            key(Key::Char('q')),
+            key(Key::Backspace),
+            key(Key::Down),
+            key(Key::Tab),
+        ];
+        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
+        let picker = model.picker.clone().unwrap();
+        assert_eq!(
+            (picker.filter.as_str(), picker.selected, picker.codex),
+            ("d", 0, true)
+        );
+        assert_eq!(picker.shown(&recent), ["/home/me/docs"]);
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.picker, None);
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some(("couldn't open it: that machine isn't connected", false))
+        );
+        model.picker = Some(model::Picker::new(Endpoint::Local, "mac".into()));
+        handle_batch([key(Key::Escape)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.picker, None);
     }
 }

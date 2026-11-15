@@ -33,6 +33,8 @@ Usage:
   cielago status                        recent handoffs and parked checkouts
   cielago unpark [dir]                  stop treating a checkout as parked
   cielago allow [dir]                   let the project's .cielago.toml run after handoffs
+  cielago open <folder> [--codex]       start a Claude (or Codex) session there, in its project's
+                                        Rex session; --list prints the project folders it knows
   cielago forwards                      ports this machine forwards to sessions that moved
   cielago forwards close <session-id>   stop forwarding a moved session's ports
   cielago tasks                         work sent to other machines, and its state
@@ -95,6 +97,8 @@ func main() {
 			dir = args[1]
 		}
 		err = unpark(dir, os.Stdout)
+	case len(args) >= 1 && args[0] == "open":
+		err = openCommand(args[1:], os.Stdout)
 	case len(args) >= 1 && args[0] == "forwards":
 		err = forwardsCommand(args[1:], os.Stdout)
 	case len(args) == 2 && args[0] == "forward-run":

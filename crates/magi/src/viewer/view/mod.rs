@@ -2,6 +2,7 @@ mod agents;
 mod history;
 mod machines;
 mod markdown;
+mod picker;
 
 use std::time::Instant;
 
@@ -15,7 +16,7 @@ use super::graphics::Graphics;
 use super::model::{Entry, Model};
 use super::style::{self, theme};
 use super::units;
-use crate::proto::{Agent, FULL, Plan};
+use crate::proto::{Agent, FULL, Plan, SessionState};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -110,7 +111,11 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     };
     agents::render_list(frame, agent_area, model, &listed, top, rows.len(), graphics);
 
-    if model.showing_alerts {
+    if let Some(picker) = &model.picker {
+        let recent = model.recent_projects(picker.endpoint, now);
+        let home = std::env::var("HOME").unwrap_or_default();
+        picker::render(frame, detail_area, picker, &recent, &home);
+    } else if model.showing_alerts {
         history::render(frame, detail_area, &model.alerts);
     } else if let Some(row) = rows.get(model.selected) {
         machines::render_detail(frame, detail_area, row, model.port, now, graphics);
@@ -437,15 +442,20 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
 
 fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     let Some(agent) = model.selected_agent(now) else {
-        return Vec::new();
+        return vec![("c", "new session")];
     };
     let mut actions = Vec::new();
-    if agent.session.pane.is_some() {
+    let in_rex = agent.session.pane.is_some();
+    if in_rex && agent.live && matches!(agent.session.state, SessionState::Working { .. }) {
+        actions.push(("x", "stop"));
+    }
+    if in_rex {
         actions.push(("o", "open in Rex"));
     }
     if agent.live && agent.session.agent == Agent::ClaudeCode {
         actions.push(("m", "move"));
     }
+    actions.push(("c", "new session"));
     actions
 }
 

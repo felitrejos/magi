@@ -6,6 +6,7 @@ mod conversation;
 mod handoff;
 mod log;
 mod net;
+mod opener;
 mod proto;
 mod screen;
 mod service;

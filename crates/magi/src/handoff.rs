@@ -220,7 +220,7 @@ fn last_line(output: &[u8]) -> Option<String> {
         .map(|line| line.trim_start_matches("cielago: ").to_string())
 }
 
-fn search_dirs() -> Vec<PathBuf> {
+pub fn search_dirs() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
@@ -236,7 +236,7 @@ fn search_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-fn find(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+pub fn find(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     dirs.iter().map(|dir| dir.join(name)).find(|path| {
         path.metadata()

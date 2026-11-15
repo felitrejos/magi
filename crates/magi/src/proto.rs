@@ -157,6 +157,7 @@ pub enum AgentMessage {
     Rejected(String),
     Reply(Reply),
     Screen(Screen),
+    Folders(Vec<String>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -182,6 +183,14 @@ pub enum Request {
         session: String,
         option: u8,
         waiting_secs: u32,
+    },
+    Stop {
+        session: String,
+    },
+    Folders,
+    Open {
+        dir: String,
+        codex: bool,
     },
 }
 
