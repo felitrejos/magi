@@ -33,6 +33,8 @@ Usage:
   cielago status                        recent handoffs and parked checkouts
   cielago unpark [dir]                  stop treating a checkout as parked
   cielago allow [dir]                   let the project's .cielago.toml run after handoffs
+  cielago forwards                      ports this machine forwards to sessions that moved
+  cielago forwards close <session-id>   stop forwarding a moved session's ports
   cielago tasks                         work sent to other machines, and its state
   cielago tasks show <id>               a task's output; collects it if it's finished
   cielago tasks cancel <id>             stop a task and remove its copy
@@ -44,6 +46,7 @@ Used by the Claude Code plugin:
                                         with -, read a note on what was running from stdin
   cielago hook stop                     the plugin's Stop hook (reads the hook JSON on stdin)
   cielago mcp                           the plugin's tool server, on stdin and stdout
+  cielago forward-run <session-id>      keeps a moved session's ports forwarded (started by a move)
 `
 
 var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -92,6 +95,10 @@ func main() {
 			dir = args[1]
 		}
 		err = unpark(dir, os.Stdout)
+	case len(args) >= 1 && args[0] == "forwards":
+		err = forwardsCommand(args[1:], os.Stdout)
+	case len(args) == 2 && args[0] == "forward-run":
+		err = runForwards(args[1])
 	case len(args) >= 1 && args[0] == "move":
 		err = moveCommand(args[1:], os.Stdout)
 	case len(args) == 1 && args[0] == "mcp":
@@ -215,7 +222,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 		})
 	}
 	if a.Notify {
-		res.ParkNote = errors.Join(res.ParkNote, writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds())}))
+		res.ParkNote = errors.Join(res.ParkNote, writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}))
 	}
 	if err := retire(a, input.SessionID, input.TranscriptPath); err != nil {
 		return err
@@ -248,6 +255,12 @@ func handedOff(a armed, res Result) map[string]string {
 	}
 	if res.TrustNote != nil {
 		where += fmt.Sprintf(". %v", res.TrustNote)
+	}
+	if forwarded := res.Forwarded(); forwarded != "" {
+		where += ". " + forwarded
+	}
+	if res.PortNote != nil {
+		where += fmt.Sprintf(". Forwarding its ports failed: %v", res.PortNote)
 	}
 	took := res.Summary()
 	if a.Desktop {
@@ -379,6 +392,9 @@ func pullCommand(hostName, sessionID string) error {
 		if note != nil {
 			fmt.Printf("Note: %v\n", note)
 		}
+	}
+	if err := closeForwards(res.Session); err != nil {
+		fmt.Printf("Note: %v\n", err)
 	}
 	res.PromptInfo.Project = setUpPulledProject(res.Project, res.ProjectRoot, os.Stdout)
 	return resumeHere(res.ToDir, res.Session, res.Name, handoffPrompt(res.PromptInfo))

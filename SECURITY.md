@@ -74,6 +74,10 @@
   checks bypassed.
 - A project's `.cielago.toml` runs only after you approve that exact file with
   `cielago allow`; any edit needs a new approval.
+- Its `ports` are forwarded over your own SSH connection from the machine a
+  session left, listening on `127.0.0.1` only, so other devices on that
+  network can't use them. `cielago forwards` lists them, `cielago forwards
+  close` stops one, and bringing the session back stops it too.
 
 ## Releases
 

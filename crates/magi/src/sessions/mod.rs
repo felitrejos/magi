@@ -1,5 +1,6 @@
 mod claude;
 mod codex;
+mod forwards;
 mod ledger;
 mod pricing;
 mod process;
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::proto::{Agent, AgentSession, BasisPoints, Plan, StatusReport, Window};
+use crate::proto::{Agent, AgentSession, BasisPoints, Forward, Plan, StatusReport, Window};
 use claude::ClaudeSessions;
 use codex::Codex;
 
@@ -126,6 +127,7 @@ pub struct Snapshot {
     pub notices: Vec<String>,
     pub panes: HashMap<String, rex::Location>,
     pub transcripts: HashMap<String, (Agent, PathBuf)>,
+    pub forwards: Vec<Forward>,
 }
 
 pub struct Found {
@@ -140,6 +142,7 @@ pub struct Sessions {
     panes: rex::Panes,
     meter: usage::Meter,
     tasks: Option<tasks::Tasks>,
+    forwards: Option<forwards::Forwards>,
 }
 
 impl Sessions {
@@ -151,6 +154,7 @@ impl Sessions {
             panes: rex::Panes::default(),
             meter: usage::Meter::default(),
             tasks: tasks::Tasks::for_this_user(),
+            forwards: forwards::Forwards::for_this_user(),
         })
     }
 
@@ -172,6 +176,9 @@ impl Sessions {
                 .push(format!("can't read Claude Code's sessions: {error}")),
         }
         snapshot.plans.extend(board.plan(now_ms / 1000));
+        if let Some(forwards) = &self.forwards {
+            snapshot.forwards = forwards.read();
+        }
         if let Some(codex) = &mut self.codex {
             let (sessions, plan) = codex.poll(now, now_ms, &mut budget);
             found.extend(sessions);

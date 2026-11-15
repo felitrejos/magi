@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
 use crate::proto::{
-    Agent, AgentSession, FULL, Identity, MAX_PROMPT_CHARS, Plan, Reply, Sample, Screen,
-    SessionState, Welcome,
+    Agent, AgentSession, FULL, ForwardState, Identity, MAX_PROMPT_CHARS, Plan, Reply, Sample,
+    Screen, SessionState, Welcome,
 };
 use crate::tailscale::Peer;
 use unicode_segmentation::UnicodeSegmentation;
@@ -561,6 +561,32 @@ impl Model {
         }
         plans.sort_by_key(|plan| plan.agent);
         plans
+    }
+
+    pub fn forwards_to(
+        &self,
+        session: &str,
+        machine: &str,
+        now: Instant,
+    ) -> Vec<(u16, ForwardState)> {
+        let names = |name: &str| {
+            let short = name.split('.').next().unwrap_or(name);
+            short.eq_ignore_ascii_case(machine.split('.').next().unwrap_or(machine))
+        };
+        let mut ports: Vec<(u16, ForwardState)> = self
+            .rows(now)
+            .into_iter()
+            .filter(|row| row.state() == Some(&LinkState::Live))
+            .filter_map(|row| row.machine()?.latest.as_ref())
+            .flat_map(|sample| &sample.forwards)
+            .filter(|forward| {
+                forward.session == session && (names(&forward.host) || names(&forward.ssh))
+            })
+            .flat_map(|forward| forward.ports.iter().map(|port| (*port, forward.state)))
+            .collect();
+        ports.sort_unstable();
+        ports.dedup_by_key(|(port, _)| *port);
+        ports
     }
 
     pub fn notices(&self, now: Instant) -> Vec<String> {

@@ -131,6 +131,7 @@ fn sample(load: f32, cores: usize) -> Sample {
             },
         ],
         notices: Vec::new(),
+        forwards: Vec::new(),
     }
 }
 

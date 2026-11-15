@@ -1178,4 +1178,38 @@ mod tests {
             ("s1", homelab)
         );
     }
+
+    #[test]
+    fn a_moved_session_shows_the_ports_its_old_machine_forwards_to_it() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
+        let LinkUpdate::Sample(mut here) = live_sample(1_000, None) else {
+            unreachable!()
+        };
+        here.forwards = vec![
+            crate::proto::Forward {
+                session: "s1".into(),
+                host: "homelab".into(),
+                ssh: "homelab".into(),
+                ports: vec![3000],
+                state: crate::proto::ForwardState::Waiting,
+            },
+            crate::proto::Forward {
+                session: "s1".into(),
+                host: "nas".into(),
+                ssh: "nas".into(),
+                ports: vec![4000],
+                state: crate::proto::ForwardState::Connected,
+            },
+        ];
+        model.apply(Endpoint::Local, LinkUpdate::Sample(here), now);
+        model.apply(homelab, live_sample(1_000, Some(claude("s1", 0))), now);
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        model.selected = 3;
+        assert_eq!(model.selected_agent(now).unwrap().session.id, "s1");
+        let shown = screen(&model);
+        assert!(shown.contains("localhost:3000 waiting"), "{shown}");
+        assert!(!shown.contains("localhost:4000"), "{shown}");
+    }
 }

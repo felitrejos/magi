@@ -85,6 +85,7 @@ impl Collector {
             sessions: Vec::new(),
             plans: Vec::new(),
             notices: Vec::new(),
+            forwards: Vec::new(),
         })
     }
 

@@ -85,6 +85,8 @@ struct Event {
     step: Option<String>,
     #[serde(default)]
     seconds: Option<String>,
+    #[serde(default)]
+    ports: Vec<u16>,
 }
 
 fn said(event: &Event, title: &str, to: &str) -> String {
@@ -98,15 +100,30 @@ fn said(event: &Event, title: &str, to: &str) -> String {
                 "launch" | "start" => "starting Claude there",
                 "panes" => "setting up the project",
                 "tab" => "opening its tab",
+                "ports" => "forwarding its ports",
                 other => other,
             };
             format!("Moving {title} to {to} · {doing}…")
         }
         "waiting" => format!("{title} moves to {to} when its turn ends…"),
-        "moved" => match &event.seconds {
-            Some(seconds) => format!("Moved {title} to {to} in {seconds}s"),
-            None => format!("Moved {title} to {to}"),
-        },
+        "moved" => {
+            let took = event
+                .seconds
+                .as_ref()
+                .map(|seconds| format!(" in {seconds}s"))
+                .unwrap_or_default();
+            let ports: Vec<String> = event
+                .ports
+                .iter()
+                .map(|port| format!("localhost:{port}"))
+                .collect();
+            let reach = if ports.is_empty() {
+                String::new()
+            } else {
+                format!(" · {} reaches it there", ports.join(", "))
+            };
+            format!("Moved {title} to {to}{took}{reach}")
+        }
         _ => format!("couldn't move {title}: {}", event.message),
     }
 }
@@ -324,7 +341,8 @@ echo '{"event":"waiting","ok":true,"session":"0b7a3c1e","host":"homelab","messag
 echo 'not json'
 echo '{"event":"step","ok":true,"step":"sync","message":"Moving session 0b7a3c1e to homelab: sync"}'
 echo '{"event":"step","ok":true,"step":"panes","message":"Moving session 0b7a3c1e to homelab: panes"}'
-echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message":"Moved session 0b7a3c1e to homelab in 4.3s (inspect 1.1s, sync 0.2s).","seconds":"4.3"}'"#,
+echo '{"event":"step","ok":true,"step":"ports","message":"Moving session 0b7a3c1e to homelab: ports"}'
+echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message":"Moved session 0b7a3c1e to homelab in 4.3s (inspect 1.1s, sync 0.2s).","seconds":"4.3","ports":[3000]}'"#,
         );
         let texts: Vec<(bool, String)> = replies(&program)
             .into_iter()
@@ -345,7 +363,14 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
                     true,
                     "Moving fix login to homelab · setting up the project…".into()
                 ),
-                (true, "Moved fix login to homelab in 4.3s".into())
+                (
+                    true,
+                    "Moving fix login to homelab · forwarding its ports…".into()
+                ),
+                (
+                    true,
+                    "Moved fix login to homelab in 4.3s · localhost:3000 reaches it there".into()
+                )
             ]
         );
         std::fs::remove_dir_all(dir).unwrap();

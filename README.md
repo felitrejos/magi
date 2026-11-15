@@ -82,9 +82,21 @@ acts on it.
 
 `cielago init` writes `~/.config/cielago/config.toml` with your machines, where
 projects live on each, and which files count as secrets; `cielago doctor`
-checks both ends. A project's
-`.cielago.toml` can name setup commands and services to start when it
-arrives, once you approve them with `cielago allow`.
+checks both ends.
+
+A project's `.cielago.toml` says what to start when it arrives, and which
+ports should follow it:
+
+```toml
+setup = "pnpm install"
+services = ["pnpm dev"]
+ports = [3000]
+```
+
+After a move, `localhost:3000` on the machine it left reaches the dev server
+on the new one, over SSH, so your browser tab keeps working. magi shows the
+port in the session's header, and moving the session back closes the forward.
+Approve the file once with `cielago allow`.
 
 ## Install
 

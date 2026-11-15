@@ -138,6 +138,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                     suggestion.as_ref(),
                     preview,
                     model.draft.as_ref(),
+                    &model.forwards_to(&agent.session.id, &agent.machine, now),
                 );
             }
             Entry::Fold { machine, count, .. } => {

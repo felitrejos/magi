@@ -1858,14 +1858,14 @@ func TestDoctorChecksTheServer(t *testing.T) {
 	}
 }
 
-func TestAProjectFileTakesSetupAndServicesOnly(t *testing.T) {
+func TestAProjectFileTakesSetupServicesAndPortsOnly(t *testing.T) {
 	p, err := parseProject([]byte("setup = \"pnpm install\"\nservices = [\"pnpm dev\", \"pnpm worker\"]\n"))
 	if err != nil || p.Setup != "pnpm install" || strings.Join(p.Services, ",") != "pnpm dev,pnpm worker" || len(p.Hash) != 64 {
 		t.Fatalf("project = %+v, %v", p, err)
 	}
 	for body, want := range map[string]string{
 		"setup = \"x\"\nbuild = \"y\"\n": "unknown key",
-		"":                               "neither setup nor services",
+		"":                               "no setup, services or ports",
 		"services = [\"\"]\n":            "can't be empty",
 		"setup = [\n":                    projectFile,
 		"setup = \"  \"\n":               "setup can't be empty",

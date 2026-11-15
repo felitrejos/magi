@@ -25,6 +25,7 @@ type Project struct {
 	Hash     string   `toml:"-"`
 	Setup    string   `toml:"setup"`
 	Services []string `toml:"services"`
+	Ports    []int    `toml:"ports"`
 }
 
 func parseProject(data []byte) (*Project, error) {
@@ -34,13 +35,23 @@ func parseProject(data []byte) (*Project, error) {
 		return nil, fmt.Errorf("%s: %w", projectFile, err)
 	}
 	if extra := md.Undecoded(); len(extra) > 0 {
-		return nil, fmt.Errorf("%s: unknown key %q; it takes setup and services", projectFile, extra[0].String())
+		return nil, fmt.Errorf("%s: unknown key %q; it takes setup, services and ports", projectFile, extra[0].String())
 	}
 	if md.IsDefined("setup") && strings.TrimSpace(p.Setup) == "" {
 		return nil, fmt.Errorf("%s: setup can't be empty", projectFile)
 	}
-	if p.Setup == "" && len(p.Services) == 0 {
-		return nil, fmt.Errorf("%s has neither setup nor services", projectFile)
+	if p.Setup == "" && len(p.Services) == 0 && len(p.Ports) == 0 {
+		return nil, fmt.Errorf("%s has no setup, services or ports", projectFile)
+	}
+	seen := map[int]bool{}
+	for _, port := range p.Ports {
+		if port < 1 || port > 65535 {
+			return nil, fmt.Errorf("%s: %d isn't a port", projectFile, port)
+		}
+		if seen[port] {
+			return nil, fmt.Errorf("%s: port %d is listed twice", projectFile, port)
+		}
+		seen[port] = true
 	}
 	for _, command := range append([]string{p.Setup}, p.Services...) {
 		if strings.ContainsFunc(command, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
@@ -171,6 +182,9 @@ func allowProject(dir string, in io.Reader, out io.Writer) error {
 	}
 	for _, s := range p.Services {
 		fmt.Fprintf(out, "  service: %s\n", s)
+	}
+	for _, port := range p.Ports {
+		fmt.Fprintf(out, "  port:    %d, which the machine it leaves forwards to it\n", port)
 	}
 	fmt.Fprint(out, "Allow it? [y/N] ")
 	answer, err := bufio.NewReader(in).ReadString('\n')

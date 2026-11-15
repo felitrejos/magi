@@ -36,10 +36,23 @@ type Result struct {
 	SetupNote error
 	ParkNote  error
 	TrustNote error
+	PortNote  error
+	Ports     []int
 	NewFolder string
 	From      string
 	FromDir   string
 	ToDir     string
+}
+
+func (r Result) Forwarded() string {
+	if len(r.Ports) == 0 {
+		return ""
+	}
+	ports := make([]string, len(r.Ports))
+	for i, port := range r.Ports {
+		ports[i] = fmt.Sprintf("localhost:%d", port)
+	}
+	return fmt.Sprintf("%s here now reaches it there", strings.Join(ports, ", "))
 }
 
 func (r Result) Total() time.Duration {
@@ -200,10 +213,21 @@ func (h Handoff) Run() (res Result, err error) {
 	local.SetContext(finish)
 	remote.SetContext(finish)
 	res.ParkNote = errors.Join(settle(local, ws, h.Host.Exclude), recordTab(remote, h.SessionID, h.Host.Launcher, tab))
+	arrivalNote := closeForwardsOn(remote, h.SessionID)
 	if project != nil {
 		if err := st.run("panes", func() error { return startProject(remote, launcher, tab, where.Root, setupStatus, project) }); err != nil {
 			res.SetupNote = errors.Unwrap(err)
 		}
+	}
+	res.PortNote = arrivalNote
+	if project != nil && len(project.Ports) > 0 {
+		forwardErr := st.run("ports", func() error {
+			return startForwards(h.SessionID, h.HostName, h.Host.SSH, project.Ports)
+		})
+		if forwardErr == nil {
+			res.Ports = project.Ports
+		}
+		res.PortNote = errors.Join(res.PortNote, forwardErr)
 	}
 	if h.Host.NewTabCommand != "" {
 		res.TabNote = st.run("tab", func() error {

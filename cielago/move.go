@@ -30,6 +30,7 @@ type moveReport struct {
 	Took    string `json:"took,omitempty"`
 	Step    string `json:"step,omitempty"`
 	Seconds string `json:"seconds,omitempty"`
+	Ports   []int  `json:"ports,omitempty"`
 }
 
 type mover struct {
@@ -186,7 +187,7 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	local.SetContext(finish)
-	notes := []error{res.ParkNote, res.TabNote, res.SetupNote, res.ShowNote, res.TrustNote}
+	notes := []error{res.ParkNote, res.TabNote, res.SetupNote, res.ShowNote, res.TrustNote, res.PortNote}
 	if _, err := sh(local, `mv -- "$1" "$1.handed-off-to-$2"`, s.Transcript, m.host); err != nil {
 		notes = append(notes, fmt.Errorf("retiring the transcript here failed: %w", err))
 	}
@@ -200,10 +201,13 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	if res.NewFolder != "" {
 		msg += fmt.Sprintf("; %s didn't have the project yet, so it now lives at %s", m.host, res.NewFolder)
 	}
+	if forwarded := res.Forwarded(); forwarded != "" {
+		msg += "; " + forwarded
+	}
 	if note := errors.Join(notes...); note != nil {
 		msg += fmt.Sprintf(" (%v)", strings.ReplaceAll(note.Error(), "\n", "; "))
 	}
-	m.report(moveReport{Event: "moved", OK: true, Message: msg + ".", ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds())})
+	m.report(moveReport{Event: "moved", OK: true, Message: msg + ".", ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports})
 	return nil
 }
 

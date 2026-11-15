@@ -10,8 +10,8 @@ use super::{
     Composed, Cursor, clip, draw_panel, markdown, panel, selected_style, spans_width, spread, tail,
 };
 use crate::proto::{
-    AgentSession, BOLD, Child, Content, DIM, FULL, INVERSE, ITALIC, Run, SessionState, Shade,
-    UNDERLINE, Waiting,
+    AgentSession, BOLD, Child, Content, DIM, FULL, ForwardState, INVERSE, ITALIC, Run,
+    SessionState, Shade, UNDERLINE, Waiting,
 };
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Draft, Entry, Group, Listed, Model, MoveTarget};
@@ -255,6 +255,7 @@ pub fn render_detail(
     suggestion: Option<&MoveTarget>,
     preview: Preview<'_>,
     draft: Option<&Draft>,
+    forwards: &[(u16, ForwardState)],
 ) {
     let session = agent.session;
     let (mark, color) = style::agent(session.agent);
@@ -269,9 +270,9 @@ pub fn render_detail(
         Facts::StateOnly,
     ]
     .into_iter()
-    .map(|shown| facts(agent, shown))
+    .map(|shown| facts(agent, forwards, shown))
     .find(|facts| spans_width(facts) + title_width <= area.width as usize)
-    .unwrap_or_else(|| facts(agent, Facts::StateOnly));
+    .unwrap_or_else(|| facts(agent, forwards, Facts::StateOnly));
     let room = (area.width as usize).saturating_sub(spans_width(&facts) + 8);
     let title = clip(
         vec![
@@ -326,7 +327,11 @@ enum Facts {
     StateOnly,
 }
 
-fn facts(agent: &AgentRow<'_>, shown: Facts) -> Vec<Span<'static>> {
+fn facts(
+    agent: &AgentRow<'_>,
+    forwards: &[(u16, ForwardState)],
+    shown: Facts,
+) -> Vec<Span<'static>> {
     let session = agent.session;
     if shown == Facts::StateOnly {
         return state_spans(agent);
@@ -357,6 +362,17 @@ fn facts(agent: &AgentRow<'_>, shown: Facts) -> Vec<Span<'static>> {
         None => {}
     }
     facts.extend([Span::styled(cost(session), style::fg(theme().text)), dot()]);
+    for (port, state) in forwards {
+        let (note, color) = match state {
+            ForwardState::Connected => ("", theme().accent),
+            ForwardState::Waiting => (" waiting", theme().warn),
+            ForwardState::Stopped => (" stopped", theme().faint),
+        };
+        facts.extend([
+            Span::styled(format!("localhost:{port}{note}"), style::fg(color)),
+            dot(),
+        ]);
+    }
     if high_cpu(agent) {
         facts.extend([Span::styled("high CPU", style::bold(theme().warn)), dot()]);
     }

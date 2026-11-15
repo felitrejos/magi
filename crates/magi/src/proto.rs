@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 2000;
@@ -272,6 +272,23 @@ pub struct Sample {
     pub sessions: Vec<AgentSession>,
     pub plans: Vec<Plan>,
     pub notices: Vec<String>,
+    pub forwards: Vec<Forward>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Forward {
+    pub session: String,
+    pub host: String,
+    pub ssh: String,
+    pub ports: Vec<u16>,
+    pub state: ForwardState,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ForwardState {
+    Connected,
+    Waiting,
+    Stopped,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
@@ -388,6 +405,13 @@ mod tests {
             sessions: Vec::new(),
             plans: Vec::new(),
             notices: Vec::new(),
+            forwards: vec![Forward {
+                session: "s1".into(),
+                host: "homelab".into(),
+                ssh: "homelab".into(),
+                ports: vec![3000, 5173],
+                state: ForwardState::Connected,
+            }],
         }
     }
 
