@@ -155,6 +155,33 @@ func TestMovingABusySessionWaitsForItsTurnAndReportsTheHandoff(t *testing.T) {
 	}
 }
 
+func TestAMoveThatStaysRemembersItUntilTheTurnEnds(t *testing.T) {
+	f := newFixture(t)
+	f.moveHost()
+	id := "0f0f0f0f-1111-2222-3333-dddddddddddd"
+	f.localSession(id, "busy")
+	path, _ := armedPath(id)
+	done := make(chan string, 1)
+	go func() {
+		var out strings.Builder
+		moveCommand([]string{id, "server", "--json", "--stay"}, &out)
+		done <- out.String()
+	}()
+	if !waitForFile(t, path, 5*time.Second) {
+		t.Fatalf("the session wasn't armed: %s", <-done)
+	}
+	var a armed
+	data, _ := os.ReadFile(path)
+	if err := json.Unmarshal(data, &a); err != nil || !a.Stay {
+		t.Fatalf("armed = %+v, %v", a, err)
+	}
+	os.Remove(path)
+	if err := writeMoveResult(id, moveReport{Event: "moved", OK: true, Message: "Moved."}); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+}
+
 func TestMoveSaysWhenTheStopHookNeverRuns(t *testing.T) {
 	f := newFixture(t)
 	f.moveHost()

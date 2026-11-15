@@ -821,6 +821,35 @@ func TestIsTrustedAcceptsATrustedParent(t *testing.T) {
 	}
 }
 
+func TestTrustCarriesOverToTheOtherMachineAndKeepsEverythingElse(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.home, ".claude.json", `{"numStartups":7,"projects":{"`+f.home+`/Projects":{"hasTrustDialogAccepted":true,"allowedTools":["Bash"]}}}`)
+	r := f.remoteHost()
+	local := f.remoteHost()
+	if err := carryTrust(local, r, filepath.Join(f.home, "Projects", "api"), f.remote); err != nil {
+		t.Fatal(err)
+	}
+	if trusted, err := isTrusted(r, f.remote); err != nil || !trusted {
+		t.Fatalf("trusted = %v, err = %v", trusted, err)
+	}
+	data, _ := os.ReadFile(filepath.Join(f.home, ".claude.json"))
+	for _, kept := range []string{`"numStartups": 7`, `"allowedTools"`} {
+		if !strings.Contains(string(data), kept) {
+			t.Errorf("lost %s: %s", kept, data)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(f.home, ".claude.json")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, %v", info.Mode().Perm(), err)
+	}
+	untrusted := filepath.Join(f.home, "elsewhere")
+	if err := carryTrust(local, r, untrusted, filepath.Join(f.home, "copy")); err != nil {
+		t.Fatal(err)
+	}
+	if trusted, _ := isTrusted(r, filepath.Join(f.home, "copy")); trusted {
+		t.Error("a folder not trusted here was trusted there")
+	}
+}
+
 func TestStopRemoteSessionStopsTheSessionWithoutKillingItself(t *testing.T) {
 	f := newFixture(t)
 	sessionID := "11111111-2222-3333-4444-555555555555"

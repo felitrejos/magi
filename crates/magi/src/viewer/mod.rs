@@ -390,12 +390,15 @@ fn answer(model: &mut Model, links: &Links, allow: bool, now: Instant) {
 
 fn confirm_move(model: &mut Model, links: &Links, pending: model::PendingMove, now: Instant) {
     let request = proto::Request::Move {
-        session: pending.session,
+        session: pending.session.clone(),
         to: pending.to.clone(),
     };
-    if let Err(error) = links.request(pending.endpoint, &request) {
-        let reason = format!("couldn't ask {} to move it: {error}", pending.from);
-        model.flash(reason, false, now);
+    match links.request(pending.endpoint, &request) {
+        Ok(()) => model.follow(pending.session, pending.endpoint, pending.to, now),
+        Err(error) => {
+            let reason = format!("couldn't ask {} to move it: {error}", pending.from);
+            model.flash(reason, false, now);
+        }
     }
 }
 
@@ -1146,5 +1149,33 @@ mod tests {
         )
         .unwrap();
         assert!(flow == Flow::Continue);
+    }
+
+    #[test]
+    fn after_a_move_the_selection_follows_the_session_to_its_new_machine() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(claude("s1", 0))),
+            now,
+        );
+        model.apply(homelab, live_sample(1_000, Some(claude("other", 0))), now);
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        model.follow("s1".into(), Endpoint::Local, "homelab".into(), now);
+        model.apply(Endpoint::Local, live_sample(1_000, None), now);
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        assert_eq!(model.selected_agent(now).map(|_| ()), None);
+        assert_eq!(model.rows(now)[model.selected].name, "homelab");
+        let mut arrived = claude("s1", 0);
+        arrived.title = "moved".into();
+        model.apply(homelab, live_sample(1_000, Some(arrived)), now);
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        let selected = model.selected_agent(now).unwrap();
+        assert_eq!(
+            (selected.session.id.as_str(), selected.endpoint),
+            ("s1", homelab)
+        );
     }
 }

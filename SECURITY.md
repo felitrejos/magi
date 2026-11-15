@@ -59,6 +59,11 @@
   disk; their contents never enter the conversation, output or logs. The
   transcript and Claude's memory move as files, so anything pasted into the
   chat moves with them. Logins, ssh keys and credential stores never move.
+- If you trust a project's folder in Claude Code on this machine, cielago
+  marks its copy on the other machine as trusted in `~/.claude.json` there, so
+  the moved session starts without asking. It writes that file atomically,
+  readable only by you, and only if nothing changed it meanwhile. A folder you
+  haven't trusted here is never trusted there.
 - On the receiving machine it recreates your branch and uncommitted work, but
   refuses if that checkout has work or commits of its own, and only creates
   folders that don't exist yet.

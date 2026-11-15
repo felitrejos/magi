@@ -26,7 +26,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/fleet.gif" alt="magi in the Rex app: a machines panel and an agents panel on the left, a home server's CPU, memory and network drawn as pixel charts on the right, then the detail of a Codex session and the alerts view with a plan nearly used and a session waiting on a permission prompt." width="820">
+  <img src="assets/fleet.gif" alt="magi in the Rex app: machines and agents on the left; on the right a home server's CPU, memory and network as pixel charts, then the conversations of Claude Code and Codex sessions drawn as Markdown, and the alerts view." width="820">
 </p>
 <p align="center">
   <i>A Mac and a home server, six agent sessions, one waiting on you.</i>
@@ -68,7 +68,8 @@ acts on it.
   homelab". When the turn ends, the conversation, your branch and uncommitted
   changes, the `secrets` files you list and Claude's memory land on the other
   machine, and the session continues there in a tab of its own with Remote
-  Control. `cielago pull <host>` brings one back.
+  Control. magi follows it there, and no prompt waits for you on the other
+  side. `cielago pull <host>` brings one back.
 - **Send work.** Every Claude Code session gets tools to run a command
   elsewhere (`run_elsewhere`), hand a task to a background Claude
   (`delegate`) or open a second session (`start_session`). Each runs in a copy
@@ -76,7 +77,7 @@ acts on it.
   asks you first.
 
 <p align="center">
-  <img src="assets/handoff.gif" alt="Rex on a MacBook. In the Mac's acme session, Claude is asked to hand itself off to the homelab. The view switches to the homelab's acme session, where the same conversation continues." width="820">
+  <img src="assets/handoff.gif" alt="magi in the Rex app: a Claude Code session on a MacBook is selected, m and y move it to the home server, the footer shows each step, and magi lands on the same session on the home server, its conversation intact, in about four seconds." width="820">
 </p>
 
 `cielago init` writes `~/.config/cielago/config.toml` with your machines, where

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -155,6 +156,65 @@ func isTrusted(m Machine, dir string) (bool, error) {
 			return false, nil
 		}
 	}
+}
+
+const trustScript = `umask 077
+f="$HOME/.claude.json"
+t="$f.cielago-$$"
+cat > "$t" || exit 1
+if [ "$(cksum < "$f")" != "$1" ]; then
+	rm -f "$t"
+	echo "it changed while cielago was updating it" >&2
+	exit 3
+fi
+mv "$t" "$f"`
+
+func carryTrust(local, remote Machine, localDir, remoteDir string) error {
+	trustedHere, err := isTrusted(local, localDir)
+	if err != nil || !trustedHere {
+		return nil
+	}
+	if trustedThere, err := isTrusted(remote, remoteDir); err == nil && trustedThere {
+		return nil
+	}
+	if err := markTrusted(remote, remoteDir); err != nil {
+		return fmt.Errorf("marking %s trusted there failed, so Claude may ask you to trust it first: %v", remoteDir, err)
+	}
+	return nil
+}
+
+func markTrusted(m Machine, dir string) error {
+	out, err := sh(m, `f="$HOME/.claude.json"; cksum < "$f"; cat "$f"`)
+	if err != nil {
+		return err
+	}
+	sum, body, found := bytes.Cut(out, []byte("\n"))
+	if !found {
+		return fmt.Errorf("read ~/.claude.json on %s: no contents", m.Name())
+	}
+	var state map[string]json.RawMessage
+	if err := json.Unmarshal(body, &state); err != nil {
+		return fmt.Errorf("read ~/.claude.json on %s: %w", m.Name(), err)
+	}
+	projects := map[string]map[string]json.RawMessage{}
+	if raw, ok := state["projects"]; ok {
+		if err := json.Unmarshal(raw, &projects); err != nil {
+			return fmt.Errorf("read the projects in ~/.claude.json on %s: %w", m.Name(), err)
+		}
+	}
+	if projects[dir] == nil {
+		projects[dir] = map[string]json.RawMessage{}
+	}
+	projects[dir]["hasTrustDialogAccepted"] = json.RawMessage("true")
+	if state["projects"], err = json.Marshal(projects); err != nil {
+		return err
+	}
+	updated, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = shIn(m, trustScript, updated, string(sum))
+	return err
 }
 
 type Prompt struct {

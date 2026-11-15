@@ -220,18 +220,50 @@ fn text(raw: &str) -> Option<String> {
 
 fn detail(input: &Value) -> String {
     let found = match input {
-        Value::String(raw) => Some(raw.as_str()),
-        Value::Object(fields) => DETAIL_KEYS
-            .iter()
-            .find_map(|key| fields.get(*key).and_then(Value::as_str)),
+        Value::String(raw) => Some(raw.clone()),
+        Value::Object(fields) => DETAIL_KEYS.iter().find_map(|key| match fields.get(*key)? {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(words) => Some(command_line(words)),
+            _ => None,
+        }),
         _ => None,
     };
-    let line = found.unwrap_or_default().lines().next().unwrap_or_default();
+    let found = found.unwrap_or_default();
+    let patched = patched_files(&found);
+    let line = if patched.is_empty() {
+        found.lines().next().unwrap_or_default()
+    } else {
+        &patched
+    };
     let mut detail: String = line.chars().take(MAX_DETAIL_CHARS).collect();
     if line.chars().count() > MAX_DETAIL_CHARS {
         detail.push('…');
     }
     detail
+}
+
+fn command_line(words: &[Value]) -> String {
+    let words: Vec<&str> = words.iter().filter_map(Value::as_str).collect();
+    match words.as_slice() {
+        [shell, flag, script] if ["bash", "sh", "zsh"].contains(shell) && flag.ends_with('c') => {
+            script.to_string()
+        }
+        _ => words.join(" "),
+    }
+}
+
+fn patched_files(text: &str) -> String {
+    if !text.starts_with("*** Begin Patch") {
+        return String::new();
+    }
+    text.lines()
+        .filter_map(|line| {
+            ["*** Update File: ", "*** Add File: ", "*** Delete File: "]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn capped(text: &str) -> String {
@@ -488,6 +520,18 @@ mod tests {
         assert_eq!(said.len(), MAX_ENTRIES);
         assert_eq!(said.last(), Some(&Said::You("latest".into())));
         assert_eq!(said[0], Said::You("early 1".into()));
+    }
+
+    #[test]
+    fn patches_name_their_files_and_command_lists_read_as_one_line() {
+        let patch = Value::String(
+            "*** Begin Patch\n*** Update File: a.go\n@@\n-x\n+y\n*** Add File: b.go\n+z\n*** End Patch".into(),
+        );
+        assert_eq!(detail(&patch), "a.go, b.go");
+        let shell: Value = serde_json::json!({ "command": ["bash", "-lc", "go test ./..."] });
+        assert_eq!(detail(&shell), "go test ./...");
+        let direct: Value = serde_json::json!({ "command": ["go", "vet", "./..."] });
+        assert_eq!(detail(&direct), "go vet ./...");
     }
 
     #[test]

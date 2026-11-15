@@ -28,12 +28,15 @@ type moveReport struct {
 	Message string `json:"message"`
 	ToDir   string `json:"to_dir,omitempty"`
 	Took    string `json:"took,omitempty"`
+	Step    string `json:"step,omitempty"`
+	Seconds string `json:"seconds,omitempty"`
 }
 
 type mover struct {
 	session string
 	host    string
 	json    bool
+	stay    bool
 	out     io.Writer
 }
 
@@ -62,14 +65,17 @@ func moveCommand(args []string, out io.Writer) error {
 	m := mover{out: out}
 	var rest []string
 	for _, a := range args {
-		if a == "--json" {
+		switch a {
+		case "--json":
 			m.json = true
-		} else {
+		case "--stay":
+			m.stay = true
+		default:
 			rest = append(rest, a)
 		}
 	}
 	if len(rest) != 2 {
-		return m.fail(errors.New("usage: cielago move <claude-session-id> <host> [--json]"))
+		return m.fail(errors.New("usage: cielago move <claude-session-id> <host> [--json] [--stay]"))
 	}
 	m.session, m.host = rest[0], rest[1]
 	return m.run()
@@ -167,7 +173,10 @@ func isClaudeProcess(m Machine, s liveSession) (bool, error) {
 
 func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error {
 	m.report(moveReport{Event: "moving", OK: true, Message: fmt.Sprintf("Moving session %s to %s...", shortID(s.ID), m.host)})
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd}.Run()
+	progress := func(step string) {
+		m.report(moveReport{Event: "step", OK: true, Step: step, Message: fmt.Sprintf("Moving session %s to %s: %s", shortID(s.ID), m.host, step)})
+	}
+	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Stay: m.stay, Progress: progress}.Run()
 	if err != nil {
 		if stopped {
 			err = fmt.Errorf("%w. The session was stopped here; to carry on here instead, run claude --resume %s in %s", err, s.ID, s.Cwd)
@@ -177,7 +186,7 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	local.SetContext(finish)
-	notes := []error{res.ParkNote, res.TabNote, res.SetupNote, res.ShowNote}
+	notes := []error{res.ParkNote, res.TabNote, res.SetupNote, res.ShowNote, res.TrustNote}
 	if _, err := sh(local, `mv -- "$1" "$1.handed-off-to-$2"`, s.Transcript, m.host); err != nil {
 		notes = append(notes, fmt.Errorf("retiring the transcript here failed: %w", err))
 	}
@@ -194,7 +203,7 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	if note := errors.Join(notes...); note != nil {
 		msg += fmt.Sprintf(" (%v)", strings.ReplaceAll(note.Error(), "\n", "; "))
 	}
-	m.report(moveReport{Event: "moved", OK: true, Message: msg + ".", ToDir: res.ToDir, Took: res.Summary()})
+	m.report(moveReport{Event: "moved", OK: true, Message: msg + ".", ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds())})
 	return nil
 }
 
@@ -231,7 +240,7 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 		return m.fail(err)
 	}
 	os.Remove(result)
-	data, err := json.Marshal(armed{Host: m.host, PID: s.Live.PID, Desktop: s.Live.Entrypoint == "claude-desktop", Notify: true})
+	data, err := json.Marshal(armed{Host: m.host, PID: s.Live.PID, Desktop: s.Live.Entrypoint == "claude-desktop", Notify: true, Stay: m.stay})
 	if err != nil {
 		return m.fail(err)
 	}

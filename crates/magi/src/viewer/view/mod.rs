@@ -153,7 +153,6 @@ fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Block<'a> {
     title.push(Span::raw(" "));
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .style(Style::new().bg(theme().panel))
         .border_style(style::fg(theme().border))
         .title(Line::from(title));
     if let Some(mut right) = right {
@@ -165,15 +164,11 @@ fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Block<'a> {
 }
 
 fn draw_panel(frame: &mut Frame, area: Rect, block: Block<'_>) {
+    let inside = block.inner(area);
     frame.render_widget(block, area);
-    if area.width < 2 || area.height < 2 {
-        return;
-    }
-    let (left, right) = (area.x, area.x + area.width - 1);
-    let (top, bottom) = (area.y, area.y + area.height - 1);
-    for corner in [(left, top), (right, top), (left, bottom), (right, bottom)] {
-        frame.buffer_mut()[corner].set_bg(Color::Reset);
-    }
+    frame
+        .buffer_mut()
+        .set_style(inside, Style::new().bg(theme().panel));
 }
 
 fn rule(

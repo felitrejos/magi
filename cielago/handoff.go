@@ -18,6 +18,8 @@ type Handoff struct {
 	TranscriptPath string
 	Cwd            string
 	Note           string
+	Stay           bool
+	Progress       func(step string)
 }
 
 type Step struct {
@@ -33,10 +35,19 @@ type Result struct {
 	TabNote   error
 	SetupNote error
 	ParkNote  error
+	TrustNote error
 	NewFolder string
 	From      string
 	FromDir   string
 	ToDir     string
+}
+
+func (r Result) Total() time.Duration {
+	var total time.Duration
+	for _, s := range r.Steps {
+		total += s.Took
+	}
+	return total
 }
 
 func (r Result) Summary() string {
@@ -50,10 +61,14 @@ func (r Result) Summary() string {
 }
 
 type stepper struct {
-	steps []Step
+	steps    []Step
+	progress func(step string)
 }
 
 func (s *stepper) run(name string, fn func() error) error {
+	if s.progress != nil {
+		s.progress(name)
+	}
 	start := time.Now()
 	err := fn()
 	s.steps = append(s.steps, Step{name, time.Since(start)})
@@ -66,7 +81,7 @@ func (s *stepper) run(name string, fn func() error) error {
 func (h Handoff) Run() (res Result, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), handoffBudget)
 	defer cancel()
-	var st stepper
+	st := stepper{progress: h.Progress}
 	defer func() { res.Steps = st.steps }()
 
 	local, err := newLocal(ctx)
@@ -161,12 +176,15 @@ func (h Handoff) Run() (res Result, err error) {
 			}
 			projectNote = projectPrompt(project, setupStatus)
 		}
+		res.TrustNote = carryTrust(local, remote, h.Cwd, remoteDir)
 		prompt := handoffPrompt(Prompt{From: local.Name(), To: h.HostName, OldDir: h.Cwd, NewDir: remoteDir, Git: ws.Git != nil, Note: h.Note, Sidecar: sidecar, Project: projectNote})
 		command := []string{expandHome(h.Host.Claude, where.Home), "--resume", h.SessionID, "--remote-control", name, prompt}
-		if tab, err = launcher.Start(where.Group, claudeTabLabel(name), remoteDir, command, true); err != nil {
+		if tab, err = launcher.Start(where.Group, claudeTabLabel(name), remoteDir, command, !h.Stay); err != nil {
 			return err
 		}
-		res.ShownOn, res.ShowNote = launcher.Show(tab)
+		if !h.Stay {
+			res.ShownOn, res.ShowNote = launcher.Show(tab)
+		}
 		res.Where = launcher.Where(where.Group)
 		return nil
 	}); err != nil {

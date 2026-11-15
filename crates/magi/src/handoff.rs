@@ -44,7 +44,7 @@ pub fn start(
         return Err("a move is already running on that machine".into());
     }
     let (id, title, to) = (session.id.clone(), session.title.clone(), to.to_string());
-    let started = format!("asking cielago to move {title} to {to}…");
+    let started = format!("Moving {title} to {to}…");
     let guard = Moving;
     thread::Builder::new()
         .name("move".into())
@@ -81,19 +81,48 @@ struct Event {
     event: String,
     ok: bool,
     message: String,
+    #[serde(default)]
+    step: Option<String>,
+    #[serde(default)]
+    seconds: Option<String>,
+}
+
+fn said(event: &Event, title: &str, to: &str) -> String {
+    match event.event.as_str() {
+        "moving" => format!("Moving {title} to {to}…"),
+        "step" => {
+            let doing = match event.step.as_deref().unwrap_or_default() {
+                "inspect" => "checking both machines",
+                "sync" => "copying your work",
+                "transcript" => "copying the conversation",
+                "launch" | "start" => "starting Claude there",
+                "panes" => "setting up the project",
+                "tab" => "opening its tab",
+                other => other,
+            };
+            format!("Moving {title} to {to} · {doing}…")
+        }
+        "waiting" => format!("{title} moves to {to} when its turn ends…"),
+        "moved" => match &event.seconds {
+            Some(seconds) => format!("Moved {title} to {to} in {seconds}s"),
+            None => format!("Moved {title} to {to}"),
+        },
+        _ => format!("couldn't move {title}: {}", event.message),
+    }
 }
 
 fn run(cielago: &Path, id: &str, title: &str, to: &str, limit: Duration, reply: &dyn Fn(Reply)) {
     let deadline = Instant::now() + limit;
-    let mut child = match bounded::spawn(Command::new(cielago).args(["move", "--json", id, to])) {
-        Ok(child) => child,
-        Err(error) => {
-            return reply(Reply {
-                ok: false,
-                text: format!("couldn't run cielago: {error}"),
-            });
-        }
-    };
+    let mut child =
+        match bounded::spawn(Command::new(cielago).args(["move", "--json", "--stay", id, to])) {
+            Ok(child) => child,
+            Err(error) => {
+                return reply(Reply {
+                    ok: false,
+                    text: format!("couldn't run cielago: {error}"),
+                });
+            }
+        };
     let stderr = bounded::drain(child.stderr.take());
     let finished = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
@@ -126,7 +155,7 @@ fn run(cielago: &Path, id: &str, title: &str, to: &str, limit: Duration, reply: 
             waiting = event.event == "waiting";
             reply(Reply {
                 ok: event.ok,
-                text: event.message,
+                text: said(&event, title, to),
             });
             if ended {
                 break;
@@ -290,10 +319,12 @@ mod tests {
     fn each_step_cielago_reports_reaches_the_viewer_as_it_happens() {
         let (dir, program) = fake_cielago(
             "steps",
-            r#"[ "$1 $2 $3 $4" = "move --json 0b7a3c1e homelab" ] || { echo "cielago: wrong arguments: $*" >&2; exit 2; }
+            r#"[ "$1 $2 $3 $4 $5" = "move --json --stay 0b7a3c1e homelab" ] || { echo "cielago: wrong arguments: $*" >&2; exit 2; }
 echo '{"event":"waiting","ok":true,"session":"0b7a3c1e","host":"homelab","message":"Session 0b7a3c1e is in the middle of a turn"}'
 echo 'not json'
-echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message":"Moved to homelab."}'"#,
+echo '{"event":"step","ok":true,"step":"sync","message":"Moving session 0b7a3c1e to homelab: sync"}'
+echo '{"event":"step","ok":true,"step":"panes","message":"Moving session 0b7a3c1e to homelab: panes"}'
+echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message":"Moved session 0b7a3c1e to homelab in 4.3s (inspect 1.1s, sync 0.2s).","seconds":"4.3"}'"#,
         );
         let texts: Vec<(bool, String)> = replies(&program)
             .into_iter()
@@ -302,8 +333,19 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
         assert_eq!(
             texts,
             [
-                (true, "Session 0b7a3c1e is in the middle of a turn".into()),
-                (true, "Moved to homelab.".into())
+                (
+                    true,
+                    "fix login moves to homelab when its turn ends…".into()
+                ),
+                (
+                    true,
+                    "Moving fix login to homelab · copying your work…".into()
+                ),
+                (
+                    true,
+                    "Moving fix login to homelab · setting up the project…".into()
+                ),
+                (true, "Moved fix login to homelab in 4.3s".into())
             ]
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -362,7 +404,7 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
             started.elapsed()
         );
         let seen = seen.into_inner().unwrap();
-        assert_eq!(seen[0].text, "Moving");
+        assert_eq!(seen[0].text, "Moving fix login to homelab…");
         assert!(!seen[1].ok);
         assert!(
             seen[1]

@@ -14,6 +14,7 @@ pub const HISTORY: usize = 300;
 const SEARCH_GRACE: Duration = Duration::from_secs(8);
 const FLASH_FOR: Duration = Duration::from_secs(5);
 const FOLD_AFTER_SECS: u32 = 24 * 60 * 60;
+const FOLLOW_FOR: Duration = Duration::from_secs(300);
 const FOLD_AT_LEAST: usize = 2;
 const HEAVY_SESSION_MILLICORES: u32 = 1_000;
 const BUSY_MACHINE: f32 = 0.8;
@@ -307,6 +308,7 @@ pub struct Model {
     pub opening: bool,
     pub pending_move: Option<PendingMove>,
     pub draft: Option<Draft>,
+    following: Option<Following>,
     pub watching: Option<(Endpoint, String)>,
     screens: HashMap<String, Screen>,
 }
@@ -324,6 +326,14 @@ pub struct PendingMove {
     pub title: String,
     pub from: String,
     pub to: String,
+}
+
+#[derive(Clone)]
+struct Following {
+    session: String,
+    from: Endpoint,
+    to: String,
+    since: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -371,6 +381,7 @@ impl Model {
             opening: false,
             pending_move: None,
             draft: None,
+            following: None,
             watching: None,
             screens: HashMap::new(),
         }
@@ -733,7 +744,40 @@ impl Model {
         self.reselect(now);
     }
 
+    pub fn follow(&mut self, session: String, from: Endpoint, to: String, now: Instant) {
+        self.following = Some(Following {
+            session,
+            from,
+            to,
+            since: now,
+        });
+    }
+
+    fn follow_moved(&mut self, now: Instant) {
+        let Some(following) = self.following.clone() else {
+            return;
+        };
+        let listed = self.listed(now);
+        let place = |agent: &AgentRow<'_>| agent.endpoint != following.from && agent.live;
+        let found = listed.iter().find_map(|listed| match &listed.entry {
+            Entry::Session(agent) if agent.session.id == following.session => Some(place(agent)),
+            _ => None,
+        });
+        match found {
+            Some(true) => {
+                self.focus = Some(Focus::Agent(following.session));
+                self.following = None;
+            }
+            Some(false) => {}
+            None => self.focus = Some(Focus::Machine(following.to)),
+        }
+        if now.duration_since(following.since) > FOLLOW_FOR {
+            self.following = None;
+        }
+    }
+
     pub fn reselect(&mut self, now: Instant) {
+        self.follow_moved(now);
         let rows = self.rows(now);
         let listed = self.listed(now);
         let count = rows.len() + listed.len();

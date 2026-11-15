@@ -27,7 +27,7 @@ Usage:
   cielago init                          set up this machine and a machine to hand off to
   cielago doctor [host...]              check that everything a handoff needs is in place
   cielago pull <host> [session-id]      bring a session back from <host> and continue it here
-  cielago move <session-id> <host> [--json]
+  cielago move <session-id> <host> [--json] [--stay]
                                         move a session running on this machine to <host>, from
                                         outside it: now if it's idle, or when its turn ends
   cielago status                        recent handoffs and parked checkouts
@@ -54,6 +54,7 @@ type armed struct {
 	Desktop bool   `json:"desktop"`
 	Note    string `json:"note"`
 	Notify  bool   `json:"notify,omitempty"`
+	Stay    bool   `json:"stay,omitempty"`
 }
 
 func main() {
@@ -214,7 +215,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 		})
 	}
 	if a.Notify {
-		res.ParkNote = errors.Join(res.ParkNote, writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary()}))
+		res.ParkNote = errors.Join(res.ParkNote, writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds())}))
 	}
 	if err := retire(a, input.SessionID, input.TranscriptPath); err != nil {
 		return err
@@ -244,6 +245,9 @@ func handedOff(a armed, res Result) map[string]string {
 	}
 	if res.SetupNote != nil {
 		where += fmt.Sprintf(". %v", res.SetupNote)
+	}
+	if res.TrustNote != nil {
+		where += fmt.Sprintf(". %v", res.TrustNote)
 	}
 	took := res.Summary()
 	if a.Desktop {
@@ -297,6 +301,7 @@ func handoff(a armed, input stopInput) (Result, error) {
 	return Handoff{
 		HostName:       a.Host,
 		Note:           a.Note,
+		Stay:           a.Stay,
 		Host:           host,
 		SessionID:      input.SessionID,
 		TranscriptPath: input.TranscriptPath,
