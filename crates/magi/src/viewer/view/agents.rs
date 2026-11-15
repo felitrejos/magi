@@ -384,7 +384,7 @@ fn measures(agent: &AgentRow<'_>) -> Composed {
         });
         line.push(Span::styled(cpu, style::fg(style::load(share))));
         line.push(Span::styled(
-            format!(" · {}", units::bytes(usage.memory)),
+            format!(" · mem {}", units::bytes(usage.memory)),
             style::fg(theme().dim),
         ));
     }

@@ -12,6 +12,7 @@ mod usage;
 
 use std::collections::HashMap;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -26,6 +27,7 @@ const CONTEXT_KEPT_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 #[derive(Default)]
 pub struct Board {
     state: Mutex<BoardState>,
+    saved: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -35,6 +37,43 @@ struct BoardState {
 }
 
 impl Board {
+    pub fn saved_at(path: PathBuf) -> Self {
+        let windows: Vec<Window> = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self {
+            state: Mutex::new(BoardState {
+                context: HashMap::new(),
+                windows: windows
+                    .into_iter()
+                    .map(|window| (window.minutes, window))
+                    .collect(),
+            }),
+            saved: Some(path),
+        }
+    }
+
+    fn save(&self, windows: &HashMap<u32, Window>) {
+        let Some(path) = &self.saved else {
+            return;
+        };
+        let mut windows: Vec<&Window> = windows.values().collect();
+        windows.sort_by_key(|window| window.minutes);
+        let Ok(json) = serde_json::to_vec(&windows) else {
+            return;
+        };
+        let temporary = path.with_extension("json.tmp");
+        let written = std::fs::write(&temporary, json)
+            .and_then(|()| {
+                std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
+            })
+            .and_then(|()| std::fs::rename(&temporary, path));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+    }
+
     pub fn record(&self, report: StatusReport) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
@@ -44,9 +83,13 @@ impl Board {
         if let Some(used) = report.context_used {
             state.context.insert(report.session_id, (used, now));
         }
+        if report.windows.is_empty() {
+            return;
+        }
         for window in report.windows {
             state.windows.insert(window.minutes, window);
         }
+        self.save(&state.windows);
     }
 
     pub fn context(&self, session_id: &str) -> Option<BasisPoints> {
@@ -212,6 +255,39 @@ mod tests {
             (board.context("a"), board.context("b")),
             (Some(1_200), None)
         );
+    }
+
+    #[test]
+    fn plan_windows_survive_a_restart_but_context_does_not() {
+        let path = std::env::temp_dir().join(format!("magi-plans-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let board = Board::saved_at(path.clone());
+        board.record(StatusReport {
+            session_id: "a".into(),
+            context_used: Some(1_200),
+            windows: vec![Window {
+                minutes: FIVE_HOURS,
+                used: 3_700,
+                resets_at: 9_000,
+            }],
+        });
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let restarted = Board::saved_at(path.clone());
+        assert_eq!(
+            restarted.plan(500).map(|plan| plan.windows),
+            Some(vec![Window {
+                minutes: FIVE_HOURS,
+                used: 3_700,
+                resets_at: 9_000,
+            }])
+        );
+        assert_eq!(restarted.context("a"), None);
+        assert_eq!(restarted.plan(10_000), None);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

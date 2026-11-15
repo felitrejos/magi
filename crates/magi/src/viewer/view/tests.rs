@@ -556,14 +556,14 @@ fn a_session_shows_what_it_and_everything_it_started_use() {
     model.selected = first_agent + with_usage;
     let screen = draw(&model, 160, 50, now);
     assert_eq!(screen.matches("2.5 cores").count(), 2, "{screen}");
-    assert!(screen.contains("2.5 cores · 3.0G"), "{screen}");
+    assert!(screen.contains("2.5 cores · mem 3.0G"), "{screen}");
     let waiting = titles
         .iter()
         .position(|title| title == "deploy fix")
         .unwrap();
     model.selected = first_agent + waiting;
     let screen = draw(&model, 160, 50, now);
-    assert!(screen.contains("measuring · 1.0M"), "{screen}");
+    assert!(screen.contains("measuring · mem 1.0M"), "{screen}");
 }
 
 #[test]

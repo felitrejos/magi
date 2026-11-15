@@ -44,7 +44,8 @@ pub struct Config {
 pub fn run(config: Config) -> io::Result<()> {
     let collector = Collector::new()?;
     let info = collector.info();
-    let agent = Arc::new(Agent::new(identity_of(&info), config.interval));
+    let board = Board::saved_at(net::state_dir()?.join("plans.json"));
+    let agent = Arc::new(Agent::new(identity_of(&info), config.interval, board));
     let socket = net::local_socket()?;
     let local = net::bind_local(&socket)?;
     log::info(format!(
@@ -139,14 +140,14 @@ impl Agent {
         }
     }
 
-    fn new(identity: Identity, interval: Duration) -> Self {
+    fn new(identity: Identity, interval: Duration, board: Board) -> Self {
         Self {
             identity: RwLock::new(identity),
             interval,
             hub: Hub::default(),
             connections: AtomicUsize::new(0),
             notices: log::Throttle::default(),
-            board: Board::default(),
+            board,
             sessions: Mutex::new(Snapshot::default()),
         }
     }
@@ -704,7 +705,7 @@ mod tests {
         let socket = std::env::temp_dir()
             .join(format!("magi-agent-{}-{name}", std::process::id()))
             .join("agent.sock");
-        let agent = Arc::new(Agent::new(identity(), interval));
+        let agent = Arc::new(Agent::new(identity(), interval, Board::default()));
         let listener = net::bind_local(&socket).unwrap();
         spawn_sampler(Collector::new().unwrap(), Arc::clone(&agent)).unwrap();
         thread::spawn(move || accept_local(&listener, &agent));
@@ -887,7 +888,7 @@ mod tests {
 
     #[test]
     fn status_reports_are_recorded_and_oversized_ones_dropped() {
-        let agent = Agent::new(identity(), Duration::from_secs(1));
+        let agent = Agent::new(identity(), Duration::from_secs(1), Board::default());
         let dir = std::env::temp_dir().join(format!("magi-status-{}", std::process::id()));
         let path = dir.join("status.sock");
         let listener = net::bind_local(&path).unwrap();
