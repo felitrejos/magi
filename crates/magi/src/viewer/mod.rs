@@ -674,13 +674,14 @@ mod tests {
         let screen = |text: &str| {
             LinkUpdate::Screen(crate::proto::Screen {
                 session: "s1".into(),
-                source: crate::proto::Source::Pane,
-                view: Ok(vec![vec![crate::proto::Run {
-                    text: text.into(),
-                    fg: crate::proto::Shade::Rgb(217, 119, 87),
-                    bg: crate::proto::Shade::Default,
-                    flags: crate::proto::BOLD,
-                }]]),
+                view: Ok(crate::proto::Content::Screen(vec![vec![
+                    crate::proto::Run {
+                        text: text.into(),
+                        fg: crate::proto::Shade::Rgb(217, 119, 87),
+                        bg: crate::proto::Shade::Default,
+                        flags: crate::proto::BOLD,
+                    },
+                ]])),
             })
         };
         let draw = |model: &Model| {
@@ -713,7 +714,6 @@ mod tests {
             Endpoint::Local,
             LinkUpdate::Screen(crate::proto::Screen {
                 session: "other".into(),
-                source: crate::proto::Source::Pane,
                 view: Err("old".into()),
             }),
             now,
@@ -759,21 +759,10 @@ mod tests {
             Endpoint::Local,
             LinkUpdate::Screen(crate::proto::Screen {
                 session: "s1".into(),
-                source: crate::proto::Source::Conversation,
-                view: Ok(vec![
-                    vec![crate::proto::Run {
-                        text: "› run the tests".into(),
-                        fg: crate::proto::Shade::Default,
-                        bg: crate::proto::Shade::Default,
-                        flags: crate::proto::BOLD,
-                    }],
-                    vec![crate::proto::Run {
-                        text: long.trim().into(),
-                        fg: crate::proto::Shade::Default,
-                        bg: crate::proto::Shade::Default,
-                        flags: 0,
-                    }],
-                ]),
+                view: Ok(crate::proto::Content::Conversation(vec![
+                    crate::proto::Said::You("run the tests".into()),
+                    crate::proto::Said::Reply(format!("**Done.** {}", long.trim())),
+                ])),
             }),
             now,
         );

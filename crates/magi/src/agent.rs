@@ -12,7 +12,7 @@ use crate::conversation::Reader;
 use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
-    self, AgentMessage, Hello, Identity, PROTOCOL_VERSION, Reply, Request, Run, Screen, Source,
+    self, AgentMessage, Content, Hello, Identity, PROTOCOL_VERSION, Reply, Request, Screen,
     StatusReport, Welcome,
 };
 use crate::screen::Capturer;
@@ -118,11 +118,7 @@ struct Agent {
 }
 
 impl Agent {
-    fn capture(
-        &self,
-        session: &str,
-        watcher: &mut Watcher,
-    ) -> (Source, Result<Vec<Vec<Run>>, String>) {
+    fn capture(&self, session: &str, watcher: &mut Watcher) -> Result<Content, String> {
         let (pane, transcript) = {
             let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
             (
@@ -131,12 +127,15 @@ impl Agent {
             )
         };
         match (pane, transcript) {
-            (Some(pane), _) => (Source::Pane, watcher.screen.capture(&pane, Instant::now())),
-            (None, Some((agent, path))) => (
-                Source::Conversation,
-                watcher.conversation.read(&path, agent),
-            ),
-            (None, None) => (Source::Conversation, Err("that session has ended".into())),
+            (Some(pane), _) => watcher
+                .screen
+                .capture(&pane, Instant::now())
+                .map(Content::Screen),
+            (None, Some((agent, path))) => watcher
+                .conversation
+                .read(&path, agent)
+                .map(Content::Conversation),
+            (None, None) => Err("that session has ended".into()),
         }
     }
 
@@ -469,11 +468,9 @@ fn spawn_watcher(
             let mut last: Option<Screen> = None;
             loop {
                 if let Some(session) = &watching {
-                    let (source, view) = agent.capture(session, &mut capturer);
                     let screen = Screen {
                         session: session.clone(),
-                        source,
-                        view,
+                        view: agent.capture(session, &mut capturer),
                     };
                     if last.as_ref() != Some(&screen) {
                         let Ok(frame) = proto::encode_frame(&AgentMessage::Screen(screen.clone()))
@@ -780,7 +777,6 @@ mod tests {
             screen,
             Screen {
                 session: "elsewhere".into(),
-                source: Source::Conversation,
                 view: Err("that session has ended".into()),
             }
         );

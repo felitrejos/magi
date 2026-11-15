@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 
@@ -161,16 +161,30 @@ pub enum Request {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Screen {
     pub session: String,
-    pub source: Source,
-    pub view: View,
+    pub view: Result<Content, String>,
 }
 
-pub type View = Result<Vec<Vec<Run>>, String>;
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum Content {
+    Screen(Vec<Vec<Run>>),
+    Conversation(Vec<Said>),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum Said {
+    You(String),
+    Reply(String),
+    Tool {
+        name: String,
+        detail: String,
+        change: Option<Change>,
+    },
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-    Pane,
-    Conversation,
+pub struct Change {
+    pub added: u32,
+    pub removed: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

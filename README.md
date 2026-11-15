@@ -47,7 +47,9 @@ view, so a glance answers "is anything stuck, and what is it costing?".
   cost.
 - **Watch any agent.** Select a session and it shows live beside the list,
   from whichever machine it's on: its screen if it runs in Rex, its latest
-  messages if it runs elsewhere, such as the Claude desktop app.
+  messages if it runs elsewhere, such as the Claude desktop app. Messages are
+  drawn as Markdown with highlighted code in your terminal's colours, and each
+  tool call is one line, with the lines an edit added and removed.
 - **Calm by default.** Sessions waiting on you come first, the rest sit under
   their machine with what they started nested beneath, and sessions idle for
   a day fold away.

@@ -1,6 +1,7 @@
 mod agents;
 mod history;
 mod machines;
+mod markdown;
 
 use std::time::Instant;
 
@@ -14,7 +15,7 @@ use super::graphics::Graphics;
 use super::model::{Entry, Model};
 use super::style::{self, theme};
 use super::units;
-use crate::proto::{Agent, FULL, Plan, Source};
+use crate::proto::{Agent, FULL, Plan};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -88,16 +89,16 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
             Entry::Session(agent) => {
                 let suggestion = model.move_suggestion(agent, now);
                 let source = if agent.session.pane.is_some() {
-                    Source::Pane
+                    agents::Source::Pane
                 } else {
-                    Source::Conversation
+                    agents::Source::Conversation
                 };
                 let preview = match model.screen(&agent.session.id) {
                     None if agent.live => agents::Preview::Waiting(source),
                     None => agents::Preview::Gone,
                     Some(screen) => match &screen.view {
-                        Ok(rows) => agents::Preview::Ready(screen.source, rows),
-                        Err(reason) => agents::Preview::Failed(screen.source, reason),
+                        Ok(content) => agents::Preview::Ready(content),
+                        Err(reason) => agents::Preview::Failed(source, reason),
                     },
                 };
                 agents::render_detail(

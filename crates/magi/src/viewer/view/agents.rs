@@ -6,16 +6,15 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{Composed, Cursor, clip, icon, panel, rule, selected_style, spread};
+use super::{Composed, Cursor, clip, icon, markdown, panel, rule, selected_style, spread};
 use crate::proto::{
-    AgentSession, BOLD, Child, DIM, FULL, INVERSE, ITALIC, Run, SessionState, Shade, Source,
+    AgentSession, BOLD, Child, Content, DIM, FULL, INVERSE, ITALIC, Run, SessionState, Shade,
     UNDERLINE, Waiting,
 };
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Entry, Group, Listed, Model, MoveTarget};
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const BUSY_MILLICORES: u32 = 500;
 const IDLE_MILLICORES: u32 = 50;
@@ -391,17 +390,24 @@ fn measures(agent: &AgentRow<'_>) -> Composed {
     line
 }
 
+#[derive(Clone, Copy)]
+pub enum Source {
+    Pane,
+    Conversation,
+}
+
 pub enum Preview<'a> {
     Waiting(Source),
-    Ready(Source, &'a [Vec<Run>]),
+    Ready(&'a Content),
     Failed(Source, &'a str),
     Gone,
 }
 
 fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width: usize) {
     let source = match preview {
-        Preview::Waiting(source) | Preview::Ready(source, _) | Preview::Failed(source, _) => source,
-        Preview::Gone => Source::Conversation,
+        Preview::Waiting(source) | Preview::Failed(source, _) => source,
+        Preview::Ready(Content::Screen(_)) => Source::Pane,
+        Preview::Ready(Content::Conversation(_)) | Preview::Gone => Source::Conversation,
     };
     let (title, symbol, hint) = match source {
         Source::Pane => ("Screen", "▣", "live from Rex · ↵ to open"),
@@ -425,8 +431,14 @@ fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width
             )),
         );
     };
-    let rows = match preview {
-        Preview::Ready(_, rows) => rows,
+    let lines: Vec<Line<'static>> = match preview {
+        Preview::Ready(Content::Screen(rows)) => rows
+            .iter()
+            .map(|row| Line::from(clip(row.iter().map(run_span).collect(), width)))
+            .collect(),
+        Preview::Ready(Content::Conversation(said)) => {
+            markdown::conversation(said, width, cursor.left() as usize)
+        }
         Preview::Waiting(Source::Pane) => {
             return note(cursor, frame, "connecting to the pane…", theme().faint);
         }
@@ -438,23 +450,12 @@ fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width
             return note(cursor, frame, "its machine isn't answering", theme().faint);
         }
     };
-    let lines: Vec<Line<'static>> = match source {
-        Source::Pane => rows
-            .iter()
-            .map(|row| Line::from(clip(row.iter().map(run_span).collect(), width)))
-            .collect(),
-        Source::Conversation => rows
-            .iter()
-            .flat_map(|row| {
-                if row.iter().all(|run| run.flags & DIM != 0) {
-                    vec![Line::from(clip(row.iter().map(run_span).collect(), width))]
-                } else {
-                    wrap(row, width)
-                }
-            })
-            .collect(),
-    };
     let room = cursor.left() as usize;
+    if matches!(preview, Preview::Ready(Content::Conversation(_))) {
+        for _ in lines.len()..room {
+            cursor.skip();
+        }
+    }
     for line in lines
         .into_iter()
         .rev()
@@ -465,47 +466,6 @@ fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, width
     {
         cursor.line(frame, line);
     }
-}
-
-fn wrap(row: &[Run], width: usize) -> Vec<Line<'static>> {
-    let width = width.max(1);
-    let mut lines = Vec::new();
-    let mut line: Vec<Span<'static>> = Vec::new();
-    let mut used = 0;
-    for run in row {
-        let style = run_span(run).style;
-        for word in run.text.split_inclusive(' ') {
-            let word_width = word.trim_end().width();
-            if used > 0 && used + word_width > width {
-                lines.push(Line::from(std::mem::take(&mut line)));
-                used = 0;
-            }
-            let mut rest = word;
-            while used == 0 && rest.trim_end().width() > width {
-                let cut = split_at_width(rest, width);
-                line.push(Span::styled(rest[..cut].to_string(), style));
-                lines.push(Line::from(std::mem::take(&mut line)));
-                rest = &rest[cut..];
-            }
-            if !(used == 0 && rest.trim().is_empty() && !lines.is_empty()) {
-                line.push(Span::styled(rest.to_string(), style));
-                used += rest.width();
-            }
-        }
-    }
-    lines.push(Line::from(line));
-    lines
-}
-
-fn split_at_width(text: &str, width: usize) -> usize {
-    let mut used = 0;
-    for (index, c) in text.char_indices() {
-        used += c.width().unwrap_or(0);
-        if used > width {
-            return index.max(c.len_utf8());
-        }
-    }
-    text.len()
 }
 
 fn run_span(run: &Run) -> Span<'static> {
@@ -551,54 +511,4 @@ pub fn render_fold(frame: &mut Frame, area: Rect, machine: &str, count: usize) {
         ]),
         inner,
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn texts(lines: &[Line<'_>]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect()
-            })
-            .collect()
-    }
-
-    fn plain(text: &str) -> Run {
-        Run {
-            text: text.into(),
-            fg: Shade::Default,
-            bg: Shade::Default,
-            flags: 0,
-        }
-    }
-
-    #[test]
-    fn conversation_text_wraps_between_words_and_only_splits_words_wider_than_the_panel() {
-        assert_eq!(
-            texts(&wrap(&[plain("the agent side builds now")], 12)),
-            ["the agent ", "side builds ", "now"]
-        );
-        assert_eq!(
-            texts(&wrap(&[plain("ab abcdefghijkl")], 5)),
-            ["ab ", "abcde", "fghij", "kl"]
-        );
-        assert_eq!(texts(&wrap(&[plain("short")], 40)), ["short"]);
-        let styled = wrap(
-            &[
-                plain("› "),
-                Run {
-                    flags: BOLD,
-                    ..plain("run it")
-                },
-            ],
-            40,
-        );
-        assert_eq!(texts(&styled), ["› run it"]);
-    }
 }
