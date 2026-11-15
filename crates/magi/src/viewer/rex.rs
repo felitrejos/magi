@@ -1,10 +1,14 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::bounded;
 use crate::proto::RexPane;
+
+const REX_LIMIT: Duration = Duration::from_secs(5);
 
 struct Here {
     session: String,
@@ -66,14 +70,12 @@ fn rex(here: &Here, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut command = Command::new(here.bin_dir.join("rex"));
     command
         .args(["--autostart=false", "--timeout", "3s"])
-        .args(args)
-        .stdin(Stdio::null());
+        .args(args);
     match &here.server {
         Some(server) => command.env("REX_SERVER", server),
         None => command.env_remove("REX_SERVER"),
     };
-    let output = command
-        .output()
+    let output = bounded::output(&mut command, REX_LIMIT)
         .map_err(|error| format!("can't run rex: {error}"))?;
     if output.status.success() {
         return Ok(output.stdout);

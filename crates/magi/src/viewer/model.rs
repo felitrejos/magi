@@ -751,7 +751,10 @@ impl Model {
         };
         match found {
             Some(index) => self.selected = index,
-            None => self.select(0, count),
+            None => {
+                self.select(0, count);
+                self.focus = self.selection(now);
+            }
         }
     }
 

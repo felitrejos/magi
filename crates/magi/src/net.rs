@@ -17,6 +17,7 @@ pub trait Conn: Read + Write + Send {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
     fn try_clone(&self) -> io::Result<Box<dyn Conn>>;
+    fn shutdown(&self) -> io::Result<()>;
 }
 
 impl Conn for TcpStream {
@@ -31,6 +32,10 @@ impl Conn for TcpStream {
     fn try_clone(&self) -> io::Result<Box<dyn Conn>> {
         Ok(Box::new(TcpStream::try_clone(self)?))
     }
+
+    fn shutdown(&self) -> io::Result<()> {
+        TcpStream::shutdown(self, std::net::Shutdown::Both)
+    }
 }
 
 impl Conn for UnixStream {
@@ -44,6 +49,10 @@ impl Conn for UnixStream {
 
     fn try_clone(&self) -> io::Result<Box<dyn Conn>> {
         Ok(Box::new(UnixStream::try_clone(self)?))
+    }
+
+    fn shutdown(&self) -> io::Result<()> {
+        UnixStream::shutdown(self, std::net::Shutdown::Both)
     }
 }
 

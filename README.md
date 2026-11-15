@@ -180,6 +180,11 @@ backup.
 **Can magi tell when Codex needs approval?** Not yet: Codex doesn't write
 approval prompts to its session files, so its sessions show working or idle.
 
+**How accurate is a session's CPU?** It counts the session and every process
+it started that's alive when magi looks, once a second. Very short ones, such
+as each compiler run under `cargo`, can finish in between, so a busy build may
+read a little low.
+
 **What if Claude Code changes its session files?** That folder isn't a
 documented format. magi notices, says so, and falls back to transcript activity
 for the affected sessions.

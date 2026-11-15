@@ -1,11 +1,14 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::bounded;
 use crate::proto::{Agent, AgentSession, Reply};
 
 const INSTALL_DIRS: [&str; 4] = [
@@ -15,7 +18,19 @@ const INSTALL_DIRS: [&str; 4] = [
     "/usr/local/bin",
 ];
 
+const MOVE_LIMIT: Duration = Duration::from_secs(15 * 60);
+const WATCH_EVERY: Duration = Duration::from_millis(200);
+const FINAL_EVENTS: [&str; 2] = ["moved", "failed"];
+
 static MOVING: AtomicBool = AtomicBool::new(false);
+
+struct Moving;
+
+impl Drop for Moving {
+    fn drop(&mut self) {
+        MOVING.store(false, Ordering::SeqCst);
+    }
+}
 
 pub fn start(
     session: &AgentSession,
@@ -30,16 +45,14 @@ pub fn start(
     }
     let (id, title, to) = (session.id.clone(), session.title.clone(), to.to_string());
     let started = format!("asking cielago to move {title} to {to}…");
+    let guard = Moving;
     thread::Builder::new()
         .name("move".into())
         .spawn(move || {
-            run(&cielago, &id, &title, &to, &reply);
-            MOVING.store(false, Ordering::SeqCst);
+            let _guard = guard;
+            run(&cielago, &id, &title, &to, MOVE_LIMIT, &reply);
         })
-        .map_err(|error| {
-            MOVING.store(false, Ordering::SeqCst);
-            format!("couldn't start the move: {error}")
-        })?;
+        .map_err(|error| format!("couldn't start the move: {error}"))?;
     Ok(started)
 }
 
@@ -70,14 +83,9 @@ struct Event {
     message: String,
 }
 
-fn run(cielago: &Path, id: &str, title: &str, to: &str, reply: &dyn Fn(Reply)) {
-    let child = Command::new(cielago)
-        .args(["move", "--json", id, to])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let mut child = match child {
+fn run(cielago: &Path, id: &str, title: &str, to: &str, limit: Duration, reply: &dyn Fn(Reply)) {
+    let deadline = Instant::now() + limit;
+    let mut child = match bounded::spawn(Command::new(cielago).args(["move", "--json", id, to])) {
         Ok(child) => child,
         Err(error) => {
             return reply(Reply {
@@ -86,39 +94,73 @@ fn run(cielago: &Path, id: &str, title: &str, to: &str, reply: &dyn Fn(Reply)) {
             });
         }
     };
-    let mut finished = false;
+    let stderr = bounded::drain(child.stderr.take());
+    let finished = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let watchdog = {
+        let finished = Arc::clone(&finished);
+        let stopped = Arc::clone(&stopped);
+        let pid = child.id();
+        thread::spawn(move || {
+            while Instant::now() < deadline && !finished.load(Ordering::SeqCst) {
+                thread::sleep(WATCH_EVERY);
+            }
+            if !finished.load(Ordering::SeqCst)
+                && let Ok(pid) = libc::pid_t::try_from(pid)
+            {
+                stopped.store(true, Ordering::SeqCst);
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+            }
+        })
+    };
+    let mut ended = false;
+    let mut waiting = false;
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let Ok(event) = serde_json::from_str::<Event>(&line) else {
                 continue;
             };
-            finished |= matches!(event.event.as_str(), "moved" | "failed");
+            ended = FINAL_EVENTS.contains(&event.event.as_str());
+            waiting = event.event == "waiting";
             reply(Reply {
                 ok: event.ok,
                 text: event.message,
             });
+            if ended {
+                break;
+            }
         }
     }
-    let output = child.wait_with_output();
-    if finished {
+    let status = bounded::wait(&mut child, deadline);
+    finished.store(true, Ordering::SeqCst);
+    let _ = watchdog.join();
+    let stderr = stderr.join().unwrap_or_default();
+    if ended || (waiting && status.as_ref().is_ok_and(|status| status.success())) {
         return;
     }
-    reply(match output {
-        Ok(output) if output.status.success() => Reply {
+    if stopped.load(Ordering::SeqCst) {
+        return reply(Reply {
+            ok: false,
+            text: format!("couldn't move {title}: cielago took too long and was stopped"),
+        });
+    }
+    reply(match status {
+        Ok(status) if status.success() => Reply {
             ok: true,
             text: format!("{title} moved to {to}"),
         },
-        Ok(output) => Reply {
+        Ok(status) => Reply {
             ok: false,
             text: format!(
                 "couldn't move {title}: {}",
-                last_line(&output.stderr)
-                    .unwrap_or_else(|| format!("cielago exited with {}", output.status))
+                last_line(&stderr).unwrap_or_else(|| format!("cielago exited with {status}"))
             ),
         },
         Err(error) => Reply {
             ok: false,
-            text: format!("couldn't move {title}: {error}"),
+            text: format!("couldn't move {title}: cielago {error}"),
         },
     });
 }
@@ -231,9 +273,16 @@ mod tests {
 
     fn replies(program: &Path) -> Vec<Reply> {
         let seen = std::sync::Mutex::new(Vec::new());
-        run(program, "0b7a3c1e", "fix login", "homelab", &|reply| {
-            seen.lock().unwrap().push(reply);
-        });
+        run(
+            program,
+            "0b7a3c1e",
+            "fix login",
+            "homelab",
+            Duration::from_secs(10),
+            &|reply| {
+                seen.lock().unwrap().push(reply);
+            },
+        );
         seen.into_inner().unwrap()
     }
 
@@ -287,5 +336,53 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
             Some("homelab has work of its own".into())
         );
         assert_eq!(last_line(b"\n  \n"), None);
+    }
+
+    #[test]
+    fn a_cielago_that_never_finishes_is_stopped_at_the_deadline_and_says_so() {
+        let (dir, program) = fake_cielago(
+            "hangs",
+            r#"echo '{"event":"moving","ok":true,"message":"Moving"}'; sleep 30"#,
+        );
+        let started = Instant::now();
+        let seen = std::sync::Mutex::new(Vec::new());
+        run(
+            &program,
+            "id",
+            "fix login",
+            "homelab",
+            Duration::from_millis(400),
+            &|reply| {
+                seen.lock().unwrap().push(reply);
+            },
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen[0].text, "Moving");
+        assert!(!seen[1].ok);
+        assert!(
+            seen[1]
+                .text
+                .starts_with("couldn't move fix login: cielago took too long"),
+            "{}",
+            seen[1].text
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_move_flag_clears_even_when_the_move_thread_panics() {
+        MOVING.store(true, Ordering::SeqCst);
+        let guard = Moving;
+        let _ = thread::spawn(move || {
+            let _guard = guard;
+            panic!("boom");
+        })
+        .join();
+        assert!(!MOVING.load(Ordering::SeqCst));
     }
 }

@@ -3,10 +3,12 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::bounded;
 use crate::proto::{BOLD, DIM, INVERSE, ITALIC, Run, Shade, UNDERLINE};
 use crate::sessions::rex::Location;
 
 const SIZE_KEPT_FOR: Duration = Duration::from_secs(5);
+const REX_LIMIT: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 pub struct Capturer {
@@ -22,8 +24,8 @@ struct Size {
 impl Capturer {
     pub fn capture(&mut self, pane: &Location, now: Instant) -> Result<Vec<Vec<Run>>, String> {
         let (rows, cols) = self.size(pane, now)?;
-        let output = pane
-            .rex(
+        let output = bounded::output(
+            &mut pane.rex(
                 "2s",
                 &[
                     "capture",
@@ -34,9 +36,10 @@ impl Capturer {
                     "--format",
                     "vt",
                 ],
-            )
-            .output()
-            .map_err(|error| format!("can't run rex: {error}"))?;
+            ),
+            REX_LIMIT,
+        )
+        .map_err(|error| format!("can't run rex: {error}"))?;
         if !output.status.success() {
             return Err(failure(&output.stderr));
         }
@@ -50,8 +53,8 @@ impl Capturer {
         {
             return Ok(*size);
         }
-        let output = pane
-            .rex(
+        let output = bounded::output(
+            &mut pane.rex(
                 "2s",
                 &[
                     "do",
@@ -61,9 +64,10 @@ impl Capturer {
                     &pane.block,
                     "com.superlogical.terminal.size",
                 ],
-            )
-            .output()
-            .map_err(|error| format!("can't run rex: {error}"))?;
+            ),
+            REX_LIMIT,
+        )
+        .map_err(|error| format!("can't run rex: {error}"))?;
         if !output.status.success() {
             return Err(failure(&output.stderr));
         }

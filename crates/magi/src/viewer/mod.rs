@@ -796,4 +796,56 @@ mod tests {
             .count();
         assert!(wrapped >= 3, "long replies wrap\n{joined}");
     }
+
+    #[test]
+    fn when_the_selected_session_ends_the_cursor_settles_and_then_stays_put() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let sample = |sessions: Vec<AgentSession>| {
+            LinkUpdate::Sample(Box::new(Sample {
+                cores: vec![0; 8],
+                sessions,
+                ..Sample::default()
+            }))
+        };
+        let named = |id: &str, title: &str, state: SessionState| AgentSession {
+            title: title.into(),
+            state,
+            ..claude(id, 0)
+        };
+        model.apply(
+            Endpoint::Local,
+            sample(vec![
+                named("a", "alpha", SessionState::Idle),
+                named("b", "bravo", SessionState::Idle),
+            ]),
+            now,
+        );
+        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.selected_agent(now).unwrap().session.id, "b");
+        model.apply(
+            Endpoint::Local,
+            sample(vec![named("a", "alpha", SessionState::Idle)]),
+            now,
+        );
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        let settled = model
+            .selected_agent(now)
+            .map(|agent| agent.session.id.clone());
+        assert_eq!(settled.as_deref(), Some("a"));
+        model.apply(
+            Endpoint::Local,
+            sample(vec![
+                named("a", "alpha", SessionState::Idle),
+                named(
+                    "c",
+                    "charlie",
+                    SessionState::Waiting(crate::proto::Waiting::Permission(None)),
+                ),
+            ]),
+            now,
+        );
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        assert_eq!(model.selected_agent(now).unwrap().session.id, "a");
+    }
 }

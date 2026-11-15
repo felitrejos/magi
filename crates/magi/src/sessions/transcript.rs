@@ -36,12 +36,34 @@ struct OpenTool {
     subagent: Option<Subagent>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Clone)]
 pub struct Subagent {
-    #[serde(default)]
     pub description: String,
-    #[serde(default)]
     pub subagent_type: String,
+}
+
+#[derive(Deserialize)]
+struct ToolInput {
+    #[serde(default)]
+    description: Option<serde_json::Value>,
+    #[serde(default)]
+    subagent_type: Option<serde_json::Value>,
+}
+
+impl ToolInput {
+    fn subagent(&self) -> Subagent {
+        let text = |value: &Option<serde_json::Value>| {
+            value
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        Subagent {
+            description: text(&self.description),
+            subagent_type: text(&self.subagent_type),
+        }
+    }
 }
 
 struct Feed<'a> {
@@ -84,7 +106,7 @@ struct Block {
     #[serde(default)]
     tool_use_id: Option<String>,
     #[serde(default)]
-    input: Option<Subagent>,
+    input: Option<ToolInput>,
 }
 
 #[derive(Deserialize, Default)]
@@ -218,7 +240,7 @@ impl Lines for Feed<'_> {
                     if let (Some(id), Some(name)) = (&block.id, &block.name) {
                         let subagent = SUBAGENT_TOOLS
                             .contains(&name.as_str())
-                            .then(|| block.input.clone())
+                            .then(|| block.input.as_ref().map(ToolInput::subagent))
                             .flatten();
                         state.open_tools.push(OpenTool {
                             id: id.clone(),
@@ -396,6 +418,22 @@ mod tests {
         append(&path, &format!("{}\n", result("toolu_a")));
         read(&mut transcript);
         assert_eq!(transcript.running_subagents().count(), 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_tool_call_with_an_unusual_description_still_counts_its_message() {
+        let path = temp("odd-description");
+        let odd = r#"{"type":"tool_use","id":"toolu_m","name":"mcp__x__y","input":{"description":{"nested":true},"subagent_type":null}}"#;
+        append(
+            &path,
+            &format!("{}\n", assistant("msg_o", odd, 70, "tool_use", NOW)),
+        );
+        let mut transcript = Transcript::new(path.clone());
+        read(&mut transcript);
+        assert_eq!(transcript.state.ledger.tokens.output, 70);
+        assert_eq!(transcript.running_tool(), Some("mcp__x__y"));
+        assert_eq!(transcript.running_subagents().count(), 0);
         fs::remove_file(path).unwrap();
     }
 

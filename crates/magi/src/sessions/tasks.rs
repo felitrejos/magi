@@ -10,6 +10,8 @@ const READ_EVERY: Duration = Duration::from_secs(2);
 const START_TOLERANCE_SECS: i64 = 2;
 const MAX_LABEL_CHARS: usize = 60;
 const FINISHED: [&str; 2] = ["collected", "gone"];
+const FORGET_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const MAX_RECORD_BYTES: u64 = 256 * 1024;
 
 #[derive(Deserialize)]
 struct Record {
@@ -78,6 +80,17 @@ fn read(dir: &Path) -> HashMap<(i32, i64), Vec<Child>> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let recent = entry.metadata().is_ok_and(|meta| {
+            meta.len() <= MAX_RECORD_BYTES
+                && meta
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age < FORGET_AFTER)
+        });
+        if !recent {
             continue;
         }
         let Some(record) = std::fs::read(&path)

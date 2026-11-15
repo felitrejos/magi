@@ -416,10 +416,11 @@ fn serve(conn: &mut dyn Conn, agent: &Arc<Agent>, origin: Origin) -> io::Result<
     }
     let (replies, frames) = agent.hub.subscribe_with_replies();
     spawn_requests(conn.try_clone()?, replies, Arc::clone(agent))?;
-    for frame in frames {
-        conn.write_all(&frame)?;
-    }
-    Ok(())
+    let streamed = frames
+        .into_iter()
+        .try_for_each(|frame| conn.write_all(&frame));
+    let _ = conn.shutdown();
+    streamed
 }
 
 fn spawn_requests(
@@ -432,7 +433,7 @@ fn spawn_requests(
         .name("requests".into())
         .spawn(move || {
             let mut buf = Vec::new();
-            let mut watcher: Option<SyncSender<Option<String>>> = None;
+            let mut watcher: Option<mpsc::Sender<Option<String>>> = None;
             while let Ok(request) =
                 proto::read_frame_within::<Request, _>(&mut *conn, &mut buf, REQUEST_MAX_BYTES)
             {
@@ -457,8 +458,8 @@ fn spawn_watcher(
     first: Option<String>,
     replies: SyncSender<Frame>,
     agent: Arc<Agent>,
-) -> io::Result<SyncSender<Option<String>>> {
-    let (watch, changes) = mpsc::sync_channel(4);
+) -> io::Result<mpsc::Sender<Option<String>>> {
+    let (watch, changes) = mpsc::channel();
     thread::Builder::new()
         .name("screen".into())
         .spawn(move || {
@@ -496,6 +497,7 @@ fn spawn_watcher(
                         Err(_) => return,
                     }
                 };
+                let next = changes.try_iter().last().unwrap_or(next);
                 if next != watching {
                     last = None;
                 }

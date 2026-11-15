@@ -2,15 +2,17 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::bounded;
 use crate::proto::RexPane;
 
 const REFRESH_EVERY: Duration = Duration::from_secs(10);
 const RETRY_MISSING_AFTER: Duration = Duration::from_secs(5);
+const LIST_LIMIT: Duration = Duration::from_secs(2);
 const REREAD_PROCESS_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -26,9 +28,7 @@ impl Location {
         let mut command = Command::new(self.bin_dir.join("rex"));
         command
             .args(["--autostart=false", "--timeout", timeout])
-            .args(args)
-            .stdin(Stdio::null())
-            .stderr(Stdio::piped());
+            .args(args);
         match &self.server {
             Some(server) => command.env("REX_SERVER", server),
             None => command.env_remove("REX_SERVER"),
@@ -40,7 +40,7 @@ impl Location {
 #[derive(Default)]
 pub struct Panes {
     servers: HashMap<(Option<OsString>, String), Server>,
-    processes: HashMap<i32, (Instant, Option<Location>)>,
+    processes: HashMap<(i32, Option<i64>), (Instant, Option<Location>)>,
 }
 
 struct Server {
@@ -89,7 +89,8 @@ impl Panes {
     }
 
     fn locate(&mut self, pid: i32, now: Instant) -> Option<Location> {
-        if let Some((at, found)) = self.processes.get(&pid)
+        let process = (pid, super::registry::process_start_secs(pid));
+        if let Some((at, found)) = self.processes.get(&process)
             && now.duration_since(*at) < REREAD_PROCESS_AFTER
         {
             return found.clone();
@@ -97,7 +98,7 @@ impl Panes {
         self.processes
             .retain(|_, (at, _)| now.duration_since(*at) < REREAD_PROCESS_AFTER);
         let found = environment(pid).and_then(|environment| location(&environment));
-        self.processes.insert(pid, (now, found.clone()));
+        self.processes.insert(process, (now, found.clone()));
         found
     }
 }
@@ -129,10 +130,11 @@ fn location(environment: &[u8]) -> Option<Location> {
 }
 
 fn list_windows(here: &Location) -> Option<HashMap<String, String>> {
-    let output = here
-        .rex("1s", &["block", "ls", "--json", "-s", &here.session])
-        .output()
-        .ok()?;
+    let output = bounded::output(
+        &mut here.rex("1s", &["block", "ls", "--json", "-s", &here.session]),
+        LIST_LIMIT,
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }

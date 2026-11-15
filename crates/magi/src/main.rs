@@ -1,4 +1,5 @@
 mod agent;
+mod bounded;
 mod cmd;
 mod collect;
 mod conversation;
