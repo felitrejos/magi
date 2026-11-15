@@ -261,6 +261,7 @@ enum Action {
     Choose(u8),
     New,
     Stop,
+    Adopt,
 }
 
 fn action(key: &Key) -> Option<Action> {
@@ -279,6 +280,7 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('n') => Action::Deny,
         Key::Char('c') => Action::New,
         Key::Char('x') => Action::Stop,
+        Key::Char('r') => Action::Adopt,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
         _ => return None,
     })
@@ -413,9 +415,9 @@ fn edit_picker(
             };
             match links.request(picker.endpoint, &request) {
                 Ok(()) => {
-                    model.await_session(picker.endpoint, &dir, now);
-                    let agent = if picker.codex { "Codex" } else { "Claude" };
                     let name = dir.rsplit('/').next().unwrap_or(&dir);
+                    model.await_session(picker.endpoint, name, now);
+                    let agent = if picker.codex { "Codex" } else { "Claude" };
                     model.flash(
                         format!("Opening {agent} in {name} on {}…", picker.machine),
                         true,
@@ -429,6 +431,33 @@ fn edit_picker(
         Key::Char(_) => {}
     }
     model.picker = Some(picker);
+}
+
+fn adopt(model: &mut Model, links: &Links, now: Instant) {
+    let Some(agent) = model.selected_agent(now) else {
+        return;
+    };
+    let adoptable = agent.live
+        && agent.session.pane.is_none()
+        && agent.session.agent == proto::Agent::ClaudeCode;
+    if !adoptable {
+        return;
+    }
+    let (endpoint, project, title) = (
+        agent.endpoint,
+        agent.session.project.clone(),
+        agent.session.title.clone(),
+    );
+    let request = proto::Request::Adopt {
+        session: agent.session.id.clone(),
+    };
+    match links.request(endpoint, &request) {
+        Ok(()) => {
+            model.await_session(endpoint, &project, now);
+            model.flash(format!("Continuing {title} in Rex…"), true, now);
+        }
+        Err(error) => model.flash(format!("couldn't continue it in Rex: {error}"), false, now),
+    }
 }
 
 fn stop(model: &mut Model, links: &Links, now: Instant) {
@@ -590,6 +619,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Choose(option)) => choose(model, links, option, now),
             Some(Action::New) => open_picker(model, links, now),
             Some(Action::Stop) => stop(model, links, now),
+            Some(Action::Adopt) => adopt(model, links, now),
             None => {}
         },
         Event::Opened(result) => {
@@ -1192,7 +1222,12 @@ mod tests {
         );
         model.selected = 3;
         assert!(!screen(&model).contains("Message this session"));
-        assert!(screen(&model).contains("messages and approvals work for sessions in Rex"));
+        assert!(screen(&model).contains("continue it in Rex to message it here"));
+        assert!(
+            footer(&model).contains("r continue in Rex"),
+            "{}",
+            footer(&model)
+        );
         handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.draft, None);
         assert_eq!(
@@ -1369,5 +1404,34 @@ mod tests {
         model.picker = Some(model::Picker::new(Endpoint::Local, "mac".into()));
         handle_batch([key(Key::Escape)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.picker, None);
+    }
+
+    #[test]
+    fn r_asks_the_agent_to_continue_a_session_outside_rex_and_skips_one_inside() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(claude("s1", 0))),
+            now,
+        );
+        model.selected = 3;
+        handle_batch([key(Key::Char('r'))].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some((
+                "couldn't continue it in Rex: that machine isn't connected",
+                false
+            ))
+        );
+        let (mut model, mut links) = fleet();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
+            now,
+        );
+        model.selected = 3;
+        handle_batch([key(Key::Char('r'))].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.flashed(Instant::now()), None);
     }
 }

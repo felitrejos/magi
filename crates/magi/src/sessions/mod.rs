@@ -128,12 +128,14 @@ pub struct Snapshot {
     pub panes: HashMap<String, rex::Location>,
     pub transcripts: HashMap<String, (Agent, PathBuf)>,
     pub forwards: Vec<Forward>,
+    pub cwds: HashMap<String, String>,
 }
 
 pub struct Found {
     pub session: AgentSession,
     pub pid: Option<i32>,
     pub transcript: Option<PathBuf>,
+    pub cwd: String,
 }
 
 pub struct Sessions {
@@ -190,8 +192,12 @@ impl Sessions {
             session,
             pid,
             transcript,
+            cwd,
         } in found
         {
+            if !cwd.is_empty() {
+                snapshot.cwds.insert(session.id.clone(), cwd);
+            }
             if let Some(path) = transcript {
                 snapshot
                     .transcripts

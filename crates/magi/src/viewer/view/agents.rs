@@ -10,7 +10,7 @@ use super::{
     Composed, Cursor, clip, draw_panel, markdown, panel, selected_style, spans_width, spread, tail,
 };
 use crate::proto::{
-    AgentSession, BOLD, Child, Content, DIM, FULL, ForwardState, INVERSE, ITALIC, Run,
+    Agent, AgentSession, BOLD, Child, Content, DIM, FULL, ForwardState, INVERSE, ITALIC, Run,
     SessionState, Shade, UNDERLINE, Waiting,
 };
 use crate::viewer::graphics::Graphics;
@@ -412,6 +412,16 @@ fn input_line(agent: &AgentRow<'_>, draft: Option<&Draft>, width: usize) -> Line
         ]);
     }
     if session.pane.is_none() {
+        if session.agent == Agent::ClaudeCode {
+            return spread(
+                vec![
+                    prompt(theme().faint),
+                    hint("continue it in Rex to message it here; the original stays"),
+                ],
+                keys(&[("r", "continue in Rex")]),
+                width,
+            );
+        }
         return Line::from(clip(
             vec![
                 prompt(theme().faint),

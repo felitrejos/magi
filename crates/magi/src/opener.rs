@@ -37,6 +37,10 @@ pub fn open(dir: &str, codex: bool) -> Result<String, String> {
     }
     args.push(dir);
     let output = cielago(&args, OPEN_LIMIT)?;
+    report(&output)
+}
+
+fn report(output: &Output) -> Result<String, String> {
     let report = std::str::from_utf8(&output.stdout)
         .ok()
         .and_then(|text| text.lines().last())
@@ -44,8 +48,14 @@ pub fn open(dir: &str, codex: bool) -> Result<String, String> {
     match report {
         Some(report) if report.ok => Ok(report.message),
         Some(report) => Err(format!("couldn't open a session: {}", report.message)),
-        None => Err(failure(&output)),
+        None => Err(failure(output)),
     }
+}
+
+pub fn adopt(dir: &str, session: &str) -> Result<String, String> {
+    check(dir)?;
+    let output = cielago(&["open", "--json", "--resume", session, dir], OPEN_LIMIT)?;
+    report(&output)
 }
 
 fn check(dir: &str) -> Result<(), String> {

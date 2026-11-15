@@ -32,8 +32,9 @@
   only to a viewer signed in as you.
 - A viewer can ask an agent to watch a session, message it, answer its
   permission prompt or question, stop its turn, start a new session in one of
-  that machine's folders with `cielago open`, or move a Claude Code session
-  with cielago. The agent
+  that machine's folders with `cielago open`, continue a Claude Code session
+  in Rex as a copy (`claude --resume --fork-session`, which leaves the
+  original untouched), or move a Claude Code session with cielago. The agent
   acts only on sessions it found itself, checks the machine name, and runs
   `rex` and `cielago` with arguments, never through a shell, each with a time
   limit after which it and anything it started are stopped.

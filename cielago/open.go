@@ -29,15 +29,21 @@ type openReport struct {
 
 func openCommand(args []string, out io.Writer) error {
 	asJSON, codex, list := false, false, false
+	resume := ""
 	var rest []string
-	for _, a := range args {
-		switch a {
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; a {
 		case "--json":
 			asJSON = true
 		case "--codex":
 			codex = true
 		case "--list":
 			list = true
+		case "--resume":
+			if i+1 < len(args) {
+				i++
+				resume = args[i]
+			}
 		default:
 			rest = append(rest, a)
 		}
@@ -77,7 +83,10 @@ func openCommand(args []string, out io.Writer) error {
 		return err
 	}
 	if len(rest) != 1 {
-		return fail(errors.New("usage: cielago open <folder> [--codex] [--json], or cielago open --list [--json]"))
+		return fail(errors.New("usage: cielago open <folder> [--codex | --resume <session-id>] [--json], or cielago open --list [--json]"))
+	}
+	if resume != "" && (codex || !sessionIDPattern.MatchString(resume)) {
+		return fail(fmt.Errorf("%q is not a Claude session id to continue", resume))
 	}
 	dir, err := filepath.Abs(rest[0])
 	if err != nil {
@@ -93,6 +102,9 @@ func openCommand(args []string, out io.Writer) error {
 	}
 	name := baseName(root)
 	agent, label, command := "claude", claudeTabLabel(name), []string{"--remote-control", name}
+	if resume != "" {
+		command = []string{"--resume", resume, "--fork-session", "--remote-control", name}
+	}
 	if codex {
 		agent, label, command = "codex", name+" · codex", nil
 	}
@@ -104,7 +116,11 @@ func openCommand(args []string, out io.Writer) error {
 	if err != nil {
 		return fail(fmt.Errorf("Rex couldn't open the tab: %w", err))
 	}
-	where := fmt.Sprintf("Opened %s in %s, Rex session %s", label, dir, group)
+	what := "Opened"
+	if resume != "" {
+		what = fmt.Sprintf("Continued session %s as a copy in", shortID(resume))
+	}
+	where := fmt.Sprintf("%s %s in %s, Rex session %s", what, label, dir, group)
 	if tab.SessionCreated {
 		where += ", which is new"
 	}

@@ -10,11 +10,11 @@ Done:
 - `c` starts a Claude Code or Codex session in any project on any machine, in
   its project's Rex tab, and magi selects it.
 - `x` stops a running turn.
+- `r` continues a session from the Claude desktop app or another terminal in a
+  Rex tab, as a copy, so magi can message, approve and move it. The original
+  is left alone; archive it in the app when you like.
 
 Next:
-- **Adopt a desktop session.** Continue a Claude desktop session in a Rex tab
-  on the same machine, stopping the desktop copy, so magi can message,
-  approve and move it.
 - **Multi-line messages and pastes**, sent as a bracketed paste with Rex's
   `block.event` paste event rather than typed line by line.
 - **Messages while it works.** Queue them the way Claude Code does, safely,

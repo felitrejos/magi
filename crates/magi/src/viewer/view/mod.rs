@@ -453,6 +453,9 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         actions.push(("o", "open in Rex"));
     }
     if agent.live && agent.session.agent == Agent::ClaudeCode {
+        if !in_rex {
+            actions.push(("r", "continue in Rex"));
+        }
         actions.push(("m", "move"));
     }
     actions.push(("c", "new session"));

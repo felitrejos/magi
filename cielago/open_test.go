@@ -52,3 +52,18 @@ func TestOpenFindsProjectsInTheUsualFoldersWhenThereIsNoConfig(t *testing.T) {
 		t.Errorf("group = %q, %v", group, err)
 	}
 }
+
+func TestOpenContinuesOnlyARealClaudeSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"--json", "--resume", "not-an-id", dir},
+		{"--json", "--codex", "--resume", "0f0f0f0f-1111-2222-3333-444444444444", dir},
+	} {
+		var out strings.Builder
+		if err := openCommand(args, &out); err != errReported || !strings.Contains(out.String(), "not a Claude session id") {
+			t.Errorf("%v: err = %v, out = %s", args, err, out.String())
+		}
+	}
+}

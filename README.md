@@ -52,7 +52,8 @@ to the machine that has room.
   project on any machine, in that project's Rex tab. Select a session to read
   its conversation, drawn as Markdown with highlighted code; `↵` writes to it,
   `y` or `n` answers its permission prompt, `1`–`9` picks an option when it
-  asks a question, and `x` stops a turn.
+  asks a question, and `x` stops a turn. A session in the Claude desktop app
+  or another terminal continues in Rex with `r`, as a copy.
 - **Limits and alerts.** Your Claude and Codex 5-hour and weekly windows, and
   alerts when a session needs you, a machine goes quiet or a plan nearly runs
   out.
@@ -118,8 +119,8 @@ x86_64 or arm64, after checking their SHA-256. Every machine needs
   `claude plugin marketplace add felitrejos/magi && claude plugin install cielago@magi`.
 
 Keys: `↑↓` select, `c` new session, `↵` or a click on the conversation to
-write, `y`/`n` allow or deny, `1`–`9` choose, `x` stop, `o` open in Rex, `m`
-move, `a` alerts, `q` quit. `magi fleet --json` prints the same picture once,
+write, `y`/`n` allow or deny, `1`–`9` choose, `x` stop, `r` continue in Rex,
+`o` open in Rex, `m` move, `a` alerts, `q` quit. `magi fleet --json` prints the same picture once,
 for scripts.
 
 ## In Rex and other terminals
@@ -169,8 +170,8 @@ magi notices, says so, and falls back to what the transcripts show.
 
 ## Roadmap
 
-Next: bringing Claude desktop sessions into Rex so magi can drive them, and
-using more of Rex, such as its event stream and floating panes. The full list
+Next: multi-line messages, and using more of Rex, such as its event stream and
+floating panes. The full list
 is in [ROADMAP.md](ROADMAP.md).
 
 What magi and cielago read, send and change is in [SECURITY.md](SECURITY.md).

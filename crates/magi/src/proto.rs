@@ -192,6 +192,9 @@ pub enum Request {
         dir: String,
         codex: bool,
     },
+    Adopt {
+        session: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

@@ -838,7 +838,7 @@ impl Model {
             .collect()
     }
 
-    pub fn await_session(&mut self, endpoint: Endpoint, dir: &str, now: Instant) {
+    pub fn await_session(&mut self, endpoint: Endpoint, project: &str, now: Instant) {
         let known = self
             .agents(now)
             .into_iter()
@@ -846,7 +846,7 @@ impl Model {
             .collect();
         self.awaiting = Some(Awaiting {
             endpoint,
-            project: dir.rsplit('/').next().unwrap_or(dir).to_string(),
+            project: project.to_string(),
             known,
             since: now,
         });

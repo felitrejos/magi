@@ -487,6 +487,10 @@ fn spawn_requests(
                         }
                         Err(text) => reply(&replies, false, text),
                     },
+                    Request::Adopt { session } => match adopt(&session, &agent) {
+                        Ok(text) => reply(&replies, true, text),
+                        Err(text) => reply(&replies, false, text),
+                    },
                     Request::Open { dir, codex } => match opener::open(&dir, codex) {
                         Ok(text) => reply(&replies, true, text),
                         Err(text) => reply(&replies, false, text),
@@ -577,6 +581,37 @@ fn move_session(session: &str, to: &str, agent: &Agent, replies: &SyncSender<Fra
         Ok(text) => reply(replies, true, text),
         Err(text) => reply(replies, false, text),
     }
+}
+
+fn adopt(session: &str, agent: &Agent) -> Result<String, String> {
+    let (found, cwd, in_rex) = {
+        let snapshot = agent
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (
+            snapshot
+                .sessions
+                .iter()
+                .find(|known| known.id == session)
+                .cloned(),
+            snapshot.cwds.get(session).cloned(),
+            snapshot.panes.contains_key(session),
+        )
+    };
+    let found = found.ok_or("that session has ended")?;
+    if found.agent != proto::Agent::ClaudeCode {
+        return Err(format!(
+            "{} is a {} session; magi continues Claude Code sessions in Rex",
+            found.title,
+            found.agent.name()
+        ));
+    }
+    if in_rex {
+        return Err(format!("{} is already in Rex", found.title));
+    }
+    let cwd = cwd.ok_or_else(|| format!("magi doesn't know which folder {} is in", found.title))?;
+    opener::adopt(&cwd, session)
 }
 
 fn type_into(

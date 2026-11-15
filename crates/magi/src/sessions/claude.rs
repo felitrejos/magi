@@ -183,10 +183,12 @@ impl ClaudeSessions {
                     .transcript
                     .as_ref()
                     .map(|transcript| transcript.path().to_path_buf());
+                let cwd = session_cwd(&session, tracked);
                 Found {
                     session: describe(session, tracked, context),
                     pid,
                     transcript,
+                    cwd,
                 }
             })
             .collect();
@@ -292,12 +294,22 @@ fn with_tool(state: SessionState, tool: Option<&str>) -> SessionState {
     }
 }
 
+fn session_cwd(session: &Seen, tracked: &Tracked) -> String {
+    session
+        .cwd
+        .clone()
+        .or_else(|| {
+            tracked
+                .transcript
+                .as_ref()
+                .and_then(|transcript| transcript.state.cwd.clone())
+        })
+        .unwrap_or_default()
+}
+
 fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>) -> AgentSession {
     let main = tracked.transcript.as_ref();
-    let cwd = session
-        .cwd
-        .or_else(|| main.and_then(|transcript| transcript.state.cwd.clone()))
-        .unwrap_or_default();
+    let cwd = session_cwd(&session, tracked);
     let project = Path::new(&cwd)
         .file_name()
         .map_or_else(|| cwd.clone(), |name| name.to_string_lossy().into_owned());

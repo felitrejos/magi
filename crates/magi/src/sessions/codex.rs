@@ -214,10 +214,16 @@ impl Codex {
                 .get(path)
                 .and_then(|rollout| describe(&rollout.state, titles, now_ms))
             {
+                let cwd = self
+                    .rollouts
+                    .get(path)
+                    .and_then(|rollout| rollout.state.cwd.clone())
+                    .unwrap_or_default();
                 sessions.push(Found {
                     session,
                     pid: Some(*pid),
                     transcript: Some(path.clone()),
+                    cwd,
                 });
             }
         }
