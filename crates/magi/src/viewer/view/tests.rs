@@ -285,8 +285,6 @@ fn wide_screen_reads_in_plain_words() {
     }
     let screen = draw(&model, 160, 40, now);
     for text in [
-        "magi",
-        "memory critical",
         "Machines",
         "Agents",
         "Memory",
@@ -326,18 +324,26 @@ fn print_phone() {
 fn phone_width_keeps_names_cpu_and_memory() {
     let now = Instant::now();
     let screen = draw(&fleet(2, now), 46, 30, now);
-    assert!(screen.contains("magi"));
     assert!(screen.contains("host-0"));
     assert!(screen.contains("cpu") && screen.contains("mem"));
 }
 
 #[test]
-fn agents_that_need_you_come_first_and_show_in_the_header() {
+fn agents_that_need_you_come_first_and_plan_limits_sit_in_the_agents_panel() {
     let now = Instant::now();
     let model = fleet(2, now);
     let screen = draw(&model, 160, 40, now);
-    assert!(screen.contains("2 need you"), "{screen}");
     let lines: Vec<&str> = screen.lines().collect();
+    assert!(
+        lines[0].contains("╭ Machines"),
+        "no header row above the panels\n{screen}"
+    );
+    let agents = lines
+        .iter()
+        .position(|line| line.contains("╭ Agents"))
+        .unwrap();
+    assert!(lines[agents + 1].contains("Claude 5h"), "{screen}");
+    assert!(lines[agents + 1].contains("Codex 5h"), "{screen}");
     let at = |text: &str| lines.iter().position(|line| line.contains(text));
     let needs_you = at(" Needs you").expect("a Needs you group");
     let first_idle = at("idle 12m").expect("an idle session");

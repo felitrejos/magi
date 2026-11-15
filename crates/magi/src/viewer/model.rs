@@ -224,14 +224,6 @@ impl Subsystem {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Strain {
-    pub subsystem: Subsystem,
-    pub level: Level,
-    pub worst: f32,
-    pub culprit: Option<String>,
-}
-
 pub fn grade(subsystem: Subsystem, value: f32) -> Level {
     match subsystem {
         Subsystem::Cpu => Level::grade(value, 0.70, 0.90),
@@ -482,30 +474,6 @@ impl Model {
             .iter()
             .find(|peer| Endpoint::Tailnet(peer.ipv4) == endpoint)
             .map(|peer| peer.node.clone())
-    }
-
-    pub fn strains(rows: &[Row<'_>]) -> [Strain; 3] {
-        [Subsystem::Cpu, Subsystem::Memory, Subsystem::Storage].map(|subsystem| {
-            let worst = rows
-                .iter()
-                .filter(|row| row.state() == Some(&LinkState::Live))
-                .filter_map(|row| row.machine().map(|machine| (row.name.as_str(), machine)))
-                .map(|(name, machine)| {
-                    let value = match subsystem {
-                        Subsystem::Cpu => machine.smoothed_cpu(),
-                        Subsystem::Memory => machine.memory_fraction(),
-                        Subsystem::Storage => machine.fullest_filesystem(),
-                    };
-                    (name, value)
-                })
-                .max_by(|a, b| a.1.total_cmp(&b.1));
-            Strain {
-                subsystem,
-                level: worst.map_or(Level::Normal, |(_, value)| grade(subsystem, value)),
-                worst: worst.map_or(0.0, |(_, value)| value),
-                culprit: worst.map(|(name, _)| name.to_string()),
-            }
-        })
     }
 
     pub fn agents(&self, now: Instant) -> Vec<AgentRow<'_>> {
@@ -773,7 +741,6 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Filesystem, Memory};
 
     const LOCAL: Endpoint = Endpoint::Local;
     const HOMELAB: Endpoint = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 7));
@@ -914,35 +881,6 @@ mod tests {
                 .len(),
             1
         );
-    }
-
-    #[test]
-    fn strains_report_the_worst_live_machine() {
-        let now = Instant::now();
-        let mut model = model_with(&[(LOCAL, "mac"), (HOMELAB, "homelab")], &[], now);
-        let busy = Sample {
-            memory: Memory {
-                total: 100,
-                used: 95,
-                ..Memory::default()
-            },
-            filesystems: vec![Filesystem {
-                mount: "/".into(),
-                total: 100,
-                used: 50,
-            }],
-            cpu: 9_500,
-            ..Sample::default()
-        };
-        model.apply(HOMELAB, LinkUpdate::Sample(Box::new(busy)), now);
-        model.apply(LOCAL, LinkUpdate::Sample(Box::default()), now);
-        let [cpu, memory, storage] = Model::strains(&model.rows(now));
-        assert_eq!(
-            (cpu.level, cpu.culprit.as_deref()),
-            (Level::Critical, Some("homelab"))
-        );
-        assert_eq!(memory.level, Level::Critical);
-        assert_eq!(storage.level, Level::Normal);
     }
 
     #[test]

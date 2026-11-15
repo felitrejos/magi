@@ -21,15 +21,24 @@ const BUSY_MILLICORES: u32 = 500;
 const IDLE_MILLICORES: u32 = 50;
 const METER: usize = 12;
 
+pub struct Top {
+    pub cost: (u64, bool),
+    pub limits: Option<Composed>,
+}
+
 pub fn render_list(
     frame: &mut Frame,
     area: Rect,
     model: &Model,
     listed: &[Listed<'_>],
-    total: (u64, bool),
+    top: Top,
     offset: usize,
+    graphics: &mut Graphics,
 ) {
-    let (cost_total, complete) = total;
+    let Top {
+        cost: (cost_total, complete),
+        limits,
+    } = top;
     let block = panel(
         vec![Span::styled("Agents", style::bold(theme().text))],
         (!listed.is_empty()).then(|| {
@@ -43,8 +52,13 @@ pub fn render_list(
             )]
         }),
     );
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
     frame.render_widget(block, area);
+    if let Some(limits) = limits.filter(|line| line.width() > 0 && inner.height > 2) {
+        let row = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(1), 1);
+        limits.draw(frame, graphics, row, Style::new());
+        inner = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
+    }
     let width = inner.width as usize;
     if listed.is_empty() {
         frame.render_widget(

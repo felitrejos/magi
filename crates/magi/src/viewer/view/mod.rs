@@ -11,11 +11,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::graphics::Graphics;
-use super::model::{AgentRow, Entry, Level, LinkState, Model, Row, Strain};
+use super::model::{Entry, Model};
 use super::style::{self, theme};
 use super::units;
-use crate::log;
-use crate::proto::{Agent, FULL, Plan, SessionState, Source};
+use crate::proto::{Agent, FULL, Plan, Source};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -37,13 +36,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     let rows = model.rows(now);
     let agents = model.agents(now);
     let plans = model.plans(now);
-    let [header, body, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-    render_header(frame, header, &rows, &agents, &plans, graphics);
+    let [body, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
     render_footer(frame, footer, model, now);
 
     let (machine_area, agent_area, detail_area, wide) = if body.width >= WIDE && body.height >= 14 {
@@ -73,7 +66,18 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         agents.iter().map(|agent| agent.session.cost_micros).sum(),
         agents.iter().all(|agent| agent.session.cost_complete),
     );
-    agents::render_list(frame, agent_area, model, &listed, total, rows.len());
+    let limits = |room: usize| {
+        [true, false]
+            .into_iter()
+            .map(|meters| plans_line(&plans, meters))
+            .find(|line| line.width() <= room)
+    };
+    let limits = limits(agent_area.width.saturating_sub(4) as usize);
+    let top = agents::Top {
+        cost: total,
+        limits,
+    };
+    agents::render_list(frame, agent_area, model, &listed, top, rows.len(), graphics);
 
     if model.showing_alerts {
         history::render(frame, detail_area, &model.alerts);
@@ -270,102 +274,6 @@ impl Cursor {
     }
 }
 
-fn render_header(
-    frame: &mut Frame,
-    area: Rect,
-    rows: &[Row<'_>],
-    agents: &[AgentRow<'_>],
-    plans: &[&Plan],
-    graphics: &mut Graphics,
-) {
-    let width = area.width as usize;
-    let mut left = vec![
-        Span::styled("magi", style::bold(theme().second)),
-        Span::styled(
-            format!(
-                "  {} {} · {} {}",
-                rows.len(),
-                plural(rows.len(), "machine", "machines"),
-                agents.len(),
-                plural(agents.len(), "agent", "agents")
-            ),
-            style::fg(theme().dim),
-        ),
-    ];
-    let waiting = agents
-        .iter()
-        .filter(|agent| agent.live && matches!(agent.session.state, SessionState::Waiting(_)))
-        .count();
-    if waiting > 0 {
-        left.push(Span::raw("  "));
-        left.push(Span::styled(
-            format!(" {waiting} {} you ", plural(waiting, "needs", "need")),
-            style::pill(theme().warn, theme().warn_tint),
-        ));
-    }
-    let lost = rows
-        .iter()
-        .filter(|row| {
-            matches!(
-                row.state(),
-                Some(LinkState::Lost { .. } | LinkState::Rejected(_))
-            )
-        })
-        .count();
-    if lost > 0 {
-        left.push(Span::styled(
-            format!("  {lost} lost"),
-            style::bold(theme().crit),
-        ));
-    }
-    left.extend(health(&Model::strains(rows), rows));
-
-    let clock = log::clock();
-    let clock = Span::styled(format!("  {}", &clock[..5]), style::fg(theme().dim));
-    let room = width.saturating_sub(spans_width(&left) + 6 + 2);
-    let mut right = plans_line(plans, true);
-    if right.width() > room {
-        right = plans_line(plans, false);
-    }
-    if right.width() > room {
-        right = Composed::default();
-    }
-    right.push(clock);
-    Composed::of(left)
-        .spread(right, width)
-        .draw(frame, graphics, area, Style::new());
-}
-
-fn health(strains: &[Strain; 3], rows: &[Row<'_>]) -> Vec<Span<'static>> {
-    if !rows.iter().any(|row| row.state() == Some(&LinkState::Live)) {
-        return Vec::new();
-    }
-    let worst = strains
-        .iter()
-        .filter(|strain| strain.level != Level::Normal)
-        .max_by(|a, b| {
-            a.level
-                .partial_cmp(&b.level)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.worst.total_cmp(&b.worst))
-        });
-    match worst.and_then(|strain| strain.culprit.as_deref().map(|culprit| (strain, culprit))) {
-        Some((strain, culprit)) => vec![Span::styled(
-            format!(
-                "  {culprit} {} {}",
-                strain.subsystem.name(),
-                if strain.level == Level::Critical {
-                    "critical"
-                } else {
-                    "high"
-                }
-            ),
-            style::fg(style::level(strain.level)),
-        )],
-        None => vec![Span::styled("  all normal", style::fg(theme().accent))],
-    }
-}
-
 fn plans_line(plans: &[&Plan], meters: bool) -> Composed {
     let mut line = Composed::default();
     for plan in plans {
@@ -496,10 +404,6 @@ fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> 
 
 fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(Span::width).sum()
-}
-
-fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
-    if count == 1 { one } else { many }
 }
 
 fn clip(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
