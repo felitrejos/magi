@@ -234,7 +234,7 @@ fn select_title(model: &mut Model, title: &str, now: Instant) {
 fn draw(model: &Model, width: u16, height: u16, now: Instant) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal
-        .draw(|frame| render(frame, model, now, &mut Graphics::cells_only(), &mut None))
+        .draw(|frame| render(frame, model, now, &mut Graphics::cells_only()))
         .unwrap();
     let buffer = terminal.backend().buffer();
     (0..height)
@@ -304,9 +304,7 @@ fn renders_every_size_from_phone_to_ultrawide_without_panicking() {
                 draw(&model, width, height, now);
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal
-                    .draw(|frame| {
-                        render(frame, &model, now, &mut Graphics::pixels(8, 16), &mut None)
-                    })
+                    .draw(|frame| render(frame, &model, now, &mut Graphics::pixels(8, 16)))
                     .unwrap();
             }
         }
@@ -475,7 +473,7 @@ fn bench_viewer() {
         let started = Instant::now();
         for _ in 0..frames {
             terminal
-                .draw(|frame| render(frame, &model, now, &mut Graphics::cells_only(), &mut None))
+                .draw(|frame| render(frame, &model, now, &mut Graphics::cells_only()))
                 .unwrap();
         }
         println!(
@@ -499,7 +497,7 @@ fn bench_viewer() {
         );
         let started = Instant::now();
         terminal
-            .draw(|frame| render(frame, &model, now, &mut pixels, &mut None))
+            .draw(|frame| render(frame, &model, now, &mut pixels))
             .unwrap();
         let mut out = Vec::new();
         pixels.flush(&mut out).unwrap();
@@ -533,7 +531,7 @@ fn bench_viewer() {
     )
     .unwrap();
     terminal
-        .draw(|frame| render(frame, &model, now, &mut Graphics::cells_only(), &mut None))
+        .draw(|frame| render(frame, &model, now, &mut Graphics::cells_only()))
         .unwrap();
     let first = written.get();
     let frames = 120;
@@ -545,7 +543,7 @@ fn bench_viewer() {
             now,
         );
         terminal
-            .draw(|frame| render(frame, &model, now, &mut Graphics::cells_only(), &mut None))
+            .draw(|frame| render(frame, &model, now, &mut Graphics::cells_only()))
             .unwrap();
     }
     println!(

@@ -69,16 +69,6 @@ pub fn update(reply: &[u8]) -> bool {
     true
 }
 
-#[cfg(target_os = "macos")]
-pub fn is_dark() -> bool {
-    let Rgb(r, g, b) = CURRENT
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .0
-        .background;
-    (u16::from(r) + u16::from(g) + u16::from(b)) / 3 < 128
-}
-
 pub fn palette_env() -> String {
     let palette = CURRENT.read().unwrap_or_else(PoisonError::into_inner).0;
     [

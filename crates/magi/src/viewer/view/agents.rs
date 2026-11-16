@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::{
-    Cursor, Mark, Pixels, body, clip, draw_panel, panel, selected_style, spans_width, spread, tail,
+    Cursor, Mark, body, clip, draw_panel, panel, selected_style, spans_width, spread, tail,
     truncate,
 };
 use crate::proto::{
@@ -267,7 +267,6 @@ pub fn render_child(
     child: &Child,
     preview: Preview<'_>,
     expanded: bool,
-    pixels: &mut Pixels<'_>,
 ) {
     if area.height < 5 || area.width < 16 {
         return;
@@ -313,7 +312,7 @@ pub fn render_child(
         working: child.state == ChildState::Running,
         expanded,
     };
-    live_view(&mut cursor, frame, preview, speech, pixels);
+    live_view(&mut cursor, frame, preview, speech);
 }
 
 fn worktree_line(
@@ -420,7 +419,7 @@ pub struct Detail<'a> {
     pub expanded: bool,
 }
 
-pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>, pixels: &mut Pixels<'_>) {
+pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
     let Detail {
         agent,
         suggestion,
@@ -500,7 +499,7 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>, pixels: 
         working: agent.live && matches!(session.state, SessionState::Working { .. }),
         expanded,
     };
-    live_view(&mut cursor, frame, preview, speech, pixels);
+    live_view(&mut cursor, frame, preview, speech);
     let mut frame_box = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(style::fg(if shown.is_some() {
@@ -764,13 +763,7 @@ pub struct Speech {
     pub expanded: bool,
 }
 
-fn live_view(
-    cursor: &mut Cursor,
-    frame: &mut Frame,
-    preview: Preview<'_>,
-    speech: Speech,
-    pixels: &mut Pixels<'_>,
-) {
+fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, speech: Speech) {
     let width = usize::from(cursor.area.width);
     if let Preview::Ready(Content::Conversation(said)) = preview {
         let talk = super::talk::Talk {
@@ -778,7 +771,7 @@ fn live_view(
             working: speech.working,
             expanded: speech.expanded,
         };
-        return super::talk::render(frame, cursor.rest(), talk, pixels);
+        return super::talk::render(frame, cursor.rest(), talk);
     }
     let note = |cursor: &mut Cursor, frame: &mut Frame, text: &str, color| {
         cursor.line(

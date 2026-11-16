@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
@@ -9,12 +8,10 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use super::markdown::{self, tool_name};
-use super::{Pixels, clip, spread, truncate};
+use super::{clip, spread, truncate};
 use crate::proto::{Change, Said, Step, StepState};
 use crate::viewer::style::{self, theme};
-use crate::viewer::typeset::{Typesetter, draw_rows};
 
-const SPACER: &str = "\n\n&nbsp;\n\n";
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const BUBBLE_SHARE: usize = 4;
 const BUBBLE_OF: usize = 5;
@@ -48,20 +45,6 @@ enum Piece<'a> {
     Plan(&'a [Step]),
 }
 
-enum Block {
-    Lines(Vec<Line<'static>>),
-    Paper { first: usize, rows: usize },
-}
-
-impl Block {
-    fn height(&self) -> usize {
-        match self {
-            Block::Lines(lines) => lines.len(),
-            Block::Paper { rows, .. } => *rows,
-        }
-    }
-}
-
 fn pieces(said: &[Said]) -> Vec<Piece<'_>> {
     let mut pieces = Vec::new();
     for entry in said {
@@ -91,7 +74,7 @@ fn pieces(said: &[Said]) -> Vec<Piece<'_>> {
     pieces
 }
 
-pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>, pixels: &mut Pixels<'_>) {
+pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>) {
     if area.height == 0 || area.width < 8 {
         return;
     }
@@ -99,95 +82,28 @@ pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>, pixels: &mut Pixels
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
-    let pieces = pieces(talk.said);
-    let Pixels { graphics, paper } = pixels;
-    let paper = typeset(&pieces, area.width, graphics.cell(), paper);
-    let mut replies = paper.as_ref().map(|(_, spans)| spans.iter());
-    let blocks: Vec<Block> = pieces
-        .iter()
-        .map(|piece| match piece {
-            Piece::Prompt(text) => Block::Lines(prompt(text, width)),
-            Piece::Reply(text) => match replies.as_mut().map(Iterator::next) {
-                Some(Some(Some((first, last)))) => Block::Paper {
-                    first: *first,
-                    rows: last - first,
-                },
-                _ => Block::Lines(markdown::markdown(text, width)),
-            },
-            Piece::Tools(tools) => Block::Lines(tool_lines(tools, talk, now, width)),
-            Piece::Plan(steps) => Block::Lines(plan_lines(steps, width)),
-        })
-        .collect();
     let mut bottom = area.y + area.height;
-    for (index, block) in blocks.iter().enumerate().rev() {
-        let height = block.height();
-        let room = usize::from(bottom - area.y);
-        let shown = height.min(room);
+    for piece in pieces(talk.said).iter().rev() {
+        let lines = match piece {
+            Piece::Prompt(text) => prompt(text, width),
+            Piece::Reply(text) => markdown::markdown(text, width),
+            Piece::Tools(tools) => tool_lines(tools, talk, now, width),
+            Piece::Plan(steps) => plan_lines(steps, width),
+        };
+        let shown = lines.len().min(usize::from(bottom - area.y));
         let top = bottom - shown as u16;
-        let skipped = height - shown;
-        match block {
-            Block::Lines(lines) => {
-                for (offset, line) in lines.iter().skip(skipped).enumerate() {
-                    frame.render_widget(
-                        Paragraph::new(line.clone()),
-                        Rect::new(area.x, top + offset as u16, area.width, 1),
-                    );
-                }
-            }
-            Block::Paper { first, .. } => {
-                if let Some((typesetter, _)) = &paper {
-                    draw_rows(
-                        frame.buffer_mut(),
-                        graphics,
-                        typesetter,
-                        Rect::new(area.x, top, area.width, shown as u16),
-                        first + skipped,
-                        "talk",
-                    );
-                }
-            }
+        let skipped = lines.len() - shown;
+        for (offset, line) in lines.into_iter().skip(skipped).enumerate() {
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect::new(area.x, top + offset as u16, area.width, 1),
+            );
         }
-        if top <= area.y + 1 || index == 0 {
+        if top <= area.y + 1 {
             break;
         }
         bottom = top - 1;
     }
-}
-
-type Spans = Vec<Option<(usize, usize)>>;
-
-fn typeset<'p>(
-    pieces: &[Piece<'_>],
-    width: u16,
-    cell: Option<(u32, u32)>,
-    paper: &'p mut Option<Typesetter>,
-) -> Option<(&'p Typesetter, Spans)> {
-    let (cell_width, cell_height) = cell?;
-    if paper.as_ref().is_none_or(|paper| !paper.matches_terminal()) {
-        *paper = Typesetter::new();
-    }
-    let paper = paper.as_mut()?;
-    let mut doc = String::new();
-    let mut lines = Vec::new();
-    for piece in pieces {
-        let Piece::Reply(text) = piece else {
-            continue;
-        };
-        if !doc.is_empty() {
-            doc.push_str(SPACER);
-        }
-        let text = text.trim();
-        let first = doc.matches('\n').count() as u32 + 1;
-        lines.push((first, first + text.lines().count().max(1) as u32 - 1));
-        doc.push_str(text);
-    }
-    paper.show(&doc, Path::new("."));
-    paper.fit(u32::from(width) * cell_width, cell_height);
-    let spans = lines
-        .into_iter()
-        .map(|(first, last)| paper.rows_of(first, last))
-        .collect();
-    Some((paper, spans))
 }
 
 fn prompt(text: &str, width: usize) -> Vec<Line<'static>> {

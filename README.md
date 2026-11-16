@@ -54,8 +54,8 @@ to the machine that has room.
   that starts in `~/Chats`), the machine (magi suggests the one with the
   most room), Claude Code or Codex and its model, and it starts in that project's Rex tab
   and magi selects it. Select a session to read
-  its conversation, typeset like a page on a Mac (real type, highlighted code,
-  tables) and drawn as Markdown elsewhere; `↵` writes to it,
+  its conversation, drawn as Markdown with highlighted code and tables, its
+  tool calls folded and its plan at the end; `↵` writes to it,
   `y` or `n` answers its permission prompt, `1`–`9` picks an option when it
   asks a question, and `x` stops a turn. A session in the Claude desktop app
   or another terminal continues in Rex with `r`, as a copy.

@@ -17,7 +17,6 @@ use ratatui::widgets::Paragraph;
 use super::graphics::Graphics;
 use super::model::{AgentRow, Focus, Model, Naming, Renaming, Row};
 use super::style::{self, theme};
-use super::typeset::Typesetter;
 use super::units;
 use crate::proto::{Agent, FULL, Plan, SessionState};
 use unicode_segmentation::UnicodeSegmentation;
@@ -124,13 +123,7 @@ fn sgr(style: Style) -> String {
     }
 }
 
-pub fn render(
-    frame: &mut Frame,
-    model: &Model,
-    now: Instant,
-    graphics: &mut Graphics,
-    paper: &mut Option<Typesetter>,
-) {
+pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Graphics) {
     let full = frame.area();
     if full.width < 28 || full.height < 8 {
         frame.render_widget(
@@ -208,7 +201,7 @@ pub fn render(
             }
             Some(Focus::Agent(id)) => {
                 if let Some(agent) = agents.iter().find(|agent| agent.session.id == id) {
-                    render_session(frame, detail_area, model, agent, now, graphics, paper);
+                    render_session(frame, detail_area, model, agent, now);
                 }
             }
             Some(Focus::Child(id, child_id)) => {
@@ -241,7 +234,6 @@ pub fn render(
                         child,
                         preview,
                         model.tools_expanded,
-                        &mut Pixels { graphics, paper },
                     );
                 }
             }
@@ -256,8 +248,6 @@ fn render_session(
     model: &Model,
     agent: &AgentRow<'_>,
     now: Instant,
-    graphics: &mut Graphics,
-    paper: &mut Option<Typesetter>,
 ) {
     let suggestion = model.move_suggestion(agent, now);
     let source = if agent.session.pane.is_some() && agent.session.state.is_waiting() {
@@ -285,13 +275,7 @@ fn render_session(
             forwards: &forwards,
             expanded: model.tools_expanded,
         },
-        &mut Pixels { graphics, paper },
     );
-}
-
-pub struct Pixels<'a> {
-    pub graphics: &'a mut Graphics,
-    pub paper: &'a mut Option<Typesetter>,
 }
 
 struct Header<'a> {

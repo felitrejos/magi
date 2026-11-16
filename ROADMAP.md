@@ -22,8 +22,9 @@ read and review from one place, and recommends where work should run.
 - **All of Rex, not one pane.** The magi pane is home. Diffs, plans, Markdown,
   files, images and machine detail open as Rex floating panes over it, like
   modals, and close back to the conversation.
-- **Built for the Mac client.** The viewer on the Mac draws pages with real
-  type through kitty graphics; other machines keep a cell-based viewer.
+- **Built for the Mac client, working everywhere.** Mac viewers get SF
+  Symbols and the Mac's own sensors; every viewer draws the same conversation
+  and pages in the terminal's own text.
 
 ## Phase 3: every session in Rex
 
@@ -56,8 +57,8 @@ Done:
   least busy one with room, with its reason), Claude or Codex and the
   model (Claude's aliases, or the models that machine's Codex lists); it starts
   the session, closes itself and magi selects the new session.
-- **Conversation, after the desktop app:** replies typeset in Charter with
-  magi's own quieter colours, your messages in a raised block, each run of
+- **Conversation, after the desktop app:** replies in magi's own quieter
+  colours, your messages in a raised block, each run of
   tool calls folded into one line (`t` shows them), the call still running
   with its time, and the session's plan as a card at the end.
 - **Session family tree:** subagents, background shells, worktrees and
@@ -70,16 +71,14 @@ Next:
    beside it, and `v` its outputs (its plan and the documents it wrote), in
    floating panes. Next: send a selection and a question back to the session
    from the diff (the idea from leaf's `@`), and images.
-2. **Pages, not cells.** The conversation is typeset with kitty graphics on
-   the Mac, built on [mddog](https://github.com/qu8n/mddog)'s engine (MIT).
-   Next, search, selection and links. The cell renderer stays for Linux.
 
 ## Phase 5: the rest of the redesign
 
 1. **Alerts.** The history as a quiet feed grouped by day, in a popup.
 2. **Shared project edits.** Keep `p` and `P` edits on the agents so every
    viewer shows the same projects.
-3. **Pages.** Search, text selection and clickable links in typeset pages.
+3. **Pages.** Search, text selection and clickable links in the conversation
+   and the Outputs preview.
 
 ## Phase 6: placement, as recommendations
 

@@ -17,7 +17,6 @@ mod style;
 mod symbols;
 mod terminal;
 mod topology;
-mod typeset;
 mod units;
 mod view;
 
@@ -189,7 +188,6 @@ fn event_loop(
     graphics: &mut Graphics,
 ) -> io::Result<()> {
     let mut model = Model::new(port, Instant::now(), alerts);
-    let mut paper = None;
     model.host_icons = rex::host_icons();
     model.projects = projects::Projects::open(net::state_dir()?.join("projects.json"));
     links.reconcile(&mut model, &[Endpoint::Local])?;
@@ -210,7 +208,7 @@ fn event_loop(
             let mut out = io::stdout();
             execute!(out, BeginSynchronizedUpdate)?;
             let drawn = terminal
-                .draw(|frame| view::render(frame, &model, now, graphics, &mut paper))
+                .draw(|frame| view::render(frame, &model, now, graphics))
                 .map(drop)
                 .and_then(|()| graphics.flush(&mut out));
             execute!(out, EndSynchronizedUpdate)?;
@@ -1241,15 +1239,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
         terminal
-            .draw(|frame| {
-                view::render(
-                    frame,
-                    model,
-                    Instant::now(),
-                    &mut Graphics::cells_only(),
-                    &mut None,
-                )
-            })
+            .draw(|frame| view::render(frame, model, Instant::now(), &mut Graphics::cells_only()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..30)
@@ -1266,15 +1256,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
         terminal
-            .draw(|frame| {
-                view::render(
-                    frame,
-                    model,
-                    Instant::now(),
-                    &mut Graphics::cells_only(),
-                    &mut None,
-                )
-            })
+            .draw(|frame| view::render(frame, model, Instant::now(), &mut Graphics::cells_only()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..120).map(|x| buffer[(x, 29)].symbol()).collect()
@@ -1472,13 +1454,7 @@ mod tests {
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
             terminal
                 .draw(|frame| {
-                    view::render(
-                        frame,
-                        model,
-                        Instant::now(),
-                        &mut Graphics::cells_only(),
-                        &mut None,
-                    )
+                    view::render(frame, model, Instant::now(), &mut Graphics::cells_only())
                 })
                 .unwrap();
             format!("{:?}", terminal.backend().buffer())
@@ -1560,15 +1536,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
         terminal
-            .draw(|frame| {
-                view::render(
-                    frame,
-                    &model,
-                    Instant::now(),
-                    &mut Graphics::cells_only(),
-                    &mut None,
-                )
-            })
+            .draw(|frame| view::render(frame, &model, Instant::now(), &mut Graphics::cells_only()))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let screen: Vec<String> = (0..30)

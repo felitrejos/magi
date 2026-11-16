@@ -13,7 +13,9 @@ use crate::proto::{Agent, Change, Said, Step, StepState};
 use crate::sessions::timestamp_secs;
 
 const HANDBACK_TOOL: &str = "SubagentHandback";
-const PLAN_TOOLS: [&str; 7] = [
+const WRAP_UP: &str = "mcp__ccd_turn__wrap_up";
+const PLAN_TOOLS: [&str; 8] = [
+    WRAP_UP,
     "TodoWrite",
     "TaskCreate",
     "TaskUpdate",
@@ -227,6 +229,7 @@ impl Plan {
                     false
                 }
                 Some("TaskUpdate") => self.update_task(input),
+                Some(WRAP_UP) => self.finish(),
                 _ => false,
             };
         }
@@ -292,6 +295,13 @@ impl Plan {
             }),
             None => false,
         }
+    }
+
+    fn finish(&mut self) -> bool {
+        for (_, step) in &mut self.steps {
+            step.state = StepState::Done;
+        }
+        !self.steps.is_empty()
     }
 
     fn at(&self, state: StepState) -> Option<usize> {
@@ -789,6 +799,29 @@ mod tests {
             plan(&super::said(codex, Agent::Codex)),
             Some(vec![("Look".into(), Done)])
         );
+    }
+
+    #[test]
+    fn the_desktop_apps_wrap_up_finishes_its_plan_and_is_not_a_tool_call() {
+        let turn = [
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"p1","name":"mcp__ccd_turn__update_plan","input":{"items":[{"content":"One","status":"in_progress"},{"content":"Two","status":"pending"}]}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w1","name":"mcp__ccd_turn__wrap_up","input":{"recap":"done"}}]}}"#,
+        ]
+        .join("\n");
+        let said = said(&turn, Agent::ClaudeCode);
+        assert_eq!(
+            plan(&said),
+            Some(vec![
+                ("One".into(), StepState::Done),
+                ("Two".into(), StepState::Done)
+            ])
+        );
+        assert!(running(&said).is_empty());
+        let next = format!(
+            "{turn}\n{}",
+            r#"{"type":"user","message":{"role":"user","content":"next thing"}}"#
+        );
+        assert_eq!(plan(&super::said(&next, Agent::ClaudeCode)), None);
     }
 
     #[test]
