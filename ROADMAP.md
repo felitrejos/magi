@@ -103,8 +103,10 @@ hosts kept by your home server. What that can replace:
 3. **Find panes through Rex.** `rex block ls -A --json` with
    `rex block call process` (foreground pid, argv, cwd, last exit) instead of
    reading process environments, which works on every host.
-4. **Port forwards.** `rex forward` instead of cielago's own SSH tunnels, with
-   their states (active, away, orphaned) shown in magi.
+4. **Port forwards.** Done: a moved session's dev ports go through
+   `rex forward` as tunnel blocks in its Rex session on the new machine,
+   reconnecting on their own (SSH stays only for tmux hosts). Next: show each
+   forward's state (active, away, orphaned) on its session.
 5. **Folders and files.** `list_dir` to browse any machine's folders when
    starting a session; `download_begin` and `upload_begin` to fetch a file for
    a popup or attach an image to a message.
@@ -117,8 +119,9 @@ Tailscale, and draw it locally. SSH stays only for what Rex has no call for:
 copying a work tree when a session moves, and running git on the machine it
 moves to.
 
-Rex is in preview, so magi should check its API revision
-(`rex version --json`) and keep working when a call it relies on changes.
+Rex is in preview, so magi and cielago follow its latest release only
+(today 0.1.0-preview.19, API revision 14), with no fallbacks for older
+servers: bump `REX_API` and `rexAPI` with each Rex release.
 
 ## Phase 8: sessions
 

@@ -194,6 +194,7 @@ impl Sessions {
             .map_or(0, |since| since.as_millis() as u64);
         let mut budget = READ_BUDGET_PER_POLL;
         let mut snapshot = Snapshot::default();
+        snapshot.notices.extend(self.events.outdated());
         let mut found = Vec::new();
         match self.claude.poll(board, now, now_ms, &mut budget) {
             Ok(polled) => {

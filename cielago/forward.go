@@ -31,10 +31,18 @@ type forwardRecord struct {
 	Session string    `json:"session"`
 	Host    string    `json:"host"`
 	SSH     string    `json:"ssh"`
+	Rex     *rexVia   `json:"rex,omitempty"`
 	Ports   []int     `json:"ports"`
 	PID     int       `json:"pid"`
 	State   string    `json:"state"`
 	Started time.Time `json:"started"`
+}
+
+// rexVia names the Rex server, and the session on it, that carries a session's forwards as
+// tunnel blocks. Without it, forwards go over ssh.
+type rexVia struct {
+	Server  string `json:"server"`
+	Session string `json:"session"`
 }
 
 func forwardsDir() (string, error) {
@@ -94,7 +102,7 @@ func runnerAlive(recordPath string) bool {
 	return false
 }
 
-func startForwards(session, host, ssh string, ports []int) error {
+func startForwards(session, host, ssh string, via *rexVia, ports []int) error {
 	if err := closeForwards(session); err != nil {
 		return err
 	}
@@ -109,7 +117,7 @@ func startForwards(session, host, ssh string, ports []int) error {
 	if err != nil {
 		return err
 	}
-	record := forwardRecord{Session: session, Host: host, SSH: ssh, Ports: ports, State: forwardWaiting, Started: time.Now()}
+	record := forwardRecord{Session: session, Host: host, SSH: ssh, Rex: via, Ports: ports, State: forwardWaiting, Started: time.Now()}
 	if err := writeForward(path, record); err != nil {
 		return err
 	}
@@ -166,13 +174,14 @@ func runForwards(session string) error {
 		if err != nil {
 			return err
 		}
-		ssh := exec.Command("ssh", forwardArgs(record)...)
-		if err := ssh.Start(); err != nil {
+		program, args := forwardCommand(record)
+		tunnel := exec.Command(program, args...)
+		if err := tunnel.Start(); err != nil {
 			return err
 		}
 		exited := make(chan struct{})
 		go func() {
-			ssh.Wait()
+			tunnel.Wait()
 			close(exited)
 		}()
 		select {
@@ -195,6 +204,18 @@ func setForwardState(path, state string) {
 	}
 	record.State = state
 	writeForward(path, record)
+}
+
+func forwardCommand(r forwardRecord) (string, []string) {
+	if r.Rex == nil {
+		return "ssh", forwardArgs(r)
+	}
+	args := []string{"--autostart=false", "-S", r.Rex.Server, "forward", "new", "-s", r.Rex.Session}
+	for _, port := range r.Ports {
+		p := strconv.Itoa(port)
+		args = append(args, "-L", "127.0.0.1:"+p+":localhost:"+p)
+	}
+	return "rex", args
 }
 
 func forwardArgs(r forwardRecord) []string {

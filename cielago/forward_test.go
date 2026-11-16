@@ -38,6 +38,21 @@ func TestForwardArgsBindOnlyThisMachineAndUseTheirOwnConnection(t *testing.T) {
 	}
 }
 
+func TestForwardsGoThroughTheSessionsRexServerWhenItHasOne(t *testing.T) {
+	program, args := forwardCommand(forwardRecord{SSH: "homelab", Rex: &rexVia{Server: "homelab", Session: "session:1"}, Ports: []int{3000, 8080}})
+	got := program + " " + strings.Join(args, " ")
+	want := "rex --autostart=false -S homelab forward new -s session:1 -L 127.0.0.1:3000:localhost:3000 -L 127.0.0.1:8080:localhost:8080"
+	if got != want {
+		t.Errorf("got %s", got)
+	}
+	if program, _ := forwardCommand(forwardRecord{SSH: "homelab", Ports: []int{3000}}); program != "ssh" {
+		t.Errorf("without Rex it should use ssh, not %s", program)
+	}
+	if forwardVia(Rex{server: "homelab"}, Tab{Session: "session:1"}) == nil || forwardVia(Rex{}, Tab{Session: "session:1"}) != nil || forwardVia(Tmux{}, Tab{Session: "s"}) != nil {
+		t.Error("only a Rex tab reached by label carries forwards")
+	}
+}
+
 func forwardHome(t *testing.T) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())

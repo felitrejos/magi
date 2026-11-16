@@ -115,7 +115,11 @@ magi                  # to look, best in a Rex pane on an always-on machine
 
 The script installs `magi` and `cielago` to `~/.local/bin` for macOS or Linux,
 x86_64 or arm64, after checking their SHA-256. Every machine needs
-[Tailscale](https://tailscale.com). Two optional steps:
+[Tailscale](https://tailscale.com) and
+[Rex](https://www.superlogical.com/rex) **0.1.0-preview.19** (API revision
+14). Rex is in preview, so magi follows its latest release only: an older
+Rex server shows a notice in magi, and `cielago doctor` says which machine to
+update. Two optional steps:
 
 - `magi statusline install` where you use Claude Code, for its context use and
   plan windows.

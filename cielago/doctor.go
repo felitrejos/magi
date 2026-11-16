@@ -239,6 +239,13 @@ func doctorHost(ctx context.Context, c *checks, name string, h Host) {
 		if !c.check(r.rexJSON(&clients, "client", "ls", "--json"), "Rex reaches "+h.RexServer, "connect Rex to "+name+" (rex hosts add)") {
 			return
 		}
+		var status struct {
+			Revision int `json:"api_revision"`
+		}
+		if c.check(r.rexJSON(&status, "api", "call", "server.status"), "Rex's server on "+name+" answers", "restart Rex there") &&
+			status.Revision < rexAPI {
+			c.fail(fmt.Sprintf("Rex on %s is at API revision %d", name, status.Revision), fmt.Sprintf("update it to Rex %s (revision %d) and restart its server", rexRelease, rexAPI))
+		}
 		apps := 0
 		for _, cl := range clients.Clients {
 			if cl.Info.Kind == "app" && cl.State == "connected" {

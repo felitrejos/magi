@@ -222,7 +222,7 @@ func (h Handoff) Run() (res Result, err error) {
 	res.PortNote = arrivalNote
 	if project != nil && len(project.Ports) > 0 {
 		forwardErr := st.run("ports", func() error {
-			return startForwards(h.SessionID, h.HostName, h.Host.SSH, project.Ports)
+			return startForwards(h.SessionID, h.HostName, h.Host.SSH, forwardVia(launcher, tab), project.Ports)
 		})
 		if forwardErr == nil {
 			res.Ports = project.Ports

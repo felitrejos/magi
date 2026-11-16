@@ -54,8 +54,12 @@ impl Status {
     }
 }
 
+pub const REX_API: u64 = 14;
+pub const REX_RELEASE: &str = "0.1.0-preview.19";
+
 #[derive(Default)]
 struct Shared {
+    outdated: Option<String>,
     statuses: HashMap<String, Status>,
     asked: HashSet<String>,
     woken: bool,
@@ -79,6 +83,10 @@ impl Events {
     #[cfg(test)]
     fn known(&self, block: &str) -> Option<Status> {
         self.lock().statuses.get(block).cloned()
+    }
+
+    pub fn outdated(&self) -> Option<String> {
+        self.lock().outdated.clone()
     }
 
     pub fn status(&self, location: &Location) -> Option<Status> {
@@ -142,6 +150,13 @@ impl Events {
                 thread::sleep(LOOK_FOR_REX_AFTER);
                 continue;
             };
+            let outdated = outdated(&rex);
+            let stale = outdated.is_some();
+            self.lock().outdated = outdated;
+            if stale {
+                thread::sleep(LOOK_FOR_REX_AFTER);
+                continue;
+            }
             let child = Command::new(rex)
                 .args(["--autostart=false", "events", "--all", "--json"])
                 .env_remove("REX_SERVER")
@@ -189,6 +204,28 @@ impl Events {
         drop(shared);
         self.shared.1.notify_all();
     }
+}
+
+fn outdated(rex: &std::path::Path) -> Option<String> {
+    let output = bounded::output(
+        Command::new(rex)
+            .args(["--autostart=false", "api", "call", "server.status"])
+            .env_remove("REX_SERVER")
+            .stdin(Stdio::null()),
+        ASK_WITHIN,
+    )
+    .ok()?;
+    let status: Value = serde_json::from_slice(&output.stdout).ok()?;
+    too_old(status["api_revision"].as_u64()?)
+}
+
+fn too_old(revision: u64) -> Option<String> {
+    (revision < REX_API).then(|| {
+        format!(
+            "Rex on this machine is at API revision {revision}; magi needs Rex {REX_RELEASE} \
+             (revision {REX_API}). Update Rex and restart its server."
+        )
+    })
 }
 
 fn block_event(line: &str) -> Option<(String, String, Value)> {
@@ -261,6 +298,12 @@ mod tests {
             r#"{"ids":[""],"reason":"prompt"}"#,
         ));
         assert_eq!(events.known("b1"), None);
+    }
+
+    #[test]
+    fn an_older_rex_than_the_one_magi_needs_is_a_notice() {
+        assert!(too_old(REX_API - 1).unwrap().contains(REX_RELEASE));
+        assert_eq!(too_old(REX_API), None);
     }
 
     #[test]
