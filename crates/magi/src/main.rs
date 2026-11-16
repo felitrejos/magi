@@ -34,6 +34,7 @@ Usage:
   magi statusline install                              add a Claude Code status line that reports context % and plan limits
   magi statusline uninstall                            remove it from ~/.claude/settings.json
   magi page [--diff] [--title TITLE] FILE              show a Markdown file or a diff in a pager
+  magi launch SOCKET                                   the new-session launcher the viewer opens in a Rex float
   magi --version
   magi --help
 
@@ -51,6 +52,7 @@ enum Command {
     StatusLineUninstall,
     StatusLine,
     Page(std::path::PathBuf, viewer::Page, bool),
+    Launch(std::path::PathBuf),
     Version,
     Help,
 }
@@ -73,6 +75,7 @@ fn main() -> ExitCode {
         Command::StatusLineUninstall => statusline::uninstall(),
         Command::StatusLine => statusline::run(),
         Command::Page(path, page, remove) => viewer::page(&path, page, remove),
+        Command::Launch(socket) => viewer::launch(&socket),
         Command::Version => {
             println!("magi {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -102,6 +105,7 @@ enum Mode {
     StatusLineUninstall,
     StatusLine,
     Page,
+    Launch,
 }
 
 fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
@@ -121,10 +125,11 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
             Value(value) if value == "fleet" && mode == Mode::Viewer => mode = Mode::Fleet,
             Long("json") if mode == Mode::Fleet => json = true,
             Value(value) if value == "page" && mode == Mode::Viewer => mode = Mode::Page,
+            Value(value) if value == "launch" && mode == Mode::Viewer => mode = Mode::Launch,
             Long("diff") if mode == Mode::Page => page.diff = true,
             Long("remove") if mode == Mode::Page => remove = true,
             Long("title") if mode == Mode::Page => page.title = parser.value()?.string()?,
-            Value(value) if mode == Mode::Page && file.is_none() => {
+            Value(value) if matches!(mode, Mode::Page | Mode::Launch) && file.is_none() => {
                 file = Some(std::path::PathBuf::from(value))
             }
             Value(value) if value == "statusline" && mode == Mode::Viewer => {
@@ -170,6 +175,7 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         Mode::StatusLine => Command::StatusLine,
         Mode::StatusLineInstall => Command::StatusLineInstall,
         Mode::StatusLineUninstall => Command::StatusLineUninstall,
+        Mode::Launch => Command::Launch(file.ok_or("magi launch needs the viewer's socket")?),
         Mode::Page => {
             let file = file.ok_or("magi page needs a file")?;
             if page.title.is_empty() {

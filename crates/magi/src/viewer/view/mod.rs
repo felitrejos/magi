@@ -1,8 +1,8 @@
 mod agents;
 mod history;
+pub(super) mod launcher;
 mod machines;
 pub(super) mod markdown;
-mod picker;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
-use super::model::{AgentRow, Focus, Model, Naming, Renaming, Row};
+use super::model::{self, AgentRow, Focus, Model, Naming, Renaming, Row};
 use super::style::{self, theme};
 use super::typeset::Typesetter;
 use super::units;
@@ -112,10 +112,6 @@ pub fn render(
         detail: detail_area,
         footer,
     } = areas(full, rows.len(), plans.len(), agents.len());
-    let detail_area = detail_area.inner(Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
     frame
         .buffer_mut()
         .set_style(detail_area, Style::new().bg(theme().panel));
@@ -153,10 +149,8 @@ pub fn render(
         graphics,
     );
 
-    if let Some(picker) = &model.picker {
-        let recent = model.recent_projects(picker.endpoint, now);
-        let home = std::env::var("HOME").unwrap_or_default();
-        picker::render(frame, detail_area, picker, &recent, &home);
+    if let Some(launcher) = &model.launcher {
+        launcher::render(frame, detail_area, Some(launcher));
     } else if model.showing_alerts {
         history::render(frame, detail_area, &model.alerts);
     } else {
@@ -291,7 +285,7 @@ fn marks(model: &Model, rows: &[Row<'_>]) -> HashMap<String, Mark> {
                 .cloned()
                 .chain(default_symbols(row).iter().map(|symbol| symbol.to_string()))
                 .collect();
-            let tag = machine_tag(&row.name, &names).to_string();
+            let tag = model::machine_tag(&row.name, &names).to_string();
             (row.name.clone(), Mark { tag, symbols })
         })
         .collect()
@@ -306,20 +300,6 @@ fn default_symbols(row: &Row<'_>) -> &'static [&'static str] {
     } else {
         &["server.rack"]
     }
-}
-
-fn machine_tag<'a>(name: &'a str, names: &[&str]) -> &'a str {
-    let tag = first_word(name);
-    let shared = names
-        .iter()
-        .filter(|other| first_word(other) == tag)
-        .count()
-        > 1;
-    if shared { name } else { tag }
-}
-
-fn first_word(name: &str) -> &str {
-    name.split(['-', '.', '_', ' ']).next().unwrap_or(name)
 }
 
 fn body(area: Rect) -> Rect {

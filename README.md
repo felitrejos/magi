@@ -49,8 +49,10 @@ to the machine that has room.
   grouped by project, related repos together (`stampr` and `stampr-ops`), with
   the ones waiting on you on top and their branch and worktree beside them.
   No server or config file.
-- **Start, read and answer.** `c` starts a Claude Code or Codex session in any
-  project on any machine, in that project's Rex tab. Select a session to read
+- **Start, read and answer.** `c` opens a launcher over magi, as a Rex
+  floating pane: pick a project, the machine (magi suggests the one with the
+  most room) and Claude Code or Codex, and it starts in that project's Rex tab
+  and magi selects it. Select a session to read
   its conversation, typeset like a page on a Mac (real type, highlighted code,
   tables) and drawn as Markdown elsewhere; `↵` writes to it,
   `y` or `n` answers its permission prompt, `1`–`9` picks an option when it

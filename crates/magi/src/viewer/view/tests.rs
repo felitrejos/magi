@@ -356,9 +356,18 @@ fn no_line_overflows_the_pane() {
 #[test]
 fn a_machine_is_tagged_by_its_first_word_unless_another_shares_it() {
     let names = ["felipes-macbook-pro", "homelab", "build.lan", "build-2"];
-    assert_eq!(super::machine_tag("felipes-macbook-pro", &names), "felipes");
-    assert_eq!(super::machine_tag("homelab", &names), "homelab");
-    assert_eq!(super::machine_tag("build.lan", &names), "build.lan");
+    assert_eq!(
+        crate::viewer::model::machine_tag("felipes-macbook-pro", &names),
+        "felipes"
+    );
+    assert_eq!(
+        crate::viewer::model::machine_tag("homelab", &names),
+        "homelab"
+    );
+    assert_eq!(
+        crate::viewer::model::machine_tag("build.lan", &names),
+        "build.lan"
+    );
 }
 
 #[test]

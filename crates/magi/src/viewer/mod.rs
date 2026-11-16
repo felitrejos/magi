@@ -5,6 +5,7 @@ mod diacritics;
 mod fleet;
 mod graphics;
 mod input;
+mod launcher;
 mod link;
 mod model;
 mod namer;
@@ -55,9 +56,11 @@ pub enum Event {
     Named(Vec<String>, Result<BTreeMap<String, String>, String>),
     Topology(Topology),
     Link(Endpoint, u64, LinkUpdate),
+    Launched(u32, Option<launcher::Choice>),
 }
 
 pub use fleet::print as fleet;
+pub use launcher::run as launch;
 pub use page::{Page, run as page};
 
 pub fn run(config: Config) -> io::Result<()> {
@@ -68,6 +71,8 @@ pub fn run(config: Config) -> io::Result<()> {
         port: config.port,
         socket: net::local_socket()?,
         sender: sender.clone(),
+        floats: rex::available(),
+        launch: None,
     };
     let alerts = alerts::Alerts::open(net::state_dir()?.join("alerts.jsonl"), Instant::now())?;
     let mut terminal = ratatui::try_init()?;
@@ -114,6 +119,8 @@ struct Links {
     port: u16,
     socket: PathBuf,
     sender: SyncSender<Event>,
+    floats: bool,
+    launch: Option<launcher::Host>,
 }
 
 impl Links {
@@ -369,112 +376,136 @@ fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Ke
             }
             return;
         }
-        Key::Enter | Key::Up | Key::Down | Key::First | Key::Last | Key::Tab => {}
+        Key::Enter
+        | Key::Up
+        | Key::Down
+        | Key::Left
+        | Key::Right
+        | Key::First
+        | Key::Last
+        | Key::Tab => {}
     }
     model.draft = Some(draft);
 }
 
-fn target_machine(model: &Model, now: Instant) -> Option<(Endpoint, String)> {
-    if let Some(agent) = model.selected_agent(now) {
-        return Some((agent.endpoint, agent.machine.clone()));
-    }
-    let rows = model.rows(now);
-    if let Some(row) = rows.get(model.selected) {
-        return Some((row.endpoint, row.name.clone()));
-    }
-    match model.detail_focus(now) {
-        Some(model::Focus::Agent(id)) => model
-            .agents(now)
-            .into_iter()
-            .find(|agent| agent.session.id == id)
-            .map(|agent| (agent.endpoint, agent.machine.clone())),
-        Some(model::Focus::Machine(name)) => rows
-            .iter()
-            .find(|row| row.name == name)
-            .map(|row| (row.endpoint, row.name.clone())),
-        _ => rows
-            .iter()
-            .find(|row| row.here)
-            .or_else(|| rows.first())
-            .map(|row| (row.endpoint, row.name.clone())),
-    }
-}
-
-fn open_picker(model: &mut Model, links: &Links, now: Instant) {
-    let Some((endpoint, machine)) = target_machine(model, now) else {
+fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
+    if model.launcher.is_some() || links.launch.is_some() {
         return;
-    };
-    if let Err(error) = links.request(endpoint, &proto::Request::Folders) {
+    }
+    let live: Vec<Endpoint> = model
+        .rows(now)
+        .iter()
+        .filter(|row| row.state() == Some(&model::LinkState::Live))
+        .map(|row| row.endpoint)
+        .collect();
+    if live.is_empty() {
         return model.flash(
-            format!("couldn't ask {machine} for its projects: {error}"),
+            "no machine is connected to start a session on".into(),
             false,
             now,
         );
     }
-    model.picker = Some(model::Picker::new(endpoint, machine));
+    model.folders.clear();
+    for endpoint in live {
+        let asked = match links.request(endpoint, &proto::Request::Folders) {
+            Ok(()) => model::Folders::Asking,
+            Err(error) => model::Folders::Failed(format!("couldn't ask for its projects: {error}")),
+        };
+        model.folders.insert(endpoint, asked);
+    }
+    if !links.floats {
+        model.launcher = Some(launcher::Launcher::new(model.menu(now)));
+        return;
+    }
+    let sender = links.sender.clone();
+    let host = match launcher::Host::start(move |id, choice| {
+        let _ = sender.send(Event::Launched(id, choice));
+    }) {
+        Ok(host) => host,
+        Err(error) => {
+            model.folders.clear();
+            return model.flash(format!("couldn't open the launcher: {error}"), false, now);
+        }
+    };
+    host.send(&model.menu(now));
+    let magi = std::env::current_exe().map_or_else(
+        |_| "magi".to_string(),
+        |path| path.to_string_lossy().into_owned(),
+    );
+    let command = vec![
+        magi,
+        "launch".into(),
+        host.path().to_string_lossy().into_owned(),
+    ];
+    links.launch = Some(host);
+    let sender = links.sender.clone();
+    let _ = thread::Builder::new().name("popup".into()).spawn(move || {
+        let _ = sender.send(Event::Opened(rex::float(
+            "magi: new session",
+            &command,
+            rex::MODAL,
+        )));
+    });
 }
 
-fn edit_picker(
+fn edit_launcher(
     model: &mut Model,
     links: &Links,
-    mut picker: model::Picker,
+    mut launcher: launcher::Launcher,
     key: Key,
     now: Instant,
 ) {
-    let recent = model.recent_projects(picker.endpoint, now);
-    let count = picker.shown(&recent).len();
-    match key {
-        Key::Char(c) if !c.is_control() => {
-            picker.filter.push(c);
-            picker.selected = 0;
-        }
-        Key::Paste(text) => {
-            picker
-                .filter
-                .extend(text.chars().filter(|c| !c.is_control()));
-            picker.selected = 0;
-        }
-        Key::Backspace => {
-            picker.filter.pop();
-            picker.selected = 0;
-        }
-        Key::Up => picker.selected = picker.selected.saturating_sub(1),
-        Key::Down => picker.selected = (picker.selected + 1).min(count.saturating_sub(1)),
-        Key::First => picker.selected = 0,
-        Key::Last => picker.selected = count.saturating_sub(1),
-        Key::Tab => picker.codex = !picker.codex,
-        Key::Escape | Key::Interrupt => return,
-        Key::Enter => {
-            let Some(dir) = picker
-                .shown(&recent)
-                .get(picker.selected.min(count.saturating_sub(1)))
-                .map(|dir| dir.to_string())
-            else {
-                model.picker = Some(picker);
-                return;
-            };
-            let request = proto::Request::Open {
-                dir: dir.clone(),
-                codex: picker.codex,
-            };
-            match links.request(picker.endpoint, &request) {
-                Ok(()) => {
-                    let name = dir.rsplit('/').next().unwrap_or(&dir);
-                    model.await_session(picker.endpoint, name, now);
-                    let agent = if picker.codex { "Codex" } else { "Claude" };
-                    model.flash(
-                        format!("Opening {agent} in {name} on {}…", picker.machine),
-                        true,
-                        now,
-                    );
-                }
-                Err(error) => model.flash(format!("couldn't open it: {error}"), false, now),
-            }
-            return;
-        }
-        Key::Char(_) | Key::Newline => {}
+    match launcher.key(key) {
+        launcher::Outcome::Stay => model.launcher = Some(launcher),
+        launcher::Outcome::Cancel => model.folders.clear(),
+        launcher::Outcome::Start(choice) => start_chosen(model, links, choice, now),
     }
-    model.picker = Some(picker);
+}
+
+fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now: Instant) {
+    let offered = model.menu(now).offers(&choice);
+    model.folders.clear();
+    if !offered {
+        return;
+    }
+    let Some(endpoint) = model
+        .rows(now)
+        .iter()
+        .find(|row| row.name == choice.machine)
+        .map(|row| row.endpoint)
+    else {
+        return;
+    };
+    let request = proto::Request::Open {
+        dir: choice.dir.clone(),
+        codex: choice.codex,
+    };
+    match links.request(endpoint, &request) {
+        Ok(()) => {
+            let name = choice.dir.rsplit('/').next().unwrap_or(&choice.dir);
+            model.await_session(endpoint, name, now);
+            let agent = if choice.codex { "Codex" } else { "Claude" };
+            model.flash(
+                format!("Opening {agent} in {name} on {}…", choice.machine),
+                true,
+                now,
+            );
+        }
+        Err(error) => model.flash(format!("couldn't open it: {error}"), false, now),
+    }
+}
+
+fn refresh_launcher(model: &mut Model, links: &Links, now: Instant) {
+    if links.launch.is_none() && model.launcher.is_none() {
+        return;
+    }
+    let menu = model.menu(now);
+    if let Some(host) = &links.launch {
+        host.send(&menu);
+    }
+    if let Some(launcher) = &mut model.launcher {
+        launcher.update(menu);
+    }
 }
 
 fn start_naming(model: &mut Model, whole_project: bool, now: Instant) {
@@ -629,7 +660,7 @@ fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instan
     let label = format!("magi: {}", shown.title);
     let sender = links.sender.clone();
     let _ = thread::Builder::new().name("popup".into()).spawn(move || {
-        let _ = sender.send(Event::Opened(rex::float(&label, &command)));
+        let _ = sender.send(Event::Opened(rex::float(&label, &command, rex::POPUP)));
     });
 }
 
@@ -794,6 +825,7 @@ fn handle_batch(
     model.note_shown(Instant::now());
     sync_watch(model, links);
     ask_namer(model, links);
+    refresh_launcher(model, links, Instant::now());
     Ok(Flow::Continue)
 }
 
@@ -878,8 +910,8 @@ fn sync_watch(model: &mut Model, links: &Links) {
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
     let now = Instant::now();
     match event {
-        Event::Input(Input::Key(key)) if let Some(picker) = model.picker.take() => {
-            edit_picker(model, links, picker, key, now);
+        Event::Input(Input::Key(key)) if let Some(launcher) = model.launcher.take() => {
+            edit_launcher(model, links, launcher, key, now);
         }
         Event::Input(Input::Key(key)) if let Some(naming) = model.naming.take() => {
             edit_naming(model, naming, key, now);
@@ -908,13 +940,13 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
                         model.flash(format!("couldn't save projects: {error}"), false, now);
                     }
                 }
-                (None, Some(model::Focus::NewSession)) => open_picker(model, links, now),
+                (None, Some(model::Focus::NewSession)) => open_launcher(model, links, now),
                 (None, _) => start_draft(model, now),
             },
             Some(Action::Allow) => answer(model, links, true, now),
             Some(Action::Deny) => answer(model, links, false, now),
             Some(Action::Choose(option)) => choose(model, links, option, now),
-            Some(Action::New) => open_picker(model, links, now),
+            Some(Action::New) => open_launcher(model, links, now),
             Some(Action::Stop) => stop(model, links, now),
             Some(Action::Adopt) => adopt(model, links, now),
             Some(Action::Project) => start_naming(model, false, now),
@@ -924,6 +956,15 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             None => {}
         },
         Event::Named(asked, result) => named(model, asked, result),
+        Event::Launched(id, choice) => {
+            if links.launch.as_ref().is_some_and(|host| host.id == id) {
+                links.launch = None;
+                match choice {
+                    Some(choice) => start_chosen(model, links, choice, now),
+                    None => model.folders.clear(),
+                }
+            }
+        }
         Event::Opened(result) => {
             model.opening = false;
             if let Err(reason) = result {
@@ -1015,6 +1056,8 @@ mod tests {
             port: 2015,
             socket: PathBuf::new(),
             sender,
+            floats: false,
+            launch: None,
         };
         let now = Instant::now();
         let mut model = Model::new(2015, now, alerts::Alerts::in_memory(now));
@@ -1640,7 +1683,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_row_keeps_the_pane_and_shows_its_keys_and_new_session_opens_the_picker() {
+    fn a_folder_row_keeps_the_pane_and_shows_its_keys_and_new_session_opens_the_launcher() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         model.apply(
@@ -1661,11 +1704,9 @@ mod tests {
             &mut links,
         )
         .unwrap();
-        let (said, _) = model.flashed(Instant::now()).unwrap();
-        assert!(
-            said.starts_with("couldn't ask mac for its projects"),
-            "{said}"
-        );
+        assert!(model.launcher.is_some());
+        let shown = screen(&model);
+        assert!(shown.contains("couldn't ask for its projects"), "{shown}");
     }
 
     #[test]
@@ -2005,50 +2046,65 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_lists_active_projects_first_filters_as_you_type_and_opens_the_choice() {
+    fn the_launcher_groups_a_project_across_machines_lists_active_ones_first_and_starts_the_choice()
+    {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
-        let mut active = claude("s1", 0);
-        active.project = "web".into();
-        model.apply(Endpoint::Local, live_sample(1_000, Some(active)), now);
-        model.picker = Some(model::Picker::new(Endpoint::Local, "mac".into()));
+        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(in_project("s1", "web"))),
+            now,
+        );
+        model.apply(homelab, live_sample(1_000, None), now);
+        model
+            .folders
+            .insert(Endpoint::Local, model::Folders::Asking);
+        model.folders.insert(homelab, model::Folders::Asking);
         model.apply(
             Endpoint::Local,
             LinkUpdate::Folders(vec![
                 "/home/me/api".into(),
-                "/home/me/docs".into(),
+                "/home/me/clones/web".into(),
                 "/home/me/web".into(),
             ]),
             now,
         );
-        let recent = model.recent_projects(Endpoint::Local, now);
-        assert_eq!(
-            model.picker.as_ref().unwrap().shown(&recent),
-            ["/home/me/web", "/home/me/api", "/home/me/docs"]
+        let menu = model.menu(now);
+        assert_eq!(menu.machines[1].listing, launcher::Listing::Asking);
+        model.apply(
+            homelab,
+            LinkUpdate::Folders(vec!["/home/felipe/dev/web".into()]),
+            now,
         );
-        let keys = [
-            key(Key::Char('d')),
-            key(Key::Char('q')),
-            key(Key::Backspace),
-            key(Key::Down),
-            key(Key::Tab),
-        ];
-        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
-        let picker = model.picker.clone().unwrap();
-        assert_eq!(
-            (picker.filter.as_str(), picker.selected, picker.codex),
-            ("d", 0, true)
-        );
-        assert_eq!(picker.shown(&recent), ["/home/me/docs"]);
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.picker, None);
+        let menu = model.menu(now);
+        let projects: Vec<(&str, bool, usize)> = menu
+            .projects
+            .iter()
+            .map(|project| (project.name.as_str(), project.active, project.folders.len()))
+            .collect();
+        assert_eq!(projects, [("web", true, 2), ("api", false, 1)]);
+        assert_eq!(menu.projects[0].folders[0].dir, "/home/me/web");
+        model.launcher = Some(launcher::Launcher::new(menu));
+        let shown = screen(&model);
+        for text in ["New session", "web", "active", "suggested", "Codex"] {
+            assert!(shown.contains(text), "missing {text:?}\n{shown}");
+        }
+        handle_batch(
+            [key(Key::Tab), key(Key::Enter)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        assert_eq!(model.launcher, None);
+        assert!(model.folders.is_empty());
         assert_eq!(
             model.flashed(Instant::now()),
             Some(("couldn't open it: that machine isn't connected", false))
         );
-        model.picker = Some(model::Picker::new(Endpoint::Local, "mac".into()));
+        model.launcher = Some(launcher::Launcher::new(launcher::Menu::default()));
         handle_batch([key(Key::Escape)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.picker, None);
+        assert_eq!(model.launcher, None);
     }
 
     #[test]
@@ -2134,31 +2190,28 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_says_why_it_has_no_folders_and_filters_on_the_project_part_only() {
-        let (mut model, _) = fleet();
+    fn the_launcher_says_why_a_machine_listed_no_projects() {
+        let (mut model, mut links) = fleet();
         let now = Instant::now();
-        model.picker = Some(model::Picker::new(Endpoint::Local, "mac".into()));
+        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
+        model.apply(homelab, live_sample(1_000, None), now);
+        handle_batch([key(Key::Char('c'))].into_iter(), &mut model, &mut links).unwrap();
+        assert!(model.launcher.is_some());
+        let shown = screen(&model);
+        assert!(
+            shown.contains("couldn't ask for its projects: that machine isn't connected"),
+            "{shown}"
+        );
+        model.folders.insert(homelab, model::Folders::Asking);
         model.apply(
-            Endpoint::Local,
+            homelab,
             LinkUpdate::Reply(crate::proto::Reply {
                 ok: false,
-                text: "couldn't open a session: cielago isn't installed".into(),
+                text: "cielago isn't installed".into(),
             }),
             now,
         );
-        assert!(
-            screen(&model).contains("cielago isn't installed"),
-            "{}",
-            screen(&model)
-        );
-        let mut picker = model::Picker::new(Endpoint::Local, "mac".into());
-        picker.folders = Some(vec![
-            "/Users/me/code/shop/api".into(),
-            "/Users/me/notes".into(),
-        ]);
-        picker.filter = "users".into();
-        assert!(picker.shown(&[]).is_empty());
-        picker.filter = "shop".into();
-        assert_eq!(picker.shown(&[]), ["/Users/me/code/shop/api"]);
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        assert!(screen(&model).contains("cielago isn't installed"));
     }
 }

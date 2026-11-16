@@ -1,8 +1,9 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
+use super::launcher::{self, Launcher, Listing, Menu, Place};
 use super::namer;
 use super::projects::{Projects, Resolved};
 use crate::proto::{
@@ -76,6 +77,7 @@ pub struct Machine {
     pub tx: History,
     pub disk_read: History,
     pub disk_write: History,
+    pub core_history: Vec<History>,
 }
 
 impl Machine {
@@ -90,6 +92,7 @@ impl Machine {
             tx: History::default(),
             disk_read: History::default(),
             disk_write: History::default(),
+            core_history: Vec::new(),
         }
     }
 
@@ -431,7 +434,8 @@ pub struct Model {
     pub pending_move: Option<PendingMove>,
     pub draft: Option<Draft>,
     following: Option<Following>,
-    pub picker: Option<Picker>,
+    pub folders: BTreeMap<Endpoint, Folders>,
+    pub launcher: Option<Launcher>,
     awaiting: Option<Awaiting>,
     pub watching: Option<Watched>,
     screens: HashMap<(String, Option<String>), Screen>,
@@ -477,53 +481,25 @@ pub struct PendingMove {
     pub to: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Picker {
-    pub endpoint: Endpoint,
-    pub machine: String,
-    pub folders: Option<Vec<String>>,
-    pub filter: String,
-    pub selected: usize,
-    pub codex: bool,
-    pub failed: Option<String>,
-}
-
-impl Picker {
-    pub fn new(endpoint: Endpoint, machine: String) -> Self {
-        Self {
-            endpoint,
-            machine,
-            folders: None,
-            filter: String::new(),
-            selected: 0,
-            codex: false,
-            failed: None,
-        }
-    }
-
-    pub fn shown<'a>(&'a self, recent: &[String]) -> Vec<&'a str> {
-        let filter = self.filter.to_lowercase();
-        let mut shown: Vec<&str> = self
-            .folders
-            .iter()
-            .flatten()
-            .map(String::as_str)
-            .filter(|folder| project_part(folder).to_lowercase().contains(&filter))
-            .collect();
-        let name = |folder: &str| folder.rsplit('/').next().unwrap_or(folder).to_string();
-        shown.sort_by_key(|folder| (!recent.contains(&name(folder)), folder.to_lowercase()));
-        shown
-    }
-}
-
-fn project_part(folder: &str) -> &str {
-    ["/Users/", "/home/"]
+pub fn machine_tag<'a>(name: &'a str, names: &[&str]) -> &'a str {
+    let tag = first_word(name);
+    let shared = names
         .iter()
-        .find_map(|home| {
-            let rest = folder.strip_prefix(home)?;
-            Some(&rest[rest.find('/')? + 1..])
-        })
-        .unwrap_or(folder)
+        .filter(|other| first_word(other) == tag)
+        .count()
+        > 1;
+    if shared { name } else { tag }
+}
+
+fn first_word(name: &str) -> &str {
+    name.split(['-', '.', '_', ' ']).next().unwrap_or(name)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Folders {
+    Asking,
+    Listed(Vec<String>),
+    Failed(String),
 }
 
 #[derive(Clone)]
@@ -590,7 +566,8 @@ impl Model {
             pending_move: None,
             draft: None,
             following: None,
-            picker: None,
+            folders: BTreeMap::new(),
+            launcher: None,
             awaiting: None,
             watching: None,
             screens: HashMap::new(),
@@ -609,22 +586,15 @@ impl Model {
                         {
                             self.awaiting = None;
                         }
-                        if let Some(picker) = self.picker.as_mut().filter(|picker| {
-                            picker.endpoint == endpoint && picker.folders.is_none()
-                        }) {
-                            picker.failed = Some(reply.text.clone());
+                        if let Some(folders @ Folders::Asking) = self.folders.get_mut(&endpoint) {
+                            *folders = Folders::Failed(reply.text.clone());
                         }
                     }
                     return self.flash(reply.text, reply.ok, now);
                 }
                 LinkUpdate::Folders(folders) => {
-                    if let Some(picker) = self
-                        .picker
-                        .as_mut()
-                        .filter(|picker| picker.endpoint == endpoint)
-                    {
-                        picker.folders = Some(folders);
-                        picker.selected = 0;
+                    if let Some(asked) = self.folders.get_mut(&endpoint) {
+                        *asked = Folders::Listed(folders);
                     }
                     return;
                 }
@@ -675,6 +645,12 @@ impl Model {
                 machine.tx.push(sample.network.tx_per_sec as f32);
                 machine.disk_read.push(sample.disk.read_per_sec as f32);
                 machine.disk_write.push(sample.disk.write_per_sec as f32);
+                machine
+                    .core_history
+                    .resize_with(sample.cores.len(), History::default);
+                for (history, core) in machine.core_history.iter_mut().zip(&sample.cores) {
+                    history.push(f32::from(*core) / f32::from(FULL));
+                }
                 machine.latest = Some(*sample);
             }
             LinkUpdate::Lost(reason) => {
@@ -1179,12 +1155,80 @@ impl Model {
         self.reselect(now);
     }
 
-    pub fn recent_projects(&self, endpoint: Endpoint, now: Instant) -> Vec<String> {
-        self.agents(now)
-            .into_iter()
-            .filter(|agent| agent.endpoint == endpoint)
-            .map(|agent| agent.session.project.clone())
-            .collect()
+    pub fn menu(&self, now: Instant) -> Menu {
+        let rows = self.rows(now);
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        let agents = self.agents(now);
+        let worked_in = |live: bool| -> Vec<String> {
+            agents
+                .iter()
+                .filter(|agent| !live || agent.live)
+                .map(|agent| agent.session.project.to_lowercase())
+                .collect()
+        };
+        let (active, recent) = (worked_in(true), worked_in(false));
+        let mut menu = Menu::default();
+        for row in &rows {
+            let Some(folders) = self.folders.get(&row.endpoint) else {
+                continue;
+            };
+            let sample = row.machine().and_then(|machine| machine.latest.as_ref());
+            let machine = menu.machines.len();
+            menu.machines.push(Place {
+                name: row.name.clone(),
+                tag: machine_tag(&row.name, &names).to_string(),
+                cpu: row.machine().map_or(0.0, Machine::smoothed_cpu),
+                free: sample.map_or(0, |sample| {
+                    sample.memory.total.saturating_sub(sample.memory.used)
+                }),
+                listing: match folders {
+                    Folders::Asking => Listing::Asking,
+                    Folders::Listed(_) => Listing::Listed,
+                    Folders::Failed(reason) => Listing::Failed(reason.clone()),
+                },
+            });
+            let Folders::Listed(folders) = folders else {
+                continue;
+            };
+            for dir in folders {
+                let repo = dir.rsplit('/').next().unwrap_or(dir);
+                let key = repo.to_lowercase();
+                let folder = launcher::Folder {
+                    machine,
+                    dir: dir.clone(),
+                };
+                let Some(project) = menu.projects.iter_mut().find(|project| project.key == key)
+                else {
+                    let (_, group) = self.project_of(repo, now);
+                    menu.projects.push(launcher::Project {
+                        active: active.contains(&key),
+                        recent: recent.contains(&key),
+                        group: (group.to_lowercase() != key).then_some(group),
+                        key,
+                        name: repo.to_string(),
+                        folders: vec![folder],
+                    });
+                    continue;
+                };
+                match project
+                    .folders
+                    .iter_mut()
+                    .find(|known| known.machine == machine)
+                {
+                    Some(known) if dir.len() < known.dir.len() => *known = folder,
+                    Some(_) => {}
+                    None => project.folders.push(folder),
+                }
+            }
+        }
+        menu.projects.sort_by_key(|project| {
+            (
+                !project.active,
+                !project.recent,
+                project.name.to_lowercase(),
+            )
+        });
+        menu
     }
 
     pub fn await_session(&mut self, endpoint: Endpoint, project: &str, now: Instant) {

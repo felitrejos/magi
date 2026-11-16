@@ -27,6 +27,8 @@ pub enum Key {
     Paste(String),
     Up,
     Down,
+    Left,
+    Right,
     First,
     Last,
     Enter,
@@ -226,6 +228,8 @@ fn final_key(byte: u8) -> Option<Key> {
     match byte {
         b'A' => Some(Key::Up),
         b'B' => Some(Key::Down),
+        b'C' => Some(Key::Right),
+        b'D' => Some(Key::Left),
         b'H' => Some(Key::First),
         b'F' => Some(Key::Last),
         b'M' => Some(Key::Enter),
@@ -346,10 +350,12 @@ mod tests {
     #[test]
     fn keys_in_every_encoding_map_to_the_same_key() {
         assert_eq!(
-            parse(&[b"\x1b[A\x1bOB\x1b[1;5A\x1b[H\x1b[1~\x1b[F\x1b[8~\r\x1bOM\x7f\x08\t\x03"]),
+            parse(&[b"\x1b[A\x1bOB\x1b[C\x1bOD\x1b[1;5A\x1b[H\x1b[1~\x1b[F\x1b[8~\r\x1bOM\x7f\x08\t\x03"]),
             [
                 Key::Up,
                 Key::Down,
+                Key::Right,
+                Key::Left,
                 Key::Up,
                 Key::First,
                 Key::First,

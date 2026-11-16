@@ -10,7 +10,8 @@ use crate::bounded;
 use crate::proto::RexPane;
 
 const REX_LIMIT: Duration = Duration::from_secs(5);
-const FLOAT_BOUNDS: [f32; 4] = [0.06, 0.05, 0.88, 0.9];
+pub const POPUP: [f32; 4] = [0.06, 0.05, 0.88, 0.9];
+pub const MODAL: [f32; 4] = [0.2, 0.15, 0.6, 0.6];
 
 struct Here {
     session: String,
@@ -31,7 +32,11 @@ struct Block {
     window_id: Option<String>,
 }
 
-pub fn float(label: &str, command: &[String]) -> Result<(), String> {
+pub fn available() -> bool {
+    here().is_some()
+}
+
+pub fn float(label: &str, command: &[String], bounds: [f32; 4]) -> Result<(), String> {
     let here = here().ok_or("open magi in a Rex pane to see this")?;
     let listing = rex(&here, &["block", "ls", "--json", "-s", &here.session])?;
     let listing: Listing = serde_json::from_slice(&listing)
@@ -45,7 +50,7 @@ pub fn float(label: &str, command: &[String]) -> Result<(), String> {
     let request = serde_json::json!({
         "session_id": here.session,
         "window_id": window,
-        "bounds": FLOAT_BOUNDS,
+        "bounds": bounds,
         "focus": true,
         "layout": {"block": {
             "flavor": "com.superlogical.terminal.shell",

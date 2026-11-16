@@ -14,8 +14,10 @@
 
 ## On each machine
 
-- Local viewers and the status line use Unix sockets in
-  `~/.local/state/magi/`, a folder only you can open.
+- Local viewers, the status line and the new-session launcher (which the
+  viewer opens in a Rex floating pane and talks to for one choice) use Unix
+  sockets in `~/.local/state/magi/`, a folder only you can open. The viewer
+  only starts a folder the launcher was offered.
 - The agent reads Claude Code's and Codex's session files and transcripts. In
   its regular samples it sends counts, states, model names, session titles,
   the short description of each running subagent and the first line of each

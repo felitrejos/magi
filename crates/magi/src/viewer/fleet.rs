@@ -19,6 +19,8 @@ pub fn print(config: Config, as_json: bool) -> io::Result<()> {
         port: config.port,
         socket: net::local_socket()?,
         sender: sender.clone(),
+        floats: false,
+        launch: None,
     };
     let started = Instant::now();
     let mut model = Model::new(config.port, started, alerts::Alerts::in_memory(started));
