@@ -32,6 +32,7 @@ pub struct Talk<'a> {
     pub scroll: &'a TalkScroll,
     pub working: bool,
     pub expanded: bool,
+    pub activity: Option<&'a str>,
 }
 
 #[derive(Clone, Copy)]
@@ -87,7 +88,20 @@ pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>) {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for piece in pieces(talk.said) {
+    let pieces = pieces(talk.said);
+    let busy = talk.working
+        && pieces.iter().any(|piece| match piece {
+            Piece::Tools(tools) => tools.iter().any(|tool| tool.running_since.is_some()),
+            _ => false,
+        });
+    let plan_last = matches!(pieces.last(), Some(Piece::Plan(_)));
+    let thinking = talk.activity.filter(|_| talk.working && !busy);
+    let count = pieces.len();
+    for (index, piece) in pieces.into_iter().enumerate() {
+        if let Some(activity) = thinking.filter(|_| plan_last && index + 1 == count) {
+            lines.push(Line::default());
+            lines.push(running_line(activity, None, now, width));
+        }
         if !lines.is_empty() {
             lines.push(Line::default());
         }
@@ -97,6 +111,10 @@ pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>) {
             Piece::Tools(tools) => tool_lines(&tools, talk, now, width),
             Piece::Plan(steps) => plan_lines(steps, width),
         });
+    }
+    if let Some(activity) = thinking.filter(|_| !plan_last) {
+        lines.push(Line::default());
+        lines.push(running_line(activity, None, now, width));
     }
     let room = usize::from(area.height);
     let back = talk.scroll.place(talk.shown, lines.len(), room);
@@ -223,21 +241,34 @@ fn tool_lines(tools: &[Tool<'_>], talk: Talk<'_>, now: u64, width: usize) -> Vec
         spans.push(Span::styled("  ›", style::fg(t.faint)));
         lines.push(Line::from(clip(spans, width)));
     }
-    for tool in busy.iter().take(MAX_RUNNING_SHOWN) {
-        let since = tool.running_since.unwrap_or(now);
-        lines.push(Line::from(clip(
-            vec![
-                Span::styled(format!("{spinner} "), style::fg(t.claude)),
-                Span::styled(doing(tool), style::fg(t.dim)),
-                Span::styled(
-                    format!("  {}", elapsed(now.saturating_sub(since))),
-                    style::fg(t.faint),
-                ),
-            ],
-            width,
-        )));
+    let shown: Vec<(String, Option<u64>)> = match (talk.activity, busy.first()) {
+        (Some(activity), Some(first)) => vec![(activity.to_string(), first.running_since)],
+        _ => busy
+            .iter()
+            .take(MAX_RUNNING_SHOWN)
+            .map(|tool| (doing(tool), tool.running_since))
+            .collect(),
+    };
+    for (what, since) in shown {
+        lines.push(running_line(&what, since, now, width));
     }
     lines
+}
+
+fn running_line(what: &str, since: Option<u64>, now: u64, width: usize) -> Line<'static> {
+    let t = theme();
+    let spinner = SPINNER[(now % SPINNER.len() as u64) as usize];
+    let mut spans = vec![
+        Span::styled(format!("{spinner} "), style::fg(t.claude)),
+        Span::styled(what.to_string(), style::fg(t.dim)),
+    ];
+    if let Some(since) = since {
+        spans.push(Span::styled(
+            format!("  {}", elapsed(now.saturating_sub(since))),
+            style::fg(t.faint),
+        ));
+    }
+    Line::from(clip(spans, width))
 }
 
 fn counts(change: Option<Change>) -> Vec<Span<'static>> {
@@ -446,6 +477,7 @@ mod tests {
             scroll: &scroll,
             working: true,
             expanded: false,
+            activity: None,
         };
         let lines = texts(&tool_lines(&tools_of(&said), talk, 1_205, 80));
         assert_eq!(
@@ -482,6 +514,7 @@ mod tests {
                     scroll,
                     working: false,
                     expanded: false,
+                    activity: None,
                 };
                 render(frame, frame.area(), talk);
             })
@@ -510,6 +543,29 @@ mod tests {
         assert!(rows[0].starts_with("reply 0"), "{rows:?}");
         let rows = screen(&said, "b", &scroll);
         assert!(rows[5].starts_with("reply 10"), "{rows:?}");
+    }
+
+    #[test]
+    fn the_agents_own_activity_replaces_the_generic_running_line() {
+        let said = [
+            tool("Bash", "cargo test", None),
+            tool("Bash", "cargo build", Some(1_000)),
+        ];
+        let scroll = TalkScroll::default();
+        let talk = Talk {
+            said: &said,
+            shown: "s",
+            scroll: &scroll,
+            working: true,
+            expanded: false,
+            activity: Some("building the release"),
+        };
+        let lines = texts(&tool_lines(&tools_of(&said), talk, 1_065, 80));
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[1].ends_with("building the release  1m 5s"),
+            "{lines:?}"
+        );
     }
 
     #[test]

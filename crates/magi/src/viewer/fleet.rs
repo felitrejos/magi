@@ -118,6 +118,7 @@ fn session(session: &AgentSession) -> Value {
             SessionState::Waiting(_) => "waiting",
             SessionState::Idle => "idle",
         },
+        "activity": session.activity,
         "cpu": usage.and_then(|usage| usage.cpu).map(|millicores| f64::from(millicores) / 1000.0),
         "memory": usage.map(|usage| usage.memory),
     })
@@ -262,11 +263,12 @@ mod tests {
             branch: None,
             worktree: None,
             parent: None,
+            activity: None,
         };
         assert_eq!(
             session(&busy),
             json!({"id": "c1", "agent": "codex", "title": "run the tests", "project": "api",
-                   "state": "working", "cpu": 2.5, "memory": 1u64 << 30})
+                   "state": "working", "activity": null, "cpu": 2.5, "memory": 1u64 << 30})
         );
         let unmeasured = AgentSession {
             usage: None,

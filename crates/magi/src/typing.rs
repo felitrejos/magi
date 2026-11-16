@@ -210,6 +210,7 @@ mod tests {
             branch: None,
             worktree: None,
             parent: None,
+            activity: None,
         }
     }
 

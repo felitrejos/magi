@@ -92,11 +92,12 @@ Each machine runs its own Rex server, and a Rex client reaches the others by
 host label (`rex -S homelab`) over Tailscale HTTPS or SSH, with the list of
 hosts kept by your home server. What that can replace:
 
-1. **Events instead of polling.** One `rex events --json` stream per server
-   replaces the `block ls` refresh and the 500 ms screen capture: magi wakes
-   on `title_changed`, `process_changed`, `pwd_changed`,
-   `program_status_changed`, `bell`, `desktop_notification` and
-   `child_exited`, which also gives faster working and blocked states.
+1. **Events instead of polling.** Done for state: each agent follows
+   `rex events --all --json` on its machine and keeps every pane's own
+   status report (Claude Code reports working, idle or blocked, with a line
+   on what it's doing). A report, bell, notification or exit updates magi at
+   once, and the report's line shows as the session's activity. Next: drop
+   the `block ls` refresh for `process_changed`.
 2. **Live screens.** `data.connect` streams a block's content as it changes,
    for remote sessions too, instead of capturing it.
 3. **Find panes through Rex.** `rex block ls -A --json` with

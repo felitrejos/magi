@@ -313,6 +313,7 @@ pub fn render_child(
     let shown = format!("{}/{}", agent.session.id, child.id);
     let speech = Speech {
         working: child.state == ChildState::Running,
+        activity: None,
         reading,
         shown: &shown,
     };
@@ -507,6 +508,7 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
     }
     let speech = Speech {
         working: agent.live && matches!(session.state, SessionState::Working { .. }),
+        activity: session.activity.as_deref(),
         reading,
         shown: &session.id,
     };
@@ -771,6 +773,7 @@ pub enum Preview<'a> {
 
 struct Speech<'a> {
     working: bool,
+    activity: Option<&'a str>,
     reading: Reading<'a>,
     shown: &'a str,
 }
@@ -784,6 +787,7 @@ fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, speec
             scroll: speech.reading.scroll,
             working: speech.working,
             expanded: speech.reading.expanded,
+            activity: speech.activity,
         };
         return super::talk::render(frame, cursor.rest(), talk);
     }

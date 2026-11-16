@@ -350,6 +350,7 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
         branch: repo.branch,
         worktree: repo.worktree,
         parent: None,
+        activity: None,
     }
 }
 

@@ -456,6 +456,7 @@ fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<Agent
         branch: repo.branch,
         worktree: repo.worktree,
         parent: None,
+        activity: None,
     })
 }
 

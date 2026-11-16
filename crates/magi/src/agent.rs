@@ -122,6 +122,7 @@ struct Agent {
     notices: log::Throttle,
     board: Board,
     sessions: Mutex<Snapshot>,
+    fresh: Nudge,
 }
 
 impl Agent {
@@ -249,6 +250,7 @@ impl Agent {
             notices: log::Throttle::default(),
             board,
             sessions: Mutex::new(Snapshot::default()),
+            fresh: Nudge::default(),
         }
     }
 
@@ -264,6 +266,28 @@ impl Agent {
     }
 }
 
+#[derive(Default)]
+struct Nudge {
+    raised: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Nudge {
+    fn raise(&self) {
+        *self.raised.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.changed.notify_all();
+    }
+
+    fn wait(&self, longest: Duration) -> bool {
+        let raised = self.raised.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mut raised, _) = self
+            .changed
+            .wait_timeout_while(raised, longest, |raised| !*raised)
+            .unwrap_or_else(PoisonError::into_inner);
+        std::mem::take(&mut *raised)
+    }
+}
+
 fn spawn_sessions(mut sessions: Sessions, agent: Arc<Agent>) -> io::Result<()> {
     thread::Builder::new()
         .name("sessions".into())
@@ -274,13 +298,17 @@ fn spawn_sessions(mut sessions: Sessions, agent: Arc<Agent>) -> io::Result<()> {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner) = snapshot;
             };
+            let mut woken = false;
             loop {
                 if agent.hub.is_idle() {
                     store(Default::default());
                     agent.hub.wait_for_subscribers();
                 }
                 store(sessions.poll(&agent.board));
-                thread::sleep(SESSIONS_EVERY);
+                if woken {
+                    agent.fresh.raise();
+                }
+                woken = sessions.wait(SESSIONS_EVERY);
             }
         })?;
     Ok(())
@@ -304,9 +332,13 @@ fn spawn_sampler(mut collector: Collector, agent: Arc<Agent>) -> io::Result<()> 
 fn stream_samples(collector: &mut Collector, agent: &Agent) {
     let mut next = Instant::now() + agent.interval;
     loop {
-        thread::sleep(next.saturating_duration_since(Instant::now()));
+        let early = agent
+            .fresh
+            .wait(next.saturating_duration_since(Instant::now()));
         let now = Instant::now();
-        next = if next + agent.interval > now {
+        next = if early {
+            now + agent.interval
+        } else if next + agent.interval > now {
             next + agent.interval
         } else {
             now + agent.interval

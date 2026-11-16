@@ -1318,6 +1318,7 @@ mod tests {
             branch: None,
             worktree: None,
             parent: None,
+            activity: None,
         };
         let sample = Sample {
             sessions: vec![session],
@@ -1423,6 +1424,7 @@ mod tests {
             branch: None,
             worktree: None,
             parent: None,
+            activity: None,
         }
     }
 

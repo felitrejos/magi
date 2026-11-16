@@ -11,6 +11,7 @@ mod process;
 mod registry;
 mod repo;
 pub mod rex;
+mod rex_events;
 mod tail;
 mod tasks;
 mod transcript;
@@ -164,6 +165,7 @@ pub struct Sessions {
     tasks: Option<tasks::Tasks>,
     forwards: Option<forwards::Forwards>,
     claude_limits: Limits,
+    events: rex_events::Events,
 }
 
 impl Sessions {
@@ -177,7 +179,12 @@ impl Sessions {
             tasks: tasks::Tasks::for_this_user(),
             forwards: forwards::Forwards::for_this_user(),
             claude_limits: Limits::new(claude_limits::ask),
+            events: rex_events::Events::listen(),
         })
+    }
+
+    pub fn wait(&self, longest: Duration) -> bool {
+        self.events.wait(longest)
     }
 
     pub fn poll(&mut self, board: &Board) -> Snapshot {
@@ -245,10 +252,18 @@ impl Sessions {
                     .insert(session.id.clone(), (session.agent, path));
             }
             let pane = pid.and_then(|pid| self.panes.find(pid, now));
+            let reported = pane
+                .as_ref()
+                .and_then(|(_, location)| self.events.status(location));
             let pane = pane.map(|(pane, location)| {
                 snapshot.panes.insert(session.id.clone(), location);
                 pane
             });
+            let mut session = session;
+            if let Some(reported) = &reported {
+                session.state = reported.apply(session.state);
+                session.activity = reported.activity();
+            }
             let mut children = session.children;
             if let (Some(pid), Some(tasks)) = (pid, &mut self.tasks) {
                 children.extend(tasks.started_by(pid, now));

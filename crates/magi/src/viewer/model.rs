@@ -1610,6 +1610,7 @@ mod tests {
             branch: None,
             worktree: None,
             parent: None,
+            activity: None,
         };
         let mac = Sample {
             sessions: vec![
