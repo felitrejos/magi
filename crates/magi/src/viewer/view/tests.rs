@@ -59,6 +59,8 @@ fn agent(title: &str, state: SessionState, context_used: Option<u16>) -> AgentSe
         worktree: None,
         parent: None,
         activity: None,
+        mode: None,
+        queued: None,
     }
 }
 

@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 25;
+pub const PROTOCOL_VERSION: u16 = 26;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -110,6 +110,53 @@ pub struct AgentSession {
     pub worktree: Option<String>,
     pub parent: Option<String>,
     pub activity: Option<String>,
+    pub mode: Option<PermissionMode>,
+    pub queued: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionMode {
+    Manual,
+    AcceptEdits,
+    Plan,
+    Auto,
+    Bypass,
+}
+
+impl PermissionMode {
+    pub fn from_transcript(name: &str) -> Option<Self> {
+        Some(match name {
+            "default" => Self::Manual,
+            "acceptEdits" => Self::AcceptEdits,
+            "plan" => Self::Plan,
+            "auto" => Self::Auto,
+            "bypassPermissions" => Self::Bypass,
+            _ => return None,
+        })
+    }
+
+    pub fn from_screen(screen: &str) -> Option<Self> {
+        let footer = screen.lines().rev().find(|line| !line.trim().is_empty())?;
+        [
+            ("manual mode on", Self::Manual),
+            ("accept edits on", Self::AcceptEdits),
+            ("plan mode on", Self::Plan),
+            ("auto mode on", Self::Auto),
+            ("bypass permissions on", Self::Bypass),
+        ]
+        .into_iter()
+        .find_map(|(shown, mode)| footer.contains(shown).then_some(mode))
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::AcceptEdits => "accept edits",
+            Self::Plan => "plan",
+            Self::Auto => "auto",
+            Self::Bypass => "bypass permissions",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -274,6 +321,9 @@ pub enum Request {
         waiting_secs: u32,
     },
     Stop {
+        session: String,
+    },
+    CycleMode {
         session: String,
     },
     Folders,
@@ -641,6 +691,32 @@ mod tests {
             ],
             ["5h", "wk", "2d", "90m"]
         );
+    }
+
+    #[test]
+    fn a_permission_mode_reads_from_claudes_footer_and_its_transcript() {
+        let screen = "❯ \n────\n  ⏸ plan mode on (shift+tab to cycle)\n\n";
+        assert_eq!(
+            PermissionMode::from_screen(screen),
+            Some(PermissionMode::Plan)
+        );
+        assert_eq!(
+            PermissionMode::from_screen("  ⏵⏵ accept edits on (shift+tab to cycle)"),
+            Some(PermissionMode::AcceptEdits)
+        );
+        assert_eq!(
+            PermissionMode::from_screen("plan mode on\n  ? for shortcuts"),
+            None
+        );
+        assert_eq!(
+            PermissionMode::from_transcript("bypassPermissions"),
+            Some(PermissionMode::Bypass)
+        );
+        assert_eq!(
+            PermissionMode::from_transcript("default"),
+            Some(PermissionMode::Manual)
+        );
+        assert_eq!(PermissionMode::from_transcript("yolo"), None);
     }
 
     #[test]

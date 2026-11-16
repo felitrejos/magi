@@ -540,7 +540,12 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
         );
     }
     if shown.is_some() {
-        let mut hints = keys(&[("↵", "send"), ("esc", "cancel")]);
+        let send = if session.state == SessionState::Idle {
+            "send"
+        } else {
+            "queue"
+        };
+        let mut hints = keys(&[("↵", send), ("esc", "cancel")]);
         hints.push(Span::raw(" "));
         frame_box = frame_box.title_bottom(Line::from(hints).alignment(Alignment::Right));
     }
@@ -683,6 +688,12 @@ pub(super) fn facts(
             dot(),
         ]);
     }
+    if let Some(mode) = session.mode.filter(|_| shown == Facts::All) {
+        facts.extend([
+            Span::styled(format!("{} mode", mode.name()), style::fg(theme().dim)),
+            dot(),
+        ]);
+    }
     if high_cpu(agent) {
         facts.extend([Span::styled("high CPU", style::bold(theme().warn)), dot()]);
     }
@@ -742,10 +753,29 @@ fn input_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
             keys(&[("1–9", "choose"), ("o", "open")]),
             width,
         ),
-        SessionState::Working { .. } => Line::from(vec![
-            prompt(theme().faint),
-            hint("working: you can message it once it's idle"),
-        ]),
+        _ if session.queued.is_some() => spread(
+            vec![
+                prompt(theme().accent),
+                Span::styled("Queued: ", style::fg(theme().accent)),
+                hint(
+                    &session
+                        .queued
+                        .clone()
+                        .unwrap_or_default()
+                        .replace('\n', " "),
+                ),
+            ],
+            keys(&[("↵", "edit")]),
+            width,
+        ),
+        SessionState::Working { .. } => spread(
+            vec![
+                prompt(theme().faint),
+                hint("Working. A message waits until it's idle"),
+            ],
+            keys(&[("↵", "queue")]),
+            width,
+        ),
         SessionState::Idle => spread(
             vec![prompt(theme().faint), hint("Message this session")],
             keys(&[("↵", "write")]),

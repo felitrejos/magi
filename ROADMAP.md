@@ -152,13 +152,21 @@ servers: bump `REX_API` and `rexAPI` with each Rex release.
 
 ## Phase 9: sessions
 
-- **Messages while it works.** Queue them the way Claude Code does, safely,
-  so they can't land in a prompt that opens meanwhile.
-- **Permission mode.** Switch a session between ask, accept edits, plan and
-  auto from magi.
+Done:
+- **Messages while it works.** A message for a busy session waits in its
+  machine's agent and goes in once the session is idle, so it can't land in a
+  prompt that opens meanwhile. The session shows what's queued; `↵` edits it,
+  and sending it empty drops it.
+- **Permission mode.** `⇧tab` cycles a Claude Code session's mode (manual,
+  accept edits, plan, auto) the way Claude Code does, and the session header
+  shows the mode it's in, read from its screen after a switch and from its
+  transcript otherwise.
+- **Codex approval prompts** show as waiting on you: Codex reports them to Rex.
+
+Open:
 - **Starting in a new folder.** Claude asks whether to trust a folder it has
   never opened; decide whether starting it from magi should answer that.
-- PR status and Codex approval prompts.
+- PR status for a session's branch.
 - Moving Codex sessions with cielago, and suggesting them for a move.
 - Forwards: clean up one that points at a machine the session moved on from,
   and handle dev servers listening on IPv6 localhost.

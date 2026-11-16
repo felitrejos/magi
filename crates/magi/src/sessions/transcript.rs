@@ -9,7 +9,15 @@ use super::claude_limits::unix_secs;
 use super::ledger::{Counted, Ledger};
 use super::pricing::{self, Usage};
 use super::tail::{self, Lines, Tail};
-use crate::proto::{Child, ChildKind, ChildState, Tokens};
+use crate::proto::{Child, ChildKind, ChildState, PermissionMode, Tokens};
+
+const MODE_MARK: &[u8] = b"\"type\":\"permission-mode\"";
+
+#[derive(Deserialize)]
+struct ModeLine {
+    #[serde(rename = "permissionMode")]
+    permission_mode: String,
+}
 
 const ASSISTANT_MARK: &[u8] = b"\"type\":\"assistant\"";
 const RESULT_MARK: &[u8] = b"\"tool_result\"";
@@ -33,6 +41,7 @@ pub struct Summary {
     pub context_tokens: u64,
     pub ended_turn: bool,
     pub cwd: Option<String>,
+    pub mode: Option<PermissionMode>,
     open_tools: Vec<OpenTool>,
     tracked: Vec<Tracked>,
 }
@@ -362,6 +371,12 @@ impl Lines for Feed<'_> {
         if tail::contains(line, NOTICE_MARK) {
             return self.state.notice(line);
         }
+        if tail::contains(line, MODE_MARK) {
+            if let Ok(line) = serde_json::from_slice::<ModeLine>(line) {
+                self.state.mode = PermissionMode::from_transcript(&line.permission_mode);
+            }
+            return;
+        }
         if !tail::contains(line, ASSISTANT_MARK) && !tail::contains(line, RESULT_MARK) {
             return;
         }
@@ -586,6 +601,22 @@ mod tests {
         transcript
             .advance(&mut u64::MAX.clone(), &mut HashSet::new())
             .unwrap();
+    }
+
+    #[test]
+    fn the_newest_permission_mode_line_is_the_sessions_mode() {
+        let path = temp("mode");
+        let mode = |name: &str| {
+            format!(r#"{{"type":"permission-mode","permissionMode":"{name}","sessionId":"s"}}"#)
+        };
+        append(&path, &format!("{}\n{}\n", mode("auto"), mode("plan")));
+        let mut transcript = Transcript::new(path.clone());
+        read(&mut transcript);
+        assert_eq!(transcript.state.mode, Some(PermissionMode::Plan));
+        append(&path, &format!("{}\n", mode("default")));
+        read(&mut transcript);
+        assert_eq!(transcript.state.mode, Some(PermissionMode::Manual));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

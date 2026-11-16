@@ -351,6 +351,8 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
         worktree: repo.worktree,
         parent: None,
         activity: None,
+        mode: main.and_then(|transcript| transcript.state.mode),
+        queued: None,
     }
 }
 

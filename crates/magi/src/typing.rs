@@ -5,13 +5,17 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::bounded;
-use crate::proto::{self, AgentSession, MAX_PROMPT_CHARS, SessionState, Waiting};
+use crate::proto::{
+    self, Agent, AgentSession, MAX_PROMPT_CHARS, PermissionMode, SessionState, Waiting,
+};
 use crate::sessions::rex::Location;
 
 const REX_LIMIT: Duration = Duration::from_secs(3);
 const SUBMIT_AFTER: Duration = Duration::from_millis(300);
 const ALLOW: &str = "1";
 const DENY: &str = "\x1b";
+const BACK_TAB: &str = "\x1b[Z";
+const MODE_SETTLES: Duration = Duration::from_millis(300);
 
 static TYPING: Mutex<()> = Mutex::new(());
 
@@ -48,6 +52,39 @@ pub fn answer(
     let what = tool.as_deref().unwrap_or("it");
     let verb = if allow { "Allowed" } else { "Denied" };
     Ok(format!("{verb} {what} in {}", session.title))
+}
+
+pub fn cycle_mode(
+    session: &AgentSession,
+    pane: Option<&Location>,
+) -> Result<PermissionMode, String> {
+    if session.agent != Agent::ClaudeCode {
+        return Err(format!(
+            "{} is a {} session; magi switches Claude Code's modes",
+            session.title,
+            session.agent.name()
+        ));
+    }
+    if session.state.is_waiting() {
+        return Err(format!(
+            "{} is asking something: answer it first",
+            session.title
+        ));
+    }
+    let pane = pane.ok_or_else(|| not_in_rex(session))?;
+    let _typing = TYPING.lock().unwrap_or_else(PoisonError::into_inner);
+    send(pane, BACK_TAB)?;
+    thread::sleep(MODE_SETTLES);
+    let screen = rex(
+        pane,
+        &["capture", "-s", &pane.session, "-b", &pane.block, "--trim"],
+    )?;
+    PermissionMode::from_screen(&String::from_utf8_lossy(&screen)).ok_or_else(|| {
+        format!(
+            "switched {}'s mode, but couldn't read which one it's in now",
+            session.title
+        )
+    })
 }
 
 pub fn stop(session: &AgentSession, pane: Option<&Location>) -> Result<String, String> {
@@ -148,6 +185,7 @@ fn send(pane: &Location, text: &str) -> Result<(), String> {
         pane,
         &["send", "-s", &pane.session, "-b", &pane.block, "--", text],
     )
+    .map(|_| ())
 }
 
 fn paste(pane: &Location, text: &str) -> Result<(), String> {
@@ -166,13 +204,14 @@ fn paste(pane: &Location, text: &str) -> Result<(), String> {
             &event.to_string(),
         ],
     )
+    .map(|_| ())
 }
 
-fn rex(pane: &Location, args: &[&str]) -> Result<(), String> {
+fn rex(pane: &Location, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = bounded::output(&mut pane.rex("2s", args), REX_LIMIT)
         .map_err(|error| format!("can't run rex: {error}"))?;
     if output.status.success() {
-        return Ok(());
+        return Ok(output.stdout);
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let reason = stderr
@@ -187,7 +226,6 @@ fn rex(pane: &Location, args: &[&str]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::Agent;
 
     fn session(agent: Agent, state: SessionState) -> AgentSession {
         AgentSession {
@@ -211,6 +249,8 @@ mod tests {
             worktree: None,
             parent: None,
             activity: None,
+            mode: None,
+            queued: None,
         }
     }
 

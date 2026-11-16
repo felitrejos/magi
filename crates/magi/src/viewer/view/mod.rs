@@ -782,6 +782,9 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     if in_rex && agent.live && matches!(agent.session.state, SessionState::Working { .. }) {
         actions.push(("x", "stop"));
     }
+    if in_rex && agent.live && agent.session.agent == Agent::ClaudeCode {
+        actions.push(("⇧tab", "mode"));
+    }
     if in_rex {
         actions.push(("o", "open in Rex"));
     }

@@ -457,6 +457,8 @@ fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<Agent
         worktree: repo.worktree,
         parent: None,
         activity: None,
+        mode: None,
+        queued: None,
     })
 }
 

@@ -101,8 +101,8 @@ Rex pane.
 
 ## FAQ
 
-**Can magi tell when Codex needs approval?** Not yet. Codex doesn't write its
-approval prompts to disk, so answer those in its pane.
+**Can magi tell when Codex needs approval?** Yes, from Codex 0.164 on: Codex
+reports its prompts to Rex the way Claude Code does, and magi follows them.
 
 **Does the status line slow Claude Code down?** No. It prints first, gives the
 agent at most 300 ms, and never replaces a status line you already have.

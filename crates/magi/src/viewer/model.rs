@@ -648,6 +648,7 @@ pub struct Draft {
     pub session: String,
     pub title: String,
     pub text: String,
+    pub had_queued: bool,
 }
 
 impl Draft {
@@ -1854,6 +1855,8 @@ mod tests {
             worktree: None,
             parent: None,
             activity: None,
+            mode: None,
+            queued: None,
         };
         let mac = Sample {
             sessions: vec![

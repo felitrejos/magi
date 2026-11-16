@@ -24,6 +24,16 @@ pub struct Location {
 }
 
 impl Location {
+    #[cfg(test)]
+    pub fn in_test(session: &str, block: &str) -> Self {
+        Self {
+            session: session.into(),
+            block: block.into(),
+            server: None,
+            bin_dir: PathBuf::from("/nonexistent"),
+        }
+    }
+
     pub fn rex(&self, timeout: &str, args: &[&str]) -> Command {
         let mut command = Command::new(self.bin_dir.join("rex"));
         command

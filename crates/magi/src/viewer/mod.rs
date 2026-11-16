@@ -373,6 +373,7 @@ fn propose_move(model: &mut Model, now: Instant) {
 
 enum Action {
     Quit,
+    Mode,
     Up,
     Down,
     First,
@@ -412,6 +413,7 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('n') => Action::Deny,
         Key::Char('c') => Action::New,
         Key::Char('x') => Action::Stop,
+        Key::BackTab => Action::Mode,
         Key::Char('r') => Action::Adopt,
         Key::Char('p') => Action::Project,
         Key::Char('P') => Action::RenameProject,
@@ -472,15 +474,12 @@ fn start_draft(model: &mut Model, now: Instant) {
     if !agent.live {
         return model.flash(format!("{} isn't answering", agent.machine), false, now);
     }
-    if agent.session.state != proto::SessionState::Idle {
-        let reason = format!("{} isn't idle: message it once it is", agent.session.title);
-        return model.flash(reason, false, now);
-    }
     model.draft = Some(model::Draft {
         endpoint: agent.endpoint,
         session: agent.session.id.clone(),
         title: agent.session.title.clone(),
-        text: String::new(),
+        text: agent.session.queued.clone().unwrap_or_default(),
+        had_queued: agent.session.queued.is_some(),
     });
 }
 
@@ -491,7 +490,7 @@ fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Ke
         Key::Newline => draft.type_in("\n"),
         Key::Backspace => draft.erase(),
         Key::Escape | Key::Interrupt => return,
-        Key::Enter if !draft.text.trim().is_empty() => {
+        Key::Enter if !draft.text.trim().is_empty() || draft.had_queued => {
             let request = proto::Request::Prompt {
                 session: draft.session,
                 text: draft.text,
@@ -893,6 +892,21 @@ fn adopt(model: &mut Model, links: &Links, now: Instant) {
     }
 }
 
+fn cycle_mode(model: &mut Model, links: &Links, now: Instant) {
+    let Some(agent) = model.selected_agent(now) else {
+        return;
+    };
+    if agent.session.agent != proto::Agent::ClaudeCode || agent.session.pane.is_none() {
+        return;
+    }
+    let request = proto::Request::CycleMode {
+        session: agent.session.id.clone(),
+    };
+    if let Err(error) = links.request(agent.endpoint, &request) {
+        model.flash(format!("couldn't switch its mode: {error}"), false, now);
+    }
+}
+
 fn stop(model: &mut Model, links: &Links, now: Instant) {
     let Some(agent) = model.selected_agent(now) else {
         return;
@@ -1249,6 +1263,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Choose(option)) => choose(model, links, option, now),
             Some(Action::New) => open_launcher(model, links, now),
             Some(Action::Stop) => stop(model, links, now),
+            Some(Action::Mode) => cycle_mode(model, links, now),
             Some(Action::Adopt) => adopt(model, links, now),
             Some(Action::Project) => start_naming(model, false, now),
             Some(Action::RenameProject) => start_naming(model, true, now),
@@ -1462,6 +1477,8 @@ mod tests {
             worktree: None,
             parent: None,
             activity: None,
+            mode: None,
+            queued: None,
         };
         let sample = Sample {
             sessions: vec![session],
@@ -1523,6 +1540,38 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_session_takes_a_queued_message_and_shift_tab_asks_to_switch_its_mode() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let mut session = in_rex(claude("s1", 0));
+        session.state = SessionState::Working { tool: None };
+        session.mode = Some(crate::proto::PermissionMode::Plan);
+        session.queued = Some("then commit".into());
+        model.apply(Endpoint::Local, live_sample(1_000, Some(session)), now);
+        select_first_session(&mut model);
+        let shown = screen(&model);
+        assert!(shown.contains("Queued: then commit"), "{shown}");
+        assert!(shown.contains("plan mode"), "{shown}");
+        assert!(footer(&model).contains("⇧tab mode"), "{}", footer(&model));
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
+        let draft = model.draft.clone().unwrap();
+        assert_eq!(
+            (draft.text.as_str(), draft.had_queued),
+            ("then commit", true)
+        );
+        assert!(screen(&model).contains("↵ queue"), "{}", screen(&model));
+        handle_batch([key(Key::Escape)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::BackTab)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some((
+                "couldn't switch its mode: that machine isn't connected",
+                false
+            ))
+        );
+    }
+
+    #[test]
     fn the_footer_offers_to_open_a_session_that_is_in_rex() {
         let (mut model, _) = fleet();
         with_session(
@@ -1576,6 +1625,8 @@ mod tests {
             worktree: None,
             parent: None,
             activity: None,
+            mode: None,
+            queued: None,
         }
     }
 

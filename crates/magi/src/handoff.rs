@@ -271,6 +271,8 @@ mod tests {
             worktree: None,
             parent: None,
             activity: None,
+            mode: None,
+            queued: None,
         }
     }
 

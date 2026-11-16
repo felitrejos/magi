@@ -14,8 +14,9 @@ use crate::conversation::Reader;
 use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
-    self, AgentMessage, AgentSession, ChildKind, Content, Hello, Identity, PROTOCOL_VERSION, Reply,
-    Request, Said, Screen, SharedProjects, Showed, Showing, Shown, StatusReport, Welcome,
+    self, AgentMessage, AgentSession, ChildKind, Content, Hello, Identity, PROTOCOL_VERSION,
+    PermissionMode, Reply, Request, Said, Screen, SessionState, SharedProjects, Showed, Showing,
+    Shown, StatusReport, Welcome,
 };
 use crate::screen::Capturer;
 use crate::sessions::rex::Location;
@@ -130,9 +131,94 @@ struct Agent {
     fresh: Nudge,
     shared: Mutex<Option<SharedProjects>>,
     shared_file: Option<PathBuf>,
+    modes: Mutex<HashMap<String, Switched>>,
+    queued: Mutex<HashMap<String, String>>,
+}
+
+struct Switched {
+    to: PermissionMode,
+    transcript_said: Option<PermissionMode>,
 }
 
 impl Agent {
+    fn remember_mode(&self, session: &AgentSession, to: PermissionMode) {
+        let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+        let transcript_said = modes
+            .get(&session.id)
+            .map_or(session.mode, |switched| switched.transcript_said);
+        modes.insert(
+            session.id.clone(),
+            Switched {
+                to,
+                transcript_said,
+            },
+        );
+    }
+
+    fn queue(
+        &self,
+        session: &AgentSession,
+        pane: Option<&Location>,
+        text: &str,
+    ) -> Result<String, String> {
+        let mut queued = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
+        if text.trim().is_empty() {
+            return match queued.remove(&session.id) {
+                Some(_) => Ok(format!("Dropped the message queued for {}", session.title)),
+                None => Err("write something to send".into()),
+            };
+        }
+        if session.state == SessionState::Idle {
+            drop(queued);
+            return typing::prompt(session, pane, text);
+        }
+        if pane.is_none() {
+            return typing::prompt(session, pane, text);
+        }
+        queued.insert(session.id.clone(), text.to_string());
+        Ok(format!(
+            "Queued for {}: it goes in once the session is idle",
+            session.title
+        ))
+    }
+
+    fn settle(&self, snapshot: &mut Snapshot) {
+        let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut queued = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
+        modes.retain(|id, _| snapshot.sessions.iter().any(|session| session.id == *id));
+        queued.retain(|id, _| snapshot.sessions.iter().any(|session| session.id == *id));
+        for session in &mut snapshot.sessions {
+            session.queued = None;
+            if let Some(switched) = modes.get(&session.id) {
+                if switched.transcript_said == session.mode {
+                    session.mode = Some(switched.to);
+                } else {
+                    modes.remove(&session.id);
+                }
+            }
+            if session.state == SessionState::Idle
+                && let Some(text) = queued.remove(&session.id)
+            {
+                let (found, pane) = (session.clone(), snapshot.panes.get(&session.id).cloned());
+                let spawned = thread::Builder::new().name("queued".into()).spawn(move || {
+                    if let Err(error) = typing::prompt(&found, pane.as_ref(), &text) {
+                        log::info(format!(
+                            "couldn't send the message queued for {}: {error}",
+                            found.title
+                        ));
+                    }
+                });
+                if let Err(error) = spawned {
+                    log::info(format!(
+                        "could not start a thread for a queued message: {error}"
+                    ));
+                }
+                continue;
+            }
+            session.queued = queued.get(&session.id).cloned();
+        }
+    }
+
     fn show(&self, session: String, what: Showing) -> Shown {
         let (cwd, transcript) = {
             let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
@@ -265,6 +351,8 @@ impl Agent {
             fresh: Nudge::default(),
             shared: Mutex::new(shared_file.as_deref().and_then(load_shared)),
             shared_file,
+            modes: Mutex::default(),
+            queued: Mutex::default(),
         }
     }
 
@@ -360,7 +448,9 @@ fn spawn_sessions(mut sessions: Sessions, agent: Arc<Agent>) -> io::Result<()> {
                     store(Default::default());
                     agent.hub.wait_for_subscribers();
                 }
-                store(sessions.poll(&agent.board));
+                let mut snapshot = sessions.poll(&agent.board);
+                agent.settle(&mut snapshot);
+                store(snapshot);
                 if woken {
                     agent.fresh.raise();
                 }
@@ -642,7 +732,17 @@ fn spawn_requests(
                     Request::Move { session, to } => move_session(&session, &to, &agent, &replies),
                     Request::Prompt { session, text } => {
                         type_into(&session, &agent, &replies, |found, pane| {
-                            typing::prompt(found, pane, &text)
+                            agent.queue(found, pane, &text)
+                        });
+                    }
+                    Request::CycleMode { session } => {
+                        let agent = Arc::clone(&agent);
+                        in_background(&replies, move |replies| {
+                            type_into(&session, &agent, replies, |found, pane| {
+                                let mode = typing::cycle_mode(found, pane)?;
+                                agent.remember_mode(found, mode);
+                                Ok(format!("{} is in {} mode", found.title, mode.name()))
+                            });
                         });
                     }
                     Request::Answer {
@@ -1033,6 +1133,100 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    fn working(id: &str) -> AgentSession {
+        AgentSession {
+            agent: proto::Agent::ClaudeCode,
+            id: id.into(),
+            title: "fix the build".into(),
+            project: String::new(),
+            state: SessionState::Working { tool: None },
+            state_secs: 0,
+            model: String::new(),
+            context_tokens: 0,
+            context_used: None,
+            tokens: Default::default(),
+            cost_micros: 0,
+            cost_complete: true,
+            age_secs: 0,
+            pane: None,
+            usage: None,
+            children: Vec::new(),
+            branch: None,
+            worktree: None,
+            parent: None,
+            activity: None,
+            mode: Some(PermissionMode::Auto),
+            queued: None,
+        }
+    }
+
+    #[test]
+    fn a_message_for_a_busy_session_waits_until_it_is_idle_and_can_be_dropped() {
+        let agent = Agent::new(identity(), Duration::from_secs(1), Board::default(), None);
+        let pane = Location::in_test("session:1", "block:1");
+        let busy = working("s1");
+        assert!(
+            agent
+                .queue(&busy, Some(&pane), "then run the tests")
+                .unwrap()
+                .starts_with("Queued")
+        );
+        let mut snapshot = Snapshot {
+            sessions: vec![busy.clone()],
+            ..Snapshot::default()
+        };
+        agent.settle(&mut snapshot);
+        assert_eq!(
+            snapshot.sessions[0].queued.as_deref(),
+            Some("then run the tests")
+        );
+        assert!(
+            agent
+                .queue(&busy, Some(&pane), "  ")
+                .unwrap()
+                .starts_with("Dropped")
+        );
+        assert!(agent.queue(&busy, Some(&pane), "").is_err());
+        agent.queue(&busy, Some(&pane), "again").unwrap();
+        snapshot.sessions[0].state = SessionState::Idle;
+        agent.settle(&mut snapshot);
+        assert_eq!(snapshot.sessions[0].queued, None);
+        assert!(agent.queued.lock().unwrap().is_empty());
+        assert!(agent.queue(&busy, None, "no pane").is_err());
+    }
+
+    #[test]
+    fn a_mode_magi_switched_to_holds_until_the_transcript_records_another() {
+        let agent = Agent::new(identity(), Duration::from_secs(1), Board::default(), None);
+        let session = working("s1");
+        agent.remember_mode(&session, PermissionMode::Plan);
+        let mut snapshot = Snapshot {
+            sessions: vec![session.clone()],
+            ..Snapshot::default()
+        };
+        agent.settle(&mut snapshot);
+        assert_eq!(snapshot.sessions[0].mode, Some(PermissionMode::Plan));
+        agent.remember_mode(&snapshot.sessions[0].clone(), PermissionMode::Auto);
+        let mut later = Snapshot {
+            sessions: vec![session.clone()],
+            ..Snapshot::default()
+        };
+        agent.settle(&mut later);
+        assert_eq!(later.sessions[0].mode, Some(PermissionMode::Auto));
+        let mut recorded = session;
+        recorded.mode = Some(PermissionMode::AcceptEdits);
+        let mut after_a_message = Snapshot {
+            sessions: vec![recorded],
+            ..Snapshot::default()
+        };
+        agent.settle(&mut after_a_message);
+        assert_eq!(
+            after_a_message.sessions[0].mode,
+            Some(PermissionMode::AcceptEdits)
+        );
+        assert!(agent.modes.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn an_agent_keeps_the_newest_shared_projects_and_hands_them_to_every_viewer() {
