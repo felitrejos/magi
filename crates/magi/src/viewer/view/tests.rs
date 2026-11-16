@@ -26,6 +26,7 @@ fn welcome(node: &str) -> LinkUpdate {
             kernel: "Linux 6.8.0-49-generic".into(),
             arch: "x86_64".into(),
             cpu_model: "AMD Ryzen 7 5700U with Radeon Graphics".into(),
+            core_kinds: Vec::new(),
             agent_version: "0.1.0".into(),
         },
     }))
@@ -622,4 +623,23 @@ fn each_machine_is_one_line_and_its_details_stay_in_the_detail() {
         .count();
     assert_eq!(machine_lines, 3, "{screen}");
     assert!(!screen.contains("up 3d 2h"), "{screen}");
+}
+
+#[test]
+fn a_mac_shows_its_performance_cores_apart_from_its_efficiency_cores() {
+    use crate::proto::CoreKind::{Efficiency, Performance};
+    let now = Instant::now();
+    let mut model = fleet(1, now);
+    let screen = draw(&model, 160, 50, now);
+    assert!(!screen.contains("Performance"), "{screen}");
+    let machine = model
+        .links
+        .get_mut(&Endpoint::Local)
+        .and_then(|link| link.machine.as_mut())
+        .unwrap();
+    machine.identity.core_kinds = vec![Efficiency, Efficiency, Performance, Performance];
+    let screen = draw(&model, 160, 50, now);
+    let at = |text: &str| screen.lines().position(|line| line.contains(text)).unwrap();
+    assert!(at("Cores") < at("Performance") && at("Performance") < at("Efficiency"));
+    assert_eq!(screen.matches("2 cores").count(), 2, "{screen}");
 }

@@ -75,6 +75,7 @@ impl Collector {
             os: os.unwrap_or_else(|| "Linux".to_string()),
             kernel: format!("Linux {}", kernel_release()),
             cpu_model: cpu_model.unwrap_or_default(),
+            core_kinds: super::cores::kinds(),
         }
     }
 

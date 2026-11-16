@@ -254,6 +254,7 @@ mod tests {
                 kernel: String::new(),
                 arch: String::new(),
                 cpu_model: String::new(),
+                core_kinds: Vec::new(),
                 agent_version: String::new(),
             },
         })

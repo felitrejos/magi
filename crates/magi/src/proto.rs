@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 17;
+pub const PROTOCOL_VERSION: u16 = 18;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -337,7 +337,14 @@ pub struct Identity {
     pub kernel: String,
     pub arch: String,
     pub cpu_model: String,
+    pub core_kinds: Vec<CoreKind>,
     pub agent_version: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreKind {
+    Performance,
+    Efficiency,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]

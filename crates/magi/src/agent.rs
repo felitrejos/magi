@@ -84,6 +84,7 @@ fn identity_of(info: &SystemInfo) -> Identity {
         kernel: info.kernel.clone(),
         arch: std::env::consts::ARCH.to_string(),
         cpu_model: info.cpu_model.clone(),
+        core_kinds: info.core_kinds.clone(),
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
@@ -938,6 +939,7 @@ mod tests {
             kernel: String::new(),
             arch: String::new(),
             cpu_model: String::new(),
+            core_kinds: Vec::new(),
             agent_version: String::new(),
         }
     }

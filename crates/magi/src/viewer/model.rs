@@ -1392,6 +1392,7 @@ mod tests {
                 kernel: "test".into(),
                 arch: "test".into(),
                 cpu_model: "test".into(),
+                core_kinds: Vec::new(),
                 agent_version: "test".into(),
             },
         }))

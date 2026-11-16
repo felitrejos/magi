@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::proto::{BasisPoints, FULL};
 
+mod cores;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -22,6 +23,7 @@ pub struct SystemInfo {
     pub os: String,
     pub kernel: String,
     pub cpu_model: String,
+    pub core_kinds: Vec<crate::proto::CoreKind>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]

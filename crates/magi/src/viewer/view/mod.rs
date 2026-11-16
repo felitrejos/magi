@@ -56,7 +56,7 @@ pub fn areas(full: Rect, machines: usize, plans: usize, agents: usize) -> Areas 
     };
     let inner = sidebar.inner(Margin {
         horizontal: 1,
-        vertical: 1,
+        vertical: 0,
     });
     let usage = if plans > 0 { 1 } else { 0 };
     let [machines, _, top_rule, _, agents, bottom_rule, _, plans] = Layout::vertical([

@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{Composed, Cursor, Mark, body, clip, draw_panel, panel, selected_style, truncate};
-use crate::proto::FULL;
+use crate::proto::{CoreKind, FULL};
 use crate::viewer::graphics::{Chart, Graphics, Kind, Series};
 use crate::viewer::model::{
     self, HISTORY, Level, LinkState, Machine, Model, Presence, Row, Subsystem,
@@ -25,6 +25,7 @@ const MIN_LABELLED_ROWS: u16 = 5;
 const CORE_GAP: u16 = 3;
 const MIN_CORE_WIDTH: u16 = 18;
 const CORE_PERCENT: u16 = 4;
+const CORE_LABEL: u16 = 3;
 const MAX_FILESYSTEMS: usize = 3;
 const FS_PERCENT: usize = 4;
 const ICON_WIDTH: u16 = 2;
@@ -485,7 +486,8 @@ fn draw_cores(
     if area.height < 2 || cores.is_empty() {
         return;
     }
-    let busiest = f32::from(cores.iter().copied().max().unwrap_or(0)) / f32::from(FULL);
+    let load = |index: usize| f32::from(cores[index]) / f32::from(FULL);
+    let busiest = (0..cores.len()).map(load).fold(0.0, f32::max);
     frame.render_widget(
         Paragraph::new(spread_line(
             vec![Span::styled("Cores", style::bold(theme().text))],
@@ -497,79 +499,183 @@ fn draw_cores(
         )),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    let grid = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
-    let count = cores.len() as u16;
-    let columns = core_columns(count, grid);
-    let lines = count.div_ceil(columns);
-    let cell_height = (grid.height / lines).max(1);
-    let chart_height = if cell_height >= 3 {
-        cell_height - 1
+    let groups = core_groups(&machine.identity.core_kinds, cores.len());
+    let titled = groups.len() > 1;
+    let titles = if titled {
+        groups.len() as u16 * 2 - 1
     } else {
-        cell_height
+        0
     };
+    let grid = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+    let space = grid.height.saturating_sub(titles);
+    let sizes: Vec<u16> = groups
+        .iter()
+        .map(|group| group.cores.len() as u16)
+        .collect();
+    let columns = core_columns(&sizes, grid.width, space);
+    let lines: u16 = sizes.iter().map(|size| size.div_ceil(columns)).sum();
+    let cell_height = (space / lines.max(1)).max(1);
     let cell_width = (grid.width + CORE_GAP) / columns - CORE_GAP;
-    let label_width = count.to_string().len() as u16 + 1;
-    for (index, core) in cores.iter().enumerate() {
-        let index = index as u16;
-        let (column, line) = (index / lines, index % lines);
-        let x = grid.x + column * (cell_width + CORE_GAP);
-        let y = grid.y + line * cell_height;
-        if y >= grid.y + grid.height {
-            break;
+    let bottom = grid.y + grid.height;
+    let mut y = grid.y;
+    for (position, group) in groups.iter().enumerate() {
+        if titled {
+            if position > 0 {
+                y += 1;
+            }
+            if y >= bottom {
+                return;
+            }
+            let average = group.cores.iter().map(|index| load(*index)).sum::<f32>()
+                / group.cores.len() as f32;
+            frame.render_widget(
+                Paragraph::new(spread_line(
+                    vec![Span::styled(group.title, style::fg(theme().dim))],
+                    vec![Span::styled(
+                        format!(
+                            "{} cores · {}",
+                            group.cores.len(),
+                            units::percent(average).trim()
+                        ),
+                        style::fg(theme().faint),
+                    )],
+                    usize::from(grid.width),
+                )),
+                Rect::new(grid.x, y, grid.width, 1),
+            );
+            y += 1;
         }
-        let fraction = f32::from(*core) / f32::from(FULL);
-        let color = match model::grade(Subsystem::Cpu, fraction) {
-            Level::Normal => theme().accent,
-            level => style::level(level),
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!(
-                    "{:>width$}",
-                    index + 1,
-                    width = usize::from(label_width) - 1
-                ),
-                style::fg(theme().faint),
-            )),
-            Rect::new(x, y, label_width, 1),
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(percent_span(fraction, Subsystem::Cpu)).right_aligned()),
-            Rect::new(x + cell_width - CORE_PERCENT, y, CORE_PERCENT, 1),
-        );
-        let history = machine
-            .core_history
-            .get(usize::from(index))
-            .map_or_else(Vec::new, |history| history.tail(window));
-        let plot = Rect::new(
-            x + label_width,
-            y,
-            cell_width.saturating_sub(label_width + CORE_PERCENT + 1),
-            chart_height.min(grid.y + grid.height - y),
-        );
-        graphics.chart(
-            frame.buffer_mut(),
-            plot,
-            format!("core:{index}"),
-            &Chart {
-                kind: Kind::Area,
-                max: 1.0,
-                guide: false,
-                series: vec![Series {
-                    values: &history,
-                    color,
-                }],
-            },
-        );
+        let group_lines = (group.cores.len() as u16).div_ceil(columns);
+        for (number, core) in group.cores.iter().enumerate() {
+            let number = number as u16;
+            let cell = Rect::new(
+                grid.x + number / group_lines * (cell_width + CORE_GAP),
+                y + number % group_lines * cell_height,
+                cell_width,
+                cell_height,
+            );
+            if cell.y >= bottom {
+                continue;
+            }
+            let history = machine
+                .core_history
+                .get(*core)
+                .map_or_else(Vec::new, |history| history.tail(window));
+            let fraction = load(*core);
+            draw_core(
+                frame,
+                graphics,
+                Rect {
+                    height: cell.height.min(bottom - cell.y),
+                    ..cell
+                },
+                Core {
+                    slot: format!("core:{core}"),
+                    label: number + 1,
+                    fraction,
+                    history: &history,
+                    color: match model::grade(Subsystem::Cpu, fraction) {
+                        Level::Normal => group.color,
+                        level => style::level(level),
+                    },
+                },
+            );
+        }
+        y += group_lines * cell_height;
     }
 }
 
-fn core_columns(cores: u16, grid: Rect) -> u16 {
-    let widest = ((grid.width + CORE_GAP) / (MIN_CORE_WIDTH + CORE_GAP)).max(1);
-    let fits = |least: u16| {
-        (1..=widest.min(cores)).find(|columns| cores.div_ceil(*columns) * least <= grid.height)
+struct CoreGroup {
+    title: &'static str,
+    color: Color,
+    cores: Vec<usize>,
+}
+
+fn core_groups(kinds: &[CoreKind], count: usize) -> Vec<CoreGroup> {
+    let of = |kind: CoreKind| -> Vec<usize> {
+        (0..count)
+            .filter(|index| kinds.get(*index) == Some(&kind))
+            .collect()
     };
-    fits(2).or_else(|| fits(1)).unwrap_or(widest.min(cores))
+    let (performance, efficiency) = (of(CoreKind::Performance), of(CoreKind::Efficiency));
+    if kinds.len() != count || performance.is_empty() || efficiency.is_empty() {
+        return vec![CoreGroup {
+            title: "",
+            color: theme().accent,
+            cores: (0..count).collect(),
+        }];
+    }
+    vec![
+        CoreGroup {
+            title: "Performance",
+            color: theme().accent,
+            cores: performance,
+        },
+        CoreGroup {
+            title: "Efficiency",
+            color: theme().second,
+            cores: efficiency,
+        },
+    ]
+}
+
+struct Core<'a> {
+    slot: String,
+    label: u16,
+    fraction: f32,
+    history: &'a [f32],
+    color: Color,
+}
+
+fn draw_core(frame: &mut Frame, graphics: &mut Graphics, cell: Rect, core: Core) {
+    let label_width = CORE_LABEL;
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!(
+                "{:>width$}",
+                core.label,
+                width = usize::from(label_width) - 1
+            ),
+            style::fg(theme().faint),
+        )),
+        Rect::new(cell.x, cell.y, label_width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(percent_span(core.fraction, Subsystem::Cpu)).right_aligned()),
+        Rect::new(cell.x + cell.width - CORE_PERCENT, cell.y, CORE_PERCENT, 1),
+    );
+    let chart_height = if cell.height >= 3 {
+        cell.height - 1
+    } else {
+        cell.height
+    };
+    graphics.chart(
+        frame.buffer_mut(),
+        Rect::new(
+            cell.x + label_width,
+            cell.y,
+            cell.width.saturating_sub(label_width + CORE_PERCENT + 1),
+            chart_height,
+        ),
+        core.slot,
+        &Chart {
+            kind: Kind::Area,
+            max: 1.0,
+            guide: false,
+            series: vec![Series {
+                values: core.history,
+                color: core.color,
+            }],
+        },
+    );
+}
+
+fn core_columns(groups: &[u16], width: u16, space: u16) -> u16 {
+    let largest = groups.iter().copied().max().unwrap_or(1).max(1);
+    let widest = ((width + CORE_GAP) / (MIN_CORE_WIDTH + CORE_GAP)).clamp(1, largest);
+    let lines = |columns: u16| -> u16 { groups.iter().map(|size| size.div_ceil(columns)).sum() };
+    let fits = |least: u16| (1..=widest).find(|columns| lines(*columns) * least <= space);
+    fits(2).or_else(|| fits(1)).unwrap_or(widest)
 }
 
 fn draw_processes(frame: &mut Frame, area: Rect, sample: &crate::proto::Sample) {
