@@ -5,15 +5,16 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::alerts;
-use super::client::{Client, Found, short_id};
+use super::client::{Client, short_id};
 use super::fleet;
 use crate::log;
-use crate::proto::{OpenIn, PermissionMode, Request, SessionState, Waiting};
+use crate::proto::{OpenIn, Request, SessionState, Waiting};
 
 const ANSWER_WITHIN: Duration = Duration::from_secs(15);
 const START_WITHIN: Duration = Duration::from_secs(90);
+const LINK_WITHIN: Duration = Duration::from_secs(40);
+const LINK_EVERY: Duration = Duration::from_millis(500);
 const MOVE_WITHIN: Duration = Duration::from_secs(30 * 60);
-const MODES_IN_A_CYCLE: usize = 5;
 const EVENTS_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, PartialEq)]
@@ -33,10 +34,6 @@ pub enum Cli {
         session: String,
         option: u8,
     },
-    Mode {
-        session: String,
-        to: Option<PermissionMode>,
-    },
     Move {
         session: String,
         to: String,
@@ -44,7 +41,6 @@ pub enum Cli {
     Start {
         machine: String,
         place: OpenIn,
-        project: Option<String>,
         codex: bool,
         model: Option<String>,
     },
@@ -66,27 +62,21 @@ pub fn run(port: u16, command: Cli) -> io::Result<()> {
         }
         Cli::Answer { session, allow } => answer(&mut client, &session, allow),
         Cli::Choose { session, option } => choose(&mut client, &session, option),
-        Cli::Mode { session, to } => mode(&mut client, &session, to),
         Cli::Move { session, to } => move_to(&mut client, &session, &to),
         Cli::Start {
             machine,
             place,
-            project,
             codex,
             model,
-        } => {
-            let machine = client.machine(&machine).map_err(io::Error::other)?;
-            let endpoint = client
-                .endpoint(&machine)
-                .ok_or_else(|| io::Error::other("that machine isn't connected"))?;
-            let request = Request::Open {
+        } => start(
+            &mut client,
+            &machine,
+            Request::Open {
                 place,
-                project,
                 codex,
                 model,
-            };
-            client.ask(endpoint, &request, START_WITHIN)
-        }
+            },
+        ),
     };
     let text = said.map_err(io::Error::other)?;
     writeln!(io::stdout(), "{text}")
@@ -122,6 +112,58 @@ fn sessions(client: &Client, as_json: bool) -> io::Result<()> {
         )?;
     }
     Ok(())
+}
+
+pub(super) fn start(
+    client: &mut Client,
+    machine: &str,
+    request: Request,
+) -> Result<String, String> {
+    let machine = client.machine(machine)?;
+    let endpoint = client
+        .endpoint(&machine)
+        .ok_or("that machine isn't connected")?;
+    let known: HashSet<String> = client
+        .model
+        .agents(Instant::now())
+        .iter()
+        .map(|agent| agent.session.id.clone())
+        .collect();
+    let said = client.ask(endpoint, &request, START_WITHIN)?;
+    let deadline = Instant::now() + LINK_WITHIN;
+    let mut started = None;
+    while Instant::now() < deadline {
+        let now = Instant::now();
+        let fresh = client
+            .model
+            .agents(now)
+            .into_iter()
+            .find(|agent| agent.endpoint == endpoint && !known.contains(&agent.session.id))
+            .map(|agent| agent.session.clone());
+        if let Some(session) = fresh {
+            let linked = session.remote.is_some();
+            started = Some(session);
+            if linked {
+                break;
+            }
+        }
+        client.wait(LINK_EVERY).map_err(|error| error.to_string())?;
+    }
+    Ok(match started {
+        Some(session) => match session.remote_url() {
+            Some(url) => format!(
+                "{said}\n{} ({}): {url}",
+                session.title,
+                short_id(&session.id)
+            ),
+            None => format!(
+                "{said}\n{} ({}) has no Remote Control link yet; magi sessions shows it once it has",
+                session.title,
+                short_id(&session.id)
+            ),
+        },
+        None => format!("{said}\nIt hasn't shown up yet; magi sessions lists it once it does"),
+    })
 }
 
 pub(super) fn listed(client: &Client) -> Value {
@@ -170,37 +212,6 @@ pub(super) fn choose(client: &mut Client, query: &str, option: u8) -> Result<Str
         waiting_secs: found.session.state_secs,
     };
     client.ask(found.endpoint, &request, ANSWER_WITHIN)
-}
-
-pub(super) fn mode(
-    client: &mut Client,
-    query: &str,
-    to: Option<PermissionMode>,
-) -> Result<String, String> {
-    let Found {
-        endpoint, session, ..
-    } = client.session(query)?;
-    if to.is_some() && session.mode == to {
-        return Ok(format!(
-            "{} is already in {} mode",
-            session.title,
-            session.mode.map_or("", PermissionMode::name)
-        ));
-    }
-    let request = Request::CycleMode {
-        session: session.id.clone(),
-    };
-    for _ in 0..MODES_IN_A_CYCLE {
-        let said = client.ask(endpoint, &request, ANSWER_WITHIN)?;
-        match to {
-            Some(to) if !said.ends_with(&format!("in {} mode", to.name())) => continue,
-            _ => return Ok(said),
-        }
-    }
-    Err(format!(
-        "{} never reached that mode; it may not offer it",
-        session.title
-    ))
 }
 
 pub(super) fn move_to(client: &mut Client, query: &str, to: &str) -> Result<String, String> {

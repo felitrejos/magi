@@ -65,47 +65,6 @@ pub fn update(reply: &[u8]) -> bool {
     true
 }
 
-pub fn palette_env() -> String {
-    let palette = CURRENT.read().unwrap_or_else(PoisonError::into_inner).0;
-    [
-        palette.foreground,
-        palette.background,
-        palette.red,
-        palette.green,
-        palette.yellow,
-        palette.blue,
-        palette.magenta,
-    ]
-    .iter()
-    .map(|Rgb(r, g, b)| format!("{r:02x}{g:02x}{b:02x}"))
-    .collect::<Vec<_>>()
-    .join(",")
-}
-
-pub fn adopt_palette(text: &str) {
-    let colors: Vec<Rgb> = text
-        .split(',')
-        .filter_map(|hex| {
-            let channel = |at: usize| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok();
-            (hex.len() == 6).then_some(())?;
-            Some(Rgb(channel(0)?, channel(2)?, channel(4)?))
-        })
-        .collect();
-    let [foreground, background, red, green, yellow, blue, magenta] = colors[..] else {
-        return;
-    };
-    let palette = Palette {
-        foreground,
-        background,
-        red,
-        green,
-        yellow,
-        blue,
-        magenta,
-    };
-    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = (palette, Theme::from(palette));
-}
-
 pub fn theme() -> Theme {
     CURRENT.read().unwrap_or_else(PoisonError::into_inner).1
 }

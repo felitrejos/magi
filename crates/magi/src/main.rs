@@ -36,17 +36,15 @@ Usage:
   magi statusline uninstall                            remove it from ~/.claude/settings.json
   magi page [--diff] [--title TITLE] FILE              show a Markdown file or a diff in a pager
   magi launch SOCKET                                   the new-session launcher the viewer opens in a Rex float
-  magi md [--width N] FILE                             print a Markdown file in magi's colours
   magi alerts                                          the alert history as a feed, by day
   magi follow TRANSCRIPT                               a subagent's work, live, for its mirror tab
   magi sessions [--json]                               every session on every machine
   magi send SESSION TEXT                               message a session, queued until it's idle
   magi answer SESSION yes|no                           allow or deny what it asks to run
   magi choose SESSION N                                pick option N of its question
-  magi mode SESSION [manual|accept-edits|plan|auto]    switch its permission mode, or cycle it
   magi move SESSION MACHINE                            move it to another machine, and wait
-  magi start MACHINE FOLDER|--chat [--project NAME] [--codex] [--model M]
-                                                       start a session there, in its project's Rex tab
+  magi start MACHINE FOLDER|--chat [--codex] [--model M]
+                                                       start a session there, in a Rex tab for its folder
   magi events                                          what needs you, as JSON lines, as it happens
   magi mcp                                             all of the above as an MCP server, for Claude Desktop and others
 
@@ -69,7 +67,6 @@ enum Command {
     StatusLine,
     Page(std::path::PathBuf, viewer::Page, bool),
     Launch(std::path::PathBuf),
-    Document(std::path::PathBuf, usize),
     Alerts,
     Follow(std::path::PathBuf),
     Cli(u16, viewer::Cli),
@@ -97,7 +94,6 @@ fn main() -> ExitCode {
         Command::StatusLine => statusline::run(),
         Command::Page(path, page, remove) => viewer::page(&path, page, remove),
         Command::Launch(socket) => viewer::launch(&socket),
-        Command::Document(path, width) => viewer::print_document(&path, width),
         Command::Alerts => viewer::alerts(),
         Command::Follow(transcript) => viewer::follow(&transcript),
         Command::Cli(port, command) => viewer::cli(port, command),
@@ -132,7 +128,6 @@ enum Mode {
     StatusLine,
     Page,
     Launch,
-    Document,
     Alerts,
     Follow,
     Mcp,
@@ -140,18 +135,16 @@ enum Mode {
     Send,
     Answer,
     Choose,
-    Permissions,
     Move,
     Start,
     Events,
 }
 
-const CLI_COMMANDS: [(&str, Mode); 8] = [
+const CLI_COMMANDS: [(&str, Mode); 7] = [
     ("sessions", Mode::Sessions),
     ("send", Mode::Send),
     ("answer", Mode::Answer),
     ("choose", Mode::Choose),
-    ("mode", Mode::Permissions),
     ("move", Mode::Move),
     ("start", Mode::Start),
     ("events", Mode::Events),
@@ -168,7 +161,6 @@ fn cli(
     codex: bool,
     chat: bool,
     model: Option<String>,
-    project: Option<String>,
 ) -> Result<viewer::Cli, lexopt::Error> {
     let mut rest = rest.into_iter();
     let mut next = |what: &str| {
@@ -207,23 +199,6 @@ fn cli(
                 .ok_or("the option is a number from 1 to 9")?;
             viewer::Cli::Choose { session, option }
         }
-        Mode::Permissions => {
-            let session = next("the session")?;
-            let to = match next("").ok().as_deref() {
-                None => None,
-                Some("manual" | "default") => Some(proto::PermissionMode::Manual),
-                Some("accept-edits" | "edits") => Some(proto::PermissionMode::AcceptEdits),
-                Some("plan") => Some(proto::PermissionMode::Plan),
-                Some("auto") => Some(proto::PermissionMode::Auto),
-                Some(other) => {
-                    return Err(format!(
-                        "{other:?} isn't a mode: manual, accept-edits, plan or auto"
-                    )
-                    .into());
-                }
-            };
-            viewer::Cli::Mode { session, to }
-        }
         Mode::Move => {
             let session = next("the session")?;
             viewer::Cli::Move {
@@ -241,7 +216,6 @@ fn cli(
             viewer::Cli::Start {
                 machine,
                 place,
-                project,
                 codex,
                 model,
             }
@@ -260,13 +234,11 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         diff: false,
     };
     let mut remove = false;
-    let mut width: usize = 80;
     let mut file = None;
     let mut rest: Vec<String> = Vec::new();
     let mut codex = false;
     let mut chat = false;
     let mut model = None;
-    let mut project = None;
     while let Some(arg) = parser.next()? {
         match arg {
             Value(value)
@@ -282,26 +254,20 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
             Long("codex") if mode == Mode::Start => codex = true,
             Long("chat") if mode == Mode::Start => chat = true,
             Long("model") if mode == Mode::Start => model = Some(parser.value()?.string()?),
-            Long("project") if mode == Mode::Start => project = Some(parser.value()?.string()?),
             Value(value) if is_cli(mode) => rest.push(value.string()?),
             Value(value) if value == "agent" && mode == Mode::Viewer => mode = Mode::Agent,
             Value(value) if value == "fleet" && mode == Mode::Viewer => mode = Mode::Fleet,
             Long("json") if mode == Mode::Fleet => json = true,
             Value(value) if value == "page" && mode == Mode::Viewer => mode = Mode::Page,
             Value(value) if value == "launch" && mode == Mode::Viewer => mode = Mode::Launch,
-            Value(value) if value == "md" && mode == Mode::Viewer => mode = Mode::Document,
             Value(value) if value == "alerts" && mode == Mode::Viewer => mode = Mode::Alerts,
             Value(value) if value == "follow" && mode == Mode::Viewer => mode = Mode::Follow,
             Value(value) if value == "mcp" && mode == Mode::Viewer => mode = Mode::Mcp,
-            Long("width") if mode == Mode::Document => width = parser.value()?.parse()?,
             Long("diff") if mode == Mode::Page => page.diff = true,
             Long("remove") if mode == Mode::Page => remove = true,
             Long("title") if mode == Mode::Page => page.title = parser.value()?.string()?,
             Value(value)
-                if matches!(
-                    mode,
-                    Mode::Page | Mode::Launch | Mode::Document | Mode::Follow
-                ) && file.is_none() =>
+                if matches!(mode, Mode::Page | Mode::Launch | Mode::Follow) && file.is_none() =>
             {
                 file = Some(std::path::PathBuf::from(value))
             }
@@ -340,7 +306,7 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         interval: Duration::from_millis(u64::from(interval_ms)),
     };
     if is_cli(mode) {
-        return cli(mode, rest, json, codex, chat, model, project)
+        return cli(mode, rest, json, codex, chat, model)
             .map(|command| Command::Cli(port, command));
     }
     Ok(match mode {
@@ -356,7 +322,6 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         Mode::Alerts => Command::Alerts,
         Mode::Mcp => Command::Mcp(port),
         Mode::Follow => Command::Follow(file.ok_or("magi follow needs a subagent's transcript")?),
-        Mode::Document => Command::Document(file.ok_or("magi md needs a file")?, width),
         Mode::Page => {
             let file = file.ok_or("magi page needs a file")?;
             if page.title.is_empty() {
@@ -403,20 +368,12 @@ mod tests {
                 .unwrap_err()
                 .contains("yes or no")
         );
-        assert_eq!(
-            cli(&["mode", "9fb6", "plan"]),
-            Ok(viewer::Cli::Mode {
-                session: "9fb6".into(),
-                to: Some(proto::PermissionMode::Plan)
-            })
-        );
         assert!(cli(&["choose", "9fb6", "12"]).is_err());
         assert_eq!(
             cli(&["start", "homelab", "--chat", "--codex"]),
             Ok(viewer::Cli::Start {
                 machine: "homelab".into(),
                 place: proto::OpenIn::Chats,
-                project: None,
                 codex: true,
                 model: None
             })

@@ -36,10 +36,14 @@ This repo holds two apps that work together or alone:
   session saying what it's doing. Any number of machines, no server or
   config file.
 - **Sessions in their place.** A new session opens on whichever machine has
-  room, in its project's Rex session and its repo's tab. Each subagent gets a
-  tab of its own beside it, showing its work live, that closes when it's done.
-- **Answer from the overview.** Allow or deny a prompt, switch a session's
-  permission mode, see its diff and outputs, or jump to its pane.
+  room, in a Rex session named after its folder and a tab for its repo. Each
+  subagent gets a tab of its own beside it, showing its work live, that
+  closes when it's done.
+- **Answer from the overview.** Allow or deny a prompt, see a session's diff,
+  or jump to its pane. Everything else happens in the session itself.
+- **Drive it from the Claude app.** Sessions magi starts run with Remote
+  Control, named after their repo and machine, so the Claude app on your
+  desktop or phone can talk to them; `magi start` prints the link.
 - **Limits and alerts.** Your Claude and Codex 5-hour and weekly windows, and
   an alert when a session needs you, a machine goes quiet or a plan nearly
   runs out.
@@ -95,9 +99,8 @@ script or Claude itself can use magi underneath:
 magi sessions --json            # every session on every machine
 magi send fix-login "now run the tests"   # queued until it's idle
 magi answer fix-login yes       # or: magi choose fix-login 2
-magi mode fix-login plan
 magi move fix-login homelab
-magi start homelab ~/developer/stampr/stampr --project Stampr
+magi start homelab ~/developer/stampr/stampr
 magi events                     # what needs you, as JSON lines
 ```
 
@@ -111,7 +114,7 @@ sessions from Claude Desktop, Claude Code or any MCP client. In Claude Code:
 ```
 
 Looking (machines, sessions, recent work, diffs, alerts) needs no approval
-from the tools' side; acting (message, answer, mode, move, start) is marked
+from the tools' side; acting (message, answer, move, start) is marked
 as such, so your client asks you first.
 
 ## How it works

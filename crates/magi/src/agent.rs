@@ -14,9 +14,8 @@ use crate::conversation::Reader;
 use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
-    self, AgentMessage, AgentSession, ChildKind, Content, Hello, Identity, PROTOCOL_VERSION,
-    PermissionMode, Reply, Request, Said, Screen, SessionState, SharedProjects, Showed, Showing,
-    Shown, StatusReport, Welcome,
+    self, AgentMessage, AgentSession, ChildKind, Content, Hello, Identity, PROTOCOL_VERSION, Reply,
+    Request, Said, Screen, SessionState, SharedLabels, Shown, StatusReport, Welcome,
 };
 use crate::screen::Capturer;
 use crate::sessions::rex::Location;
@@ -129,33 +128,13 @@ struct Agent {
     board: Board,
     sessions: Mutex<Snapshot>,
     fresh: Nudge,
-    shared: Mutex<Option<SharedProjects>>,
+    shared: Mutex<Option<SharedLabels>>,
     shared_file: Option<PathBuf>,
-    modes: Mutex<HashMap<String, Switched>>,
     queued: Mutex<HashMap<String, String>>,
     mirrored: Mutex<HashSet<(String, String)>>,
 }
 
-struct Switched {
-    to: PermissionMode,
-    transcript_said: Option<PermissionMode>,
-}
-
 impl Agent {
-    fn remember_mode(&self, session: &AgentSession, to: PermissionMode) {
-        let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
-        let transcript_said = modes
-            .get(&session.id)
-            .map_or(session.mode, |switched| switched.transcript_said);
-        modes.insert(
-            session.id.clone(),
-            Switched {
-                to,
-                transcript_said,
-            },
-        );
-    }
-
     fn queue(
         &self,
         session: &AgentSession,
@@ -214,19 +193,10 @@ impl Agent {
     }
 
     fn settle(&self, snapshot: &mut Snapshot) {
-        let mut modes = self.modes.lock().unwrap_or_else(PoisonError::into_inner);
         let mut queued = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
-        modes.retain(|id, _| snapshot.sessions.iter().any(|session| session.id == *id));
         queued.retain(|id, _| snapshot.sessions.iter().any(|session| session.id == *id));
         for session in &mut snapshot.sessions {
             session.queued = None;
-            if let Some(switched) = modes.get(&session.id) {
-                if switched.transcript_said == session.mode {
-                    session.mode = Some(switched.to);
-                } else {
-                    modes.remove(&session.id);
-                }
-            }
             if session.state == SessionState::Idle
                 && let Some(text) = queued.remove(&session.id)
             {
@@ -250,32 +220,18 @@ impl Agent {
         }
     }
 
-    fn show(&self, session: String, what: Showing) -> Shown {
-        let (cwd, transcript) = {
-            let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
-            (
-                snapshot.cwds.get(&session).cloned().unwrap_or_default(),
-                snapshot
-                    .transcripts
-                    .get(&session)
-                    .map(|(_, path)| path.clone()),
-            )
-        };
-        let (title, body) = match what {
-            Showing::Diff => ("Changes", show::diff(&cwd).map(Showed::Diff)),
-            Showing::Outputs => (
-                "Outputs",
-                transcript
-                    .ok_or_else(|| "that session's transcript isn't on this machine".to_string())
-                    .and_then(|path| show::outputs(&path, &cwd))
-                    .map(Showed::Outputs),
-            ),
-        };
+    fn diff(&self, session: String) -> Shown {
+        let cwd = self
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cwds
+            .get(&session)
+            .cloned()
+            .unwrap_or_default();
         Shown {
             session,
-            what,
-            title: title.to_string(),
-            body,
+            diff: show::diff(&cwd),
         }
     }
 
@@ -382,13 +338,12 @@ impl Agent {
             fresh: Nudge::default(),
             shared: Mutex::new(shared_file.as_deref().and_then(load_shared)),
             shared_file,
-            modes: Mutex::default(),
             queued: Mutex::default(),
             mirrored: Mutex::default(),
         }
     }
 
-    fn share_projects(&self, shared: SharedProjects) {
+    fn share_labels(&self, shared: SharedLabels) {
         {
             let mut known = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
             if known
@@ -403,9 +358,9 @@ impl Agent {
             && let Err(error) = save_shared(path, &shared)
         {
             self.notices
-                .info(format!("couldn't keep the shared projects: {error}"));
+                .info(format!("couldn't keep the shared labels: {error}"));
         }
-        if let Ok(frame) = proto::encode_frame(&AgentMessage::Projects(shared)) {
+        if let Ok(frame) = proto::encode_frame(&AgentMessage::Labels(shared)) {
             self.hub.publish(frame.into());
         }
     }
@@ -423,15 +378,15 @@ impl Agent {
 }
 
 fn shared_path() -> io::Result<PathBuf> {
-    Ok(net::state_dir()?.join("shared-projects.json"))
+    Ok(net::state_dir()?.join("shared-labels.json"))
 }
 
-fn load_shared(path: &std::path::Path) -> Option<SharedProjects> {
+fn load_shared(path: &std::path::Path) -> Option<SharedLabels> {
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
-fn save_shared(path: &std::path::Path, shared: &SharedProjects) -> io::Result<()> {
+fn save_shared(path: &std::path::Path, shared: &SharedLabels) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let temporary = path.with_extension("json.tmp");
     std::fs::write(
@@ -735,7 +690,7 @@ fn serve(conn: &mut dyn Conn, agent: &Arc<Agent>, origin: Origin) -> io::Result<
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
     if let Some(frame) =
-        shared.and_then(|shared| proto::encode_frame(&AgentMessage::Projects(shared)).ok())
+        shared.and_then(|shared| proto::encode_frame(&AgentMessage::Labels(shared)).ok())
     {
         let _ = replies.try_send(frame.into());
     }
@@ -768,16 +723,6 @@ fn spawn_requests(
                             agent.queue(found, pane, &text)
                         });
                     }
-                    Request::CycleMode { session } => {
-                        let agent = Arc::clone(&agent);
-                        in_background(&replies, move |replies| {
-                            type_into(&session, &agent, replies, |found, pane| {
-                                let mode = typing::cycle_mode(found, pane)?;
-                                agent.remember_mode(found, mode);
-                                Ok(format!("{} is in {} mode", found.title, mode.name()))
-                            });
-                        });
-                    }
                     Request::Answer {
                         session,
                         allow,
@@ -801,17 +746,17 @@ fn spawn_requests(
                     Request::Stop { session } => {
                         type_into(&session, &agent, &replies, typing::stop);
                     }
-                    Request::Show { session, what } => {
+                    Request::Diff { session } => {
                         let agent = Arc::clone(&agent);
                         in_background(&replies, move |replies| {
-                            let shown = agent.show(session, what);
+                            let shown = agent.diff(session);
                             if let Ok(frame) = proto::encode_frame(&AgentMessage::Shown(shown)) {
                                 let _ = replies.send(frame.into());
                             }
                         });
                     }
-                    Request::ShareProjects(shared) => {
-                        agent.share_projects(shared);
+                    Request::ShareLabels(shared) => {
+                        agent.share_labels(shared);
                     }
                     Request::Folders => {
                         in_background(&replies, |replies| {
@@ -845,13 +790,11 @@ fn spawn_requests(
                     }
                     Request::Open {
                         place,
-                        project,
                         codex,
                         model,
                     } => {
                         in_background(&replies, move |replies| {
-                            match opener::open(&place, project.as_deref(), codex, model.as_deref())
-                            {
+                            match opener::open(&place, codex, model.as_deref()) {
                                 Ok(text) => reply(replies, true, text),
                                 Err(text) => reply(replies, false, text),
                             }
@@ -1168,6 +1111,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::proto::PermissionMode;
 
     fn working(id: &str) -> AgentSession {
         AgentSession {
@@ -1193,6 +1137,7 @@ mod tests {
             activity: None,
             mode: Some(PermissionMode::Auto),
             queued: None,
+            remote: None,
         }
     }
 
@@ -1232,58 +1177,26 @@ mod tests {
     }
 
     #[test]
-    fn a_mode_magi_switched_to_holds_until_the_transcript_records_another() {
-        let agent = Agent::new(identity(), Duration::from_secs(1), Board::default(), None);
-        let session = working("s1");
-        agent.remember_mode(&session, PermissionMode::Plan);
-        let mut snapshot = Snapshot {
-            sessions: vec![session.clone()],
-            ..Snapshot::default()
-        };
-        agent.settle(&mut snapshot);
-        assert_eq!(snapshot.sessions[0].mode, Some(PermissionMode::Plan));
-        agent.remember_mode(&snapshot.sessions[0].clone(), PermissionMode::Auto);
-        let mut later = Snapshot {
-            sessions: vec![session.clone()],
-            ..Snapshot::default()
-        };
-        agent.settle(&mut later);
-        assert_eq!(later.sessions[0].mode, Some(PermissionMode::Auto));
-        let mut recorded = session;
-        recorded.mode = Some(PermissionMode::AcceptEdits);
-        let mut after_a_message = Snapshot {
-            sessions: vec![recorded],
-            ..Snapshot::default()
-        };
-        agent.settle(&mut after_a_message);
-        assert_eq!(
-            after_a_message.sessions[0].mode,
-            Some(PermissionMode::AcceptEdits)
-        );
-        assert!(agent.modes.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn an_agent_keeps_the_newest_shared_projects_and_hands_them_to_every_viewer() {
+    fn an_agent_keeps_the_newest_shared_labels_and_hands_them_to_every_viewer() {
         let mut agent = Agent::new(identity(), Duration::from_secs(1), Board::default(), None);
         let dir = std::env::temp_dir().join(format!("magi-shared-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("shared-projects.json");
+        let path = dir.join("shared-labels.json");
         agent.shared_file = Some(path.clone());
         let viewer = agent.hub.subscribe();
-        let mut newer = SharedProjects {
+        let mut newer = SharedLabels {
             updated_ms: 20,
-            ..SharedProjects::default()
+            ..SharedLabels::default()
         };
-        newer.repos.insert("ping".into(), "Games".into());
-        agent.share_projects(newer.clone());
+        newer.machines.insert("homelab".into(), "Server".into());
+        agent.share_labels(newer.clone());
         let frame = viewer.try_recv().unwrap();
         let mut buf = Vec::new();
         let message: AgentMessage = proto::read_frame(&mut &frame[..], &mut buf).unwrap();
-        assert_eq!(message, AgentMessage::Projects(newer.clone()));
-        agent.share_projects(SharedProjects {
+        assert_eq!(message, AgentMessage::Labels(newer.clone()));
+        agent.share_labels(SharedLabels {
             updated_ms: 10,
-            ..SharedProjects::default()
+            ..SharedLabels::default()
         });
         assert!(viewer.try_recv().is_err());
         assert_eq!(load_shared(&path), Some(newer));

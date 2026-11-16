@@ -98,7 +98,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                     .map_or(row.name.as_str(), String::as_str);
                 machine_line(
                     row,
-                    model.projects.machine_label(&row.name).unwrap_or(tag),
+                    model.labels.machine_label(&row.name).unwrap_or(tag),
                     width,
                 )
             }

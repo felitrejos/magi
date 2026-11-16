@@ -88,7 +88,7 @@ impl Client {
                 row.name.eq_ignore_ascii_case(name)
                     || self
                         .model
-                        .projects
+                        .labels
                         .machine_label(&row.name)
                         .is_some_and(|label| label.eq_ignore_ascii_case(name))
             })

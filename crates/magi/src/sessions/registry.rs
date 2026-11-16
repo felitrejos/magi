@@ -22,6 +22,7 @@ pub struct Registered {
     pub session_id: String,
     pub cwd: String,
     pub name: Option<String>,
+    pub remote: Option<String>,
     pub status: Status,
     pub status_since_ms: u64,
     pub started_ms: u64,
@@ -37,6 +38,8 @@ struct RegistryJson {
     cwd: String,
     #[serde(default)]
     name: Option<String>,
+    #[serde(rename = "bridgeSessionId", default)]
+    remote: Option<String>,
     #[serde(default)]
     status: Option<String>,
     #[serde(rename = "waitingFor", default)]
@@ -140,10 +143,17 @@ fn parse(text: &[u8]) -> Parsed {
         session_id: json.session_id,
         cwd: json.cwd,
         name: json.name.filter(|name| !name.is_empty()),
+        remote: json.remote.filter(|id| is_remote_id(id)),
         status,
         status_since_ms: json.status_updated_at,
         started_ms: json.started_at,
         proc_start: json.proc_start,
+    })
+}
+
+fn is_remote_id(id: &str) -> bool {
+    id.strip_prefix("session_").is_some_and(|rest| {
+        !rest.is_empty() && rest.len() <= 64 && rest.chars().all(|c| c.is_ascii_alphanumeric())
     })
 }
 
@@ -244,6 +254,26 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_control_session_keeps_its_id_and_a_strange_one_is_dropped() {
+        let remote = session(parse(&entry(
+            "idle",
+            r#","bridgeSessionId":"session_01PZAiQ7TuGT2SFskGqJrbd4""#,
+        )));
+        assert_eq!(
+            remote.remote.as_deref(),
+            Some("session_01PZAiQ7TuGT2SFskGqJrbd4")
+        );
+        for odd in ["session_", "session_../x", "https://evil.example", ""] {
+            let parsed = session(parse(&entry(
+                "idle",
+                &format!(r#","bridgeSessionId":"{odd}""#),
+            )));
+            assert_eq!(parsed.remote, None, "{odd}");
+        }
+        assert_eq!(session(parse(&entry("idle", ""))).remote, None);
+    }
+
+    #[test]
     fn parses_busy_waiting_and_idle() {
         let busy = session(parse(&entry("busy", "")));
         assert_eq!(
@@ -316,6 +346,7 @@ mod tests {
             session_id: "s".into(),
             cwd: String::new(),
             name: None,
+            remote: None,
             status: Status::Idle,
             status_since_ms: 0,
             started_ms: 0,

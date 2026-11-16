@@ -43,6 +43,7 @@ struct Seen {
     pid: Option<i32>,
     cwd: Option<String>,
     name: Option<String>,
+    remote: Option<String>,
     state: SessionState,
     state_secs: u32,
     age_secs: u32,
@@ -135,6 +136,7 @@ impl ClaudeSessions {
                 age_secs: secs_between(session.started_ms, now_ms),
                 cwd: Some(session.cwd),
                 name: session.name,
+                remote: session.remote,
                 id: session.session_id,
                 pid: Some(session.pid),
             })
@@ -230,6 +232,7 @@ impl ClaudeSessions {
             pid: None,
             cwd: None,
             name: None,
+            remote: None,
             state: if quiet < WORKING_IF_WRITTEN_WITHIN && !ended {
                 SessionState::Working { tool: None }
             } else {
@@ -353,6 +356,7 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
         activity: None,
         mode: main.and_then(|transcript| transcript.state.mode),
         queued: None,
+        remote: session.remote,
     }
 }
 

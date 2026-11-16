@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
-use super::model::{Focus, Model, Naming, Renaming, Row};
+use super::model::{Focus, Model, Naming, Row};
 use super::style::{self, theme};
 use super::units;
 use crate::proto::{Agent, FULL, Plan, SessionState, Waiting};
@@ -329,11 +329,7 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         spans
     };
     let line = if let Some(naming) = &model.naming {
-        let names = match naming.what {
-            Renaming::Machine(_) => Vec::new(),
-            _ => model.project_names(now),
-        };
-        naming_line(naming, &names, width)
+        naming_line(naming, width)
     } else if let Some(pending) = &model.pending_move {
         let question = format!(
             "Move {} from {} to {}?",
@@ -385,41 +381,26 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn naming_line(naming: &Naming, names: &[String], width: usize) -> Line<'static> {
-    let question = match &naming.what {
-        Renaming::Machine(name) => format!("Label {name} as "),
-        Renaming::Repo(repo) => format!("Move {repo} to project "),
-        Renaming::Project { name, .. } => format!("Rename {name} to "),
-    };
-    let completion = naming.completion(names);
-    let ghost: String = completion
-        .map(|name| name.chars().skip(naming.text.chars().count()).collect())
-        .unwrap_or_default();
-    let mut pairs = Vec::new();
-    if completion.is_some() {
-        pairs.push(("⇥", "complete"));
-    }
-    pairs.push(("↵", "save"));
-    pairs.push(("esc", "cancel"));
+fn naming_line(naming: &Naming, width: usize) -> Line<'static> {
+    let question = format!("Label {} as ", naming.machine);
     let mut right = Vec::new();
-    for (index, (key, label)) in pairs.into_iter().enumerate() {
+    for (index, (key, label)) in [("↵", "save"), ("esc", "cancel")].into_iter().enumerate() {
         if index > 0 {
             right.push(Span::raw("   "));
         }
         right.push(Span::styled(key, style::bold(theme().text)));
         right.push(Span::styled(format!(" {label}"), style::fg(theme().faint)));
     }
-    let hint = match &naming.what {
-        _ if !naming.text.is_empty() || !ghost.is_empty() => "",
-        Renaming::Machine(_) => "empty shows its own name",
-        _ => "empty puts it back where magi would",
+    let hint = if naming.text.is_empty() {
+        "empty shows its own name"
+    } else {
+        ""
     };
     spread(
         vec![
             Span::styled(question, style::fg(theme().text)),
             Span::styled("› ", style::fg(theme().accent)),
             Span::styled(naming.text.clone(), style::bold(theme().text)),
-            Span::styled(ghost, style::fg(theme().faint)),
             Span::styled("▏", style::fg(theme().accent)),
             Span::styled(hint, style::fg(theme().faint)),
         ],
@@ -454,14 +435,11 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     if in_rex && agent.live && matches!(agent.session.state, SessionState::Working { .. }) {
         actions.push(("x", "stop"));
     }
-    if in_rex && agent.live && agent.session.agent == Agent::ClaudeCode {
-        actions.push(("⇧tab", "mode"));
-    }
     if in_rex {
         actions.push(("↵", "open in Rex"));
     }
     if agent.live {
-        actions.extend([("d", "diff"), ("v", "outputs")]);
+        actions.push(("d", "diff"));
     }
     if agent.live && agent.session.agent == Agent::ClaudeCode {
         if !in_rex {

@@ -273,6 +273,7 @@ mod tests {
             activity: None,
             mode: None,
             queued: None,
+            remote: None,
         }
     }
 

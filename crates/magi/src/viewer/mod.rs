@@ -10,13 +10,12 @@ mod fleet;
 mod follow;
 mod graphics;
 mod input;
+mod labels;
 mod launcher;
 mod link;
 mod mcp;
 mod model;
-mod namer;
 mod page;
-mod projects;
 mod rex;
 mod style;
 mod terminal;
@@ -24,7 +23,7 @@ mod topology;
 mod units;
 mod view;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -43,10 +42,6 @@ use input::{Input, Key};
 use link::{Dial, LinkHandle};
 use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
-const THUMBNAIL_PIXELS: &str = "1200";
-const THUMBNAIL_WITHIN: Duration = Duration::from_secs(10);
-const LEARN_EXISTING_FOR: Duration = Duration::from_secs(30);
-const ASK_NAMER_EVERY: Duration = Duration::from_secs(60);
 const FRAME: Duration = Duration::from_millis(33);
 const TICK: Duration = Duration::from_secs(1);
 const THEME_CHECK: Duration = Duration::from_secs(2);
@@ -59,7 +54,6 @@ pub struct Config {
 pub enum Event {
     Input(input::Input),
     Opened(Result<(), String>),
-    Named(Vec<String>, Result<BTreeMap<String, String>, String>),
     Topology(Topology),
     Link(Endpoint, u64, LinkUpdate),
     Launched(u32, Option<launcher::Choice>),
@@ -72,91 +66,6 @@ pub use follow::run as follow;
 pub use launcher::run as launch;
 pub use mcp::run as mcp;
 pub use page::{Page, run as page};
-
-pub fn print_document(path: &std::path::Path, width: usize) -> io::Result<()> {
-    if let Ok(palette) = std::env::var("MAGI_PALETTE") {
-        style::adopt_palette(&palette);
-    }
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let name = path
-        .file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-    let shown = match extension.as_str() {
-        "md" | "markdown" | "mdx" => {
-            view::markdown_ansi(&std::fs::read_to_string(path)?, width.max(20))
-        }
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "pdf" | "html" => {
-            match picture(path, &extension) {
-                Some(png) => picture_lines(&png, path, width),
-                None if extension == "svg" || extension == "html" => {
-                    plain(&std::fs::read_to_string(path)?)
-                }
-                None => format!("{name}\n\n↵ opens it\n"),
-            }
-        }
-        _ => plain(&std::fs::read_to_string(path)?),
-    };
-    let mut out = io::stdout().lock();
-    out.write_all(shown.as_bytes())?;
-    out.flush()
-}
-
-fn plain(text: &str) -> String {
-    text.chars()
-        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
-        .collect()
-}
-
-fn picture(path: &std::path::Path, extension: &str) -> Option<Vec<u8>> {
-    if extension == "png" {
-        return std::fs::read(path).ok();
-    }
-    let path = path.canonicalize().ok()?;
-    let dir = path.parent()?;
-    let thumbnail = dir.join(format!("{}.png", path.file_name()?.to_string_lossy()));
-    if !thumbnail.exists() {
-        let quick_look = crate::handoff::find("qlmanage", &[PathBuf::from("/usr/bin")])?;
-        let _ = crate::bounded::output(
-            std::process::Command::new(quick_look)
-                .args(["-t", "-s", THUMBNAIL_PIXELS, "-o"])
-                .arg(dir)
-                .arg(&path)
-                .stdin(std::process::Stdio::null()),
-            THUMBNAIL_WITHIN,
-        );
-    }
-    std::fs::read(thumbnail).ok()
-}
-
-fn picture_lines(png: &[u8], path: &std::path::Path, width: usize) -> String {
-    let Some((pixels_wide, pixels_tall)) = graphics::png_size(png) else {
-        return String::new();
-    };
-    let lines = std::env::var("FZF_PREVIEW_LINES")
-        .ok()
-        .and_then(|lines| lines.parse::<usize>().ok())
-        .unwrap_or(30)
-        .saturating_sub(2)
-        .max(4);
-    let aspect = f64::from(pixels_tall) / f64::from(pixels_wide);
-    let mut cols = width.max(8);
-    let mut rows = ((cols as f64 * aspect) / 2.0).round().max(1.0) as usize;
-    if rows > lines {
-        rows = lines;
-        cols = ((rows as f64 * 2.0) / aspect).round().max(1.0) as usize;
-    }
-    let mut hasher = std::hash::DefaultHasher::new();
-    std::hash::Hash::hash(&path, &mut hasher);
-    let id = (std::hash::Hasher::finish(&hasher) % 0xff_fffe) as u32 + 1;
-    format!(
-        "\x1b[2m{pixels_wide}×{pixels_tall}\x1b[0m\n\n{}",
-        graphics::inline_png(png, id, cols as u16, rows as u16)
-    )
-}
 
 pub fn run(config: Config) -> io::Result<()> {
     if !rex::available() {
@@ -267,7 +176,7 @@ fn event_loop(
     graphics: &mut Graphics,
 ) -> io::Result<()> {
     let mut model = Model::new(port, Instant::now(), alerts);
-    model.projects = projects::Projects::open(net::state_dir()?.join("projects.json"));
+    model.labels = labels::Labels::open(net::state_dir()?.join("labels.json"));
     links.reconcile(&mut model, &[Endpoint::Local])?;
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME;
@@ -373,7 +282,6 @@ fn propose_move(model: &mut Model, now: Instant) {
 
 enum Action {
     Quit,
-    Mode,
     Up,
     Down,
     First,
@@ -387,11 +295,9 @@ enum Action {
     New,
     Stop,
     Adopt,
-    Project,
-    RenameProject,
+    Label,
     Back,
     Diff,
-    Outputs,
 }
 
 fn action(key: &Key) -> Option<Action> {
@@ -408,13 +314,10 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('n') => Action::Deny,
         Key::Char('c') => Action::New,
         Key::Char('x') => Action::Stop,
-        Key::BackTab => Action::Mode,
         Key::Char('r') => Action::Adopt,
-        Key::Char('p') => Action::Project,
-        Key::Char('P') => Action::RenameProject,
+        Key::Char('P') => Action::Label,
         Key::Escape => Action::Back,
         Key::Char('d') => Action::Diff,
-        Key::Char('v') => Action::Outputs,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
         _ => return None,
     })
@@ -505,7 +408,6 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
         } else {
             proto::OpenIn::Folder(choice.dir.clone())
         },
-        project: choice.project.clone(),
         codex: choice.codex,
         model: choice.model.clone(),
     };
@@ -541,38 +443,16 @@ fn step(model: &mut Model, delta: isize, now: Instant) {
     }
 }
 
-fn start_naming(model: &mut Model, whole_project: bool, now: Instant) {
-    if let Some(model::Focus::Machine(name)) = model.selection(now).filter(|_| whole_project) {
-        let text = model
-            .projects
-            .machine_label(&name)
-            .unwrap_or_default()
-            .to_string();
-        model.naming = Some(model::Naming {
-            what: model::Renaming::Machine(name),
-            text,
-        });
-        return;
-    }
-    let Some(agent) = model.selected_agent(now) else {
-        return model.flash("select a session to change its project".into(), false, now);
+fn start_labelling(model: &mut Model, now: Instant) {
+    let Some(model::Focus::Machine(machine)) = model.selection(now) else {
+        return model.flash("select a machine to label it".into(), false, now);
     };
-    let repo = agent.session.project.clone();
-    let (key, name) = model.project_of(&repo, now);
-    model.naming = Some(if whole_project {
-        model::Naming {
-            what: model::Renaming::Project {
-                key,
-                name: name.clone(),
-            },
-            text: name,
-        }
-    } else {
-        model::Naming {
-            what: model::Renaming::Repo(repo),
-            text: String::new(),
-        }
-    });
+    let text = model
+        .labels
+        .machine_label(&machine)
+        .unwrap_or_default()
+        .to_string();
+    model.naming = Some(model::Naming { machine, text });
 }
 
 fn edit_naming(model: &mut Model, mut naming: model::Naming, key: Key, now: Instant) {
@@ -583,12 +463,6 @@ fn edit_naming(model: &mut Model, mut naming: model::Naming, key: Key, now: Inst
             let last = naming.text.grapheme_indices(true).next_back();
             naming.text.truncate(last.map_or(0, |(start, _)| start));
         }
-        Key::Tab => {
-            let names = model.project_names(now);
-            if let Some(name) = naming.completion(&names) {
-                naming.text = name.to_string();
-            }
-        }
         Key::Escape | Key::Interrupt => return,
         Key::Enter => return apply_naming(model, naming, now),
         _ => {}
@@ -597,40 +471,20 @@ fn edit_naming(model: &mut Model, mut naming: model::Naming, key: Key, now: Inst
 }
 
 fn apply_naming(model: &mut Model, naming: model::Naming, now: Instant) {
-    let name = projects::clean(&naming.text);
-    let (saved, said) = match naming.what {
-        model::Renaming::Machine(machine) => (
-            model.projects.label_machine(&machine, &name),
-            if name.is_empty() {
-                format!("{machine} shows its own name again")
-            } else {
-                format!("{machine} is now labelled {name}")
-            },
-        ),
-        model::Renaming::Repo(repo) => (
-            model.projects.move_repo(&repo, &name),
-            if name.is_empty() {
-                format!("{repo} is grouped automatically again")
-            } else {
-                format!("Moved {repo} to {name}")
-            },
-        ),
-        model::Renaming::Project { key, name: old } => (
-            model.projects.rename(&key, &name),
-            if name.is_empty() {
-                format!("{old} is grouped automatically again")
-            } else {
-                format!("Renamed {old} to {name}")
-            },
-        ),
-    };
-    match saved {
-        Ok(()) => model.flash(said, true, now),
-        Err(error) => model.flash(format!("couldn't save projects: {error}"), false, now),
+    let machine = naming.machine;
+    match model.labels.label_machine(&machine, &naming.text) {
+        Ok(()) => {
+            let said = match model.labels.machine_label(&machine) {
+                Some(label) => format!("{machine} is now labelled {label}"),
+                None => format!("{machine} shows its own name again"),
+            };
+            model.flash(said, true, now);
+        }
+        Err(error) => model.flash(format!("couldn't save the labels: {error}"), false, now),
     }
 }
 
-fn ask_to_show(model: &mut Model, links: &Links, what: proto::Showing, now: Instant) {
+fn ask_for_diff(model: &mut Model, links: &Links, now: Instant) {
     let found = match model.selection(now) {
         Some(model::Focus::Agent(id)) => model
             .agents(now)
@@ -648,20 +502,16 @@ fn ask_to_show(model: &mut Model, links: &Links, what: proto::Showing, now: Inst
     let Some((endpoint, session, title)) = found else {
         return model.flash("select a session first".into(), false, now);
     };
-    let what_text = match what {
-        proto::Showing::Diff => "changes",
-        proto::Showing::Outputs => "outputs",
-    };
-    let request = proto::Request::Show { session, what };
+    let request = proto::Request::Diff { session };
     match links.request(endpoint, &request) {
-        Ok(()) => model.flash(format!("Getting {title}'s {what_text}…"), true, now),
+        Ok(()) => model.flash(format!("Getting {title}'s changes…"), true, now),
         Err(error) => model.flash(format!("couldn't ask for it: {error}"), false, now),
     }
 }
 
 fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instant) {
-    let body = match shown.body {
-        Ok(body) => body,
+    let diff = match shown.diff {
+        Ok(diff) => diff,
         Err(reason) => return model.flash(reason, false, now),
     };
     if !links.rex {
@@ -671,38 +521,17 @@ fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instan
         Ok(state) => state.join("popups"),
         Err(error) => return model.flash(format!("couldn't save it to show: {error}"), false, now),
     };
-    let browsed = match &body {
-        proto::Showed::Diff(text) => browse::diff(text, &shown.title, &popups),
-        proto::Showed::Outputs(files) => {
-            browse::outputs(files, &shown.title, &style::palette_env(), &popups)
-        }
-    };
-    let command = match browsed {
+    let title = "Changes";
+    let command = match browse::diff(&diff, title, &popups) {
         Ok(Some(command)) => Ok(command),
-        Ok(None) => match body {
-            proto::Showed::Diff(text) => page_command(&text, &shown.title, true),
-            proto::Showed::Outputs(files) => {
-                let joined: String = files
-                    .iter()
-                    .filter(|file| std::str::from_utf8(&file.bytes).is_ok())
-                    .map(|file| {
-                        format!(
-                            "# {}\n\n{}\n\n",
-                            file.path,
-                            String::from_utf8_lossy(&file.bytes)
-                        )
-                    })
-                    .collect();
-                page_command(&joined, &shown.title, false)
-            }
-        },
+        Ok(None) => page_command(&diff, title, true),
         Err(error) => Err(error),
     };
     let command = match command {
         Ok(command) => command,
         Err(error) => return model.flash(format!("couldn't save it to show: {error}"), false, now),
     };
-    let label = format!("magi: {}", shown.title);
+    let label = format!("magi: {title}");
     let sender = links.sender.clone();
     let _ = thread::Builder::new().name("popup".into()).spawn(move || {
         let _ = sender.send(Event::Opened(rex::float(&label, &command, rex::POPUP)));
@@ -797,21 +626,6 @@ fn adopt(model: &mut Model, links: &Links, now: Instant) {
             model.flash(format!("Continuing {title} in Rex…"), true, now);
         }
         Err(error) => model.flash(format!("couldn't continue it in Rex: {error}"), false, now),
-    }
-}
-
-fn cycle_mode(model: &mut Model, links: &Links, now: Instant) {
-    let Some(agent) = model.selected_agent(now) else {
-        return;
-    };
-    if agent.session.agent != proto::Agent::ClaudeCode || agent.session.pane.is_none() {
-        return;
-    }
-    let request = proto::Request::CycleMode {
-        session: agent.session.id.clone(),
-    };
-    if let Err(error) = links.request(agent.endpoint, &request) {
-        model.flash(format!("couldn't switch its mode: {error}"), false, now);
     }
 }
 
@@ -916,18 +730,17 @@ fn handle_batch(
         }
     }
     model.reselect(Instant::now());
-    ask_namer(model, links);
     refresh_launcher(model, links, Instant::now());
-    share_projects(model, links);
+    share_labels(model, links);
     Ok(Flow::Continue)
 }
 
-fn share_projects(model: &mut Model, links: &Links) {
-    let updated = model.projects.updated_ms();
+fn share_labels(model: &mut Model, links: &Links) {
+    let updated = model.labels.updated_ms();
     if updated <= model.shared_sent {
         return;
     }
-    let request = proto::Request::ShareProjects(model.projects.shared());
+    let request = proto::Request::ShareLabels(model.labels.shared());
     let sent = links
         .handles
         .keys()
@@ -941,62 +754,6 @@ fn share_projects(model: &mut Model, links: &Links) {
         .count();
     if sent > 0 {
         model.shared_sent = updated;
-    }
-}
-
-fn ask_namer(model: &mut Model, links: &Links) {
-    let now = Instant::now();
-    if model.namer_busy {
-        return;
-    }
-    if !model.projects.has_seen_any() {
-        if model.since_start(now) >= LEARN_EXISTING_FOR {
-            let repos = model.repos(now);
-            let _ = model.projects.learn(repos.iter().map(String::as_str));
-        }
-        return;
-    }
-    if model
-        .namer_asked_at
-        .is_some_and(|at| now.duration_since(at) < ASK_NAMER_EVERY)
-    {
-        return;
-    }
-    let Some((asked, request)) = model.naming_request(now) else {
-        return;
-    };
-    model.namer_asked_at = Some(now);
-    let Some(claude) = crate::handoff::find("claude", &crate::handoff::search_dirs()) else {
-        let _ = model.projects.suggest(&asked, BTreeMap::new());
-        return;
-    };
-    let Ok(workdir) = net::state_dir().map(|dir| dir.join("namer")) else {
-        return;
-    };
-    model.namer_busy = true;
-    let sender = links.sender.clone();
-    let _ = thread::Builder::new().name("namer".into()).spawn(move || {
-        let named = namer::ask(&claude, &workdir, &request);
-        let _ = sender.send(Event::Named(asked, named));
-    });
-}
-
-fn named(model: &mut Model, asked: Vec<String>, named: Result<BTreeMap<String, String>, String>) {
-    let now = Instant::now();
-    model.namer_busy = false;
-    let names = named.unwrap_or_default();
-    let said: Vec<String> = names
-        .iter()
-        .filter(|(repo, name)| !repo.eq_ignore_ascii_case(name))
-        .map(|(repo, name)| format!("{repo} in {name}"))
-        .collect();
-    match model.projects.suggest(&asked, names) {
-        Ok(()) if !said.is_empty() => {
-            let text = format!("Grouped {} · P renames", said.join(", "));
-            model.flash(text, true, now);
-        }
-        Ok(()) => {}
-        Err(error) => model.flash(format!("couldn't save projects: {error}"), false, now),
     }
 }
 
@@ -1055,15 +812,11 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Choose(option)) => choose(model, links, option, now),
             Some(Action::New) => open_launcher(model, links, now),
             Some(Action::Stop) => stop(model, links, now),
-            Some(Action::Mode) => cycle_mode(model, links, now),
             Some(Action::Adopt) => adopt(model, links, now),
-            Some(Action::Project) => start_naming(model, false, now),
-            Some(Action::RenameProject) => start_naming(model, true, now),
-            Some(Action::Diff) => ask_to_show(model, links, proto::Showing::Diff, now),
-            Some(Action::Outputs) => ask_to_show(model, links, proto::Showing::Outputs, now),
+            Some(Action::Label) => start_labelling(model, now),
+            Some(Action::Diff) => ask_for_diff(model, links, now),
             None => {}
         },
-        Event::Named(asked, result) => named(model, asked, result),
         Event::Launched(id, choice) => {
             if links.launch.as_ref().is_some_and(|host| host.id == id) {
                 links.launch = None;
@@ -1257,6 +1010,7 @@ mod tests {
             activity: None,
             mode: None,
             queued: None,
+            remote: None,
         };
         let sample = Sample {
             sessions: vec![session],
@@ -1318,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_shows_what_is_queued_for_it_and_shift_tab_asks_to_switch_its_mode() {
+    fn a_session_shows_its_mode_and_what_is_queued_and_magi_leaves_the_mode_alone() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         let mut session = in_rex(claude("s1", 0));
@@ -1329,15 +1083,9 @@ mod tests {
         select_first_session(&mut model);
         let shown = screen(&model);
         assert!(shown.contains("plan · queued"), "{shown}");
-        assert!(footer(&model).contains("⇧tab mode"), "{}", footer(&model));
+        assert!(!footer(&model).contains("mode"), "{}", footer(&model));
         handle_batch([key(Key::BackTab)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some((
-                "couldn't switch its mode: that machine isn't connected",
-                false
-            ))
-        );
+        assert_eq!(model.flashed(Instant::now()), None);
     }
 
     #[test]
@@ -1396,6 +1144,7 @@ mod tests {
             activity: None,
             mode: None,
             queued: None,
+            remote: None,
         }
     }
 
@@ -1602,27 +1351,6 @@ mod tests {
         session
     }
 
-    fn groups(model: &Model) -> Vec<(String, Vec<String>)> {
-        let now = Instant::now();
-        let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-        for agent in model.agents(now) {
-            let (_, name) = model.project_of(&agent.session.project, now);
-            groups
-                .entry(name)
-                .or_default()
-                .push(agent.session.id.clone());
-        }
-        let mut groups: Vec<(String, Vec<String>)> = groups
-            .into_iter()
-            .map(|(name, mut ids)| {
-                ids.sort();
-                (name, ids)
-            })
-            .collect();
-        groups.sort_by_key(|(name, _)| name.to_lowercase());
-        groups
-    }
-
     fn select_first_session(model: &mut Model) {
         let index = model
             .board(Instant::now())
@@ -1639,46 +1367,6 @@ mod tests {
             .position(|item| *item == model::Focus::Agent(id.into()))
             .unwrap();
         model.selected = index;
-    }
-
-    #[test]
-    fn the_namer_is_asked_only_about_repos_it_has_not_seen_with_their_session_titles() {
-        let (mut model, _links) = fleet();
-        let now = Instant::now();
-        let mut ping = claude("s2", 0);
-        ping.project = "ping".into();
-        ping.title = "two player pong".into();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(claude("s1", 0))),
-            now,
-        );
-        assert!(model.naming_request(now).is_none());
-        model.projects.learn(["api"]).unwrap();
-        model.apply(
-            Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2)),
-            live_sample(1_000, Some(ping)),
-            now,
-        );
-        let (asked, request) = model.naming_request(now).unwrap();
-        assert_eq!(asked, ["ping"]);
-        assert_eq!(
-            serde_json::to_value(&request).unwrap(),
-            serde_json::json!({
-                "projects": [{"name": "api", "repos": ["api"]}],
-                "new": [{"repo": "ping", "sessions": ["two player pong"]}],
-            })
-        );
-        named(
-            &mut model,
-            asked,
-            Ok(BTreeMap::from([("ping".into(), "Network Pong".into())])),
-        );
-        assert!(model.naming_request(now).is_none());
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some(("Grouped ping in Network Pong · P renames", true))
-        );
     }
 
     #[test]
@@ -1700,72 +1388,6 @@ mod tests {
         handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
         let shown = screen(&model);
         assert!(shown.contains("↳ 1"), "{shown}");
-    }
-
-    #[test]
-    fn p_moves_a_repo_to_a_project_and_capital_p_renames_one_onto_another() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let mut docs = claude("s2", 0);
-        docs.project = "api-docs".into();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(claude("s1", 0))),
-            now,
-        );
-        model.apply(
-            Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2)),
-            live_sample(1_000, Some(docs)),
-            now,
-        );
-        let typed = |text: &str| text.chars().map(|c| key(Key::Char(c))).collect::<Vec<_>>();
-        assert_eq!(
-            groups(&model),
-            [("api".into(), vec!["s1".into(), "s2".into()])]
-        );
-
-        select(&mut model, "s2");
-        let mut keys = vec![key(Key::Char('p'))];
-        keys.extend(typed("Docs"));
-        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
-        assert!(screen(&model).contains("Move api-docs to project › Docs▏"));
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(
-            groups(&model),
-            [
-                ("api".into(), vec!["s1".into()]),
-                ("Docs".into(), vec!["s2".into()])
-            ]
-        );
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some(("Moved api-docs to Docs", true))
-        );
-
-        select(&mut model, "s1");
-        let mut keys = vec![key(Key::Char('P'))];
-        keys.extend([Key::Backspace, Key::Backspace, Key::Backspace].map(key));
-        keys.extend(typed("d"));
-        keys.push(key(Key::Tab));
-        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.naming.as_ref().unwrap().text, "Docs");
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(
-            groups(&model),
-            [("Docs".into(), vec!["s1".into(), "s2".into()])]
-        );
-
-        handle_batch(
-            [key(Key::Char('p')), key(Key::Char('x')), key(Key::Escape)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert_eq!(model.naming, None);
-        assert_eq!(
-            groups(&model),
-            [("Docs".into(), vec!["s1".into(), "s2".into()])]
-        );
     }
 
     #[test]
@@ -2092,14 +1714,14 @@ mod tests {
         keys.extend("Studio".chars().map(|c| key(Key::Char(c))));
         keys.push(key(Key::Enter));
         handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.projects.machine_label(&name), Some("Studio"));
+        assert_eq!(model.labels.machine_label(&name), Some("Studio"));
         let shown = screen(&model);
         assert!(shown.contains("Studio"), "{shown}");
         let mut keys = vec![key(Key::Char('P'))];
         keys.extend((0..6).map(|_| key(Key::Backspace)));
         keys.push(key(Key::Enter));
         handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.projects.machine_label(&name), None);
+        assert_eq!(model.labels.machine_label(&name), None);
         assert!(!screen(&model).contains("Studio"));
     }
 
@@ -2137,11 +1759,7 @@ mod tests {
         assert_eq!(selected(&model).as_deref(), Some("b"));
         handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
         handle_batch([key(Key::Char('P'))].into_iter(), &mut model, &mut links).unwrap();
-        let Some(model::Naming {
-            what: model::Renaming::Machine(name),
-            ..
-        }) = model.naming.take()
-        else {
+        let Some(model::Naming { machine: name, .. }) = model.naming.take() else {
             panic!("P on a machine should start labelling it");
         };
         assert!(name.contains("nas"), "{name}");

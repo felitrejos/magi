@@ -4,9 +4,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use super::units;
 use crate::handoff;
-use crate::proto::OutputFile;
 
 const BROWSE: &str = r#"cd "$0" || exit 1
 export MAGI_TOOL="$2" MAGI_PALETTE="$5"
@@ -18,12 +16,8 @@ export MAGI_TOOL="$2" MAGI_PALETTE="$5"
   --bind="$7" < files
 cd / && rm -rf "$0""#;
 const DELTA_PREVIEW: &str = r#""$MAGI_TOOL" --paging=never --width=$FZF_PREVIEW_COLUMNS < {3}"#;
-const MAGI_PREVIEW: &str = r#""$MAGI_TOOL" md --width $FZF_PREVIEW_COLUMNS {3}"#;
 const NEW_FILE: &str = "new file, not yet added: ";
 const PICK: &str = "↑↓ pick a file · esc close";
-const PICK_AND_OPEN: &str = "↑↓ pick a file · ↵ open it · esc close";
-const OPENERS: [&str; 2] = ["open", "xdg-open"];
-const TEXT: [&str; 8] = ["md", "markdown", "mdx", "txt", "rst", "html", "csv", "svg"];
 
 #[derive(Debug, PartialEq)]
 struct Section {
@@ -117,88 +111,8 @@ pub fn diff(diff: &str, title: &str, popups: &Path) -> io::Result<Option<Vec<Str
     browser.open(entries, &header, popups).map(Some)
 }
 
-pub fn outputs(
-    outputs: &[OutputFile],
-    title: &str,
-    palette: &str,
-    popups: &Path,
-) -> io::Result<Option<Vec<String>>> {
-    let Some(fzf) = handoff::find("fzf", &handoff::search_dirs()) else {
-        return Ok(None);
-    };
-    let magi = std::env::current_exe()?;
-    let dirs = handoff::search_dirs();
-    let opener = OPENERS.iter().find_map(|name| handoff::find(name, &dirs));
-    let entries = outputs
-        .iter()
-        .enumerate()
-        .map(|(index, output)| {
-            let extension = Path::new(&output.path)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .filter(|extension| extension.chars().all(|c| c.is_ascii_alphanumeric()))
-                .unwrap_or("md")
-                .to_ascii_lowercase();
-            let missing = output.bytes.is_empty() && output.size > 0;
-            Entry {
-                left: format!("\x1b[2m{:>9}\x1b[0m", measure(output, &extension)),
-                label: output.path.clone(),
-                file: if missing {
-                    format!("{index}.txt")
-                } else {
-                    format!("{index}.{extension}")
-                },
-                text: if missing {
-                    format!(
-                        "{} is {}, too large to bring over to show here.\n",
-                        output.path,
-                        units::bytes(output.size)
-                    )
-                    .into_bytes()
-                } else {
-                    output.bytes.clone()
-                },
-            }
-        })
-        .collect();
-    let browser = Browser {
-        fzf: &fzf,
-        tool: &magi,
-        preview: MAGI_PREVIEW,
-        palette,
-        footer: if opener.is_some() {
-            PICK_AND_OPEN
-        } else {
-            PICK
-        },
-        enter: opener.map_or_else(
-            || "enter:ignore".into(),
-            |opener| format!("enter:execute-silent('{}' {{3}})", opener.display()),
-        ),
-    };
-    let header = format!("{title} · {}", files(outputs.len()));
-    browser.open(entries, &header, popups).map(Some)
-}
-
 fn files(count: usize) -> String {
     format!("{count} {}", if count == 1 { "file" } else { "files" })
-}
-
-fn measure(output: &OutputFile, extension: &str) -> String {
-    if TEXT.contains(&extension) {
-        lines(&String::from_utf8_lossy(&output.bytes))
-    } else {
-        units::bytes(output.size)
-    }
-}
-
-fn lines(text: &str) -> String {
-    let count = text.lines().count();
-    if count == 1 {
-        "1 line".into()
-    } else {
-        format!("{count} lines")
-    }
 }
 
 struct Browser<'a> {
@@ -281,47 +195,6 @@ mod tests {
         assert!(found[0].text.starts_with("diff --git a/src/a.rs"));
         assert!(!found[0].text.contains("b.md"));
         assert_eq!(found[2].text, "new file, not yet added: notes.txt\n");
-    }
-
-    #[test]
-    fn outputs_list_each_document_by_its_path_and_preview_it_with_magi() {
-        let popups = std::env::temp_dir().join(format!("magi-outputs-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&popups);
-        let files = [
-            OutputFile {
-                path: "Plan".into(),
-                bytes: b"1. Ship it".to_vec(),
-                size: 10,
-            },
-            OutputFile {
-                path: "docs/notes.txt".into(),
-                bytes: b"a\nb".to_vec(),
-                size: 3,
-            },
-            OutputFile {
-                path: "shots/big.png".into(),
-                bytes: Vec::new(),
-                size: 3 << 20,
-            },
-        ];
-        let Some(command) = outputs(&files, "Outputs", "palette", &popups).unwrap() else {
-            return;
-        };
-        let dir = PathBuf::from(&command[3]);
-        assert_eq!(command[4], "Outputs · 3 files");
-        assert_eq!(command[7], MAGI_PREVIEW);
-        assert_eq!(command[8], "palette");
-        let list = fs::read_to_string(dir.join("files")).unwrap();
-        assert!(list.contains("1 line\x1b[0m\tPlan\t0.md\n"), "{list:?}");
-        assert!(list.contains("\tdocs/notes.txt\t1.txt\n"), "{list:?}");
-        assert_eq!(fs::read_to_string(dir.join("1.txt")).unwrap(), "a\nb");
-        assert!(list.contains("\tshots/big.png\t2.txt\n"), "{list:?}");
-        assert!(
-            fs::read_to_string(dir.join("2.txt"))
-                .unwrap()
-                .contains("too large")
-        );
-        fs::remove_dir_all(popups).unwrap();
     }
 
     #[test]

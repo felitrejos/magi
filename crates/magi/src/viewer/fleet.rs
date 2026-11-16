@@ -88,6 +88,7 @@ pub(super) fn session(session: &AgentSession) -> Value {
         "mode": session.mode.map(PermissionMode::name),
         "queued": session.queued,
         "in_rex": session.pane.is_some(),
+        "remote_url": session.remote_url(),
         "subagents": session.children.iter().map(|child| json!({
             "id": child.id,
             "label": child.label,
@@ -242,12 +243,14 @@ mod tests {
             activity: None,
             mode: None,
             queued: None,
+            remote: None,
         };
         assert_eq!(
             session(&busy),
             json!({"id": "c1", "agent": "codex", "title": "run the tests", "project": "api",
                    "branch": null, "state": "working", "asking": null, "activity": null,
-                   "mode": null, "queued": null, "in_rex": false, "subagents": [],
+                   "mode": null, "queued": null, "in_rex": false, "remote_url": null,
+                   "subagents": [],
                    "cpu": 2.5, "memory": 1u64 << 30})
         );
         let asking = AgentSession {
@@ -257,6 +260,14 @@ mod tests {
         };
         assert_eq!(session(&asking)["asking"], json!({"permission": "Bash"}));
         assert_eq!(session(&asking)["mode"], json!("plan"));
+        let remote = AgentSession {
+            remote: Some("session_01abc".into()),
+            ..busy.clone()
+        };
+        assert_eq!(
+            session(&remote)["remote_url"],
+            json!("https://claude.ai/code/session_01abc")
+        );
         let unmeasured = AgentSession {
             usage: None,
             ..busy

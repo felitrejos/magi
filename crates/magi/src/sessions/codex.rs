@@ -459,6 +459,7 @@ fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<Agent
         activity: None,
         mode: None,
         queued: None,
+        remote: None,
     })
 }
 

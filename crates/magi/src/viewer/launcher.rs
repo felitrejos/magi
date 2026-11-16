@@ -62,7 +62,6 @@ pub struct Folder {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Choice {
     pub machine: String,
-    pub project: Option<String>,
     pub dir: String,
     pub chat: bool,
     pub codex: bool,
@@ -281,7 +280,6 @@ impl Launcher {
         let pick = self.pick();
         Some(Choice {
             machine: self.menu.machines[folder.machine].name.clone(),
-            project: (!project.chat).then(|| project.name.clone()),
             dir: folder.dir.clone(),
             chat: project.chat,
             codex: pick.codex,
@@ -635,7 +633,6 @@ mod tests {
             launcher.key(Key::Enter),
             Outcome::Start(Choice {
                 machine: "mac".into(),
-                project: Some("magi".into()),
                 dir: "/home/me/0/magi".into(),
                 chat: false,
                 codex: true,
@@ -690,7 +687,6 @@ mod tests {
         let menu = menu();
         let choice = |machine: &str, dir: &str, codex: bool, model: Option<&str>| Choice {
             machine: machine.into(),
-            project: None,
             dir: dir.into(),
             chat: false,
             codex,
@@ -744,7 +740,6 @@ mod tests {
         assert_eq!(second.machines[0].cpu, 0.9);
         let choice = Choice {
             machine: "homelab".into(),
-            project: Some("Stampr".into()),
             dir: "/home/me/1/stampr".into(),
             chat: false,
             codex: false,

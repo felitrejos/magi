@@ -8,12 +8,11 @@ use serde_json::{Value, json};
 use super::client::{Answer, Client};
 use super::{alerts, cli, fleet};
 use crate::log;
-use crate::proto::{Content, OpenIn, PermissionMode, Request, Said, Showed, Showing};
+use crate::proto::{Content, OpenIn, Request, Said};
 
 const PROTOCOLS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const PUMP_EVERY: Duration = Duration::from_millis(100);
 const ANSWER_WITHIN: Duration = Duration::from_secs(15);
-const START_WITHIN: Duration = Duration::from_secs(90);
 const SHOWN_WITHIN: Duration = Duration::from_secs(30);
 const RECENT_ITEMS: usize = 20;
 const MAX_RECENT_ITEMS: usize = 200;
@@ -22,7 +21,7 @@ const INSTRUCTIONS: &str = "magi sees every Claude Code and Codex session on the
 (those running a magi agent on their tailnet), with each machine's load and the user's plan \
 limits. Use machines and sessions to look, recent_work and diff to see what a session did, and \
 alerts for what needs the user. Actions type into the user's live sessions: say what you'll do \
-and let the user decide before send_message, answer_permission, choose_option, set_mode, \
+and let the user decide before send_message, answer_permission, choose_option, \
 move_session or start_session.";
 
 pub fn run(port: u16) -> io::Result<()> {
@@ -173,13 +172,6 @@ fn tools() -> Vec<Value> {
             false,
         ),
         tool(
-            "set_mode",
-            "Switch a Claude Code session's permission mode",
-            json!({"session": session, "mode": {"type": "string", "enum": ["manual", "accept-edits", "plan", "auto"]}}),
-            &["session", "mode"],
-            false,
-        ),
-        tool(
             "move_session",
             "Move a Claude Code session, with its conversation and uncommitted work, to another machine once its turn ends",
             json!({"session": session, "machine": {"type": "string"}}),
@@ -188,12 +180,11 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "start_session",
-            "Start a Claude Code or Codex session on a machine, in its project's Rex tab with Remote Control on",
+            "Start a Claude Code or Codex session on a machine, in a Rex tab for its folder, with Remote Control on",
             json!({
                 "machine": {"type": "string"},
                 "folder": {"type": "string", "description": "A project folder on that machine; leave out with chat"},
                 "chat": {"type": "boolean", "description": "Start a chat in ~/Chats instead of a project"},
-                "project": {"type": "string", "description": "The project's name, for its Rex session"},
                 "codex": {"type": "boolean"},
                 "model": {"type": "string"},
             }),
@@ -261,16 +252,6 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
                 .ok_or("choose_option needs an option from 1 to 9")?;
             cli::choose(client, &text("session")?, option)
         }
-        "set_mode" => {
-            let mode = match text("mode")?.as_str() {
-                "manual" => PermissionMode::Manual,
-                "accept-edits" => PermissionMode::AcceptEdits,
-                "plan" => PermissionMode::Plan,
-                "auto" => PermissionMode::Auto,
-                other => return Err(format!("{other:?} isn't a mode")),
-            };
-            cli::mode(client, &text("session")?, Some(mode))
-        }
         "move_session" => {
             let found = client.session(&text("session")?)?;
             let to = client.machine(&text("machine")?)?;
@@ -281,10 +262,7 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
             client.ask(found.endpoint, &request, ANSWER_WITHIN)
         }
         "start_session" => {
-            let machine = client.machine(&text("machine")?)?;
-            let endpoint = client
-                .endpoint(&machine)
-                .ok_or("that machine isn't connected")?;
+            let machine = text("machine")?;
             let place = if arguments["chat"].as_bool() == Some(true) {
                 OpenIn::Chats
             } else {
@@ -292,11 +270,10 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
             };
             let request = Request::Open {
                 place,
-                project: arguments["project"].as_str().map(str::to_string),
                 codex: arguments["codex"].as_bool() == Some(true),
                 model: arguments["model"].as_str().map(str::to_string),
             };
-            client.ask(endpoint, &request, START_WITHIN)
+            cli::start(client, &machine, request)
         }
         _ => Err(format!("magi has no tool {name}")),
     }
@@ -376,19 +353,18 @@ fn diff(client: &mut Client, query: &str) -> Result<String, String> {
     let id = found.session.id.clone();
     client.send(
         found.endpoint,
-        &Request::Show {
+        &Request::Diff {
             session: id.clone(),
-            what: Showing::Diff,
         },
     )?;
     let shown = client.answer(found.endpoint, SHOWN_WITHIN, |answer| match answer {
-        Answer::Shown(shown) if shown.session == id => Some(shown.body),
+        Answer::Shown(shown) if shown.session == id => Some(shown.diff),
         _ => None,
     })??;
-    match shown {
-        Showed::Diff(text) if text.trim().is_empty() => Ok("No uncommitted changes".into()),
-        Showed::Diff(text) => Ok(clip(&text)),
-        Showed::Outputs(_) => Err("the agent sent outputs instead of a diff".into()),
+    if shown.trim().is_empty() {
+        Ok("No uncommitted changes".into())
+    } else {
+        Ok(clip(&shown))
     }
 }
 

@@ -98,18 +98,3 @@ func TestAProjectReachedThroughASymlinkedRootKeepsItsGroup(t *testing.T) {
 		t.Errorf("group = %q, %v", group, err)
 	}
 }
-
-func TestAProjectNameCanNameItsRexSessionWhenItIsSafe(t *testing.T) {
-	for name, want := range map[string]bool{
-		"Stampr":        true,
-		"Quorum trader": true,
-		"":              false,
-		"-rf":           false,
-		"a/b":           false,
-		"bad\nname":     false,
-	} {
-		if got := validGroup(name); got != want {
-			t.Errorf("validGroup(%q) = %v, want %v", name, got, want)
-		}
-	}
-}

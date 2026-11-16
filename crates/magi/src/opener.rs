@@ -50,12 +50,7 @@ impl Drop for Opening {
     }
 }
 
-pub fn open(
-    place: &OpenIn,
-    project: Option<&str>,
-    codex: bool,
-    model: Option<&str>,
-) -> Result<String, String> {
+pub fn open(place: &OpenIn, codex: bool, model: Option<&str>) -> Result<String, String> {
     if let OpenIn::Folder(dir) = place {
         check(dir)?;
     }
@@ -69,9 +64,6 @@ pub fn open(
     }
     if let Some(model) = model {
         args.extend(["--model", model]);
-    }
-    if let (Some(project), OpenIn::Folder(_)) = (project, place) {
-        args.extend(["--group", project]);
     }
     match place {
         OpenIn::Folder(dir) => args.push(dir),

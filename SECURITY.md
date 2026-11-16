@@ -38,11 +38,6 @@
   renews it, so Claude Code's own sign-in is left as it was. The token goes
   to `curl` on its standard input, never on a command line, and is not kept,
   logged or sent anywhere else; only the percentages and reset times are.
-- When a repo the viewer hasn't seen before shows up, the viewer asks Claude
-  (Haiku, through `claude -p` with no tools, no MCP servers and no saved
-  session) which project it belongs to. It sends only repo names, project
-  names and up to three of the new repo's session titles, once per repo; the
-  repos already there when it first ran are never sent.
 - When no Codex session has reported its usage limits in the last five
   minutes, the agent asks Codex itself, at most every five minutes: it runs
   `codex app-server` and sends only the `account/rateLimits/read` request,
@@ -75,19 +70,15 @@
   viewer saw: same tool, waiting as long. Messages and answers to one
   machine are typed one at a time. Since a message can ask the agent to do
   anything, only viewers signed in as you can send one, like everything else.
-- `d` and `v` ask the agent for a session's changes (`git diff HEAD` and the
-  names of new files, in the session's own folder, under 1 MB) or its
-  outputs (the last plan it proposed, and the documents it wrote or edited
-  inside its own folder: Markdown, text, HTML, CSV, images and PDFs, at
-  most 40 files and 900 KB, a file over 700 KB listed but not sent). On a
-  Mac, images, PDFs and pages are previewed through Quick Look's own
-  thumbnailer (`qlmanage`), and Enter opens one with `open`. The viewer writes the answer to files only you can read in
+- `d` asks the agent for a session's changes (`git diff HEAD` and the
+  names of new files, in the session's own folder, under 1 MB). The viewer
+  writes the answer to files only you can read in
   `~/.local/state/magi/popups/`, shows them in a Rex floating pane on its
-  own machine (through fzf, delta and `magi md`, which draw only from those
-  files), and the pane deletes them when it closes.
-- Project names, project moves and machine labels you set in a viewer are
-  sent to every agent you're connected to, which keeps the newest set in
-  `~/.local/state/magi/shared-projects.json` (only you can read it) and
+  own machine (through fzf and delta, which draw only from those files),
+  and the pane deletes them when it closes.
+- Machine labels you set in a viewer are sent to every agent you're
+  connected to, which keeps the newest set in
+  `~/.local/state/magi/shared-labels.json` (only you can read it) and
   passes it to your other viewers. Only viewers signed in as you can send
   or receive them, as with everything else.
 - `magi statusline install` edits only `statusLine` in

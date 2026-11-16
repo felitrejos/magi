@@ -69,7 +69,7 @@ pub fn render_detail(
     now: Instant,
     graphics: &mut Graphics,
 ) {
-    let label = model.projects.machine_label(&row.name);
+    let label = model.labels.machine_label(&row.name);
     let orphans = model.orphaned_forwards(&row.name, now);
     let port = model.port;
     if area.height < 4 || area.width < 16 {

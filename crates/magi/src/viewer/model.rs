@@ -3,20 +3,18 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
+use super::labels::Labels;
 use super::launcher::{self, Listing, Menu, Place};
-use super::namer;
-use super::projects::{Projects, Resolved};
 use super::units;
 use crate::proto::{
     self, Agent, AgentSession, CodexModel, FULL, Forward, ForwardState, Identity, Plan, Reply,
-    Sample, SessionState, SharedProjects, Welcome,
+    Sample, SessionState, SharedLabels, Welcome,
 };
 use crate::tailscale::Peer;
 
 pub const HISTORY: usize = 300;
 const SEARCH_GRACE: Duration = Duration::from_secs(8);
 const FLASH_FOR: Duration = Duration::from_secs(5);
-const MAX_NEW_PER_ASK: usize = 20;
 const FOLLOW_FOR: Duration = Duration::from_secs(300);
 const AWAIT_FOR: Duration = Duration::from_secs(60);
 const HEAVY_SESSION_MILLICORES: u32 = 1_000;
@@ -46,7 +44,7 @@ pub enum LinkUpdate {
     Reply(Reply),
     Folders(Vec<String>),
     Models(Vec<CodexModel>),
-    Projects(SharedProjects),
+    Labels(SharedLabels),
     Shown(crate::proto::Shown),
     Screen(crate::proto::Screen),
 }
@@ -307,36 +305,6 @@ pub struct AgentRow<'a> {
     pub live: bool,
 }
 
-type ProjectGroup<'a> = (String, Option<String>, Vec<AgentRow<'a>>);
-
-fn add_to_project<'a>(
-    groups: &mut Vec<ProjectGroup<'a>>,
-    projects: &Projects,
-    agent: AgentRow<'a>,
-) {
-    let Resolved { key, name } = projects.resolve(&agent.session.project);
-    match groups.iter_mut().find(|(known, ..)| *known == key) {
-        Some((_, named, agents)) => {
-            if named.is_none() {
-                *named = name;
-            }
-            agents.push(agent);
-        }
-        None => groups.push((key, name, vec![agent])),
-    }
-}
-
-fn project_name(name: Option<String>, agents: &[AgentRow<'_>]) -> String {
-    name.unwrap_or_else(|| {
-        agents
-            .iter()
-            .map(|agent| agent.session.project.as_str())
-            .min_by_key(|name| (name.len(), *name))
-            .unwrap_or_default()
-            .to_string()
-    })
-}
-
 fn urgency(agent: &AgentRow<'_>) -> (u8, i64) {
     let rank = match agent.session.state {
         SessionState::Waiting(_) => 0,
@@ -355,11 +323,9 @@ pub struct Model {
     pub links: HashMap<Endpoint, Link>,
     pub selected: usize,
     pub port: u16,
-    pub projects: Projects,
+    pub labels: Labels,
     pub naming: Option<Naming>,
-    pub namer_busy: bool,
     pub machine_page: Option<String>,
-    pub namer_asked_at: Option<Instant>,
     pub alerts: Alerts,
     focus: Option<Focus>,
     started: Instant,
@@ -375,29 +341,9 @@ pub struct Model {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Renaming {
-    Machine(String),
-    Repo(String),
-    Project { key: String, name: String },
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Naming {
-    pub what: Renaming,
+    pub machine: String,
     pub text: String,
-}
-
-impl Naming {
-    pub fn completion<'a>(&self, names: &'a [String]) -> Option<&'a str> {
-        if self.text.is_empty() {
-            return None;
-        }
-        let typed = self.text.to_lowercase();
-        names
-            .iter()
-            .find(|name| name.to_lowercase().starts_with(&typed) && name.len() > self.text.len())
-            .map(|name| name.as_str())
-    }
 }
 
 struct Flash {
@@ -521,11 +467,9 @@ impl Model {
             links: HashMap::new(),
             selected: 0,
             port,
-            projects: Projects::default(),
+            labels: Labels::default(),
             naming: None,
-            namer_busy: false,
             machine_page: None,
-            namer_asked_at: None,
             alerts,
             focus: None,
             started: now,
@@ -564,13 +508,13 @@ impl Model {
                 }
                 return;
             }
-            LinkUpdate::Projects(shared) => {
+            LinkUpdate::Labels(shared) => {
                 let updated = shared.updated_ms;
-                match self.projects.adopt(shared) {
+                match self.labels.adopt(shared) {
                     Ok(true) => self.shared_sent = updated,
                     Ok(false) => {}
                     Err(error) => {
-                        self.flash(format!("couldn't save projects: {error}"), false, now)
+                        self.flash(format!("couldn't save the labels: {error}"), false, now)
                     }
                 }
                 return;
@@ -633,7 +577,7 @@ impl Model {
             LinkUpdate::Reply(_)
             | LinkUpdate::Folders(_)
             | LinkUpdate::Models(_)
-            | LinkUpdate::Projects(_)
+            | LinkUpdate::Labels(_)
             | LinkUpdate::Screen(_)
             | LinkUpdate::Shown(_) => {
                 unreachable!("replies, screens and folders are handled before a link is looked up")
@@ -890,98 +834,6 @@ impl Model {
             .find(|agent| agent.session.id == id)
     }
 
-    pub fn since_start(&self, now: Instant) -> Duration {
-        now.duration_since(self.started)
-    }
-
-    pub fn repos(&self, now: Instant) -> Vec<String> {
-        let mut repos: Vec<String> = self
-            .agents(now)
-            .iter()
-            .map(|agent| agent.session.project.clone())
-            .filter(|repo| !repo.is_empty())
-            .collect();
-        repos.sort_by_key(|repo| repo.to_lowercase());
-        repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-        repos
-    }
-
-    pub fn naming_request(&self, now: Instant) -> Option<(Vec<String>, namer::Request)> {
-        let new: Vec<String> = self
-            .repos(now)
-            .into_iter()
-            .filter(|repo| self.projects.is_new(repo))
-            .take(MAX_NEW_PER_ASK)
-            .collect();
-        if new.is_empty() {
-            return None;
-        }
-        let agents = self.agents(now);
-        let mut projects: Vec<ProjectGroup<'_>> = Vec::new();
-        for agent in self
-            .agents(now)
-            .into_iter()
-            .filter(|agent| !new.contains(&agent.session.project))
-        {
-            add_to_project(&mut projects, &self.projects, agent);
-        }
-        let request = namer::Request {
-            projects: projects
-                .into_iter()
-                .map(|(_, name, members)| {
-                    let mut repos: Vec<String> = members
-                        .iter()
-                        .map(|agent| agent.session.project.clone())
-                        .collect();
-                    repos.dedup();
-                    namer::Project {
-                        name: project_name(name, &members),
-                        repos,
-                    }
-                })
-                .collect(),
-            new: new
-                .iter()
-                .map(|repo| {
-                    let titles = agents
-                        .iter()
-                        .filter(|agent| agent.session.project == *repo)
-                        .map(|agent| agent.session.title.clone());
-                    namer::new_repo(repo, titles)
-                })
-                .collect(),
-        };
-        Some((new, request))
-    }
-
-    pub fn project_names(&self, now: Instant) -> Vec<String> {
-        let mut groups: Vec<ProjectGroup<'_>> = Vec::new();
-        for agent in self.agents(now) {
-            add_to_project(&mut groups, &self.projects, agent);
-        }
-        let mut names: Vec<String> = groups
-            .into_iter()
-            .map(|(_, name, agents)| project_name(name, &agents))
-            .collect();
-        names.sort_by_key(|name| name.to_lowercase());
-        names.dedup();
-        names
-    }
-
-    pub fn project_of(&self, repo: &str, now: Instant) -> (String, String) {
-        let Resolved { key, name } = self.projects.resolve(repo);
-        let name = name.unwrap_or_else(|| {
-            self.agents(now)
-                .iter()
-                .map(|agent| agent.session.project.as_str())
-                .filter(|other| self.projects.resolve(other).key == key)
-                .min_by_key(|name| (name.len(), *name))
-                .unwrap_or(repo)
-                .to_string()
-        });
-        (key, name)
-    }
-
     pub fn board(&self, now: Instant) -> Vec<Focus> {
         let agents = self.agents(now);
         let waiting = |agent: &AgentRow<'_>| {
@@ -1019,7 +871,7 @@ impl Model {
     }
 
     pub fn machine_label(&self, name: &str, names: &[&str]) -> String {
-        self.projects
+        self.labels
             .machine_label(name)
             .map_or_else(|| machine_tag(name, names).to_string(), str::to_string)
     }
@@ -1074,12 +926,11 @@ impl Model {
                 };
                 let Some(project) = menu.projects.iter_mut().find(|project| project.key == key)
                 else {
-                    let (_, group) = self.project_of(repo, now);
                     menu.projects.push(launcher::Project {
                         active: active.contains(&key),
                         recent: recent.contains(&key),
                         chat: false,
-                        group: (group.to_lowercase() != key).then_some(group),
+                        group: None,
                         key,
                         name: repo.to_string(),
                         folders: vec![folder],
@@ -1408,6 +1259,7 @@ mod tests {
             activity: None,
             mode: None,
             queued: None,
+            remote: None,
         };
         let mac = Sample {
             sessions: vec![

@@ -215,12 +215,26 @@ orchestrators: read tools (machines, sessions, a session's recent work,
 diff, alerts, plans) and action tools (message, answer, mode, move, start).
 cielago's MCP stays for work sent from inside a session.
 
-## Phase 13: desktop first
+## Phase 13: desktop first (done)
 
-Sessions magi starts run as named Remote Control sessions in their Rex tabs,
-so the Claude app on desktop or phone can drive them; `start` returns the
-link. Check first that they appear in the desktop app. Sessions the desktop
+Sessions magi starts run as Remote Control sessions in their Rex tabs, named
+`<repo> · <machine>`, and the Claude desktop app lists them and drives them
+(checked: a message sent from the app reached the session in Rex). Every
+session started with Remote Control carries its link: `w` opens it from the
+overview, `magi sessions --json` and MCP list it, and `magi start` and MCP
+`start_session` wait for the new session and return it. Sessions the desktop
 app runs locally stay visible, with `r` to continue them in Rex.
+
+## Phase 14: less in magi, more in the tools
+
+magi stopped doing what the agents and Rex do natively: switching a
+session's permission mode (`⇧tab` and `magi mode`), opening a session's
+Remote Control link (`w`), Outputs (`v` and `magi md`; it only saw files
+written with the agents' own file tools), and projects (moving repos,
+renaming projects, the namer that asked Claude to name them, and sharing
+them). Sessions start in a Rex session named after their folder, as
+cielago always did, and a tab for their repo; machine labels stay. The diff
+stays.
 
 ## Before 0.6.0
 
