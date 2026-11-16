@@ -49,6 +49,7 @@ pub struct Project {
     pub group: Option<String>,
     pub active: bool,
     pub recent: bool,
+    pub chat: bool,
     pub folders: Vec<Folder>,
 }
 
@@ -62,6 +63,7 @@ pub struct Folder {
 pub struct Choice {
     pub machine: String,
     pub dir: String,
+    pub chat: bool,
     pub codex: bool,
     pub model: Option<String>,
 }
@@ -119,6 +121,7 @@ impl Menu {
     pub fn offers(&self, choice: &Choice) -> bool {
         self.projects
             .iter()
+            .filter(|project| project.chat == choice.chat)
             .flat_map(|project| &project.folders)
             .filter(|folder| folder.dir == choice.dir)
             .map(|folder| &self.machines[folder.machine])
@@ -278,6 +281,7 @@ impl Launcher {
         Some(Choice {
             machine: self.menu.machines[folder.machine].name.clone(),
             dir: folder.dir.clone(),
+            chat: project.chat,
             codex: pick.codex,
             model: pick.model,
         })
@@ -353,6 +357,8 @@ impl Launcher {
         });
     }
 }
+
+pub const CHAT_FOLDER: &str = "~/Chats";
 
 pub fn project_part(folder: &str) -> &str {
     ["/Users/", "/home/"]
@@ -555,6 +561,7 @@ mod tests {
             group: None,
             active,
             recent: active,
+            chat: false,
             folders: machines
                 .iter()
                 .map(|machine| Folder {
@@ -627,6 +634,7 @@ mod tests {
             Outcome::Start(Choice {
                 machine: "mac".into(),
                 dir: "/home/me/0/magi".into(),
+                chat: false,
                 codex: true,
                 model: Some("gpt-5.6-terra".into()),
             })
@@ -680,6 +688,7 @@ mod tests {
         let choice = |machine: &str, dir: &str, codex: bool, model: Option<&str>| Choice {
             machine: machine.into(),
             dir: dir.into(),
+            chat: false,
             codex,
             model: model.map(str::to_string),
         };
@@ -691,6 +700,25 @@ mod tests {
         assert!(!menu.offers(&choice("homelab", stampr, true, Some("--yolo"))));
         assert!(!menu.offers(&choice("mac", stampr, false, None)));
         assert!(!menu.offers(&choice("homelab", "/etc", false, None)));
+        let chat = Choice {
+            chat: true,
+            ..choice("homelab", CHAT_FOLDER, false, None)
+        };
+        assert!(!menu.offers(&chat));
+        let mut with_chat = menu.clone();
+        with_chat.projects.push(Project {
+            chat: true,
+            folders: vec![Folder {
+                machine: 1,
+                dir: CHAT_FOLDER.into(),
+            }],
+            ..project("No project", false, &[])
+        });
+        assert!(with_chat.offers(&chat));
+        assert!(!with_chat.offers(&Choice {
+            chat: false,
+            ..chat.clone()
+        }));
     }
 
     #[test]
@@ -713,6 +741,7 @@ mod tests {
         let choice = Choice {
             machine: "homelab".into(),
             dir: "/home/me/1/stampr".into(),
+            chat: false,
             codex: false,
             model: None,
         };

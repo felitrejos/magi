@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 19;
+pub const PROTOCOL_VERSION: u16 = 20;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -202,6 +202,12 @@ pub enum AgentMessage {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum OpenIn {
+    Folder(String),
+    Chats,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct CodexModel {
     pub id: String,
     pub name: String,
@@ -256,7 +262,7 @@ pub enum Request {
     },
     Folders,
     Open {
-        dir: String,
+        place: OpenIn,
         codex: bool,
         model: Option<String>,
     },

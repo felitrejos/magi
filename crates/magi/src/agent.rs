@@ -611,9 +611,13 @@ fn spawn_requests(
                             Err(text) => reply(replies, false, text),
                         });
                     }
-                    Request::Open { dir, codex, model } => {
+                    Request::Open {
+                        place,
+                        codex,
+                        model,
+                    } => {
                         in_background(&replies, move |replies| {
-                            match opener::open(&dir, codex, model.as_deref()) {
+                            match opener::open(&place, codex, model.as_deref()) {
                                 Ok(text) => reply(replies, true, text),
                                 Err(text) => reply(replies, false, text),
                             }

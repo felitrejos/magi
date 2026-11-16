@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use crate::bounded;
 use crate::handoff::{find, search_dirs};
+use crate::proto::OpenIn;
 
 const LIST_LIMIT: Duration = Duration::from_secs(10);
 const OPEN_LIMIT: Duration = Duration::from_secs(40);
@@ -49,8 +50,10 @@ impl Drop for Opening {
     }
 }
 
-pub fn open(dir: &str, codex: bool, model: Option<&str>) -> Result<String, String> {
-    check(dir)?;
+pub fn open(place: &OpenIn, codex: bool, model: Option<&str>) -> Result<String, String> {
+    if let OpenIn::Folder(dir) = place {
+        check(dir)?;
+    }
     if let Some(model) = model.filter(|model| !crate::proto::is_model_name(model)) {
         return Err(format!("{model:?} isn't a model name"));
     }
@@ -62,7 +65,10 @@ pub fn open(dir: &str, codex: bool, model: Option<&str>) -> Result<String, Strin
     if let Some(model) = model {
         args.extend(["--model", model]);
     }
-    args.push(dir);
+    match place {
+        OpenIn::Folder(dir) => args.push(dir),
+        OpenIn::Chats => args.push("--chat"),
+    }
     let output = cielago(&args, OPEN_LIMIT)?;
     report(&output)
 }

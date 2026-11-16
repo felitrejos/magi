@@ -483,7 +483,11 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
         return;
     };
     let request = proto::Request::Open {
-        dir: choice.dir.clone(),
+        place: if choice.chat {
+            proto::OpenIn::Chats
+        } else {
+            proto::OpenIn::Folder(choice.dir.clone())
+        },
         codex: choice.codex,
         model: choice.model.clone(),
     };
@@ -492,7 +496,12 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
             let name = choice.dir.rsplit('/').next().unwrap_or(&choice.dir);
             model.await_session(endpoint, name, now);
             let agent = if choice.codex { "Codex" } else { "Claude" };
-            model.flash(format!("Opening {agent} in {name} on {label}…"), true, now);
+            let said = if choice.chat {
+                format!("Opening a {agent} chat on {label}…")
+            } else {
+                format!("Opening {agent} in {name} on {label}…")
+            };
+            model.flash(said, true, now);
         }
         Err(error) => model.flash(format!("couldn't open it: {error}"), false, now),
     }
@@ -2121,11 +2130,27 @@ mod tests {
             .iter()
             .map(|project| (project.name.as_str(), project.active, project.folders.len()))
             .collect();
-        assert_eq!(projects, [("web", true, 2), ("api", false, 1)]);
-        assert_eq!(menu.projects[0].folders[0].dir, "/home/me/web");
+        assert_eq!(
+            projects,
+            [
+                ("No project", false, 2),
+                ("web", true, 2),
+                ("api", false, 1)
+            ]
+        );
+        assert!(menu.projects[0].chat);
+        assert_eq!(menu.projects[1].folders[0].dir, "/home/me/web");
         model.launcher = Some(launcher::Launcher::new(menu));
         let shown = screen(&model);
-        for text in ["New session", "web", "active", "suggested", "Codex"] {
+        for text in [
+            "New session",
+            "No project",
+            "~/Chats",
+            "web",
+            "active",
+            "suggested",
+            "Codex",
+        ] {
             assert!(shown.contains(text), "missing {text:?}\n{shown}");
         }
         handle_batch(

@@ -50,7 +50,8 @@ to the machine that has room.
   the ones waiting on you on top and their branch and worktree beside them.
   No server or config file.
 - **Start, read and answer.** `c` opens a launcher over magi, as a Rex
-  floating pane: pick a project, the machine (magi suggests the one with the
+  floating pane: pick a project (or No project, for a chat on that machine
+  that starts in `~/Chats`), the machine (magi suggests the one with the
   most room), Claude Code or Codex and its model, and it starts in that project's Rex tab
   and magi selects it. Select a session to read
   its conversation, typeset like a page on a Mac (real type, highlighted code,

@@ -1228,6 +1228,7 @@ impl Model {
                     menu.projects.push(launcher::Project {
                         active: active.contains(&key),
                         recent: recent.contains(&key),
+                        chat: false,
                         group: (group.to_lowercase() != key).then_some(group),
                         key,
                         name: repo.to_string(),
@@ -1246,8 +1247,30 @@ impl Model {
                 }
             }
         }
+        let chat = launcher::Project {
+            key: String::new(),
+            name: "No project".into(),
+            group: Some(format!("a chat in {}", launcher::CHAT_FOLDER)),
+            active: false,
+            recent: false,
+            chat: true,
+            folders: menu
+                .machines
+                .iter()
+                .enumerate()
+                .filter(|(_, place)| place.listing == Listing::Listed)
+                .map(|(machine, _)| launcher::Folder {
+                    machine,
+                    dir: launcher::CHAT_FOLDER.into(),
+                })
+                .collect(),
+        };
+        if !chat.folders.is_empty() {
+            menu.projects.push(chat);
+        }
         menu.projects.sort_by_key(|project| {
             (
+                !project.chat,
                 !project.active,
                 !project.recent,
                 project.name.to_lowercase(),

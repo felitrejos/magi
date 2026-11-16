@@ -15,6 +15,9 @@ import (
 )
 
 const (
+	chatFolder   = "Chats"
+	chatGroup    = "chats"
+	chatName     = "chat"
 	openLimit    = 30 * time.Second
 	listDepth    = 2
 	listMaxFound = 200
@@ -27,7 +30,7 @@ type openReport struct {
 }
 
 func openCommand(args []string, out io.Writer) error {
-	asJSON, codex, list := false, false, false
+	asJSON, codex, list, chat := false, false, false, false
 	resume, model := "", ""
 	var rest []string
 	for i := 0; i < len(args); i++ {
@@ -38,6 +41,8 @@ func openCommand(args []string, out io.Writer) error {
 			codex = true
 		case "--list":
 			list = true
+		case "--chat":
+			chat = true
 		case "--resume":
 			if i+1 >= len(args) {
 				return errors.New("--resume needs a session id")
@@ -78,7 +83,7 @@ func openCommand(args []string, out io.Writer) error {
 		return fail(err)
 	}
 	if list {
-		if len(rest) != 0 || resume != "" || codex || model != "" {
+		if len(rest) != 0 || resume != "" || codex || model != "" || chat {
 			return fail(errors.New("--list takes no folder"))
 		}
 		folders, err := knownProjects(roots)
@@ -91,8 +96,21 @@ func openCommand(args []string, out io.Writer) error {
 		_, err = fmt.Fprintln(out, strings.Join(folders, "\n"))
 		return err
 	}
+	if chat {
+		if len(rest) != 0 || resume != "" {
+			return fail(errors.New("--chat starts in its own folder and continues nothing"))
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fail(err)
+		}
+		rest = []string{filepath.Join(home, chatFolder)}
+		if err := os.MkdirAll(rest[0], 0o755); err != nil {
+			return fail(err)
+		}
+	}
 	if len(rest) != 1 {
-		return fail(errors.New("usage: cielago open <folder> [--codex] [--model <model> | --resume <session-id>] [--json], or cielago open --list [--json]"))
+		return fail(errors.New("usage: cielago open <folder> [--codex] [--model <model> | --resume <session-id>] [--json], cielago open --chat [--codex] [--model <model>] [--json], or cielago open --list [--json]"))
 	}
 	if resume != "" && (codex || !sessionIDPattern.MatchString(resume)) {
 		return fail(fmt.Errorf("%q is not a Claude session id to continue", resume))
@@ -107,15 +125,17 @@ func openCommand(args []string, out io.Writer) error {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return fail(fmt.Errorf("%s isn't a folder on this machine", dir))
 	}
-	root := projectRoot(ctx, dir)
-	if resume == "" && !inProjectFolders(root, roots) {
-		return fail(fmt.Errorf("%s isn't in one of this machine's project folders", root))
+	root, group, name := dir, chatGroup, chatName
+	if !chat {
+		root = projectRoot(ctx, dir)
+		if resume == "" && !inProjectFolders(root, roots) {
+			return fail(fmt.Errorf("%s isn't in one of this machine's project folders", root))
+		}
+		if group, err = localGroup(root, roots); err != nil {
+			return fail(err)
+		}
+		name = baseName(root)
 	}
-	group, err := localGroup(root, roots)
-	if err != nil {
-		return fail(err)
-	}
-	name := baseName(root)
 	if name == "" || name == "." || name == "/" || strings.HasPrefix(name, "-") {
 		return fail(fmt.Errorf("%q can't name a session", name))
 	}

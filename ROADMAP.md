@@ -51,7 +51,8 @@ Done:
   using the machine (with the session each process belongs to); CPU
   temperature on Linux and on the Mac (through its HID sensors).
 - **The launcher:** `c` opens a Rex floating pane like a modal: pick a
-  project (active and recent ones first), the machine (magi suggests the
+  project (active and recent ones first, or No project for a chat in
+  `~/Chats` in its own `chats` Rex session), the machine (magi suggests the
   least busy one with room, with its reason), Claude or Codex and the
   model (Claude's aliases, or the models that machine's Codex lists); it starts
   the session, closes itself and magi selects the new session.
