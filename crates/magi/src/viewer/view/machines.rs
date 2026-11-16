@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
@@ -7,7 +6,7 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{Composed, Cursor, Mark, body, clip, draw_panel, panel, selected_style, truncate};
+use super::{Cursor, body, clip, draw_panel, panel, truncate};
 use crate::proto::{CoreKind, FULL};
 use crate::viewer::graphics::{Chart, Graphics, Kind, Series};
 use crate::viewer::model::{
@@ -17,7 +16,6 @@ use crate::viewer::style::{self, theme};
 use crate::viewer::units;
 use unicode_width::UnicodeWidthStr;
 
-const SIDEBAR_BAR: usize = 3;
 const TWO_COLUMNS: u16 = 70;
 const TILE_GAP: u16 = 3;
 const ROW_GAP: u16 = 1;
@@ -28,108 +26,6 @@ const CORE_PERCENT: u16 = 4;
 const CORE_LABEL: u16 = 3;
 const MAX_FILESYSTEMS: usize = 3;
 const FS_PERCENT: usize = 4;
-const ICON_WIDTH: u16 = 2;
-const ICON_GAP: &str = "   ";
-const SIDEBAR_GAUGE: usize = SIDEBAR_BAR + 5;
-
-pub fn render_list(
-    frame: &mut Frame,
-    area: Rect,
-    model: &Model,
-    rows: &[Row<'_>],
-    marks: &HashMap<String, Mark>,
-    now: Instant,
-    graphics: &mut Graphics,
-) {
-    if area.height == 0 {
-        return;
-    }
-    let width = area.width as usize;
-    let visible = area.height as usize;
-    let first = if model.selected < rows.len() {
-        model.selected.saturating_sub(visible - 1)
-    } else {
-        0
-    };
-    let name_width = rows
-        .iter()
-        .map(|row| {
-            marks
-                .get(&row.name)
-                .map_or(row.name.width(), |mark| mark.tag.width())
-        })
-        .max()
-        .unwrap_or(0)
-        .clamp(6, width.saturating_sub(SIDEBAR_GAUGE + 5).max(6));
-    let icons = graphics.has_pixels();
-    let mut cursor = Cursor::new(area);
-    for (index, row) in rows.iter().enumerate().skip(first).take(visible) {
-        let selected = index == model.selected;
-        let name_style = if selected {
-            style::bold(theme().text)
-        } else {
-            style::fg(theme().text)
-        };
-        let live = row
-            .machine()
-            .filter(|_| row.state() == Some(&LinkState::Live))
-            .and_then(|machine| machine.latest.as_ref().map(|_| machine));
-        let line = Composed::of(vec![
-            Span::raw(" "),
-            Span::raw(if icons { ICON_GAP } else { "" }),
-            Span::styled(
-                truncate(
-                    marks
-                        .get(&row.name)
-                        .map_or(row.name.as_str(), |mark| mark.tag.as_str()),
-                    name_width,
-                ),
-                name_style,
-            ),
-        ]);
-        let room = width.saturating_sub(name_width + 2);
-        let right = match live {
-            Some(machine) => sidebar_gauge(machine, index),
-            None => Composed::of(vec![status_span(row, model.port, now, room)]),
-        };
-        let at = cursor.row();
-        line.spread(right, width)
-            .draw(frame, graphics, at, selected_style(selected));
-        if let Some(mark) = marks.get(&row.name).filter(|_| icons) {
-            graphics.icon(
-                frame.buffer_mut(),
-                Rect::new(at.x + 1, at.y, ICON_WIDTH, 1),
-                format!("mark:{}", row.name),
-                &mark.symbols,
-                if selected { theme().text } else { theme().dim },
-            );
-        }
-        cursor.skip();
-    }
-}
-
-fn sidebar_gauge(machine: &Machine, index: usize) -> Composed {
-    let cpu = machine.smoothed_cpu();
-    let memory = machine.memory_fraction();
-    let mut gauge = Composed::default();
-    if model::grade(Subsystem::Memory, memory) != Level::Normal {
-        gauge.push(Span::styled(
-            format!("mem {}  ", units::percent(memory).trim()),
-            style::fg(level_text(memory, Subsystem::Memory)),
-        ));
-    }
-    gauge.bar(
-        SIDEBAR_BAR,
-        cpu,
-        style::level(model::grade(Subsystem::Cpu, cpu)),
-        format!("sidebar:cpu:{index}"),
-    );
-    gauge.push(Span::styled(
-        format!(" {:>4}", units::percent(cpu).trim()),
-        style::fg(level_text(cpu, Subsystem::Cpu)),
-    ));
-    gauge
-}
 
 fn level_text(value: f32, subsystem: Subsystem) -> Color {
     match model::grade(subsystem, value) {

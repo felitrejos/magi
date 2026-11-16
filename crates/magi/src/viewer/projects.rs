@@ -23,11 +23,7 @@ pub struct Projects {
     #[serde(default)]
     known: Option<BTreeSet<String>>,
     #[serde(default)]
-    folded: BTreeSet<String>,
-    #[serde(default)]
     machines: BTreeMap<String, String>,
-    #[serde(default)]
-    zen: bool,
     #[serde(default)]
     updated_ms: u64,
     #[serde(skip)]
@@ -95,17 +91,6 @@ impl Projects {
         }
     }
 
-    pub fn is_folded(&self, key: &str) -> bool {
-        self.folded.contains(key)
-    }
-
-    pub fn toggle_fold(&mut self, key: &str) -> io::Result<()> {
-        if !self.folded.remove(key) {
-            self.folded.insert(key.to_string());
-        }
-        self.save()
-    }
-
     pub fn has_seen_any(&self) -> bool {
         self.known.is_some()
     }
@@ -160,15 +145,6 @@ impl Projects {
         }
         self.groups.insert(key.to_string(), name);
         self.changed()
-    }
-
-    pub fn zen(&self) -> bool {
-        self.zen
-    }
-
-    pub fn set_zen(&mut self, zen: bool) -> io::Result<()> {
-        self.zen = zen;
-        self.save()
     }
 
     pub fn machine_label(&self, machine: &str) -> Option<&str> {
@@ -330,7 +306,6 @@ mod tests {
     fn an_edit_is_stamped_to_share_and_only_a_newer_shared_set_replaces_ours() {
         let mut projects = Projects::default();
         projects.move_repo("ping", "Games").unwrap();
-        projects.set_zen(true).unwrap();
         let mine = projects.shared();
         assert!(mine.updated_ms > 0);
         assert_eq!(mine.repos.get("ping").map(String::as_str), Some("Games"));
@@ -347,7 +322,6 @@ mod tests {
         assert!(projects.adopt(newer).unwrap());
         assert_eq!(projects.machine_label("homelab"), Some("Server"));
         assert_eq!(resolved(&projects, "ping"), ("ping".into(), None));
-        assert!(projects.zen());
         let mut flood = projects.shared();
         flood.updated_ms += 10;
         flood.repos = (0..=MAX_SHARED)

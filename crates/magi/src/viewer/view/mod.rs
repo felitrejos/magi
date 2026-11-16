@@ -1,89 +1,27 @@
 mod agents;
+mod bands;
 pub(super) mod launcher;
 mod machines;
 pub(super) mod markdown;
-mod zen;
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
-use super::model::{AgentRow, Focus, Model, Naming, Renaming, Row};
+use super::model::{Focus, Model, Naming, Renaming, Row};
 use super::style::{self, theme};
 use super::units;
-use crate::proto::{Agent, FULL, Plan, SessionState};
+use crate::proto::{Agent, FULL, Plan, SessionState, Waiting};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const WIDE: u16 = 90;
 const STALE_PLAN_SECS: u64 = 15 * 60;
-const SIDEBAR_SHARE: u32 = 22;
-const SIDEBAR_MIN: u16 = 24;
-const SIDEBAR_MAX: u16 = 30;
-
-pub struct Areas {
-    pub machines: Rect,
-    pub plans: Rect,
-    pub agents: Rect,
-    pub rules: [Rect; 2],
-    pub detail: Rect,
-    pub footer: Rect,
-}
-
-pub fn areas(full: Rect, machines: usize, plans: usize, agents: usize) -> Areas {
-    let [body, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(full);
-    let (sidebar, detail) = if body.width >= WIDE && body.height >= 12 {
-        let width = (u32::from(body.width) * SIDEBAR_SHARE / 100) as u16;
-        let [sidebar, detail] = Layout::horizontal([
-            Constraint::Length(width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)),
-            Constraint::Min(0),
-        ])
-        .areas(body);
-        (sidebar, detail)
-    } else {
-        let wanted = (machines + plans + agents * 2 + 6) as u16;
-        let height = wanted.min(body.height * 2 / 5).max(6);
-        let [sidebar, detail] =
-            Layout::vertical([Constraint::Length(height), Constraint::Min(0)]).areas(body);
-        (sidebar, detail)
-    };
-    let inner = sidebar.inner(Margin {
-        horizontal: 1,
-        vertical: 0,
-    });
-    let usage = if plans > 0 { 1 } else { 0 };
-    let [machines, _, top_rule, _, agents, bottom_rule, _, plans] = Layout::vertical([
-        Constraint::Length((machines as u16).min(inner.height / 3)),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(usage),
-        Constraint::Length(usage),
-        Constraint::Length(plans as u16),
-    ])
-    .areas(inner);
-    Areas {
-        machines,
-        plans: plans.inner(Margin {
-            horizontal: 1,
-            vertical: 0,
-        }),
-        agents,
-        rules: [top_rule, bottom_rule],
-        detail,
-        footer: footer.inner(Margin {
-            horizontal: 1,
-            vertical: 0,
-        }),
-    }
-}
 
 pub fn markdown_ansi(text: &str, width: usize) -> String {
     let (lines, links) = markdown::markdown_links(text, width);
@@ -165,108 +103,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         );
         return;
     }
-    if model.projects.zen() {
-        return zen::render(frame, model, now, graphics);
-    }
-    let rows = model.rows(now);
-    let agents = model.agents(now);
-    let plans = model.plans(now);
-    let Areas {
-        machines: machine_area,
-        plans: plan_area,
-        agents: agent_area,
-        rules,
-        detail: detail_area,
-        footer,
-    } = areas(full, rows.len(), plans.len(), agents.len());
-    frame
-        .buffer_mut()
-        .set_style(detail_area, Style::new().bg(theme().panel));
-    render_footer(frame, footer, model, now);
-    for rule in rules.into_iter().filter(|rule| !rule.is_empty()) {
-        let line = "─".repeat(rule.width as usize);
-        frame.render_widget(
-            Paragraph::new(Span::styled(line, style::fg(theme().rule))),
-            rule,
-        );
-    }
-    let marks = marks(model, &rows);
-    machines::render_list(frame, machine_area, model, &rows, &marks, now, graphics);
-    let mut cursor = Cursor::new(plan_area);
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    for plan in &plans {
-        let room = plan_area.width as usize;
-        let line = [6, 3, 0]
-            .into_iter()
-            .map(|meter| plans_line(&[*plan], meter, now_secs))
-            .find(|line| line.width() <= room)
-            .unwrap_or_else(|| plans_line(&[*plan], 0, now_secs));
-        cursor.composed(frame, graphics, line);
-    }
-    let listed = model.listed(now);
-    agents::render_list(
-        frame,
-        agent_area,
-        model,
-        &listed,
-        rows.len(),
-        &marks,
-        graphics,
-    );
-
-    {
-        match model.detail_focus(now) {
-            Some(Focus::Machine(name)) => {
-                if let Some(row) = rows.iter().find(|row| row.name == name) {
-                    machines::render_detail(frame, detail_area, row, model, now, graphics);
-                }
-            }
-            Some(Focus::Agent(id)) => {
-                if let Some(agent) = agents.iter().find(|agent| agent.session.id == id) {
-                    render_session(frame, detail_area, model, agent, now);
-                }
-            }
-            Some(Focus::Child(id, child_id)) => {
-                let found = agents
-                    .iter()
-                    .find(|agent| agent.session.id == id)
-                    .and_then(|agent| {
-                        let child = agent
-                            .session
-                            .children
-                            .iter()
-                            .find(|child| child.id == child_id)?;
-                        Some((agent, child))
-                    });
-                if let Some((agent, child)) = found {
-                    agents::render_child(frame, detail_area, agent, child);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn render_session(
-    frame: &mut Frame,
-    area: Rect,
-    model: &Model,
-    agent: &AgentRow<'_>,
-    now: Instant,
-) {
-    let suggestion = model.move_suggestion(agent, now);
-    let forwards = model.forwards_to(&agent.session.id, &agent.machine, now);
-    agents::render_detail(
-        frame,
-        area,
-        agents::Detail {
-            agent,
-            suggestion: suggestion.as_ref(),
-            forwards: &forwards,
-        },
-    );
+    bands::render(frame, model, now, graphics);
 }
 
 struct Header<'a> {
@@ -292,37 +129,11 @@ fn draw_panel(frame: &mut Frame, area: Rect, header: Header<'static>) {
     frame.render_widget(Paragraph::new(line), row);
 }
 
-pub struct Mark {
-    tag: String,
-    symbols: Vec<String>,
-}
-
-fn marks(model: &Model, rows: &[Row<'_>]) -> HashMap<String, Mark> {
+fn marks(model: &Model, rows: &[Row<'_>]) -> HashMap<String, String> {
     let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
     rows.iter()
-        .map(|row| {
-            let symbols = model
-                .host_icons
-                .get(&row.name.to_lowercase())
-                .into_iter()
-                .cloned()
-                .chain(default_symbols(row).iter().map(|symbol| symbol.to_string()))
-                .collect();
-            let tag = model.machine_label(&row.name, &names);
-            (row.name.clone(), Mark { tag, symbols })
-        })
+        .map(|row| (row.name.clone(), model.machine_label(&row.name, &names)))
         .collect()
-}
-
-fn default_symbols(row: &Row<'_>) -> &'static [&'static str] {
-    let mac = row
-        .machine()
-        .is_some_and(|machine| machine.identity.os.starts_with("macOS"));
-    if mac {
-        &["macbook", "laptopcomputer"]
-    } else {
-        &["server.rack"]
-    }
 }
 
 fn body(area: Rect) -> Rect {
@@ -446,14 +257,6 @@ impl Cursor {
         frame.render_widget(Paragraph::new(line), self.row());
         self.y += 1;
     }
-
-    fn composed(&mut self, frame: &mut Frame, graphics: &mut Graphics, composed: Composed) {
-        if self.left() == 0 {
-            return;
-        }
-        composed.draw(frame, graphics, self.row(), Style::new());
-        self.y += 1;
-    }
 }
 
 fn plans_line(plans: &[&Plan], meter: usize, now_secs: u64) -> Composed {
@@ -547,17 +350,7 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
             width,
         )
     } else {
-        let mut global = keys(&[
-            (
-                "z",
-                if model.projects.zen() {
-                    "full view"
-                } else {
-                    "zen"
-                },
-            ),
-            ("a", "alerts"),
-        ]);
+        let mut global = keys(&[("a", "alerts")]);
         let active = model.alerts.active().count();
         if active > 0 {
             global.push(Span::styled(
@@ -636,39 +429,27 @@ fn naming_line(naming: &Naming, names: &[String], width: usize) -> Line<'static>
 }
 
 fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
-    if let Some((_, _, open)) = model.selected_folder(now) {
-        return vec![("↵", if open { "fold" } else { "open" }), ("P", "rename")];
-    }
-    if model.selection(now) == Some(Focus::NewSession) {
-        return vec![("↵", "new session")];
-    }
-    if model.selected < model.rows(now).len() {
-        if model.projects.zen() {
-            return vec![("↑↓←→", "pick"), ("P", "label"), ("c", "new session")];
-        }
-        return vec![("P", "label"), ("c", "new session")];
+    if let Some(Focus::Machine(_)) = model.selection(now) {
+        let page = if model.machine_page.is_some() {
+            "back"
+        } else {
+            "details"
+        };
+        return vec![("↵", page), ("P", "label"), ("c", "new session")];
     }
     let Some(agent) = model.selected_agent(now) else {
-        if model.projects.zen() {
-            return vec![("↑↓←→", "pick"), ("c", "new session")];
-        }
         return vec![("c", "new session")];
     };
     let mut actions = Vec::new();
     let in_rex = agent.session.pane.is_some();
-    if model.projects.zen() {
-        actions.push(("↑↓←→", "pick"));
-        if in_rex {
-            actions.push(("↵", "open in Rex"));
+    match &agent.session.state {
+        SessionState::Waiting(Waiting::Permission(_)) if in_rex && agent.live => {
+            actions.extend([("y", "allow"), ("n", "deny")]);
         }
-        if agent.live {
-            actions.extend([("d", "diff"), ("v", "outputs")]);
+        SessionState::Waiting(Waiting::Input(_)) if in_rex && agent.live => {
+            actions.push(("1–9", "choose"));
         }
-        if agent.live && agent.session.agent == Agent::ClaudeCode {
-            actions.push(("m", "move"));
-        }
-        actions.extend([("p", "project"), ("c", "new session")]);
-        return actions;
+        _ => {}
     }
     if in_rex && agent.live && matches!(agent.session.state, SessionState::Working { .. }) {
         actions.push(("x", "stop"));
@@ -688,8 +469,11 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         }
         actions.push(("m", "move"));
     }
-    actions.push(("p", "project"));
-    actions.push(("c", "new session"));
+    actions.extend([
+        ("p", "project"),
+        ("P", "rename project"),
+        ("c", "new session"),
+    ]);
     actions
 }
 

@@ -8,8 +8,8 @@ use super::namer;
 use super::projects::{Projects, Resolved};
 use super::units;
 use crate::proto::{
-    self, Agent, AgentSession, Child, CodexModel, FULL, Forward, ForwardState, Identity, Plan,
-    Reply, Sample, SessionState, SharedProjects, Welcome,
+    self, Agent, AgentSession, CodexModel, FULL, Forward, ForwardState, Identity, Plan, Reply,
+    Sample, SessionState, SharedProjects, Welcome,
 };
 use crate::tailscale::Peer;
 
@@ -17,10 +17,8 @@ pub const HISTORY: usize = 300;
 const SEARCH_GRACE: Duration = Duration::from_secs(8);
 const FLASH_FOR: Duration = Duration::from_secs(5);
 const MAX_NEW_PER_ASK: usize = 20;
-const FOLD_AFTER_SECS: u32 = 24 * 60 * 60;
 const FOLLOW_FOR: Duration = Duration::from_secs(300);
 const AWAIT_FOR: Duration = Duration::from_secs(60);
-const FOLD_AT_LEAST: usize = 2;
 const HEAVY_SESSION_MILLICORES: u32 = 1_000;
 const HEAVY_SESSION_BYTES: u64 = 1 << 30;
 const SUSTAINED_SAMPLES: usize = 60;
@@ -300,52 +298,6 @@ pub fn grade(subsystem: Subsystem, value: f32) -> Level {
 pub enum Focus {
     Machine(String),
     Agent(String),
-    Project(String),
-    Child(String, String),
-    Earlier,
-    NewSession,
-}
-
-impl Focus {
-    fn session(&self) -> Option<&str> {
-        match self {
-            Focus::Agent(id) | Focus::Child(id, _) => Some(id),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Group {
-    NeedsYou,
-    Project(String),
-    Earlier,
-    Actions,
-}
-
-pub enum Entry<'a> {
-    Session(AgentRow<'a>),
-    Child {
-        session: &'a AgentSession,
-        child: &'a Child,
-    },
-    Project {
-        key: String,
-        name: String,
-        count: usize,
-        open: bool,
-    },
-    Fold {
-        count: usize,
-        open: bool,
-    },
-    NewSession,
-}
-
-pub struct Listed<'a> {
-    pub group: Group,
-    pub entry: Entry<'a>,
-    pub nested: bool,
 }
 
 pub struct AgentRow<'a> {
@@ -353,22 +305,6 @@ pub struct AgentRow<'a> {
     pub machine: String,
     pub session: &'a AgentSession,
     pub live: bool,
-    pub capacity: Capacity,
-}
-
-#[derive(Clone, Copy)]
-pub struct Capacity {
-    pub cores: usize,
-}
-
-fn focus_of(entry: &Entry<'_>) -> Focus {
-    match entry {
-        Entry::Session(agent) => Focus::Agent(agent.session.id.clone()),
-        Entry::Child { session, child } => Focus::Child(session.id.clone(), child.id.clone()),
-        Entry::Project { key, .. } => Focus::Project(key.clone()),
-        Entry::Fold { .. } => Focus::Earlier,
-        Entry::NewSession => Focus::NewSession,
-    }
 }
 
 type ProjectGroup<'a> = (String, Option<String>, Vec<AgentRow<'a>>);
@@ -388,52 +324,6 @@ fn add_to_project<'a>(
         }
         None => groups.push((key, name, vec![agent])),
     }
-}
-
-fn with_children<'a>(group: &Group, agent: AgentRow<'a>, nested: bool) -> Vec<Listed<'a>> {
-    let session = agent.session;
-    std::iter::once(Listed {
-        group: group.clone(),
-        entry: Entry::Session(agent),
-        nested,
-    })
-    .chain(session.children.iter().map(|child| Listed {
-        group: group.clone(),
-        entry: Entry::Child { session, child },
-        nested,
-    }))
-    .collect()
-}
-
-fn family_order(agents: Vec<AgentRow<'_>>) -> Vec<(AgentRow<'_>, bool)> {
-    let ids: Vec<String> = agents
-        .iter()
-        .map(|agent| agent.session.id.clone())
-        .collect();
-    let is_nested = |agent: &AgentRow<'_>| {
-        agent
-            .session
-            .parent
-            .as_ref()
-            .is_some_and(|parent| ids.contains(parent))
-    };
-    let (kids, roots): (Vec<_>, Vec<_>) = agents.into_iter().partition(|agent| is_nested(agent));
-    let mut kids: Vec<Option<AgentRow<'_>>> = kids.into_iter().map(Some).collect();
-    let mut ordered = Vec::new();
-    for root in roots {
-        let id = root.session.id.clone();
-        ordered.push((root, false));
-        for kid in kids.iter_mut() {
-            if kid
-                .as_ref()
-                .is_some_and(|kid| kid.session.parent.as_deref() == Some(id.as_str()))
-            {
-                ordered.extend(kid.take().map(|kid| (kid, true)));
-            }
-        }
-    }
-    ordered.extend(kids.into_iter().flatten().map(|kid| (kid, true)));
-    ordered
 }
 
 fn project_name(name: Option<String>, agents: &[AgentRow<'_>]) -> String {
@@ -465,11 +355,10 @@ pub struct Model {
     pub links: HashMap<Endpoint, Link>,
     pub selected: usize,
     pub port: u16,
-    pub host_icons: HashMap<String, String>,
     pub projects: Projects,
     pub naming: Option<Naming>,
     pub namer_busy: bool,
-    pub shown: Option<Focus>,
+    pub machine_page: Option<String>,
     pub namer_asked_at: Option<Instant>,
     pub alerts: Alerts,
     focus: Option<Focus>,
@@ -580,6 +469,14 @@ impl Pressure {
         }
     }
 
+    pub fn short(self) -> String {
+        match self {
+            Self::Cpu(cpu) => format!("CPU {} for a minute", units::percent(cpu).trim()),
+            Self::Memory(memory) => format!("memory {} full", units::percent(memory).trim()),
+            Self::Load { load, cores } => format!("load {load:.0} on {cores} cores"),
+        }
+    }
+
     pub fn describe(self, machine: &str) -> String {
         match self {
             Self::Cpu(cpu) => format!(
@@ -624,11 +521,10 @@ impl Model {
             links: HashMap::new(),
             selected: 0,
             port,
-            host_icons: HashMap::new(),
             projects: Projects::default(),
             naming: None,
             namer_busy: false,
-            shown: None,
+            machine_page: None,
             namer_asked_at: None,
             alerts,
             focus: None,
@@ -816,16 +712,12 @@ impl Model {
                 let live = row.state() == Some(&LinkState::Live);
                 let machine = row.machine()?;
                 let sample = machine.latest.as_ref()?;
-                let capacity = Capacity {
-                    cores: sample.cores.len(),
-                };
                 let endpoint = row.endpoint;
                 Some(sample.sessions.iter().map(move |session| AgentRow {
                     endpoint,
                     machine: row.name.clone(),
                     session,
                     live,
-                    capacity,
                 }))
             })
             .flatten()
@@ -990,26 +882,12 @@ impl Model {
     }
 
     pub fn selected_agent(&self, now: Instant) -> Option<AgentRow<'_>> {
-        let machines = self.rows(now).len();
-        let index = self.selected.checked_sub(machines)?;
-        match self.listed(now).into_iter().nth(index)?.entry {
-            Entry::Session(agent) => Some(agent),
-            Entry::Project { .. }
-            | Entry::Fold { .. }
-            | Entry::NewSession
-            | Entry::Child { .. } => None,
-        }
-    }
-
-    pub fn selected_project(&self, now: Instant) -> Option<String> {
-        let machines = self.rows(now).len();
-        let index = self.selected.checked_sub(machines)?;
-        match self.listed(now).into_iter().nth(index)?.entry {
-            Entry::Project { key, .. } => Some(key),
-            Entry::Session(_) | Entry::Fold { .. } | Entry::NewSession | Entry::Child { .. } => {
-                None
-            }
-        }
+        let Some(Focus::Agent(id)) = self.selection(now) else {
+            return None;
+        };
+        self.agents(now)
+            .into_iter()
+            .find(|agent| agent.session.id == id)
     }
 
     pub fn since_start(&self, now: Instant) -> Duration {
@@ -1104,140 +982,40 @@ impl Model {
         (key, name)
     }
 
-    pub fn listed(&self, now: Instant) -> Vec<Listed<'_>> {
-        let mut listed = self.listed_sessions(now);
-        listed.push(Listed {
-            group: Group::Actions,
-            entry: Entry::NewSession,
-            nested: false,
-        });
-        listed
-    }
-
-    pub fn note_shown(&mut self, now: Instant) {
-        if let Some(focus @ (Focus::Machine(_) | Focus::Agent(_) | Focus::Child(..))) =
-            self.selection(now)
-        {
-            self.shown = Some(focus);
-        }
-    }
-
-    pub fn detail_focus(&self, now: Instant) -> Option<Focus> {
-        match self.selection(now) {
-            Some(focus @ (Focus::Machine(_) | Focus::Agent(_) | Focus::Child(..))) => Some(focus),
-            _ => self.shown.clone(),
-        }
-    }
-
-    pub fn selected_folder(&self, now: Instant) -> Option<(String, String, bool)> {
-        let machines = self.rows(now).len();
-        let index = self.selected.checked_sub(machines)?;
-        match self.listed(now).into_iter().nth(index)?.entry {
-            Entry::Project {
-                key, name, open, ..
-            } => Some((key, name, open)),
-            _ => None,
-        }
-    }
-
-    fn listed_sessions(&self, now: Instant) -> Vec<Listed<'_>> {
-        let mut needs_you = Vec::new();
-        let mut asleep = Vec::new();
-        let mut projects: Vec<ProjectGroup<'_>> = Vec::new();
-        for agent in self.agents(now) {
-            if agent.live && matches!(agent.session.state, SessionState::Waiting(_)) {
-                needs_you.push(agent);
-            } else if agent.live
-                && agent.session.state == SessionState::Idle
-                && agent.session.state_secs >= FOLD_AFTER_SECS
-            {
-                asleep.push(agent);
-            } else {
-                add_to_project(&mut projects, &self.projects, agent);
-            }
-        }
-        if asleep.len() < FOLD_AT_LEAST {
-            for agent in asleep.drain(..) {
-                add_to_project(&mut projects, &self.projects, agent);
-            }
-        }
-        projects.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut listed: Vec<Listed<'_>> = needs_you
-            .into_iter()
-            .flat_map(|agent| with_children(&Group::NeedsYou, agent, false))
-            .collect();
-        for (key, name, agents) in projects {
-            let name = project_name(name, &agents);
-            let group = Group::Project(name.clone());
-            let focused = self
-                .focus
-                .as_ref()
-                .and_then(Focus::session)
-                .is_some_and(|id| agents.iter().any(|agent| agent.session.id == id));
-            let open = focused || !self.projects.is_folded(&key);
-            listed.push(Listed {
-                group: group.clone(),
-                entry: Entry::Project {
-                    key,
-                    name,
-                    count: agents.len(),
-                    open,
-                },
-                nested: false,
-            });
-            if open {
-                listed.extend(
-                    family_order(agents)
-                        .into_iter()
-                        .flat_map(|(agent, nested)| with_children(&group, agent, nested)),
-                );
-            }
-        }
-        if asleep.is_empty() {
-            return listed;
-        }
-        let open = match &self.focus {
-            Some(Focus::Earlier) => true,
-            Some(focus @ (Focus::Agent(_) | Focus::Child(..))) => asleep
-                .iter()
-                .any(|agent| Some(agent.session.id.as_str()) == focus.session()),
-            _ => false,
+    pub fn board(&self, now: Instant) -> Vec<Focus> {
+        let agents = self.agents(now);
+        let waiting = |agent: &AgentRow<'_>| {
+            agent.live && matches!(agent.session.state, SessionState::Waiting(_))
         };
-        listed.push(Listed {
-            group: Group::Earlier,
-            entry: Entry::Fold {
-                count: asleep.len(),
-                open,
-            },
-            nested: false,
-        });
-        if open {
-            listed.extend(
-                asleep
-                    .into_iter()
-                    .flat_map(|agent| with_children(&Group::Earlier, agent, false)),
+        let mut needs: Vec<&AgentRow<'_>> = agents.iter().filter(|agent| waiting(agent)).collect();
+        needs.sort_by_key(|agent| urgency(agent));
+        let mut board: Vec<Focus> = needs
+            .iter()
+            .map(|agent| Focus::Agent(agent.session.id.clone()))
+            .collect();
+        for row in self.rows(now) {
+            board.push(Focus::Machine(row.name.clone()));
+            let mut mine: Vec<&AgentRow<'_>> = agents
+                .iter()
+                .filter(|agent| agent.machine == row.name && !waiting(agent))
+                .collect();
+            mine.sort_by_key(|agent| urgency(agent));
+            board.extend(
+                mine.iter()
+                    .map(|agent| Focus::Agent(agent.session.id.clone())),
             );
         }
-        listed
+        board
     }
 
     pub fn selection(&self, now: Instant) -> Option<Focus> {
-        let rows = self.rows(now);
-        match rows.get(self.selected) {
-            Some(row) => Some(Focus::Machine(row.name.clone())),
-            None => self
-                .listed(now)
-                .into_iter()
-                .nth(self.selected - rows.len())
-                .map(|listed| focus_of(&listed.entry)),
-        }
+        self.board(now).get(self.selected).cloned()
     }
 
     pub fn move_selection(&mut self, delta: isize, now: Instant) {
-        let count = self.rows(now).len() + self.listed(now).len();
+        let count = self.board(now).len();
         self.select(delta, count);
         self.focus = self.selection(now);
-        self.reselect(now);
     }
 
     pub fn machine_label(&self, name: &str, names: &[&str]) -> String {
@@ -1370,18 +1148,14 @@ impl Model {
             return;
         };
         let opened = self
-            .listed(now)
+            .agents(now)
             .iter()
-            .find_map(|listed| match &listed.entry {
-                Entry::Session(agent)
-                    if agent.endpoint == awaiting.endpoint
-                        && agent.session.project == awaiting.project
-                        && !awaiting.known.contains(&agent.session.id) =>
-                {
-                    Some(agent.session.id.clone())
-                }
-                _ => None,
-            });
+            .find(|agent| {
+                agent.endpoint == awaiting.endpoint
+                    && agent.session.project == awaiting.project
+                    && !awaiting.known.contains(&agent.session.id)
+            })
+            .map(|agent| agent.session.id.clone());
         if let Some(session) = opened {
             self.focus = Some(Focus::Agent(session));
             self.awaiting = None;
@@ -1403,12 +1177,11 @@ impl Model {
         let Some(following) = self.following.clone() else {
             return;
         };
-        let listed = self.listed(now);
-        let place = |agent: &AgentRow<'_>| agent.endpoint != following.from && agent.live;
-        let found = listed.iter().find_map(|listed| match &listed.entry {
-            Entry::Session(agent) if agent.session.id == following.session => Some(place(agent)),
-            _ => None,
-        });
+        let found = self
+            .agents(now)
+            .iter()
+            .find(|agent| agent.session.id == following.session)
+            .map(|agent| agent.endpoint != following.from && agent.live);
         match found {
             Some(true) => {
                 self.focus = Some(Focus::Agent(following.session));
@@ -1422,98 +1195,30 @@ impl Model {
         }
     }
 
-    pub fn zen_board(&self, now: Instant) -> Vec<(String, Vec<String>)> {
-        let agents = self.agents(now);
-        let rank = |agent: &AgentRow<'_>| match agent.session.state {
-            SessionState::Waiting(_) if agent.live => 0,
-            SessionState::Working { .. } if agent.live => 1,
-            _ => 2,
-        };
-        self.rows(now)
-            .iter()
-            .map(|row| {
-                let mut mine: Vec<&AgentRow<'_>> = agents
-                    .iter()
-                    .filter(|agent| agent.endpoint == row.endpoint)
-                    .collect();
-                mine.sort_by_key(|agent| (rank(agent), agent.session.state_secs));
-                (
-                    row.name.clone(),
-                    mine.iter().map(|agent| agent.session.id.clone()).collect(),
-                )
-            })
-            .collect()
-    }
-
-    pub fn zen_step(&mut self, down: isize, across: isize, now: Instant) {
-        let board: Vec<Vec<Focus>> = self
-            .zen_board(now)
-            .into_iter()
-            .map(|(name, ids)| {
-                std::iter::once(Focus::Machine(name))
-                    .chain(ids.into_iter().map(Focus::Agent))
-                    .collect()
-            })
-            .collect();
-        let current = self.selection(now);
-        let at = current.as_ref().and_then(|focus| {
-            board.iter().enumerate().find_map(|(column, items)| {
-                Some((column, items.iter().position(|item| item == focus)?))
-            })
-        });
-        let next = match at {
-            None => board.first().and_then(|items| items.first()).cloned(),
-            Some((column, row)) if across != 0 => {
-                let count = board.len() as isize;
-                let column = (column as isize + across).rem_euclid(count) as usize;
-                let items = &board[column];
-                items.get(row.min(items.len() - 1)).cloned()
-            }
-            Some((column, row)) => {
-                let items = &board[column];
-                let row = (row as isize + down).clamp(0, items.len() as isize - 1) as usize;
-                items.get(row).cloned()
-            }
-        };
-        if let Some(focus) = next {
-            self.focus = Some(focus);
-            self.reselect(now);
-        }
-    }
-
     pub fn reselect(&mut self, now: Instant) {
         self.follow_moved(now);
         self.select_opened(now);
-        let rows = self.rows(now);
-        let listed = self.listed(now);
-        let count = rows.len() + listed.len();
-        let found = match &self.focus {
-            Some(Focus::Machine(name)) => rows.iter().position(|row| &row.name == name),
-            Some(focus) => listed
-                .iter()
-                .position(|listed| focus_of(&listed.entry) == *focus)
-                .map(|index| rows.len() + index),
-            None => None,
-        };
-        let fallback = if matches!(self.focus, Some(Focus::Agent(_) | Focus::Child(..))) {
-            let clamped = self.selected.min(count.saturating_sub(1));
-            let end = clamped.saturating_sub(rows.len()).min(listed.len());
-            listed[..end]
-                .iter()
-                .rposition(|item| matches!(item.entry, Entry::Session(_)))
-                .map(|index| rows.len() + index)
-        } else {
-            None
-        };
+        let board = self.board(now);
+        let found = self
+            .focus
+            .as_ref()
+            .and_then(|focus| board.iter().position(|item| item == focus));
         match found {
             Some(index) => self.selected = index,
             None => {
-                self.select(0, count);
-                if let Some(index) = fallback {
-                    self.selected = index;
+                if matches!(self.focus, Some(Focus::Agent(_))) {
+                    self.selected = self.selected.saturating_sub(1);
                 }
-                self.focus = self.selection(now);
+                self.select(0, board.len());
+                self.focus = board.get(self.selected).cloned();
             }
+        }
+        if self
+            .machine_page
+            .as_ref()
+            .is_some_and(|name| !self.rows(now).iter().any(|row| row.name == *name))
+        {
+            self.machine_page = None;
         }
     }
 

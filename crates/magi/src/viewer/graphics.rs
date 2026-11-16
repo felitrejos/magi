@@ -14,7 +14,6 @@ use super::base64;
 use super::chart;
 use super::diacritics::DIACRITICS;
 use super::style::theme;
-use super::symbols;
 
 const PLACEHOLDER: char = '\u{10EEEE}';
 const CHUNK: usize = 4096;
@@ -50,7 +49,6 @@ pub struct Graphics {
     uploads: Vec<Vec<u8>>,
     stale: Vec<u32>,
     next_id: u32,
-    missing: HashSet<String>,
 }
 
 struct Slot {
@@ -77,7 +75,6 @@ impl Graphics {
             uploads: Vec::new(),
             stale: Vec::new(),
             next_id: FIRST_ID,
-            missing: HashSet::new(),
         }
     }
 
@@ -148,55 +145,6 @@ impl Graphics {
         );
     }
 
-    pub fn icon(
-        &mut self,
-        buf: &mut Buffer,
-        area: Rect,
-        slot: String,
-        symbols: &[String],
-        color: Color,
-    ) -> bool {
-        let area = area.intersection(buf.area);
-        let Some((cell_width, cell_height)) = self.cell else {
-            return false;
-        };
-        if area.is_empty() {
-            return false;
-        }
-        let mut hasher = DefaultHasher::new();
-        (symbols, color, area.width, area.height).hash(&mut hasher);
-        let key = hasher.finish();
-        let id = match self.slots.get(&slot) {
-            Some(existing) if existing.key == key => existing.id,
-            _ => {
-                let (width, height, _) =
-                    pixel_size(area.width, area.height, cell_width, cell_height);
-                let Some(pixels) = symbols.iter().find_map(|symbol| {
-                    if self.missing.contains(symbol) {
-                        return None;
-                    }
-                    let pixels = symbols::render(symbol, width, height, rgb(color));
-                    if pixels.is_none() {
-                        self.missing.insert(symbol.clone());
-                    }
-                    pixels
-                }) else {
-                    return false;
-                };
-                let id = self.allocate();
-                self.uploads
-                    .push(upload(id, area.width, area.height, width, height, &pixels));
-                if let Some(old) = self.slots.insert(slot.clone(), Slot { id, key }) {
-                    self.stale.push(old.id);
-                }
-                id
-            }
-        };
-        self.used.insert(slot);
-        place(buf, area, id);
-        true
-    }
-
     pub fn flush(&mut self, out: &mut impl Write) -> io::Result<()> {
         let unused: Vec<String> = self
             .slots
@@ -235,10 +183,6 @@ impl Graphics {
         self.stale
             .extend(self.slots.drain().map(|(_, slot)| slot.id));
         true
-    }
-
-    pub fn has_pixels(&self) -> bool {
-        self.cell.is_some()
     }
 
     pub fn samples_per_cell(&self) -> usize {

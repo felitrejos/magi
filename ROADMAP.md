@@ -191,7 +191,13 @@ and magi puts every session in the right place and keeps watch.
   search and links go. A session shows its state, what it's doing or asking,
   context, cost, model, subagents, tasks and ports; `↵` goes to its pane,
   `y`/`n` answer a permission prompt, `⇧tab` switches mode, `m` moves it,
-  `d`/`v` show its diff and outputs, `c` starts one. Zen stays.
+  `d`/`v` show its diff and outputs, `c` starts one.
+- **One view, made for Rex's sidebar.** Rex's sidebar lists the sessions, so
+  magi stopped repeating it: the project tree and Zen gave way to one view,
+  what needs you on top, then a band per machine (its load, then a line per
+  session with what it's doing, mode, subagents, model, context and cost).
+  It scrolls, so any number of machines fits; `↵` on a machine opens its
+  full page.
 
 ## Phase 11: fleet client and CLI (done)
 

@@ -36,7 +36,6 @@ pub struct Theme {
     pub accent: Color,
     pub second: Color,
     pub warn: Color,
-    pub warn_tint: Color,
     pub crit: Color,
     pub claude: Color,
     pub codex: Color,
@@ -127,7 +126,6 @@ impl From<Palette> for Theme {
             accent: palette.green.into(),
             second: palette.magenta.into(),
             warn: palette.yellow.into(),
-            warn_tint: palette.yellow.mix(palette.background, 0.78),
             crit: palette.red.into(),
             claude: CLAUDE.into(),
             codex: palette.blue.into(),
@@ -210,10 +208,6 @@ pub fn fg(color: Color) -> Style {
 
 pub fn bold(color: Color) -> Style {
     fg(color).add_modifier(Modifier::BOLD)
-}
-
-pub fn pill(color: Color, tint: Color) -> Style {
-    bold(color).bg(tint)
 }
 
 pub fn load(fraction: f32) -> Color {

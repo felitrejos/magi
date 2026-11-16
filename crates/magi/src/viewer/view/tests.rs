@@ -224,14 +224,22 @@ fn fleet(machines: usize, now: Instant) -> Model {
 }
 
 fn select_title(model: &mut Model, title: &str, now: Instant) {
-    let index = model
-        .listed(now)
+    let agents = model.agents(now);
+    let id = agents
         .iter()
-        .position(|item| {
-            matches!(&item.entry, crate::viewer::model::Entry::Session(agent) if agent.session.title.starts_with(title))
-        })
+        .find(|agent| agent.session.title.starts_with(title))
+        .map(|agent| agent.session.id.clone())
         .unwrap();
-    model.selected = model.rows(now).len() + index;
+    model.selected = model
+        .board(now)
+        .iter()
+        .position(|item| *item == crate::viewer::model::Focus::Agent(id.clone()))
+        .unwrap();
+}
+
+fn on_machine_page(mut model: Model, now: Instant) -> Model {
+    model.machine_page = Some(model.rows(now)[0].name.clone());
+    model
 }
 
 fn draw(model: &Model, width: u16, height: u16, now: Instant) -> String {
@@ -253,7 +261,7 @@ fn draw(model: &Model, width: u16, height: u16, now: Instant) -> String {
 #[test]
 fn the_machine_view_reads_as_titled_charts_then_cores_then_what_uses_it() {
     let now = Instant::now();
-    let screen = draw(&fleet(2, now), 160, 50, now);
+    let screen = draw(&on_machine_page(fleet(2, now), now), 160, 50, now);
     for text in [
         "61 °C",
         "CPU",
@@ -328,11 +336,11 @@ fn wide_screen_reads_in_plain_words() {
     let screen = draw(&model, 160, 40, now);
     for text in [
         "Needs you",
-        "Memory",
-        "Disk",
-        "Network",
-        "lost",
-        "this machine",
+        "CPU",
+        "mem",
+        "load",
+        "not answering",
+        "busy · memory 100% full",
         "100%",
     ] {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");
@@ -405,47 +413,49 @@ fn phone_width_keeps_names_cpu_and_memory() {
 }
 
 #[test]
-fn sessions_that_need_you_come_first_then_projects_with_plans_at_the_bottom() {
+fn sessions_that_need_you_come_first_then_each_machine_with_its_sessions() {
     let now = Instant::now();
     let model = fleet(2, now);
     let screen = draw(&model, 160, 40, now);
     let lines: Vec<&str> = screen.lines().collect();
     let at = |text: &str| lines.iter().position(|line| line.contains(text));
-    let claude = at("Claude 5h").expect("Claude's plan");
-    let codex = at("Codex 5h").expect("Codex's plan");
-    let needs_you = at(" Needs you").expect("a Needs you group");
-    let magi = at("▾ magi").expect("the magi project");
-    let stampr = at("▾ stampr").expect("stampr, with stampr-ops merged in");
-    assert!(needs_you < magi && magi < stampr, "{screen}");
-    assert!(stampr < claude && claude < codex, "{screen}");
-    assert!(lines[needs_you + 1].contains("✻ deploy fix"), "{screen}");
-    assert!(!screen.contains("stampr-ops "), "{screen}");
+    let plans = at("Claude 5h").expect("the plans, on the top line");
+    let needs_you = at("Needs you").expect("a Needs you group");
+    let first = at("host-0 ").expect("the first machine");
+    let second = at("host-1").expect("the second machine");
     assert!(
-        !lines[needs_you + 1].contains("opus 5.5"),
-        "model and context stay in the detail\n{screen}"
+        plans < needs_you && needs_you < first && first < second,
+        "{screen}"
+    );
+    assert!(lines[needs_you + 1].contains("deploy fix"), "{screen}");
+    assert!(
+        lines[first + 1..second]
+            .iter()
+            .any(|line| line.contains("refactor the collectors")),
+        "a machine's sessions sit under it\n{screen}"
     );
 }
 
 #[test]
-fn selecting_an_agent_shows_its_detail_and_keeps_the_machines_visible() {
+fn a_session_line_says_what_it_does_and_its_model_context_and_cost() {
     let now = Instant::now();
     let mut model = fleet(2, now);
-    model.selected = 2;
-    let screen = draw(&model, 140, 40, now);
+    select_title(&mut model, "deploy fix", now);
+    let screen = draw(&model, 160, 40, now);
+    let line = screen
+        .lines()
+        .find(|line| line.contains("deploy fix"))
+        .expect("its line");
     for text in [
-        "host-0",
         "needs you · Bash",
-        "12m",
-        "$51.38",
         "opus 5.5",
         "831K context",
-        "not in Rex: continue it there",
+        "$51.38",
+        "not in Rex",
     ] {
-        assert!(screen.contains(text), "missing {text:?}\n{screen}");
+        assert!(line.contains(text), "missing {text:?}\n{screen}");
     }
-    for gone in ["cache write", "at API list prices", "session deploy fix"] {
-        assert!(!screen.contains(gone), "still shows {gone:?}\n{screen}");
-    }
+    assert!(screen.contains("r continue in Rex"), "{screen}");
 }
 
 #[test]
@@ -558,7 +568,7 @@ fn bench_viewer() {
 #[test]
 fn storage_and_every_disk_stay_on_screen_when_the_pane_is_short() {
     let now = Instant::now();
-    let model = fleet(2, now);
+    let model = on_machine_page(fleet(2, now), now);
     for (width, height) in [(120, 24), (120, 30), (160, 30)] {
         let screen = draw(&model, width, height, now);
         assert!(screen.contains("Disk"), "{width}x{height}\n{screen}");
@@ -588,48 +598,10 @@ fn truncated_text_never_draws_wider_than_its_room() {
 }
 
 #[test]
-fn only_a_session_using_much_of_its_machine_is_flagged_for_cpu() {
-    let now = Instant::now();
-    let mut model = fleet(1, now);
-    let mut busy = sample(0.5, 12);
-    let cores = busy.cores.len() as u32;
-    busy.sessions[0].usage = Some(crate::proto::Usage {
-        cpu: Some(cores * 500),
-        memory: 3 << 30,
-    });
-    busy.sessions[1].usage = Some(crate::proto::Usage {
-        cpu: None,
-        memory: 1 << 20,
-    });
-    model.apply(Endpoint::Local, LinkUpdate::Sample(Box::new(busy)), now);
-    select_title(&mut model, "refactor", now);
-    let screen = draw(&model, 160, 50, now);
-    assert_eq!(screen.matches("high CPU").count(), 1, "{screen}");
-    assert!(!screen.contains("cores"), "{screen}");
-    select_title(&mut model, "deploy fix", now);
-    let screen = draw(&model, 160, 50, now);
-    assert!(!screen.contains("high CPU"), "{screen}");
-}
-
-#[test]
-fn each_machine_is_one_line_and_its_details_stay_in_the_detail() {
-    let now = Instant::now();
-    let mut model = fleet(3, now);
-    model.selected = model.rows(now).len();
-    let screen = draw(&model, 160, 40, now);
-    let machine_lines = screen
-        .lines()
-        .filter(|line| line.contains("host-") && line.contains('%'))
-        .count();
-    assert_eq!(machine_lines, 3, "{screen}");
-    assert!(!screen.contains("up 3d 2h"), "{screen}");
-}
-
-#[test]
 fn a_mac_shows_its_performance_cores_apart_from_its_efficiency_cores() {
     use crate::proto::CoreKind::{Efficiency, Performance};
     let now = Instant::now();
-    let mut model = fleet(1, now);
+    let mut model = on_machine_page(fleet(1, now), now);
     let screen = draw(&model, 160, 50, now);
     assert!(!screen.contains("Performance"), "{screen}");
     let machine = model

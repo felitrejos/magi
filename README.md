@@ -31,16 +31,15 @@ This repo holds two apps that work together or alone:
 
 ## magi
 
-- **Every session, every machine.** Sessions are grouped by project, the ones
-  waiting on you on top, with each machine's CPU, memory and network beside
-  them. No server or config file.
+- **Every session, every machine.** Made to sit beside Rex's sidebar: what
+  needs you on top, then a band per machine with its load and a line per
+  session saying what it's doing. Any number of machines, no server or
+  config file.
 - **Sessions in their place.** A new session opens on whichever machine has
   room, in its project's Rex session and its repo's tab. Each subagent gets a
   tab of its own beside it, showing its work live, that closes when it's done.
 - **Answer from the overview.** Allow or deny a prompt, switch a session's
   permission mode, see its diff and outputs, or jump to its pane.
-- **Zen.** A second layout to glance at: a column per machine, its load and
-  its sessions.
 - **Limits and alerts.** Your Claude and Codex 5-hour and weekly windows, and
   an alert when a session needs you, a machine goes quiet or a plan nearly
   runs out.

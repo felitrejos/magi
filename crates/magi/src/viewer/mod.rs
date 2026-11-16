@@ -19,7 +19,6 @@ mod page;
 mod projects;
 mod rex;
 mod style;
-mod symbols;
 mod terminal;
 mod topology;
 mod units;
@@ -268,7 +267,6 @@ fn event_loop(
     graphics: &mut Graphics,
 ) -> io::Result<()> {
     let mut model = Model::new(port, Instant::now(), alerts);
-    model.host_icons = rex::host_icons();
     model.projects = projects::Projects::open(net::state_dir()?.join("projects.json"));
     links.reconcile(&mut model, &[Endpoint::Local])?;
     let mut dirty = true;
@@ -391,7 +389,7 @@ enum Action {
     Adopt,
     Project,
     RenameProject,
-    Zen,
+    Back,
     Diff,
     Outputs,
 }
@@ -414,7 +412,7 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('r') => Action::Adopt,
         Key::Char('p') => Action::Project,
         Key::Char('P') => Action::RenameProject,
-        Key::Char('z') => Action::Zen,
+        Key::Escape => Action::Back,
         Key::Char('d') => Action::Diff,
         Key::Char('v') => Action::Outputs,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
@@ -422,26 +420,8 @@ fn action(key: &Key) -> Option<Action> {
     })
 }
 
-fn on_detail(model: &Model, column: u16, row: u16, now: Instant) -> bool {
-    let Ok((width, height)) = ratatui::crossterm::terminal::size() else {
-        return false;
-    };
-    let full = ratatui::layout::Rect::new(0, 0, width, height);
-    let areas = view::areas(
-        full,
-        model.rows(now).len(),
-        model.plans(now).len(),
-        model.agents(now).len(),
-    );
-    areas
-        .detail
-        .contains(ratatui::layout::Position::new(column, row))
-}
-
-fn wheel(model: &mut Model, up: bool, column: u16, row: u16, now: Instant) {
-    if !on_detail(model, column, row, now) {
-        model.move_selection(if up { -1 } else { 1 }, now);
-    }
+fn wheel(model: &mut Model, up: bool, now: Instant) {
+    step(model, if up { -1 } else { 1 }, now);
 }
 
 fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
@@ -551,13 +531,18 @@ fn refresh_launcher(model: &mut Model, links: &Links, now: Instant) {
     }
 }
 
+fn step(model: &mut Model, delta: isize, now: Instant) {
+    model.move_selection(delta, now);
+    if model.machine_page.is_some() {
+        model.machine_page = match model.selection(now) {
+            Some(model::Focus::Machine(name)) => Some(name),
+            _ => None,
+        };
+    }
+}
+
 fn start_naming(model: &mut Model, whole_project: bool, now: Instant) {
-    if let Some(row) = model
-        .rows(now)
-        .get(model.selected)
-        .filter(|_| whole_project)
-    {
-        let name = row.name.clone();
+    if let Some(model::Focus::Machine(name)) = model.selection(now).filter(|_| whole_project) {
         let text = model
             .projects
             .machine_label(&name)
@@ -566,16 +551,6 @@ fn start_naming(model: &mut Model, whole_project: bool, now: Instant) {
         model.naming = Some(model::Naming {
             what: model::Renaming::Machine(name),
             text,
-        });
-        return;
-    }
-    if let Some((key, name, _)) = model.selected_folder(now).filter(|_| whole_project) {
-        model.naming = Some(model::Naming {
-            what: model::Renaming::Project {
-                key,
-                name: name.clone(),
-            },
-            text: name,
         });
         return;
     }
@@ -656,8 +631,8 @@ fn apply_naming(model: &mut Model, naming: model::Naming, now: Instant) {
 }
 
 fn ask_to_show(model: &mut Model, links: &Links, what: proto::Showing, now: Instant) {
-    let found = match model.detail_focus(now) {
-        Some(model::Focus::Agent(id) | model::Focus::Child(id, _)) => model
+    let found = match model.selection(now) {
+        Some(model::Focus::Agent(id)) => model
             .agents(now)
             .into_iter()
             .find(|agent| agent.session.id == id)
@@ -941,7 +916,6 @@ fn handle_batch(
         }
     }
     model.reselect(Instant::now());
-    model.note_shown(Instant::now());
     ask_namer(model, links);
     refresh_launcher(model, links, Instant::now());
     share_projects(model, links);
@@ -1057,39 +1031,24 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
                 _ => {}
             }
         }
-        Event::Input(Input::Key(
-            key @ (Key::Up | Key::Down | Key::Left | Key::Right | Key::Char('j' | 'k' | 'h' | 'l')),
-        )) if model.projects.zen() && model.naming.is_none() => {
-            let (down, across) = match key {
-                Key::Up | Key::Char('k') => (-1, 0),
-                Key::Down | Key::Char('j') => (1, 0),
-                Key::Left | Key::Char('h') => (0, -1),
-                _ => (0, 1),
-            };
-            model.zen_step(down, across, now);
-        }
-        Event::Input(Input::Key(key)) => match action(&key).filter(|action| {
-            !model.projects.zen()
-                || !matches!(
-                    action,
-                    Action::Allow | Action::Deny | Action::Choose(_) | Action::Stop | Action::Adopt
-                )
-        }) {
+        Event::Input(Input::Key(key)) => match action(&key) {
             Some(Action::Quit) => return Ok(Flow::Quit),
-            Some(Action::Up) => model.move_selection(-1, now),
-            Some(Action::Down) => model.move_selection(1, now),
-            Some(Action::First) => model.move_selection(isize::MIN, now),
-            Some(Action::Last) => model.move_selection(isize::MAX, now),
+            Some(Action::Up) => step(model, -1, now),
+            Some(Action::Down) => step(model, 1, now),
+            Some(Action::First) => step(model, isize::MIN, now),
+            Some(Action::Last) => step(model, isize::MAX, now),
+            Some(Action::Back) => model.machine_page = None,
             Some(Action::Alerts) => open_alerts(links),
             Some(Action::Move) => propose_move(model, now),
-            Some(Action::Enter) => match (model.selected_project(now), model.selection(now)) {
-                (Some(key), _) => {
-                    if let Err(error) = model.projects.toggle_fold(&key) {
-                        model.flash(format!("couldn't save projects: {error}"), false, now);
-                    }
+            Some(Action::Enter) => match model.selection(now) {
+                Some(model::Focus::Machine(name)) => {
+                    model.machine_page = match model.machine_page {
+                        Some(_) => None,
+                        None => Some(name),
+                    };
                 }
-                (None, Some(model::Focus::NewSession)) => open_launcher(model, links, now),
-                (None, _) => open_selected(model, links, now)?,
+                Some(model::Focus::Agent(_)) => open_selected(model, links, now)?,
+                None => {}
             },
             Some(Action::Allow) => answer(model, links, true, now),
             Some(Action::Deny) => answer(model, links, false, now),
@@ -1100,12 +1059,6 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Adopt) => adopt(model, links, now),
             Some(Action::Project) => start_naming(model, false, now),
             Some(Action::RenameProject) => start_naming(model, true, now),
-            Some(Action::Zen) => {
-                let zen = !model.projects.zen();
-                if let Err(error) = model.projects.set_zen(zen) {
-                    model.flash(format!("couldn't save the view: {error}"), false, now);
-                }
-            }
             Some(Action::Diff) => ask_to_show(model, links, proto::Showing::Diff, now),
             Some(Action::Outputs) => ask_to_show(model, links, proto::Showing::Outputs, now),
             None => {}
@@ -1134,7 +1087,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
         Event::Input(Input::Cells { width, height }) => model.cell_size = Some((width, height)),
         Event::Input(Input::Closed) => return Ok(Flow::Quit),
         Event::Input(Input::Click { .. }) => {}
-        Event::Input(Input::Wheel { up, column, row }) => wheel(model, up, column, row, now),
+        Event::Input(Input::Wheel { up, .. }) => wheel(model, up, now),
         Event::Topology(topology) => {
             let mut wanted: Vec<Endpoint> = std::iter::once(Endpoint::Local)
                 .chain(
@@ -1251,23 +1204,18 @@ mod tests {
             &mut links,
         )
         .unwrap();
-        assert_eq!(selected(&model), "nas");
+        assert_eq!(selected(&model), "homelab");
         handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(
             model.selection(Instant::now()),
-            Some(model::Focus::NewSession)
+            Some(model::Focus::Machine("nas".into()))
         );
     }
 
     #[test]
     fn the_selection_follows_its_machine_when_rows_reorder() {
         let (mut model, mut links) = fleet();
-        handle_batch(
-            [key(Key::Last), key(Key::Up)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
+        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
         agent(
             &mut model,
             Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 4)),
@@ -1380,8 +1328,7 @@ mod tests {
         model.apply(Endpoint::Local, live_sample(1_000, Some(session)), now);
         select_first_session(&mut model);
         let shown = screen(&model);
-        assert!(shown.contains("queued: then commit"), "{shown}");
-        assert!(shown.contains("plan mode"), "{shown}");
+        assert!(shown.contains("plan · queued"), "{shown}");
         assert!(footer(&model).contains("⇧tab mode"), "{}", footer(&model));
         handle_batch([key(Key::BackTab)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(
@@ -1616,12 +1563,8 @@ mod tests {
             ]),
             now,
         );
-        handle_batch(
-            [key(Key::Last), key(Key::Up)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
+        select(&mut model, "b");
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
         assert_eq!(model.selected_agent(now).unwrap().session.id, "b");
         model.apply(
             Endpoint::Local,
@@ -1660,42 +1603,42 @@ mod tests {
     }
 
     fn groups(model: &Model) -> Vec<(String, Vec<String>)> {
-        let mut groups: Vec<(String, Vec<String>)> = Vec::new();
-        for item in model.listed(Instant::now()) {
-            let (model::Group::Project(name), model::Entry::Session(agent)) =
-                (&item.group, &item.entry)
-            else {
-                continue;
-            };
-            match groups.last_mut() {
-                Some((last, ids)) if last == name => ids.push(agent.session.id.clone()),
-                _ => groups.push((name.clone(), vec![agent.session.id.clone()])),
-            }
+        let now = Instant::now();
+        let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for agent in model.agents(now) {
+            let (_, name) = model.project_of(&agent.session.project, now);
+            groups
+                .entry(name)
+                .or_default()
+                .push(agent.session.id.clone());
         }
-        for (_, ids) in &mut groups {
-            ids.sort();
-        }
+        let mut groups: Vec<(String, Vec<String>)> = groups
+            .into_iter()
+            .map(|(name, mut ids)| {
+                ids.sort();
+                (name, ids)
+            })
+            .collect();
+        groups.sort_by_key(|(name, _)| name.to_lowercase());
         groups
     }
 
     fn select_first_session(model: &mut Model) {
-        let now = Instant::now();
         let index = model
-            .listed(now)
+            .board(Instant::now())
             .iter()
-            .position(|item| matches!(item.entry, model::Entry::Session(_)))
+            .position(|item| matches!(item, model::Focus::Agent(_)))
             .unwrap();
-        model.selected = model.rows(now).len() + index;
+        model.selected = index;
     }
 
     fn select(model: &mut Model, id: &str) {
-        let now = Instant::now();
         let index = model
-            .listed(now)
+            .board(Instant::now())
             .iter()
-            .position(|item| matches!(&item.entry, model::Entry::Session(agent) if agent.session.id == id))
+            .position(|item| *item == model::Focus::Agent(id.into()))
             .unwrap();
-        model.selected = model.rows(now).len() + index;
+        model.selected = index;
     }
 
     #[test]
@@ -1739,63 +1682,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_started_by_another_sits_nested_right_under_it() {
-        let (mut model, _links) = fleet();
-        let now = Instant::now();
-        let mut child = claude("kid", 0);
-        child.parent = Some("s1".into());
-        let mut other = claude("s3", 0);
-        other.title = "another".into();
-        model.apply(
-            Endpoint::Local,
-            LinkUpdate::Sample(Box::new(Sample {
-                cpu: 1_000,
-                cores: vec![0; 8],
-                sessions: vec![child, other, claude("s1", 0)],
-                ..Sample::default()
-            })),
-            now,
-        );
-        let order: Vec<(String, bool)> = model
-            .listed(now)
-            .into_iter()
-            .filter_map(|item| match item.entry {
-                model::Entry::Session(agent) => Some((agent.session.id.clone(), item.nested)),
-                _ => None,
-            })
-            .collect();
-        let kid = order.iter().position(|(id, _)| id == "kid").unwrap();
-        assert_eq!(order[kid - 1].0, "s1");
-        assert!(order[kid].1 && !order[kid - 1].1);
-    }
-
-    #[test]
-    fn a_folder_row_keeps_the_pane_and_shows_its_keys_and_new_session_opens_the_launcher() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(claude("s1", 0))),
-            now,
-        );
-        select_first_session(&mut model);
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        handle_batch([key(Key::Up)].into_iter(), &mut model, &mut links).unwrap();
-        assert!(model.selected_folder(now).is_some());
-        let shown = screen(&model);
-        assert!(shown.contains("run the tests"), "{shown}");
-        assert!(shown.contains("↵ fold   P rename"), "{shown}");
-        handle_batch(
-            [key(Key::Last), key(Key::Enter)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert!(asked_and_failed(&model, "couldn't ask for its projects"));
-    }
-
-    #[test]
-    fn a_session_lists_its_subagents_and_one_points_to_its_own_tab() {
+    fn a_session_counts_its_running_subagents_whose_work_has_tabs_of_their_own() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         let mut parent = claude("s1", 0);
@@ -1810,48 +1697,9 @@ mod tests {
         }];
         model.apply(Endpoint::Local, live_sample(1_000, Some(parent)), now);
         select_first_session(&mut model);
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
         let shown = screen(&model);
-        assert!(shown.contains("Subagents and tasks"), "{shown}");
-        handle_batch([key(Key::Down)].into_iter(), &mut model, &mut links).unwrap();
-        let shown = screen(&model);
-        for text in [
-            "◇ Find the parser",
-            "subagent ·",
-            "from run the tests · Explore",
-            "Its work shows live in its own tab, ↳ Find the parser",
-        ] {
-            assert!(shown.contains(text), "missing {text:?}\n{shown}");
-        }
-    }
-
-    #[test]
-    fn enter_on_a_project_folds_it_to_a_count_and_opens_it_again() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(claude("s1", 0))),
-            now,
-        );
-        model.selected = model.rows(now).len();
-        assert_eq!(model.selected_project(now).as_deref(), Some("api"));
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        let entries: Vec<String> = model
-            .listed(now)
-            .iter()
-            .map(|item| match &item.entry {
-                model::Entry::Project {
-                    name, count, open, ..
-                } => format!("{name} {count} {open}"),
-                model::Entry::Session(agent) => agent.session.id.clone(),
-                model::Entry::Fold { .. } => "earlier".into(),
-                model::Entry::NewSession => "new".into(),
-                model::Entry::Child { child, .. } => child.id.clone(),
-            })
-            .collect();
-        assert_eq!(entries, ["api 1 false", "new"]);
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(groups(&model), [("api".into(), vec!["s1".into()])]);
+        assert!(shown.contains("↳ 1"), "{shown}");
     }
 
     #[test]
@@ -1930,7 +1778,7 @@ mod tests {
             now,
         );
         select_first_session(&mut model);
-        assert!(screen(&model).contains("not in Rex: continue it there"));
+        assert!(screen(&model).contains("not in Rex"), "{}", screen(&model));
         assert!(
             footer(&model).contains("r continue in Rex"),
             "{}",
@@ -1953,7 +1801,7 @@ mod tests {
             now,
         );
         select_first_session(&mut model);
-        assert!(!screen(&model).contains("Allow Bash?"));
+        assert!(!screen(&model).contains("Needs you"));
         handle_batch([key(Key::Char('y'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.flashed(Instant::now()), None);
         let mut asking = in_rex(claude("s1", 0));
@@ -1961,10 +1809,15 @@ mod tests {
             SessionState::Waiting(crate::proto::Waiting::Permission(Some("Bash".into())));
         model.apply(Endpoint::Local, live_sample(1_000, Some(asking)), now);
         model.reselect(now);
+        let shown = screen(&model);
         assert!(
-            screen(&model).contains("Allow Bash?") && screen(&model).contains("y allow   n deny"),
+            shown.contains("Needs you") && shown.contains("needs you · Bash"),
+            "{shown}"
+        );
+        assert!(
+            footer(&model).contains("y allow   n deny"),
             "{}",
-            screen(&model)
+            footer(&model)
         );
         handle_batch([key(Key::Char('n'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(
@@ -2053,7 +1906,7 @@ mod tests {
         assert!(shown.contains("localhost:3000 waiting"), "{shown}");
         assert!(!shown.contains("localhost:4000"), "{shown}");
         assert!(!shown.contains("localhost:5000"), "{shown}");
-        model.selected = 0;
+        model.machine_page = Some(model.rows(now)[0].name.clone());
         let shown = screen(&model);
         assert!(
             shown.contains("localhost:5000 → homelab for a session that left"),
@@ -2242,7 +2095,6 @@ mod tests {
         assert_eq!(model.projects.machine_label(&name), Some("Studio"));
         let shown = screen(&model);
         assert!(shown.contains("Studio"), "{shown}");
-        assert!(shown.contains(&format!("{name} · this machine")), "{shown}");
         let mut keys = vec![key(Key::Char('P'))];
         keys.extend((0..6).map(|_| key(Key::Backspace)));
         keys.push(key(Key::Enter));
@@ -2252,34 +2104,7 @@ mod tests {
     }
 
     #[test]
-    fn zen_shows_a_session_as_a_monitor_reads_no_conversation_and_never_types() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
-            now,
-        );
-        select_first_session(&mut model);
-        handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
-        assert!(model.projects.zen());
-        let shown = screen(&model);
-        for text in [
-            "all quiet",
-            "run the tests",
-            "no sessions",
-            "↵ open in Rex",
-            "z full view",
-        ] {
-            assert!(shown.contains(text), "missing {text:?}\n{shown}");
-        }
-        assert!(!shown.contains("show tools"), "{shown}");
-        handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
-        assert!(!model.projects.zen());
-    }
-
-    #[test]
-    fn zen_arrows_walk_the_board_across_machines_and_pick_where_a_move_goes() {
+    fn arrows_walk_machines_and_their_sessions_in_order_and_pick_where_a_move_goes() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
@@ -2295,7 +2120,7 @@ mod tests {
             now,
         );
         model.apply(nas, live_sample(1_000, None), now);
-        handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
         let selected = |model: &Model| {
             model
                 .selected_agent(now)
@@ -2303,32 +2128,29 @@ mod tests {
         };
         handle_batch([key(Key::Down)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(selected(&model).as_deref(), Some("a"));
-        handle_batch([key(Key::Right)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(selected(&model).as_deref(), Some("b"));
-        handle_batch([key(Key::Left)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(selected(&model).as_deref(), Some("a"));
-        handle_batch([key(Key::Up)].into_iter(), &mut model, &mut links).unwrap();
-        let machine = model.selection(now);
-        assert!(
-            matches!(machine, Some(model::Focus::Machine(_))),
-            "{machine:?}"
-        );
         handle_batch(
-            [key(Key::Left), key(Key::Char('P'))].into_iter(),
+            [key(Key::Down), key(Key::Down)].into_iter(),
             &mut model,
             &mut links,
         )
         .unwrap();
+        assert_eq!(selected(&model).as_deref(), Some("b"));
+        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Char('P'))].into_iter(), &mut model, &mut links).unwrap();
         let Some(model::Naming {
             what: model::Renaming::Machine(name),
             ..
         }) = model.naming.take()
         else {
-            panic!("P on a machine in Zen should start labelling it");
+            panic!("P on a machine should start labelling it");
         };
         assert!(name.contains("nas"), "{name}");
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.machine_page.as_deref(), Some(name.as_str()));
+        handle_batch([key(Key::Escape)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.machine_page, None);
         handle_batch(
-            [key(Key::Right), key(Key::Down)].into_iter(),
+            [key(Key::First), key(Key::Down)].into_iter(),
             &mut model,
             &mut links,
         )
