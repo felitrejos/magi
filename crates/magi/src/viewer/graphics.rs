@@ -284,7 +284,7 @@ impl Graphics {
         loop {
             let id = self.next_id;
             self.next_id = if id >= LAST_ID { FIRST_ID } else { id + 1 };
-            if !self.slots.values().any(|slot| slot.id == id) {
+            if !self.slots.values().any(|slot| slot.id == id) && !self.stale.contains(&id) {
                 return id;
             }
         }

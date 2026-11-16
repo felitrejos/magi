@@ -15,6 +15,7 @@ mod mac {
         look: (bool, Color),
         text: String,
         blocks: Vec<Block>,
+        texts: Vec<String>,
         lines: Vec<u64>,
         width: u32,
         row_height: u32,
@@ -56,6 +57,7 @@ mod mac {
                 look,
                 text: String::new(),
                 blocks: Vec::new(),
+                texts: Vec::new(),
                 lines: Vec::new(),
                 width: 0,
                 row_height: 1,
@@ -98,6 +100,7 @@ mod mac {
             let layout = self.engine.layout();
             self.page_height = layout.height;
             self.blocks = layout.blocks;
+            self.texts = layout.texts;
         }
 
         pub fn rows(&self) -> usize {
@@ -108,16 +111,26 @@ mod mac {
             let (top, bottom) = self.span(row);
             let mut hasher = DefaultHasher::new();
             (row, self.width, self.row_height, self.look.0).hash(&mut hasher);
-            for block in self
+            for (index, block) in self
                 .blocks
                 .iter()
-                .filter(|block| block.top < bottom && block.top + block.height > top)
+                .enumerate()
+                .filter(|(_, block)| block.top < bottom && block.top + block.height > top)
             {
                 (block.top.to_bits(), block.height.to_bits()).hash(&mut hasher);
-                let lines = (block.start as usize)..(block.end as usize).min(self.lines.len());
-                self.lines.get(lines).hash(&mut hasher);
+                self.texts.get(index).hash(&mut hasher);
+                let last = (block.end as usize + 1).min(self.lines.len());
+                let first = (block.start as usize).saturating_sub(1).min(last);
+                self.lines.get(first..last).hash(&mut hasher);
             }
             hasher.finish()
+        }
+
+        #[cfg(test)]
+        pub fn row_of_text(&self, needle: &str) -> Option<usize> {
+            let index = self.texts.iter().position(|text| text.contains(needle))?;
+            let block = self.blocks.get(index)?;
+            Some((block.top * self.scale / f64::from(self.row_height)) as usize)
         }
 
         fn span(&self, row: usize) -> (f64, f64) {
@@ -194,5 +207,34 @@ pub fn draw_rows(
             typesetter.key(row),
             |width, height| typesetter.pixels(row, width, height),
         );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_changed_short_paragraph_gets_new_pixels_and_unchanged_rows_keep_theirs() {
+        let mut paper = Typesetter::new().unwrap();
+        paper.fit(1200, 34);
+        let keys = |paper: &Typesetter| {
+            (0..paper.rows())
+                .map(|row| paper.key(row))
+                .collect::<Vec<_>>()
+        };
+        paper.show(
+            "First paragraph.\n\nThat's it.\n\nAfter.",
+            std::path::Path::new("."),
+        );
+        let changed = paper.row_of_text("That's it.").unwrap();
+        let before = keys(&paper);
+        paper.show(
+            "First paragraph.\n\nWhat else.\n\nAfter.",
+            std::path::Path::new("."),
+        );
+        let after = keys(&paper);
+        assert_eq!(before[0], after[0]);
+        assert_ne!(before[changed], after[changed]);
     }
 }
