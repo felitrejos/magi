@@ -2,6 +2,7 @@ mod alerts;
 mod base64;
 mod chart;
 mod diacritics;
+mod diff;
 mod fleet;
 mod graphics;
 mod input;
@@ -649,46 +650,46 @@ fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instan
         Err(reason) => return model.flash(reason, false, now),
     };
     let diff = shown.what == proto::Showing::Diff;
-    let path = match popup_file(&text, if diff { "diff" } else { "md" }) {
-        Ok(path) => path,
-        Err(error) => return model.flash(format!("couldn't save it to show: {error}"), false, now),
+    let browsed = if diff {
+        net::state_dir().and_then(|state| diff::browser(&text, &shown.title, &state.join("popups")))
+    } else {
+        Ok(None)
     };
-    let file = path.to_string_lossy().into_owned();
-    let delta = diff
-        .then(|| crate::handoff::find("delta", &crate::handoff::search_dirs()))
-        .flatten();
-    let command: Vec<String> = match delta {
-        Some(delta) => vec![
-            "sh".into(),
-            "-c".into(),
-            r#""$0" --paging=always < "$1"; rm -f "$1""#.into(),
-            delta.to_string_lossy().into_owned(),
-            file,
-        ],
-        None => {
-            let magi = std::env::current_exe().map_or_else(
-                |_| "magi".to_string(),
-                |path| path.to_string_lossy().into_owned(),
-            );
-            let mut command = vec![
-                magi,
-                "page".into(),
-                "--remove".into(),
-                "--title".into(),
-                shown.title.clone(),
-            ];
-            if diff {
-                command.push("--diff".into());
+    let command = match browsed {
+        Ok(Some(command)) => command,
+        Ok(None) => match page_command(&text, &shown.title, diff) {
+            Ok(command) => command,
+            Err(error) => {
+                return model.flash(format!("couldn't save it to show: {error}"), false, now);
             }
-            command.push(file);
-            command
-        }
+        },
+        Err(error) => return model.flash(format!("couldn't save it to show: {error}"), false, now),
     };
     let label = format!("magi: {}", shown.title);
     let sender = links.sender.clone();
     let _ = thread::Builder::new().name("popup".into()).spawn(move || {
         let _ = sender.send(Event::Opened(rex::float(&label, &command, rex::POPUP)));
     });
+}
+
+fn page_command(text: &str, title: &str, diff: bool) -> io::Result<Vec<String>> {
+    let path = popup_file(text, if diff { "diff" } else { "md" })?;
+    let magi = std::env::current_exe().map_or_else(
+        |_| "magi".to_string(),
+        |path| path.to_string_lossy().into_owned(),
+    );
+    let mut command = vec![
+        magi,
+        "page".into(),
+        "--remove".into(),
+        "--title".into(),
+        title.to_string(),
+    ];
+    if diff {
+        command.push("--diff".into());
+    }
+    command.push(path.to_string_lossy().into_owned());
+    Ok(command)
 }
 
 fn popup_file(text: &str, extension: &str) -> io::Result<PathBuf> {

@@ -8,7 +8,7 @@ mod mac {
 
     use crate::viewer::style::{self, theme};
 
-    const BODY_FONTS: &str = "Charter, \"Iowan Old Style\", system-ui";
+    const BODY_FONTS: &str = "system-ui";
     const HEADING_SCALE: &str = "1.3 1.18 1.08 1 1 1";
     const HEADING_WEIGHT: &str = "560 540 520 500 500 500";
     const LINE_HEIGHT: &str = "1.55";
@@ -272,8 +272,11 @@ mod tests {
         let path = std::env::var("MAGI_PNG").unwrap();
         let mut paper = Typesetter::new().unwrap();
         paper.fit(1400, 34);
+        let sample = std::env::var("MAGI_MD")
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok());
         paper.show(
-            "## Grouping the cores\n\nThe agent reads each core's **cluster type** once, from the device tree, and sends it with the machine's identity. The view then shows `Performance` and `Efficiency` apart.\n\n- Each group is numbered on its own\n- Its average sits beside its title\n\n> A quote stays quiet.\n\n```rust\nfn kinds() -> Vec<CoreKind> {\n    mac::kinds().unwrap_or_default()\n}\n```\n\nCommitted and pushed, see [the commit](https://example.com).",
+            sample.as_deref().unwrap_or("## Grouping the cores\n\nThe agent reads each core's **cluster type** once, from the device tree, and sends it with the machine's identity. The view then shows `Performance` and `Efficiency` apart.\n\n- Each group is numbered on its own\n- Its average sits beside its title\n\n> A quote stays quiet.\n\n```rust\nfn kinds() -> Vec<CoreKind> {\n    mac::kinds().unwrap_or_default()\n}\n```\n\nCommitted and pushed, see [the commit](https://example.com)."),
             std::path::Path::new("."),
         );
         let rows = paper.rows();

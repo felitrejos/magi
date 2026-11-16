@@ -124,7 +124,8 @@ x86_64 or arm64, after checking their SHA-256. Every machine needs
 
 Keys: `↑↓` select, `c` new session, `↵` or a click on the conversation to
 write (`⇧↵` for a new line), `y`/`n` allow or deny, `1`–`9` choose, `x` stop,
-`r` continue in Rex, `o` open in Rex, `m` move, `d` its changes and `v` its
+`r` continue in Rex, `o` open in Rex, `m` move, `d` its changes (a file list with each file's diff
+beside it, through fzf and delta when they're installed) and `v` its
 plan in a floating pane over magi, `t` show or fold its tool calls, `p` move its repo to another project, `P`
 rename its project (onto another name to merge them) or, on a machine, give
 it a label to show instead of its name, `a` alerts, `q` quit.
