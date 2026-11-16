@@ -48,6 +48,7 @@ Usage:
   magi start MACHINE FOLDER|--chat [--project NAME] [--codex] [--model M]
                                                        start a session there, in its project's Rex tab
   magi events                                          what needs you, as JSON lines, as it happens
+  magi mcp                                             all of the above as an MCP server, for Claude Desktop and others
 
   SESSION is the start of its id or a unique part of its title.
   magi --version
@@ -72,6 +73,7 @@ enum Command {
     Alerts,
     Follow(std::path::PathBuf),
     Cli(u16, viewer::Cli),
+    Mcp(u16),
     Version,
     Help,
 }
@@ -99,6 +101,7 @@ fn main() -> ExitCode {
         Command::Alerts => viewer::alerts(),
         Command::Follow(transcript) => viewer::follow(&transcript),
         Command::Cli(port, command) => viewer::cli(port, command),
+        Command::Mcp(port) => viewer::mcp(port),
         Command::Version => {
             println!("magi {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -132,6 +135,7 @@ enum Mode {
     Document,
     Alerts,
     Follow,
+    Mcp,
     Sessions,
     Send,
     Answer,
@@ -288,6 +292,7 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
             Value(value) if value == "md" && mode == Mode::Viewer => mode = Mode::Document,
             Value(value) if value == "alerts" && mode == Mode::Viewer => mode = Mode::Alerts,
             Value(value) if value == "follow" && mode == Mode::Viewer => mode = Mode::Follow,
+            Value(value) if value == "mcp" && mode == Mode::Viewer => mode = Mode::Mcp,
             Long("width") if mode == Mode::Document => width = parser.value()?.parse()?,
             Long("diff") if mode == Mode::Page => page.diff = true,
             Long("remove") if mode == Mode::Page => remove = true,
@@ -314,7 +319,7 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
             Long("port")
                 if matches!(
                     mode,
-                    Mode::Viewer | Mode::Fleet | Mode::Agent | Mode::Install
+                    Mode::Viewer | Mode::Fleet | Mode::Agent | Mode::Install | Mode::Mcp
                 ) || is_cli(mode) =>
             {
                 port = parser.value()?.parse()?
@@ -349,6 +354,7 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         Mode::StatusLineUninstall => Command::StatusLineUninstall,
         Mode::Launch => Command::Launch(file.ok_or("magi launch needs the viewer's socket")?),
         Mode::Alerts => Command::Alerts,
+        Mode::Mcp => Command::Mcp(port),
         Mode::Follow => Command::Follow(file.ok_or("magi follow needs a subagent's transcript")?),
         Mode::Document => Command::Document(file.ok_or("magi md needs a file")?, width),
         Mode::Page => {

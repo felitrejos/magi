@@ -202,7 +202,7 @@ four letters long. `send` queues for a busy session, `move` waits for the
 move to finish, `events` prints what needs you as JSON lines (raised,
 updated, resolved).
 
-## Phase 12: `magi mcp`
+## Phase 12: `magi mcp` (done)
 
 The same commands as MCP tools for Claude Desktop, Claude Code and other
 orchestrators: read tools (machines, sessions, a session's recent work,

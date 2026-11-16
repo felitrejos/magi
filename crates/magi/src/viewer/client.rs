@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::model::{Endpoint, LinkState, LinkUpdate, Model, Presence};
 use super::{EVENT_BACKLOG, Event, Links, alerts, handle, net, topology};
-use crate::proto::{AgentSession, Reply, Request};
+use crate::proto::{AgentSession, Reply, Request, Screen, Shown};
 
 const SETTLE_WITHIN: Duration = Duration::from_secs(3);
 const MIN_ID_PREFIX: usize = 4;
@@ -15,7 +15,13 @@ pub struct Client {
     pub model: Model,
     links: Links,
     events: Receiver<Event>,
-    replies: VecDeque<(Endpoint, Reply)>,
+    inbox: VecDeque<(Endpoint, Answer)>,
+}
+
+pub enum Answer {
+    Reply(Reply),
+    Shown(Shown),
+    Screen(Screen),
 }
 
 #[derive(Clone)]
@@ -41,7 +47,7 @@ impl Client {
             model: Model::new(port, started, alerts::Alerts::in_memory(started)),
             links,
             events,
-            replies: VecDeque::new(),
+            inbox: VecDeque::new(),
         };
         client
             .links
@@ -107,25 +113,41 @@ impl Client {
         request: &Request,
         within: Duration,
     ) -> Result<String, String> {
-        self.links
-            .request(endpoint, request)
-            .map_err(|error| format!("couldn't reach that machine: {error}"))?;
+        self.send(endpoint, request)?;
         self.reply(endpoint, within)
     }
 
+    pub fn send(&self, endpoint: Endpoint, request: &Request) -> Result<(), String> {
+        self.links
+            .request(endpoint, request)
+            .map_err(|error| format!("couldn't reach that machine: {error}"))
+    }
+
     pub fn reply(&mut self, endpoint: Endpoint, within: Duration) -> Result<String, String> {
+        let reply = self.answer(endpoint, within, |answer| match answer {
+            Answer::Reply(reply) => Some(reply),
+            Answer::Shown(_) | Answer::Screen(_) => None,
+        })?;
+        if reply.ok {
+            Ok(reply.text)
+        } else {
+            Err(reply.text)
+        }
+    }
+
+    pub fn answer<T>(
+        &mut self,
+        endpoint: Endpoint,
+        within: Duration,
+        wanted: impl Fn(Answer) -> Option<T>,
+    ) -> Result<T, String> {
         let deadline = Instant::now() + within;
         loop {
-            if let Some(index) = self.replies.iter().position(|(from, _)| *from == endpoint) {
-                let (_, reply) = self
-                    .replies
-                    .remove(index)
-                    .expect("index came from the queue");
-                return if reply.ok {
-                    Ok(reply.text)
-                } else {
-                    Err(reply.text)
-                };
+            while let Some(index) = self.inbox.iter().position(|(from, _)| *from == endpoint) {
+                let (_, answer) = self.inbox.remove(index).expect("index came from the queue");
+                if let Some(found) = wanted(answer) {
+                    return Ok(found);
+                }
             }
             let left = deadline
                 .checked_duration_since(Instant::now())
@@ -145,11 +167,16 @@ impl Client {
     }
 
     fn take(&mut self, event: Event) -> io::Result<()> {
-        if let Event::Link(endpoint, _, LinkUpdate::Reply(reply)) = event {
-            self.replies.push_back((endpoint, reply));
-            return Ok(());
-        }
-        handle(event, &mut self.model, &mut self.links).map(drop)
+        let answer = match event {
+            Event::Link(endpoint, _, LinkUpdate::Reply(reply)) => (endpoint, Answer::Reply(reply)),
+            Event::Link(endpoint, _, LinkUpdate::Shown(shown)) => (endpoint, Answer::Shown(shown)),
+            Event::Link(endpoint, _, LinkUpdate::Screen(screen)) => {
+                (endpoint, Answer::Screen(screen))
+            }
+            event => return handle(event, &mut self.model, &mut self.links).map(drop),
+        };
+        self.inbox.push_back(answer);
+        Ok(())
     }
 }
 

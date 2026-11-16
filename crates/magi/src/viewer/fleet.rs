@@ -24,7 +24,7 @@ pub fn print(config: Config, as_json: bool) -> io::Result<()> {
     }
 }
 
-fn describe(row: &Row<'_>) -> Value {
+pub(super) fn describe(row: &Row<'_>) -> Value {
     let Some((machine, sample)) = row
         .machine()
         .filter(|_| row.state() == Some(&LinkState::Live))
@@ -98,7 +98,7 @@ pub(super) fn session(session: &AgentSession) -> Value {
     })
 }
 
-fn plan(plan: &Plan) -> Value {
+pub(super) fn plan(plan: &Plan) -> Value {
     json!({
         "agent": agent_key(plan.agent),
         "windows": plan.windows.iter().map(|window| json!({

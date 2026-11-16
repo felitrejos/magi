@@ -50,6 +50,7 @@ pub enum LinkUpdate {
     Models(Vec<CodexModel>),
     Projects(SharedProjects),
     Shown(crate::proto::Shown),
+    Screen(crate::proto::Screen),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -684,6 +685,7 @@ impl Model {
                 }
                 return;
             }
+            LinkUpdate::Screen(_) => return,
             update => update,
         };
         if matches!(update, LinkUpdate::Welcome(_)) {
@@ -736,6 +738,7 @@ impl Model {
             | LinkUpdate::Folders(_)
             | LinkUpdate::Models(_)
             | LinkUpdate::Projects(_)
+            | LinkUpdate::Screen(_)
             | LinkUpdate::Shown(_) => {
                 unreachable!("replies, screens and folders are handled before a link is looked up")
             }

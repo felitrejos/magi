@@ -102,6 +102,19 @@ magi start homelab ~/developer/stampr/stampr --project Stampr
 magi events                     # what needs you, as JSON lines
 ```
 
+`magi mcp` offers the same as MCP tools, so Claude can look after your other
+sessions from Claude Desktop, Claude Code or any MCP client. In Claude Code:
+`claude mcp add magi -- magi mcp`. In Claude Desktop, add to
+`claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "magi": { "command": "/Users/you/.local/bin/magi", "args": ["mcp"] } } }
+```
+
+Looking (machines, sessions, recent work, diffs, alerts) needs no approval
+from the tools' side; acting (message, answer, mode, move, start) is marked
+as such, so your client asks you first.
+
 ## How it works
 
 Each machine runs `magi agent` in the background (launchd or a systemd user

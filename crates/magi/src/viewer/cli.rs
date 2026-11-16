@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::alerts;
 use super::client::{Client, Found, short_id};
@@ -96,16 +96,7 @@ fn sessions(client: &Client, as_json: bool) -> io::Result<()> {
     let agents = client.model.agents(Instant::now());
     let mut out = io::stdout().lock();
     if as_json {
-        let listed: Vec<_> = agents
-            .iter()
-            .map(|agent| {
-                let mut session = fleet::session(agent.session);
-                session["machine"] = json!(agent.machine);
-                session["live"] = json!(agent.live);
-                session
-            })
-            .collect();
-        serde_json::to_writer(&mut out, &listed)?;
+        serde_json::to_writer(&mut out, &listed(client))?;
         return writeln!(out);
     }
     for agent in &agents {
@@ -133,7 +124,22 @@ fn sessions(client: &Client, as_json: bool) -> io::Result<()> {
     Ok(())
 }
 
-fn answer(client: &mut Client, query: &str, allow: bool) -> Result<String, String> {
+pub(super) fn listed(client: &Client) -> Value {
+    let agents = client.model.agents(Instant::now());
+    Value::Array(
+        agents
+            .iter()
+            .map(|agent| {
+                let mut session = fleet::session(agent.session);
+                session["machine"] = json!(agent.machine);
+                session["live"] = json!(agent.live);
+                session
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn answer(client: &mut Client, query: &str, allow: bool) -> Result<String, String> {
     let found = client.session(query)?;
     let SessionState::Waiting(Waiting::Permission(tool)) = &found.session.state else {
         return Err(format!(
@@ -150,7 +156,7 @@ fn answer(client: &mut Client, query: &str, allow: bool) -> Result<String, Strin
     client.ask(found.endpoint, &request, ANSWER_WITHIN)
 }
 
-fn choose(client: &mut Client, query: &str, option: u8) -> Result<String, String> {
+pub(super) fn choose(client: &mut Client, query: &str, option: u8) -> Result<String, String> {
     let found = client.session(query)?;
     if !matches!(
         found.session.state,
@@ -166,7 +172,11 @@ fn choose(client: &mut Client, query: &str, option: u8) -> Result<String, String
     client.ask(found.endpoint, &request, ANSWER_WITHIN)
 }
 
-fn mode(client: &mut Client, query: &str, to: Option<PermissionMode>) -> Result<String, String> {
+pub(super) fn mode(
+    client: &mut Client,
+    query: &str,
+    to: Option<PermissionMode>,
+) -> Result<String, String> {
     let Found {
         endpoint, session, ..
     } = client.session(query)?;
@@ -193,7 +203,7 @@ fn mode(client: &mut Client, query: &str, to: Option<PermissionMode>) -> Result<
     ))
 }
 
-fn move_to(client: &mut Client, query: &str, to: &str) -> Result<String, String> {
+pub(super) fn move_to(client: &mut Client, query: &str, to: &str) -> Result<String, String> {
     let found = client.session(query)?;
     let to = client.machine(to)?;
     let request = Request::Move {

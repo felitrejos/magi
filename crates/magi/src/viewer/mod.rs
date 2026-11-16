@@ -12,6 +12,7 @@ mod graphics;
 mod input;
 mod launcher;
 mod link;
+mod mcp;
 mod model;
 mod namer;
 mod page;
@@ -70,6 +71,7 @@ pub use feed::run as alerts;
 pub use fleet::print as fleet;
 pub use follow::run as follow;
 pub use launcher::run as launch;
+pub use mcp::run as mcp;
 pub use page::{Page, run as page};
 
 pub fn print_document(path: &std::path::Path, width: usize) -> io::Result<()> {
