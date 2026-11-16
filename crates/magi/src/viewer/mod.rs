@@ -9,6 +9,7 @@ mod link;
 mod model;
 mod rex;
 mod style;
+mod symbols;
 mod terminal;
 mod topology;
 mod units;
@@ -150,6 +151,7 @@ fn event_loop(
     graphics: &mut Graphics,
 ) -> io::Result<()> {
     let mut model = Model::new(port, Instant::now(), alerts);
+    model.host_icons = rex::host_icons();
     links.reconcile(&mut model, &[Endpoint::Local])?;
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME;

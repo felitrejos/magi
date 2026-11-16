@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
@@ -7,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{
-    Composed, Cursor, body, clip, draw_panel, icon, pad, panel, selected_style, spans_width,
+    Composed, Cursor, Mark, body, clip, draw_panel, icon, pad, panel, selected_style, spans_width,
     truncate,
 };
 use crate::proto::FULL;
@@ -23,6 +24,8 @@ use unicode_width::UnicodeWidthStr;
 const GUTTER: u16 = 9;
 
 const SIDEBAR_BAR: usize = 5;
+const ICON_WIDTH: u16 = 2;
+const ICON_GAP: &str = "   ";
 const SIDEBAR_GAUGE: usize = SIDEBAR_BAR + 5;
 
 pub fn render_list(
@@ -30,6 +33,7 @@ pub fn render_list(
     area: Rect,
     model: &Model,
     rows: &[Row<'_>],
+    marks: &HashMap<String, Mark>,
     now: Instant,
     graphics: &mut Graphics,
 ) {
@@ -48,7 +52,8 @@ pub fn render_list(
         .map(|row| row.name.width())
         .max()
         .unwrap_or(0)
-        .clamp(6, width.saturating_sub(SIDEBAR_GAUGE + 2).max(6));
+        .clamp(6, width.saturating_sub(SIDEBAR_GAUGE + 5).max(6));
+    let icons = graphics.has_pixels();
     let mut cursor = Cursor::new(area);
     for (index, row) in rows.iter().enumerate().skip(first).take(visible) {
         let selected = index == model.selected;
@@ -63,6 +68,7 @@ pub fn render_list(
             .and_then(|machine| machine.latest.as_ref().map(|_| machine));
         let line = Composed::of(vec![
             Span::styled(if selected { "▎" } else { " " }, style::fg(theme().accent)),
+            Span::raw(if icons { ICON_GAP } else { "" }),
             Span::styled(truncate(&row.name, name_width), name_style),
         ]);
         let room = width.saturating_sub(name_width + 2);
@@ -70,8 +76,18 @@ pub fn render_list(
             Some(machine) => sidebar_gauge(machine, index),
             None => Composed::of(vec![status_span(row, model.port, now, room)]),
         };
+        let at = cursor.row();
         line.spread(right, width)
-            .draw(frame, graphics, cursor.row(), selected_style(selected));
+            .draw(frame, graphics, at, selected_style(selected));
+        if let Some(mark) = marks.get(&row.name).filter(|_| icons) {
+            graphics.icon(
+                frame.buffer_mut(),
+                Rect::new(at.x + 1, at.y, ICON_WIDTH, 1),
+                format!("mark:{}", row.name),
+                &mark.symbols,
+                if selected { theme().text } else { theme().dim },
+            );
+        }
         cursor.skip();
     }
 }

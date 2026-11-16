@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -7,13 +8,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::{
-    Cursor, body, clip, draw_panel, machine_tag, markdown, panel, selected_style, spans_width,
-    spread, tail, truncate,
+    Cursor, Mark, body, clip, draw_panel, markdown, panel, selected_style, spans_width, spread,
+    tail, truncate,
 };
 use crate::proto::{
     Agent, AgentSession, BOLD, Child, Content, DIM, FULL, ForwardState, INVERSE, ITALIC, Run,
     SessionState, Shade, UNDERLINE, Waiting,
 };
+use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Draft, Endpoint, Entry, Group, Listed, Model, MoveTarget};
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
@@ -22,6 +24,7 @@ use unicode_width::UnicodeWidthStr;
 const HIGH_CPU_SHARE: f32 = 0.4;
 const MIN_TITLE: usize = 28;
 const MAX_BADGE: usize = 10;
+const ICON_WIDTH: u16 = 2;
 const DRAFT_ROWS: usize = 6;
 const TAB: &str = "    ";
 
@@ -31,8 +34,10 @@ pub fn render_list(
     model: &Model,
     listed: &[Listed<'_>],
     offset: usize,
-    machines: &[&str],
+    marks: &HashMap<String, Mark>,
+    graphics: &mut Graphics,
 ) {
+    let icons = graphics.has_pixels();
     let width = area.width as usize;
     if listed.is_empty() {
         frame.render_widget(
@@ -49,6 +54,7 @@ pub fn render_list(
     }
     let selected = model.selected.checked_sub(offset);
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut placed: Vec<(usize, usize, &Mark)> = Vec::new();
     let mut selected_end = 0;
     let mut group = None;
     for (index, item) in listed.iter().enumerate() {
@@ -64,7 +70,14 @@ pub fn render_list(
         let is_selected = selected == Some(index);
         match &item.entry {
             Entry::Session(agent) => {
-                lines.push(session_line(agent, machines, is_selected, width));
+                let mark = marks
+                    .get(&agent.machine)
+                    .filter(|_| agent.endpoint != Endpoint::Local);
+                let (line, icon_at) = session_line(agent, mark, icons, is_selected, width);
+                if let (Some(column), Some(mark)) = (icon_at, mark) {
+                    placed.push((lines.len(), column, mark));
+                }
+                lines.push(line);
                 lines.extend(
                     agent
                         .session
@@ -85,6 +98,18 @@ pub fn render_list(
     let first = selected_end.saturating_sub(visible);
     let shown: Vec<Line<'static>> = lines.into_iter().skip(first).take(visible).collect();
     frame.render_widget(Paragraph::new(shown), area);
+    for (line, column, mark) in placed {
+        let Some(row) = line.checked_sub(first).filter(|row| *row < visible) else {
+            continue;
+        };
+        graphics.icon(
+            frame.buffer_mut(),
+            Rect::new(area.x + column as u16, area.y + row as u16, ICON_WIDTH, 1),
+            format!("session:{line}"),
+            &mark.symbols,
+            theme().dim,
+        );
+    }
 }
 
 fn heading(group: &Group) -> Option<Line<'static>> {
@@ -101,30 +126,31 @@ fn heading(group: &Group) -> Option<Line<'static>> {
 
 fn session_line(
     agent: &AgentRow<'_>,
-    machines: &[&str],
+    mark: Option<&Mark>,
+    icons: bool,
     is_selected: bool,
     width: usize,
-) -> Line<'static> {
+) -> (Line<'static>, Option<usize>) {
     let session = agent.session;
-    let (mark, color) = style::agent(session.agent);
+    let (agent_mark, color) = style::agent(session.agent);
     let mut right = Vec::new();
-    if agent.endpoint != Endpoint::Local {
-        right.push(Span::styled(
-            format!(
-                "{} ",
-                truncate(machine_tag(&agent.machine, machines), MAX_BADGE)
-            ),
+    match mark {
+        Some(_) if icons => right.push(Span::raw(" ".repeat(ICON_WIDTH as usize + 1))),
+        Some(mark) => right.push(Span::styled(
+            format!("{} ", truncate(&mark.tag, MAX_BADGE)),
             style::fg(theme().faint),
-        ));
+        )),
+        None => {}
     }
     right.push(row_state(session, agent.live));
-    spread(
+    let icon_at = (mark.is_some() && icons).then(|| width.saturating_sub(spans_width(&right)));
+    let line = spread(
         vec![
             Span::styled(
                 if is_selected { "▎" } else { " " },
                 style::fg(theme().accent),
             ),
-            Span::styled(format!("{mark} "), style::fg(color)),
+            Span::styled(format!("{agent_mark} "), style::fg(color)),
             Span::styled(
                 session.title.clone(),
                 if is_selected {
@@ -137,7 +163,8 @@ fn session_line(
         right,
         width,
     )
-    .style(selected_style(is_selected))
+    .style(selected_style(is_selected));
+    (line, icon_at)
 }
 
 fn row_state(session: &AgentSession, live: bool) -> Span<'static> {

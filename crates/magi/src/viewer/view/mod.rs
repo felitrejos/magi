@@ -4,6 +4,7 @@ mod machines;
 mod markdown;
 mod picker;
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use ratatui::Frame;
@@ -13,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
-use super::model::{Entry, Model};
+use super::model::{Entry, Model, Row};
 use super::style::{self, theme};
 use super::units;
 use crate::proto::{Agent, FULL, Plan, SessionState};
@@ -99,7 +100,8 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         .buffer_mut()
         .set_style(sidebar, Style::new().bg(theme().panel));
     render_footer(frame, footer, model, now);
-    machines::render_list(frame, machine_area, model, &rows, now, graphics);
+    let marks = marks(model, &rows);
+    machines::render_list(frame, machine_area, model, &rows, &marks, now, graphics);
     let mut cursor = Cursor::new(plan_area);
     for plan in &plans {
         let room = plan_area.width as usize;
@@ -111,8 +113,15 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         cursor.composed(frame, graphics, line);
     }
     let listed = model.listed(now);
-    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
-    agents::render_list(frame, agent_area, model, &listed, rows.len(), &names);
+    agents::render_list(
+        frame,
+        agent_area,
+        model,
+        &listed,
+        rows.len(),
+        &marks,
+        graphics,
+    );
 
     if let Some(picker) = &model.picker {
         let recent = model.recent_projects(picker.endpoint, now);
@@ -178,6 +187,39 @@ fn draw_panel(frame: &mut Frame, area: Rect, header: Header<'static>) {
         row.width as usize,
     );
     frame.render_widget(Paragraph::new(line), row);
+}
+
+pub struct Mark {
+    tag: String,
+    symbols: Vec<String>,
+}
+
+fn marks(model: &Model, rows: &[Row<'_>]) -> HashMap<String, Mark> {
+    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    rows.iter()
+        .map(|row| {
+            let symbols = model
+                .host_icons
+                .get(&row.name.to_lowercase())
+                .into_iter()
+                .cloned()
+                .chain(default_symbols(row).iter().map(|symbol| symbol.to_string()))
+                .collect();
+            let tag = machine_tag(&row.name, &names).to_string();
+            (row.name.clone(), Mark { tag, symbols })
+        })
+        .collect()
+}
+
+fn default_symbols(row: &Row<'_>) -> &'static [&'static str] {
+    let mac = row
+        .machine()
+        .is_some_and(|machine| machine.identity.os.starts_with("macOS"));
+    if mac {
+        &["macbook", "laptopcomputer"]
+    } else {
+        &["server.rack"]
+    }
 }
 
 fn machine_tag<'a>(name: &'a str, names: &[&str]) -> &'a str {

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
@@ -51,6 +52,45 @@ pub fn open(pane: &RexPane) -> Result<(), String> {
         ],
     )?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct Hosts {
+    hosts: Vec<Listed>,
+}
+
+#[derive(Deserialize)]
+struct Listed {
+    host: Host,
+}
+
+#[derive(Deserialize)]
+struct Host {
+    label: Option<String>,
+    icon: Option<String>,
+}
+
+pub fn host_icons() -> HashMap<String, String> {
+    let Some(here) = here() else {
+        return HashMap::new();
+    };
+    let Ok(listing) = rex(&here, &["hosts", "list", "--json"]) else {
+        return HashMap::new();
+    };
+    serde_json::from_slice::<Hosts>(&listing)
+        .map(|hosts| host_icon_pairs(hosts.hosts))
+        .unwrap_or_default()
+}
+
+fn host_icon_pairs(hosts: Vec<Listed>) -> HashMap<String, String> {
+    hosts
+        .into_iter()
+        .filter_map(|listed| {
+            let label = listed.host.label?.to_lowercase();
+            let icon = listed.host.icon.filter(|icon| !icon.is_empty())?;
+            Some((label, icon))
+        })
+        .collect()
 }
 
 fn here() -> Option<Here> {
