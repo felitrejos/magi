@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
-use super::model::{Entry, Model, Naming, Renaming, Row};
+use super::model::{AgentRow, Focus, Model, Naming, Renaming, Row};
 use super::style::{self, theme};
 use super::units;
 use crate::proto::{Agent, FULL, Plan, SessionState};
@@ -152,49 +152,53 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         picker::render(frame, detail_area, picker, &recent, &home);
     } else if model.showing_alerts {
         history::render(frame, detail_area, &model.alerts);
-    } else if let Some(row) = rows.get(model.selected) {
-        machines::render_detail(frame, detail_area, row, model.port, now, graphics);
-    } else if let Some(item) = listed.get(model.selected - rows.len()) {
-        match &item.entry {
-            Entry::Session(agent) => {
-                let suggestion = model.move_suggestion(agent, now);
-                let source = if agent.session.pane.is_some() && agent.session.state.is_waiting() {
-                    agents::Source::Pane
-                } else {
-                    agents::Source::Conversation
-                };
-                let preview = match model.screen(&agent.session.id) {
-                    None if agent.live => agents::Preview::Waiting(source),
-                    None => agents::Preview::Gone,
-                    Some(screen) => match &screen.view {
-                        Ok(content) => agents::Preview::Ready(content),
-                        Err(reason) => agents::Preview::Failed(reason),
-                    },
-                };
-                agents::render_detail(
-                    frame,
-                    detail_area,
-                    agent,
-                    suggestion.as_ref(),
-                    preview,
-                    model.draft.as_ref(),
-                    &model.forwards_to(&agent.session.id, &agent.machine, now),
-                );
+    } else {
+        match model.detail_focus(now) {
+            Some(Focus::Machine(name)) => {
+                if let Some(row) = rows.iter().find(|row| row.name == name) {
+                    machines::render_detail(frame, detail_area, row, model.port, now, graphics);
+                }
             }
-            Entry::Project { name, count, .. } => {
-                agents::render_folder(frame, detail_area, name, &project_note(*count));
+            Some(Focus::Agent(id)) => {
+                if let Some(agent) = agents.iter().find(|agent| agent.session.id == id) {
+                    render_session(frame, detail_area, model, agent, now);
+                }
             }
-            Entry::Fold { count, .. } => agents::render_folder(
-                frame,
-                detail_area,
-                "Earlier",
-                &[
-                    format!("{count} sessions have been idle for a day or more."),
-                    "They stay folded so the busy ones stand out. ↵ opens them.".into(),
-                ],
-            ),
+            _ => {}
         }
     }
+}
+
+fn render_session(
+    frame: &mut Frame,
+    area: Rect,
+    model: &Model,
+    agent: &AgentRow<'_>,
+    now: Instant,
+) {
+    let suggestion = model.move_suggestion(agent, now);
+    let source = if agent.session.pane.is_some() && agent.session.state.is_waiting() {
+        agents::Source::Pane
+    } else {
+        agents::Source::Conversation
+    };
+    let preview = match model.screen(&agent.session.id) {
+        None if agent.live => agents::Preview::Waiting(source),
+        None => agents::Preview::Gone,
+        Some(screen) => match &screen.view {
+            Ok(content) => agents::Preview::Ready(content),
+            Err(reason) => agents::Preview::Failed(reason),
+        },
+    };
+    agents::render_detail(
+        frame,
+        area,
+        agent,
+        suggestion.as_ref(),
+        preview,
+        model.draft.as_ref(),
+        &model.forwards_to(&agent.session.id, &agent.machine, now),
+    );
 }
 
 struct Header<'a> {
@@ -265,14 +269,6 @@ fn machine_tag<'a>(name: &'a str, names: &[&str]) -> &'a str {
 
 fn first_word(name: &str) -> &str {
     name.split(['-', '.', '_', ' ']).next().unwrap_or(name)
-}
-
-fn project_note(count: usize) -> [String; 2] {
-    let sessions = if count == 1 { "session" } else { "sessions" };
-    [
-        format!("{count} {sessions} in this project."),
-        "↵ folds or opens it · P renames it · p on a session moves it elsewhere".into(),
-    ]
 }
 
 fn body(area: Rect) -> Rect {
@@ -595,6 +591,12 @@ fn naming_line(naming: &Naming, names: &[String], width: usize) -> Line<'static>
 }
 
 fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
+    if let Some((_, _, open)) = model.selected_folder(now) {
+        return vec![("↵", if open { "fold" } else { "open" }), ("P", "rename")];
+    }
+    if model.selection(now) == Some(Focus::NewSession) {
+        return vec![("↵", "new session")];
+    }
     let Some(agent) = model.selected_agent(now) else {
         return vec![("c", "new session")];
     };

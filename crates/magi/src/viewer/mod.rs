@@ -371,8 +371,25 @@ fn target_machine(model: &Model, now: Instant) -> Option<(Endpoint, String)> {
         return Some((agent.endpoint, agent.machine.clone()));
     }
     let rows = model.rows(now);
-    let row = rows.get(model.selected)?;
-    Some((row.endpoint, row.name.clone()))
+    if let Some(row) = rows.get(model.selected) {
+        return Some((row.endpoint, row.name.clone()));
+    }
+    match model.detail_focus(now) {
+        Some(model::Focus::Agent(id)) => model
+            .agents(now)
+            .into_iter()
+            .find(|agent| agent.session.id == id)
+            .map(|agent| (agent.endpoint, agent.machine.clone())),
+        Some(model::Focus::Machine(name)) => rows
+            .iter()
+            .find(|row| row.name == name)
+            .map(|row| (row.endpoint, row.name.clone())),
+        _ => rows
+            .iter()
+            .find(|row| row.here)
+            .or_else(|| rows.first())
+            .map(|row| (row.endpoint, row.name.clone())),
+    }
 }
 
 fn open_picker(model: &mut Model, links: &Links, now: Instant) {
@@ -453,6 +470,16 @@ fn edit_picker(
 }
 
 fn start_naming(model: &mut Model, whole_project: bool, now: Instant) {
+    if let Some((key, name, _)) = model.selected_folder(now).filter(|_| whole_project) {
+        model.naming = Some(model::Naming {
+            what: model::Renaming::Project {
+                key,
+                name: name.clone(),
+            },
+            text: name,
+        });
+        return;
+    }
     let Some(agent) = model.selected_agent(now) else {
         return model.flash("select a session to change its project".into(), false, now);
     };
@@ -656,6 +683,7 @@ fn handle_batch(
         drafted |= drafting && model.draft.is_none();
     }
     model.reselect(Instant::now());
+    model.note_shown(Instant::now());
     sync_watch(model, links);
     ask_namer(model, links);
     Ok(Flow::Continue)
@@ -761,13 +789,14 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Alerts) => model.showing_alerts = !model.showing_alerts,
             Some(Action::Open) => open_selected(model, links, now)?,
             Some(Action::Move) => propose_move(model, now),
-            Some(Action::Message) => match model.selected_project(now) {
-                Some(key) => {
+            Some(Action::Message) => match (model.selected_project(now), model.selection(now)) {
+                (Some(key), _) => {
                     if let Err(error) = model.projects.toggle_fold(&key) {
                         model.flash(format!("couldn't save projects: {error}"), false, now);
                     }
                 }
-                None => start_draft(model, now),
+                (None, Some(model::Focus::NewSession)) => open_picker(model, links, now),
+                (None, _) => start_draft(model, now),
             },
             Some(Action::Allow) => answer(model, links, true, now),
             Some(Action::Deny) => answer(model, links, false, now),
@@ -901,15 +930,23 @@ mod tests {
             &mut links,
         )
         .unwrap();
-        assert_eq!(selected(&model), "homelab");
-        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(selected(&model), "nas");
+        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(
+            model.selection(Instant::now()),
+            Some(model::Focus::NewSession)
+        );
     }
 
     #[test]
     fn the_selection_follows_its_machine_when_rows_reorder() {
         let (mut model, mut links) = fleet();
-        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch(
+            [key(Key::Last), key(Key::Up)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
         agent(
             &mut model,
             Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 4)),
@@ -1297,7 +1334,12 @@ mod tests {
             ]),
             now,
         );
-        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch(
+            [key(Key::Last), key(Key::Up)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
         assert_eq!(model.selected_agent(now).unwrap().session.id, "b");
         model.apply(
             Endpoint::Local,
@@ -1445,6 +1487,35 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_row_keeps_the_pane_and_shows_its_keys_and_new_session_opens_the_picker() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(claude("s1", 0))),
+            now,
+        );
+        select_first_session(&mut model);
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Up)].into_iter(), &mut model, &mut links).unwrap();
+        assert!(model.selected_folder(now).is_some());
+        let shown = screen(&model);
+        assert!(shown.contains("run the tests"), "{shown}");
+        assert!(shown.contains("↵ fold   P rename"), "{shown}");
+        handle_batch(
+            [key(Key::Last), key(Key::Enter)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        let (said, _) = model.flashed(Instant::now()).unwrap();
+        assert!(
+            said.starts_with("couldn't ask mac for its projects"),
+            "{said}"
+        );
+    }
+
+    #[test]
     fn enter_on_a_project_folds_it_to_a_count_and_opens_it_again() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
@@ -1465,9 +1536,10 @@ mod tests {
                 } => format!("{name} {count} {open}"),
                 model::Entry::Session(agent) => agent.session.id.clone(),
                 model::Entry::Fold { .. } => "earlier".into(),
+                model::Entry::NewSession => "new".into(),
             })
             .collect();
-        assert_eq!(entries, ["api 1 false"]);
+        assert_eq!(entries, ["api 1 false", "new"]);
         assert_eq!(model.draft, None);
         handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(groups(&model), [("api".into(), vec!["s1".into()])]);

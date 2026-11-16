@@ -205,7 +205,7 @@ fn select_title(model: &mut Model, title: &str, now: Instant) {
         .listed(now)
         .iter()
         .position(|item| {
-            matches!(&item.entry, Entry::Session(agent) if agent.session.title.starts_with(title))
+            matches!(&item.entry, crate::viewer::model::Entry::Session(agent) if agent.session.title.starts_with(title))
         })
         .unwrap();
     model.selected = model.rows(now).len() + index;

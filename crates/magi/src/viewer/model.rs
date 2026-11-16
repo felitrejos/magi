@@ -246,6 +246,7 @@ pub enum Focus {
     Agent(String),
     Project(String),
     Earlier,
+    NewSession,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +254,7 @@ pub enum Group {
     NeedsYou,
     Project(String),
     Earlier,
+    Actions,
 }
 
 pub enum Entry<'a> {
@@ -267,6 +269,7 @@ pub enum Entry<'a> {
         count: usize,
         open: bool,
     },
+    NewSession,
 }
 
 pub struct Listed<'a> {
@@ -293,6 +296,7 @@ fn focus_of(entry: &Entry<'_>) -> Focus {
         Entry::Session(agent) => Focus::Agent(agent.session.id.clone()),
         Entry::Project { key, .. } => Focus::Project(key.clone()),
         Entry::Fold { .. } => Focus::Earlier,
+        Entry::NewSession => Focus::NewSession,
     }
 }
 
@@ -379,6 +383,7 @@ pub struct Model {
     pub projects: Projects,
     pub naming: Option<Naming>,
     pub namer_busy: bool,
+    pub shown: Option<Focus>,
     pub namer_asked_at: Option<Instant>,
     pub alerts: Alerts,
     pub showing_alerts: bool,
@@ -537,6 +542,7 @@ impl Model {
             projects: Projects::default(),
             naming: None,
             namer_busy: false,
+            shown: None,
             namer_asked_at: None,
             alerts,
             showing_alerts: false,
@@ -825,7 +831,11 @@ impl Model {
         if self.showing_alerts {
             return None;
         }
-        let agent = self.selected_agent(now)?;
+        let Some(Focus::Agent(id)) = self.detail_focus(now) else {
+            return None;
+        };
+        let agents = self.agents(now);
+        let agent = agents.iter().find(|agent| agent.session.id == id)?;
         agent
             .live
             .then(|| (agent.endpoint, agent.session.id.clone()))
@@ -876,7 +886,7 @@ impl Model {
         let index = self.selected.checked_sub(machines)?;
         match self.listed(now).into_iter().nth(index)?.entry {
             Entry::Session(agent) => Some(agent),
-            Entry::Project { .. } | Entry::Fold { .. } => None,
+            Entry::Project { .. } | Entry::Fold { .. } | Entry::NewSession => None,
         }
     }
 
@@ -885,7 +895,7 @@ impl Model {
         let index = self.selected.checked_sub(machines)?;
         match self.listed(now).into_iter().nth(index)?.entry {
             Entry::Project { key, .. } => Some(key),
-            Entry::Session(_) | Entry::Fold { .. } => None,
+            Entry::Session(_) | Entry::Fold { .. } | Entry::NewSession => None,
         }
     }
 
@@ -982,6 +992,40 @@ impl Model {
     }
 
     pub fn listed(&self, now: Instant) -> Vec<Listed<'_>> {
+        let mut listed = self.listed_sessions(now);
+        listed.push(Listed {
+            group: Group::Actions,
+            entry: Entry::NewSession,
+            nested: false,
+        });
+        listed
+    }
+
+    pub fn note_shown(&mut self, now: Instant) {
+        if let Some(focus @ (Focus::Machine(_) | Focus::Agent(_))) = self.selection(now) {
+            self.shown = Some(focus);
+        }
+    }
+
+    pub fn detail_focus(&self, now: Instant) -> Option<Focus> {
+        match self.selection(now) {
+            Some(focus @ (Focus::Machine(_) | Focus::Agent(_))) => Some(focus),
+            _ => self.shown.clone(),
+        }
+    }
+
+    pub fn selected_folder(&self, now: Instant) -> Option<(String, String, bool)> {
+        let machines = self.rows(now).len();
+        let index = self.selected.checked_sub(machines)?;
+        match self.listed(now).into_iter().nth(index)?.entry {
+            Entry::Project {
+                key, name, open, ..
+            } => Some((key, name, open)),
+            _ => None,
+        }
+    }
+
+    fn listed_sessions(&self, now: Instant) -> Vec<Listed<'_>> {
         let mut needs_you = Vec::new();
         let mut asleep = Vec::new();
         let mut projects: Vec<ProjectGroup<'_>> = Vec::new();
@@ -1177,10 +1221,23 @@ impl Model {
                 .map(|index| rows.len() + index),
             None => None,
         };
+        let fallback = if matches!(self.focus, Some(Focus::Agent(_))) {
+            let clamped = self.selected.min(count.saturating_sub(1));
+            let end = clamped.saturating_sub(rows.len()).min(listed.len());
+            listed[..end]
+                .iter()
+                .rposition(|item| matches!(item.entry, Entry::Session(_)))
+                .map(|index| rows.len() + index)
+        } else {
+            None
+        };
         match found {
             Some(index) => self.selected = index,
             None => {
                 self.select(0, count);
+                if let Some(index) = fallback {
+                    self.selected = index;
+                }
                 self.focus = self.selection(now);
             }
         }

@@ -107,16 +107,23 @@ pub fn render_list(
             Entry::Fold { count, open } => {
                 lines.push(folder_line("Earlier", *count, *open, is_selected, width));
             }
+            Entry::NewSession => {
+                let color = if is_selected {
+                    theme().text
+                } else {
+                    theme().faint
+                };
+                lines.push(
+                    Line::from(Span::styled(" + New session", style::fg(color)))
+                        .style(selected_style(is_selected)),
+                );
+            }
         }
         if is_selected {
             selected_end = lines.len();
         }
     }
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        " + New session",
-        style::fg(theme().faint),
-    )));
+
     let visible = area.height as usize;
     let first = selected_end.saturating_sub(visible);
     let shown: Vec<Line<'static>> = lines.into_iter().skip(first).take(visible).collect();
@@ -138,7 +145,7 @@ pub fn render_list(
 fn heading(group: &Group) -> Option<Line<'static>> {
     let (text, color) = match group {
         Group::NeedsYou => ("Needs you".to_string(), theme().warn),
-        Group::Project(_) | Group::Earlier => return None,
+        Group::Project(_) | Group::Earlier | Group::Actions => return None,
     };
     Some(Line::from(Span::styled(
         format!(" {text}"),
@@ -731,28 +738,4 @@ fn run_span(run: &Run) -> Span<'static> {
         }
         .add_modifier(modifiers),
     )
-}
-
-pub fn render_folder(frame: &mut Frame, area: Rect, title: &str, note: &[String]) {
-    draw_panel(
-        frame,
-        area,
-        panel(
-            vec![Span::styled(title.to_string(), style::bold(theme().text))],
-            None,
-        ),
-    );
-    let lines: Vec<Line<'static>> = note
-        .iter()
-        .enumerate()
-        .map(|(index, text)| {
-            let color = if index == 0 {
-                theme().text
-            } else {
-                theme().faint
-            };
-            Line::from(Span::styled(text.clone(), style::fg(color)))
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), body(area));
 }
