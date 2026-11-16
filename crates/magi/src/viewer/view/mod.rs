@@ -688,15 +688,6 @@ fn clip(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     clipped
 }
 
-fn pad(text: &str, width: usize) -> String {
-    let len = text.width();
-    if len >= width {
-        truncate(text, width)
-    } else {
-        format!("{text}{}", " ".repeat(width - len))
-    }
-}
-
 fn truncate(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_string();

@@ -5,8 +5,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 
-use super::{Composed, Cursor, Mark, body, clip, draw_panel, pad, panel, selected_style, truncate};
+use super::{Composed, Cursor, Mark, body, clip, draw_panel, panel, selected_style, truncate};
 use crate::proto::FULL;
 use crate::viewer::graphics::{Chart, Graphics, Kind, Series};
 use crate::viewer::model::{
@@ -17,6 +18,18 @@ use crate::viewer::units;
 use unicode_width::UnicodeWidthStr;
 
 const SIDEBAR_BAR: usize = 3;
+const TWO_COLUMNS: u16 = 70;
+const TILE_GAP: u16 = 3;
+const ROW_GAP: u16 = 1;
+const MIN_TILE: u16 = 5;
+const COMFORTABLE_TILE: u16 = 8;
+const MAX_TILE: u16 = 12;
+const CORES_ROWS: u16 = 4;
+const MAX_CORE_SLOT: u16 = 12;
+const MAX_PROCESS_ROWS: usize = 8;
+const MAX_FILESYSTEMS: usize = 3;
+const FS_PERCENT: usize = 4;
+const BAR_EIGHTHS: [&str; 7] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇"];
 const ICON_WIDTH: u16 = 2;
 const ICON_GAP: &str = "   ";
 const SIDEBAR_GAUGE: usize = SIDEBAR_BAR + 5;
@@ -182,18 +195,7 @@ pub fn render_detail(
     let width = area.width as usize;
     let mut cursor = Cursor::new(Rect::new(area.x, area.y - 1, area.width, area.height + 1));
     if let Some(machine) = row.machine() {
-        let mut line = facts(machine);
-        if let Some(degrees) = machine
-            .latest
-            .as_ref()
-            .and_then(|sample| sample.temperature)
-        {
-            line.push(Span::styled(
-                format!(" · {degrees:.0} °C"),
-                style::fg(temperature_color(degrees)),
-            ));
-        }
-        cursor.line(frame, Line::from(clip(line, width)));
+        cursor.line(frame, Line::from(clip(facts(machine), width)));
     }
     let Some((machine, sample)) = row
         .machine()
@@ -204,24 +206,140 @@ pub fn render_detail(
         return;
     };
     cursor.skip();
-    let chart_width = ((width * 2 / 5) as u16).clamp(8, 64);
-    let text_width = width.saturating_sub(chart_width as usize + 2);
-    let window = (usize::from(chart_width) * graphics.samples_per_cell()).min(HISTORY);
-    let chart_area =
-        |y: u16, rows: u16| Rect::new(area.x + area.width - chart_width, y, chart_width, rows);
-
-    let cpu = machine.smoothed_cpu();
-    let busiest = sample
-        .cores
+    let columns: u16 = if area.width >= TWO_COLUMNS { 2 } else { 1 };
+    let tile_width = (area.width - (columns - 1) * TILE_GAP) / columns;
+    let window = (usize::from(tile_width) * graphics.samples_per_cell()).min(HISTORY);
+    let tiles = tiles(machine, sample, window, tile_width);
+    let tile_rows = (tiles.len() as u16).div_ceil(columns);
+    let shortest = tiles
         .iter()
-        .map(|core| f32::from(*core) / f32::from(FULL))
-        .fold(0.0, f32::max);
-    let cpu_history = machine.cpu.tail(window);
+        .map(|tile| tile.notes.len() as u16 + 3)
+        .max()
+        .unwrap_or(0)
+        .max(MIN_TILE);
+    let processes = sample.processes.len().min(MAX_PROCESS_ROWS) as u16;
+    let cores = CORES_ROWS + 1;
+    let band = if columns == 2 {
+        (processes + 1).max(cores)
+    } else {
+        cores + ROW_GAP + processes + 1
+    };
+    let (tile_height, band) = plan(cursor.left(), tile_rows, shortest, cores, band);
+    for (index, tile) in tiles.iter().enumerate() {
+        let index = index as u16;
+        let (column, line) = (index % columns, index / columns);
+        let rect = Rect::new(
+            area.x + column * (tile_width + TILE_GAP),
+            cursor.y + line * (tile_height + ROW_GAP),
+            tile_width,
+            tile_height,
+        );
+        draw_tile(frame, graphics, rect, tile);
+    }
+    cursor.y += tile_rows * (tile_height + ROW_GAP);
+    draw_band(
+        frame,
+        Rect::new(area.x, cursor.y, area.width, band),
+        columns,
+        tile_width,
+        sample,
+    );
+}
+
+fn plan(height: u16, tile_rows: u16, shortest: u16, least: u16, most: u16) -> (u16, u16) {
+    let tile_rows = tile_rows.max(1);
+    let grid = tile_rows * (shortest + ROW_GAP);
+    if height < grid {
+        return ((height / tile_rows).saturating_sub(ROW_GAP).max(2), 0);
+    }
+    let mut spare = height - grid;
+    let mut band = if spare >= least { least } else { 0 };
+    spare -= band;
+    let grow = |tile: u16, spare: u16, to: u16| {
+        let added = to.saturating_sub(tile).min(spare / tile_rows);
+        (tile + added, spare - added * tile_rows)
+    };
+    let (tile, mut spare) = grow(shortest, spare, COMFORTABLE_TILE);
+    if band > 0 {
+        let added = most.saturating_sub(band).min(spare);
+        band += added;
+        spare -= added;
+    }
+    let (tile, _) = grow(tile, spare, MAX_TILE);
+    (tile, band)
+}
+
+fn draw_band(
+    frame: &mut Frame,
+    area: Rect,
+    columns: u16,
+    tile_width: u16,
+    sample: &crate::proto::Sample,
+) {
+    if area.height == 0 {
+        return;
+    }
+    if columns == 2 {
+        draw_cores(
+            frame,
+            Rect::new(area.x, area.y, tile_width, area.height),
+            &sample.cores,
+        );
+        draw_processes(
+            frame,
+            Rect::new(
+                area.x + tile_width + TILE_GAP,
+                area.y,
+                tile_width,
+                area.height,
+            ),
+            sample,
+        );
+        return;
+    }
+    let cores = (CORES_ROWS + 1).min(area.height);
+    draw_cores(
+        frame,
+        Rect::new(area.x, area.y, area.width, cores),
+        &sample.cores,
+    );
+    draw_processes(
+        frame,
+        Rect::new(
+            area.x,
+            area.y + cores + ROW_GAP,
+            area.width,
+            area.height.saturating_sub(cores + ROW_GAP),
+        ),
+        sample,
+    );
+}
+
+type Note = (Vec<Span<'static>>, Vec<Span<'static>>);
+
+struct Tile {
+    title: &'static str,
+    value: Span<'static>,
+    detail: Vec<Span<'static>>,
+    notes: Vec<Note>,
+    max: f32,
+    series: Vec<(Vec<f32>, Color)>,
+}
+
+fn tiles(machine: &Machine, sample: &crate::proto::Sample, window: usize, width: u16) -> Vec<Tile> {
+    let room = usize::from(width).saturating_sub(FS_PERCENT + 3);
+    let cpu = machine.smoothed_cpu();
+    let mut cpu_detail = vec![Span::styled(
+        format!("load {:.2}", sample.load[0]),
+        style::fg(theme().dim),
+    )];
+    if let Some(degrees) = sample.temperature {
+        cpu_detail.push(Span::styled(
+            format!(" · {degrees:.0} °C"),
+            style::fg(temperature_color(degrees)),
+        ));
+    }
     let memory = machine.memory_fraction();
-    let memory_history = machine.memory.tail(window);
-    let rx = machine.rx.tail(window);
-    let tx = machine.tx.tail(window);
-    let peak = rx.iter().chain(&tx).copied().fold(1.0, f32::max) * 1.1;
     let mut memory_detail = format!(
         "{} of {}",
         units::bytes(sample.memory.used),
@@ -233,131 +351,195 @@ pub fn render_detail(
             units::bytes(sample.memory.swap_used)
         ));
     }
-    let metrics = [
+    let rates = |first: &model::History, second: &model::History| {
+        let (first, second) = (first.tail(window), second.tail(window));
+        let peak = first.iter().chain(&second).copied().fold(1.0, f32::max) * 1.15;
         (
-            "CPU",
-            percent_span(cpu, Subsystem::Cpu),
-            format!(
-                "busiest core {} · load {:.2}",
-                units::percent(busiest).trim(),
-                sample.load[0]
-            ),
-            Chart {
-                kind: Kind::Area,
-                max: 1.0,
-                guide: false,
-                series: vec![Series {
-                    values: &cpu_history,
-                    color: theme().accent,
-                }],
-            },
-        ),
-        (
-            "Memory",
-            percent_span(memory, Subsystem::Memory),
-            memory_detail,
-            Chart {
-                kind: Kind::Area,
-                max: 1.0,
-                guide: false,
-                series: vec![Series {
-                    values: &memory_history,
-                    color: theme().second,
-                }],
-            },
-        ),
-        (
-            "Network",
-            Span::styled(
+            peak,
+            vec![(first, theme().accent), (second, theme().second)],
+        )
+    };
+    let (network_peak, network) = rates(&machine.rx, &machine.tx);
+    let (disk_peak, disk) = rates(&machine.disk_read, &machine.disk_write);
+    let filesystems = sample
+        .filesystems
+        .iter()
+        .take(MAX_FILESYSTEMS)
+        .map(|fs| {
+            let used = model::fraction(fs.used, fs.total);
+            let size = format!("{} of {}", units::bytes(fs.used), units::bytes(fs.total));
+            (
+                vec![
+                    percent_span(used, Subsystem::Storage),
+                    Span::raw("  "),
+                    Span::styled(
+                        ending(&fs.mount, room.saturating_sub(size.width())),
+                        style::fg(theme().dim),
+                    ),
+                ],
+                vec![Span::styled(size, style::fg(theme().faint))],
+            )
+        })
+        .collect();
+    vec![
+        Tile {
+            title: "CPU",
+            value: percent_span(cpu, Subsystem::Cpu),
+            detail: cpu_detail,
+            notes: Vec::new(),
+            max: 1.0,
+            series: vec![(machine.cpu.tail(window), theme().accent)],
+        },
+        Tile {
+            title: "Memory",
+            value: percent_span(memory, Subsystem::Memory),
+            detail: vec![Span::styled(memory_detail, style::fg(theme().dim))],
+            notes: Vec::new(),
+            max: 1.0,
+            series: vec![(machine.memory.tail(window), theme().second)],
+        },
+        Tile {
+            title: "Network",
+            value: Span::styled(
                 format!("↓ {}", units::rate(sample.network.rx_per_sec)),
                 style::bold(theme().accent),
             ),
-            format!("↑ {}", units::rate(sample.network.tx_per_sec)),
-            Chart {
-                kind: Kind::Area,
-                max: peak,
-                guide: false,
-                series: vec![
-                    Series {
-                        values: &rx,
-                        color: theme().accent,
-                    },
-                    Series {
-                        values: &tx,
-                        color: theme().second,
-                    },
-                ],
-            },
-        ),
-    ];
-    for (title, value, detail, chart) in metrics {
-        if cursor.left() < 2 {
-            return;
-        }
-        let y = cursor.y;
-        cursor.line(frame, metric_line(title, value, &detail, text_width));
-        graphics.chart(
-            frame.buffer_mut(),
-            chart_area(y, 2),
-            format!("detail:{title}"),
-            &chart,
-        );
-        cursor.skip();
-        cursor.skip();
-    }
-    let disk_detail = format!(
-        "read {} · write {}",
-        units::rate(sample.disk.read_per_sec),
-        units::rate(sample.disk.write_per_sec)
-    );
-    for (index, fs) in sample.filesystems.iter().take(3).enumerate() {
-        if cursor.left() == 0 {
-            return;
-        }
-        let used = model::fraction(fs.used, fs.total);
-        let title = if index == 0 { "Disk" } else { "" };
-        let mut detail = format!(
-            "{}  {} of {}",
-            fs.mount,
-            units::bytes(fs.used),
-            units::bytes(fs.total)
-        );
-        if index == 0 {
-            detail.push_str(&format!(" · {disk_detail}"));
-        }
-        let y = cursor.y;
-        cursor.line(
-            frame,
-            metric_line(
-                title,
-                percent_span(used, Subsystem::Storage),
-                &detail,
-                text_width,
+            detail: vec![Span::styled(
+                format!("↑ {}", units::rate(sample.network.tx_per_sec)),
+                style::bold(theme().second),
+            )],
+            notes: Vec::new(),
+            max: network_peak,
+            series: network,
+        },
+        Tile {
+            title: "Disk",
+            value: Span::styled(
+                format!("read {}", units::rate(sample.disk.read_per_sec)),
+                style::bold(theme().accent),
             ),
-        );
-        graphics.meter(
-            frame.buffer_mut(),
-            chart_area(y, 1),
-            format!("detail:disk:{}", fs.mount),
-            used,
-            style::level(model::grade(Subsystem::Storage, used)),
-        );
-    }
-    cursor.skip();
-    if cursor.left() == 0 {
+            detail: vec![Span::styled(
+                format!("write {}", units::rate(sample.disk.write_per_sec)),
+                style::bold(theme().second),
+            )],
+            notes: filesystems,
+            max: disk_peak,
+            series: disk,
+        },
+    ]
+}
+
+fn draw_tile(frame: &mut Frame, graphics: &mut Graphics, rect: Rect, tile: &Tile) {
+    let rect = rect.intersection(frame.area());
+    if rect.height == 0 {
         return;
     }
-    cursor.line(frame, cores_line(&sample.cores, busiest, width));
-    cursor.skip();
-    if cursor.left() < 2 || sample.processes.is_empty() {
-        return;
-    }
+    let width = rect.width as usize;
+    let mut cursor = Cursor::new(rect);
     cursor.line(
         frame,
         spread_line(
-            vec![Span::styled("Using it", style::bold(theme().dim))],
+            vec![
+                Span::styled(tile.title, style::bold(theme().text)),
+                Span::raw("  "),
+                tile.value.clone(),
+            ],
+            tile.detail.clone(),
+            width,
+        ),
+    );
+    for (left, right) in &tile.notes {
+        cursor.line(frame, spread_line(left.clone(), right.clone(), width));
+    }
+    if cursor.left() == 0 {
+        return;
+    }
+    let chart = Chart {
+        kind: Kind::Area,
+        max: tile.max,
+        guide: false,
+        series: tile
+            .series
+            .iter()
+            .map(|(values, color)| Series {
+                values,
+                color: *color,
+            })
+            .collect(),
+    };
+    graphics.chart(
+        frame.buffer_mut(),
+        cursor.rest(),
+        format!("detail:{}", tile.title),
+        &chart,
+    );
+}
+
+fn draw_cores(frame: &mut Frame, area: Rect, cores: &[u16]) {
+    let area = area.intersection(frame.area());
+    if area.height < 2 || cores.is_empty() {
+        return;
+    }
+    let busiest = cores.iter().copied().max().unwrap_or(0);
+    let busiest = f32::from(busiest) / f32::from(FULL);
+    frame.render_widget(
+        Paragraph::new(Line::from(clip(
+            vec![
+                Span::styled("Cores", style::bold(theme().text)),
+                Span::styled(
+                    format!(
+                        "  {} · busiest {}",
+                        cores.len(),
+                        units::percent(busiest).trim()
+                    ),
+                    style::fg(theme().dim),
+                ),
+            ],
+            area.width as usize,
+        ))),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let bars = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+    let slot = (bars.width / cores.len() as u16).clamp(1, MAX_CORE_SLOT);
+    let bar = if slot > 1 { slot - 1 } else { 1 };
+    let eighths = u32::from(bars.height) * 8;
+    let buf = frame.buffer_mut();
+    for (index, core) in cores.iter().enumerate() {
+        let x = bars.x + index as u16 * slot;
+        if x + bar > bars.x + bars.width {
+            break;
+        }
+        let fraction = f32::from(*core) / f32::from(FULL);
+        let filled = ((fraction * eighths as f32).round() as u32).max(1);
+        let color = style::level(model::grade(Subsystem::Cpu, fraction));
+        for level in 0..bars.height {
+            let y = bars.y + bars.height - 1 - level;
+            let below = u32::from(level) * 8;
+            let (symbol, color) = match filled.saturating_sub(below) {
+                0 => ("▁", theme().faint),
+                left if left >= 8 => ("█", color),
+                left => (BAR_EIGHTHS[left as usize - 1], color),
+            };
+            if level > 0 && filled <= below {
+                continue;
+            }
+            for dx in 0..bar {
+                buf[(x + dx, y)].set_symbol(symbol).set_fg(color);
+            }
+        }
+    }
+}
+
+fn draw_processes(frame: &mut Frame, area: Rect, sample: &crate::proto::Sample) {
+    let area = area.intersection(frame.area());
+    let width = area.width as usize;
+    let mut cursor = Cursor::new(area);
+    cursor.line(
+        frame,
+        spread_line(
+            vec![Span::styled("Using it", style::bold(theme().text))],
             vec![Span::styled(
-                format!("{:>6}  {:>7}", "CPU", "memory"),
+                format!("{:>6}  {:>8}", "CPU", "memory"),
                 style::fg(theme().faint),
             )],
             width,
@@ -386,7 +568,7 @@ pub fn render_detail(
             spread_line(
                 left,
                 vec![Span::styled(
-                    format!("{cpu:>6}  {:>7}", units::bytes(process.memory)),
+                    format!("{cpu:>6}  {:>8}", units::bytes(process.memory)),
                     style::fg(theme().dim),
                 )],
                 width,
@@ -395,15 +577,12 @@ pub fn render_detail(
     }
 }
 
-fn metric_line(title: &str, value: Span<'static>, detail: &str, width: usize) -> Line<'static> {
-    Line::from(clip(
-        vec![
-            Span::styled(pad(title, 9), style::fg(theme().dim)),
-            value,
-            Span::styled(format!("  {detail}"), style::fg(theme().faint)),
-        ],
-        width,
-    ))
+fn ending(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        text.to_string()
+    } else {
+        format!("…{}", super::tail(text, width.saturating_sub(1)))
+    }
 }
 
 fn percent_span(value: f32, subsystem: Subsystem) -> Span<'static> {
@@ -411,25 +590,6 @@ fn percent_span(value: f32, subsystem: Subsystem) -> Span<'static> {
         units::percent(value).trim().to_string(),
         style::bold(level_text(value, subsystem)),
     )
-}
-
-fn cores_line(cores: &[u16], busiest: f32, width: usize) -> Line<'static> {
-    const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let mut spans = vec![Span::styled(pad("Cores", 9), style::fg(theme().dim))];
-    let room = width.saturating_sub(9 + 22) / 2;
-    for core in cores.iter().take(room) {
-        let fraction = f32::from(*core) / f32::from(FULL);
-        let level = ((fraction * 7.0).round() as usize).min(7);
-        spans.push(Span::styled(
-            format!("{} ", LEVELS[level]),
-            style::fg(style::level(model::grade(Subsystem::Cpu, fraction))),
-        ));
-    }
-    spans.push(Span::styled(
-        format!(" busiest {}", units::percent(busiest).trim()),
-        style::fg(theme().faint),
-    ));
-    Line::from(clip(spans, width))
 }
 
 fn spread_line(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {

@@ -247,13 +247,13 @@ fn draw(model: &Model, width: u16, height: u16, now: Instant) -> String {
 }
 
 #[test]
-fn the_machine_view_reads_as_a_summary_then_cores_then_what_uses_it() {
+fn the_machine_view_reads_as_titled_charts_then_cores_then_what_uses_it() {
     let now = Instant::now();
     let screen = draw(&fleet(2, now), 160, 50, now);
     for text in [
         "61 °C",
         "CPU",
-        "busiest core",
+        "busiest 30%",
         "Memory",
         "swap",
         "Network",
@@ -268,7 +268,10 @@ fn the_machine_view_reads_as_a_summary_then_cores_then_what_uses_it() {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");
     }
     let at = |text: &str| screen.lines().position(|line| line.contains(text)).unwrap();
-    assert!(at("Memory") < at("Disk") && at("Disk") < at("Cores") && at("Cores") < at("Using it"));
+    assert_eq!(at("CPU  "), at("Memory  "));
+    assert_eq!(at("Network  "), at("Disk  "));
+    assert!(at("Memory  ") < at("Disk  ") && at("Disk  ") < at("Cores"));
+    assert_eq!(at("Cores"), at("Using it"));
 }
 
 #[test]

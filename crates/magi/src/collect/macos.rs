@@ -29,6 +29,7 @@ pub struct Collector {
     disk_write: CounterRate,
     net_rx: CounterRate,
     net_tx: CounterRate,
+    sensors: Option<super::sensors::Sensors>,
 }
 
 impl Collector {
@@ -44,6 +45,7 @@ impl Collector {
             disk_write: CounterRate::default(),
             net_rx: CounterRate::default(),
             net_tx: CounterRate::default(),
+            sensors: super::sensors::Sensors::new(),
         })
     }
 
@@ -87,7 +89,10 @@ impl Collector {
             notices: Vec::new(),
             forwards: Vec::new(),
             processes: Vec::new(),
-            temperature: None,
+            temperature: self
+                .sensors
+                .as_ref()
+                .and_then(super::sensors::Sensors::hottest_die),
         })
     }
 

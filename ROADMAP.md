@@ -46,6 +46,10 @@ Done:
 - **Layout, after Dia:** a narrow borderless sidebar with machines (and
   their Rex icons), sessions and plan usage in three zones; the
   conversation on an inset card; the selected row as a pill.
+- **Machine view:** CPU, memory, network and disk as titled tiles, each
+  with its own chart and colour-coded legend; the cores as bars beside what's
+  using the machine (with the session each process belongs to); CPU
+  temperature on Linux and on the Mac (through its HID sensors).
 - **Session family tree:** subagents, background shells, worktrees and
   sessions started inside another, nested under their session with their
   state. Selecting one shows a subagent's own conversation, live, or a
@@ -65,19 +69,15 @@ Next:
 
 ## Phase 5: the rest of the redesign
 
-1. **Machine view.** A calm summary first: CPU, memory, disk and network,
-   one line each with a small history beside it; then what's using the
-   machine (top processes by CPU and memory, with the session each belongs
-   to), the cores (so one maxed-out core stands out), and temperature.
-2. **The launcher.** `c` opens a Rex floating pane, like a modal: pick the
+1. **The launcher.** `c` opens a Rex floating pane, like a modal: pick the
    project and the machine (magi suggests the machine with its reason, such
    as "homelab: 12% CPU, 9 GB free", and Tab picks another), choose Claude or
    Codex, and Enter starts it. The pane closes itself and magi selects the
    new session.
-3. **Alerts.** The history as a quiet feed grouped by day, in a popup.
-4. **Shared project edits.** Keep `p` and `P` edits on the agents so every
+2. **Alerts.** The history as a quiet feed grouped by day, in a popup.
+3. **Shared project edits.** Keep `p` and `P` edits on the agents so every
    viewer shows the same projects.
-5. **Pages.** Search, text selection and clickable links in typeset pages.
+4. **Pages.** Search, text selection and clickable links in typeset pages.
 
 ## Phase 6: placement, as recommendations
 

@@ -74,6 +74,8 @@ pub struct Machine {
     pub memory: History,
     pub rx: History,
     pub tx: History,
+    pub disk_read: History,
+    pub disk_write: History,
 }
 
 impl Machine {
@@ -86,6 +88,8 @@ impl Machine {
             memory: History::default(),
             rx: History::default(),
             tx: History::default(),
+            disk_read: History::default(),
+            disk_write: History::default(),
         }
     }
 
@@ -669,6 +673,8 @@ impl Model {
                     .push(fraction(sample.memory.used, sample.memory.total));
                 machine.rx.push(sample.network.rx_per_sec as f32);
                 machine.tx.push(sample.network.tx_per_sec as f32);
+                machine.disk_read.push(sample.disk.read_per_sec as f32);
+                machine.disk_write.push(sample.disk.write_per_sec as f32);
                 machine.latest = Some(*sample);
             }
             LinkUpdate::Lost(reason) => {

@@ -9,6 +9,8 @@ mod linux;
 mod macos;
 #[cfg(any(target_os = "linux", test))]
 mod procfs;
+#[cfg(target_os = "macos")]
+mod sensors;
 
 #[cfg(target_os = "linux")]
 pub use linux::Collector;
