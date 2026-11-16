@@ -4,6 +4,27 @@ magi is built around [Rex](https://www.superlogical.com/rex): every session it
 drives lives in a Rex tab, and Rex is how magi sees, types into and opens
 them. This is what's left, in the order it's planned.
 
+## Direction
+
+magi is the control room for the Claude Code and Codex sessions you already
+run, across your own machines. It shows what needs you, lets you answer,
+read and review from one place, and recommends where work should run.
+
+- **A multiplexer, not an orchestrator.** Splitting work across agents is the
+  agents' job. magi's job is to make whatever they do clear: subagents,
+  background tasks, worktrees, teammates and sessions one agent started for
+  another, each shown under the session it belongs to.
+- **Projects first.** Sessions are grouped by project, as in the Claude
+  desktop app; the machine is a badge on each session, not a group.
+- **Recommend, never act alone.** magi warns and suggests (move this session,
+  start that one elsewhere, a plan is nearly spent) but never moves or starts
+  anything on its own.
+- **All of Rex, not one pane.** The magi pane is home. Diffs, plans, Markdown,
+  files, images and machine detail open as Rex floating panes over it, like
+  modals, and close back to the conversation.
+- **Built for the Mac client.** The viewer on the Mac draws pages with real
+  type through kitty graphics; other machines keep a cell-based viewer.
+
 ## Phase 3: every session in Rex
 
 Done:
@@ -16,52 +37,90 @@ Done:
 - Multi-line messages and pastes (`⇧↵` for a new line), sent with Rex's
   paste event.
 
-Next:
-- **Messages while it works.** Queue them the way Claude Code does, safely,
-  so they can't land in a prompt that opens meanwhile.
-- **Permission mode.** Switch a session between ask, accept edits, plan and
-  auto from magi.
+## Phase 4: the redesign
 
-## Phase 4: polish, revolving around Rex
+1. **Projects.** Sessions grouped by the project folder group cielago already
+   uses (`~/developer/stampr/` holds `stampr` and `stampr-ops`), the same
+   project on every machine. Rename, move and merge projects with a key;
+   magi saves your edits and they always win. A small model (Haiku through
+   `claude -p`) names a group only when a new folder or a loose session
+   appears, the way Dia names tab groups.
+2. **Layout.** A narrow, borderless sidebar (about 30 columns): Needs you,
+   then projects, then sessions with a machine badge. One line on top for
+   each machine's load and the plans' usage, which only turns amber or red
+   when something's wrong; the machine graphs open on a key. The
+   conversation takes the rest, with approvals inline above the input,
+   the only boxed element. Contrast, not borders, separates areas.
+3. **Session family tree.** Running and finished subagents with what they
+   were asked and what they returned, background shells, the worktree and
+   branch a session works in, agent-team teammates, and sessions an agent
+   started in other Rex tabs, nested under their parent with their own state.
+   Any of them can be selected and read.
+4. **Rex popups.** Floating layers made with `session.new_layer`, closed with
+   `session.close_layer`, minimized with `session.set_layer_state`:
+   - `d`: the session's diff, reviewable, with a way to send a selection and
+     a question back to the session (the idea from leaf's `@`).
+   - `p`: the session's plan, and any Markdown file it wrote.
+   - Files the agent changed, images, and the machine graphs.
+5. **Pages, not cells.** Markdown drawn as a typeset page with kitty graphics,
+   built on [mddog](https://github.com/qu8n/mddog)'s engine (MIT, macOS): it
+   lays out Markdown with CoreText and returns any slice of the page as
+   pixels, with search, selection and links. The conversation and every
+   Markdown popup use it on the Mac; the cell renderer stays for Linux.
 
-What Rex offers that magi doesn't use yet, most valuable first:
+## Phase 5: placement, as recommendations
 
-1. **Events instead of polling.** One `rex events -s SESSION --json` stream
-   per server replaces the `block ls` refresh and the 500 ms screen capture:
-   magi wakes only on `title_changed`, `process_changed`, `pwd_changed`,
+- `c` suggests the machine to start on, with its reason ("homelab: 12% CPU,
+  9 GB free"); Tab picks another.
+- Move suggestions weigh CPU, memory and sustained load, and cover Codex.
+- Warnings before a plan's usage runs out, suggesting Codex for the next one.
+- magi never moves or starts a session by itself.
+
+## Phase 6: Rex between machines
+
+Each machine runs its own Rex server, and a Rex client reaches the others by
+host label (`rex -S homelab`) over Tailscale HTTPS or SSH, with the list of
+hosts kept by your home server. What that can replace:
+
+1. **Events instead of polling.** One `rex events --json` stream per server
+   replaces the `block ls` refresh and the 500 ms screen capture: magi wakes
+   on `title_changed`, `process_changed`, `pwd_changed`,
    `program_status_changed`, `bell`, `desktop_notification` and
-   `child_exited`.
-2. **Faster state and alerts.** Claude's title spinner, its bell and its
-   desktop notifications as immediate signals for working and blocked.
+   `child_exited`, which also gives faster working and blocked states.
+2. **Live screens.** `data.connect` streams a block's content as it changes,
+   for remote sessions too, instead of capturing it.
 3. **Find panes through Rex.** `rex block ls -A --json` with
-   `rex block call -s S -b B process` (foreground pid, argv, cwd, last exit)
-   instead of reading process environments, which also works on other hosts.
-4. **Keys and pastes the Rex way.** `rex send-key escape` / `enter`, and the
-   paste event for prompts.
-5. **Floating panes for outputs.** A plan, a diff (`git diff | delta`) or an
-   image beside the session: `rex split --json` then
-   `rex api call session.float_block`, minimized or closed with
-   `session.set_layer_state` and `session.close_layer`.
-6. **Rex port forwarding.** Swap cielago's own SSH tunnels for
-   `rex forward new` / `open`, and show `rex forward ls --json` states
-   (active, away, orphaned) in magi.
-7. **Exits without polling.** `rex wait --json` or `child_exited`.
-8. **A folder picker from Rex.** `list_dir` to browse any machine's folders
-   when starting a session, beyond the projects cielago knows.
-9. **Land on the agent.** After opening a session's tab, `rex zoom --on` its
-   pane, and label agent panes with `session.set_block_label`.
-10. **Later:** stream screens over Rex's data connection instead of
-    capturing, and attach images with `upload_begin`.
+   `rex block call process` (foreground pid, argv, cwd, last exit) instead of
+   reading process environments, which works on every host.
+4. **Port forwards.** `rex forward` instead of cielago's own SSH tunnels, with
+   their states (active, away, orphaned) shown in magi.
+5. **Folders and files.** `list_dir` to browse any machine's folders when
+   starting a session; `download_begin` and `upload_begin` to fetch a file for
+   a popup or attach an image to a message.
+6. **Land on the agent.** `rex zoom --on` the agent's pane when opening its
+   tab, and label agent panes with `session.set_block_label`.
+
+Popups for a session on another machine get their content (a diff, a plan, a
+file) through the magi agent there, which already talks to the viewer over
+Tailscale, and draw it locally. SSH stays only for what Rex has no call for:
+copying a work tree when a session moves, and running git on the machine it
+moves to.
 
 Rex is in preview, so magi should check its API revision
 (`rex version --json`) and keep working when a call it relies on changes.
 
-Other polish:
-- **Machine detail:** top processes by CPU, memory and disk, and temperature.
-- **Sessions:** PR status, worktree and branch labels, and subagent output.
-- **Codex:** see its approval prompts.
-- **Forwards:** clean up a forward that points at a machine the session moved
-  on from, and handle dev servers listening on IPv6 localhost.
+## Phase 7: sessions
+
+- **Messages while it works.** Queue them the way Claude Code does, safely,
+  so they can't land in a prompt that opens meanwhile.
+- **Permission mode.** Switch a session between ask, accept edits, plan and
+  auto from magi.
+- **Starting in a new folder.** Claude asks whether to trust a folder it has
+  never opened; decide whether starting it from magi should answer that.
+- PR status, Codex approval prompts, and machine detail with top processes
+  and temperature.
+- Forwards: clean up one that points at a machine the session moved on from,
+  and handle dev servers listening on IPv6 localhost.
 
 ## Before 0.6.0
 
