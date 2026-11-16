@@ -62,8 +62,11 @@ jobs:
         run: |
           mkdir -p dist
           tar -czf "dist/magi-$TARGET.tar.gz" -C "target/$TARGET/release" magi cielago -C "$GITHUB_WORKSPACE" LICENSE README.md
+          tar -czf "dist/cielago-$TARGET.tar.gz" -C "target/$TARGET/release" cielago -C "$GITHUB_WORKSPACE" LICENSE README.md
           cd dist
-          shasum -a 256 "magi-$TARGET.tar.gz" > "magi-$TARGET.tar.gz.sha256"
+          for app in magi cielago; do
+            shasum -a 256 "$app-$TARGET.tar.gz" > "$app-$TARGET.tar.gz.sha256"
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: magi-${{ matrix.target }}

@@ -1,5 +1,4 @@
 mod agents;
-mod history;
 pub(super) mod launcher;
 mod machines;
 pub(super) mod markdown;
@@ -252,11 +251,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         graphics,
     );
 
-    if let Some(launcher) = &model.launcher {
-        launcher::render(frame, detail_area, Some(launcher));
-    } else if model.showing_alerts {
-        history::render(frame, detail_area, &model.alerts);
-    } else {
+    {
         match model.detail_focus(now) {
             Some(Focus::Machine(name)) => {
                 if let Some(row) = rows.iter().find(|row| row.name == name) {

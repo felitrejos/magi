@@ -3,17 +3,24 @@ set -eu
 
 main() {
   repo="felitrejos/magi"
+  app="${1:-magi}"
   dir="${MAGI_INSTALL_DIR:-$HOME/.local/bin}"
+
+  case "$app" in
+    magi) bins="magi cielago" ;;
+    cielago) bins="cielago" ;;
+    *) echo "install.sh installs magi or cielago, not $app" >&2; exit 1 ;;
+  esac
 
   case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) target=aarch64-apple-darwin ;;
     Darwin/x86_64) target=x86_64-apple-darwin ;;
     Linux/x86_64) target=x86_64-unknown-linux-musl ;;
     Linux/aarch64 | Linux/arm64) target=aarch64-unknown-linux-musl ;;
-    *) echo "magi has no build for $(uname -s) $(uname -m) yet" >&2; exit 1 ;;
+    *) echo "$app has no build for $(uname -s) $(uname -m) yet" >&2; exit 1 ;;
   esac
 
-  archive="magi-$target.tar.gz"
+  archive="$app-$target.tar.gz"
   url="https://github.com/$repo/releases/latest/download/$archive"
   work="$(mktemp -d)"
   trap 'rm -rf "$work"' EXIT
@@ -30,22 +37,23 @@ main() {
 
   tar -xzf "$work/$archive" -C "$work"
   mkdir -p "$dir"
-  for bin in magi cielago; do
+  for bin in $bins; do
     install -m 755 "$work/$bin" "$dir/$bin.new"
     mv "$dir/$bin.new" "$dir/$bin"
   done
-  echo "Installed magi and cielago to $dir"
+  echo "Installed $bins to $dir"
 
   case ":$PATH:" in
     *":$dir:"*) ;;
-    *) echo "Add $dir to your PATH to run magi" ;;
+    *) echo "Add $dir to your PATH" ;;
   esac
 
   printf '\nNext:\n'
-  printf '  magi agent install        run the agent on this machine in the background\n'
-  printf "  magi statusline install   send Claude Code's context and plan limits to it\n"
-  printf '  magi                      open the viewer, best kept in a Rex pane\n'
-  printf '  cielago init              set up moving sessions and work between machines\n'
+  if [ "$app" = magi ]; then
+    printf '  magi agent install   on every machine\n'
+    printf '  magi                 in a Rex pane\n'
+  fi
+  printf '  cielago init         to move sessions and work between machines\n'
 }
 
 main "$@"

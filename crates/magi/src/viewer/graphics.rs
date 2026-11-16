@@ -24,8 +24,6 @@ const FILL_ALPHA: u8 = 56;
 const FIRST_ID: u32 = 0x4d_0001;
 const LAST_ID: u32 = 0xff_fff0;
 const EIGHTHS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-const PLACEHOLDER_TERMINALS: [&str; 2] = ["rex ", "ghostty "];
-const KITTY_PLACEHOLDERS_SINCE: (u32, u32) = (0, 28);
 
 #[derive(Clone, Copy)]
 pub enum Kind {
@@ -276,15 +274,7 @@ fn places_unicode_placeholders(reply: &str) -> bool {
         .and_then(|rest| rest.split("\x1b\\").next())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    kitty_version(&name).is_some_and(|version| version >= KITTY_PLACEHOLDERS_SINCE)
-        || PLACEHOLDER_TERMINALS
-            .iter()
-            .any(|terminal| name.starts_with(terminal))
-}
-
-fn kitty_version(name: &str) -> Option<(u32, u32)> {
-    let mut parts = name.strip_prefix("kitty(")?.split(['.', ')']);
-    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    name.starts_with("rex ")
 }
 
 fn fingerprint(chart: &Chart, cols: u16, rows: u16) -> u64 {
@@ -631,19 +621,7 @@ mod tests {
             parse_reply(&reply("\x1bP>|rex 0.1.0-preview.18\x1b\\")),
             Some((8, 16))
         );
-        assert_eq!(
-            parse_reply(&reply("\x1bP>|ghostty 1.2.3\x1b\\")),
-            Some((8, 16))
-        );
-        assert_eq!(
-            parse_reply(&reply("\x1bP>|kitty(0.42.1)\x1b\\")),
-            Some((8, 16))
-        );
-        assert_eq!(
-            parse_reply(&reply("\x1bP>|kitty(1.0.0)\x1b\\")),
-            Some((8, 16))
-        );
-        assert_eq!(parse_reply(&reply("\x1bP>|kitty(0.27.0)\x1b\\")), None);
+        assert_eq!(parse_reply(&reply("\x1bP>|kitty(0.42.1)\x1b\\")), None);
         assert_eq!(parse_reply(&reply("\x1bP>|WezTerm 20240203\x1b\\")), None);
         assert_eq!(parse_reply(&reply("")), None);
         assert_eq!(parse_reply(b"\x1b[6;16;8t\x1b[?62;22c"), None);

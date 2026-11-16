@@ -91,15 +91,16 @@ Done:
 - **Links:** links in the conversation and the Outputs preview are real
   terminal hyperlinks, so Rex opens them on a click.
 
-## Phase 6: Rex only
+## Phase 6: Rex only, and two apps (done)
 
-magi is built for Rex and nothing else. Remove what exists for other
-terminals and for tmux:
-- cielago's tmux launcher, and the SSH tunnels it still uses for tmux hosts;
-- the viewer's paths for running outside a Rex pane (the in-pane launcher,
-  the `magi page` fallback, terminal detection for Ghostty and kitty);
-- "Other terminals" in the README.
-magi then refuses to start outside a Rex pane, and says why.
+- magi runs only in a Rex pane and says so elsewhere (`magi fleet --json`
+  still works anywhere). The in-pane launcher and alerts view are gone, as
+  is the Ghostty and kitty detection: the launcher, alerts, diff and outputs
+  always open as Rex floating panes.
+- cielago installs on its own (`install.sh | sh -s cielago`, its own release
+  archive) and keeps tmux and SSH tunnels for machines without Rex, since it
+  is useful without magi.
+- The README presents the two apps, short.
 
 ## Phase 7: placement, as recommendations
 

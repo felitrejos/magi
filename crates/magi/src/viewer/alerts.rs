@@ -116,10 +116,6 @@ impl Alerts {
         self.problem.as_deref()
     }
 
-    pub fn path(&self) -> Option<&PathBuf> {
-        self.log.as_ref().map(|log| &log.path)
-    }
-
     pub fn active(&self) -> impl Iterator<Item = &Condition> {
         self.active.values().map(|active| &active.condition)
     }
@@ -142,6 +138,7 @@ impl Alerts {
             .filter(|(key, _, _)| key.starts_with("machine/") && key.ends_with("/lost"))
     }
 
+    #[cfg(test)]
     pub fn history(&self) -> impl Iterator<Item = &Entry> {
         self.history.iter().rev()
     }

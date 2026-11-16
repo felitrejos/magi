@@ -154,6 +154,11 @@ fn picture_lines(png: &[u8], path: &std::path::Path, width: usize) -> String {
 }
 
 pub fn run(config: Config) -> io::Result<()> {
+    if !rex::available() {
+        return Err(io::Error::other(
+            "magi runs in a Rex pane (https://www.superlogical.com/rex). Open it there, or use `magi fleet --json` for a one-off look.",
+        ));
+    }
     let (sender, events) = mpsc::sync_channel(EVENT_BACKLOG);
     let mut links = Links {
         handles: HashMap::new(),
@@ -161,7 +166,7 @@ pub fn run(config: Config) -> io::Result<()> {
         port: config.port,
         socket: net::local_socket()?,
         sender: sender.clone(),
-        floats: rex::available(),
+        floats: true,
         launch: None,
     };
     let alerts = alerts::Alerts::open(net::state_dir()?.join("alerts.jsonl"), Instant::now())?;
@@ -367,7 +372,6 @@ fn propose_move(model: &mut Model, now: Instant) {
 
 enum Action {
     Quit,
-    Back,
     Up,
     Down,
     First,
@@ -395,7 +399,6 @@ enum Action {
 fn action(key: &Key) -> Option<Action> {
     Some(match key {
         Key::Char('q') | Key::Interrupt => Action::Quit,
-        Key::Escape => Action::Back,
         Key::Char('k') | Key::Up => Action::Up,
         Key::Char('j') | Key::Down => Action::Down,
         Key::Char('g') | Key::First => Action::First,
@@ -439,7 +442,7 @@ fn on_detail(model: &Model, column: u16, row: u16, now: Instant) -> bool {
 }
 
 fn click(model: &mut Model, column: u16, row: u16, now: Instant) {
-    if on_detail(model, column, row, now) && !model.showing_alerts && model.draft.is_none() {
+    if on_detail(model, column, row, now) && model.draft.is_none() {
         start_draft(model, now);
     }
 }
@@ -513,7 +516,7 @@ fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Ke
 }
 
 fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
-    if model.launcher.is_some() || links.launch.is_some() {
+    if links.launch.is_some() {
         return;
     }
     let live: Vec<Endpoint> = model
@@ -538,7 +541,6 @@ fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
         model.folders.insert(endpoint, asked);
     }
     if !links.floats {
-        model.launcher = Some(launcher::Launcher::new(model.menu(now)));
         return;
     }
     let sender = links.sender.clone();
@@ -570,20 +572,6 @@ fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
             rex::MODAL,
         )));
     });
-}
-
-fn edit_launcher(
-    model: &mut Model,
-    links: &Links,
-    mut launcher: launcher::Launcher,
-    key: Key,
-    now: Instant,
-) {
-    match launcher.key(key) {
-        launcher::Outcome::Stay => model.launcher = Some(launcher),
-        launcher::Outcome::Cancel => model.end_launch(),
-        launcher::Outcome::Start(choice) => start_chosen(model, links, choice, now),
-    }
 }
 
 fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now: Instant) {
@@ -628,15 +616,8 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
 }
 
 fn refresh_launcher(model: &mut Model, links: &Links, now: Instant) {
-    if links.launch.is_none() && model.launcher.is_none() {
-        return;
-    }
-    let menu = model.menu(now);
     if let Some(host) = &links.launch {
-        host.send(&menu);
-    }
-    if let Some(launcher) = &mut model.launcher {
-        launcher.update(menu);
+        host.send(&model.menu(now));
     }
 }
 
@@ -820,9 +801,8 @@ fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instan
     });
 }
 
-fn open_alerts(model: &mut Model, links: &Links) {
+fn open_alerts(links: &Links) {
     if !links.floats {
-        model.showing_alerts = !model.showing_alerts;
         return;
     }
     let command = vec![
@@ -1165,9 +1145,6 @@ fn sync_watch(model: &mut Model, links: &Links) {
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
     let now = Instant::now();
     match event {
-        Event::Input(Input::Key(key)) if let Some(launcher) = model.launcher.take() => {
-            edit_launcher(model, links, launcher, key, now);
-        }
         Event::Input(Input::Key(key))
             if model.search.as_ref().is_some_and(|search| search.typing) =>
         {
@@ -1249,12 +1226,11 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
                 )
         }) {
             Some(Action::Quit) => return Ok(Flow::Quit),
-            Some(Action::Back) => model.showing_alerts = false,
             Some(Action::Up) => model.move_selection(-1, now),
             Some(Action::Down) => model.move_selection(1, now),
             Some(Action::First) => model.move_selection(isize::MIN, now),
             Some(Action::Last) => model.move_selection(isize::MAX, now),
-            Some(Action::Alerts) => open_alerts(model, links),
+            Some(Action::Alerts) => open_alerts(links),
             Some(Action::Open) => open_selected(model, links, now)?,
             Some(Action::Move) => propose_move(model, now),
             Some(Action::Message) => match (model.selected_project(now), model.selection(now)) {
@@ -1496,6 +1472,13 @@ mod tests {
             Instant::now(),
         );
         select_first_session(model);
+    }
+
+    fn asked_and_failed(model: &Model, reason: &str) -> bool {
+        model
+            .folders
+            .values()
+            .any(|folders| matches!(folders, model::Folders::Failed(said) if said.contains(reason)))
     }
 
     fn screen(model: &Model) -> String {
@@ -2020,9 +2003,7 @@ mod tests {
             &mut links,
         )
         .unwrap();
-        assert!(model.launcher.is_some());
-        let shown = screen(&model);
-        assert!(shown.contains("couldn't ask for its projects"), "{shown}");
+        assert!(asked_and_failed(&model, "couldn't ask for its projects"));
     }
 
     #[test]
@@ -2364,7 +2345,7 @@ mod tests {
     #[test]
     fn the_launcher_groups_a_project_across_machines_lists_active_ones_first_and_starts_the_choice()
     {
-        let (mut model, mut links) = fleet();
+        let (mut model, links) = fleet();
         let now = Instant::now();
         let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
         model.apply(
@@ -2409,8 +2390,13 @@ mod tests {
         );
         assert!(menu.projects[0].chat);
         assert_eq!(menu.projects[1].folders[0].dir, "/home/me/web");
-        model.launcher = Some(launcher::Launcher::new(menu));
-        let shown = screen(&model);
+        let mut launcher = launcher::Launcher::new(menu);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| view::launcher::float(frame, Some(&launcher)))
+            .unwrap();
+        let shown = format!("{:?}", terminal.backend().buffer());
         for text in [
             "New session",
             "No project",
@@ -2422,21 +2408,16 @@ mod tests {
         ] {
             assert!(shown.contains(text), "missing {text:?}\n{shown}");
         }
-        handle_batch(
-            [key(Key::Tab), key(Key::Enter)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert_eq!(model.launcher, None);
+        launcher.key(Key::Tab);
+        let launcher::Outcome::Start(choice) = launcher.key(Key::Enter) else {
+            panic!("enter should start the chosen session");
+        };
+        start_chosen(&mut model, &links, choice, now);
         assert!(model.folders.is_empty());
         assert_eq!(
             model.flashed(Instant::now()),
             Some(("couldn't open it: that machine isn't connected", false))
         );
-        model.launcher = Some(launcher::Launcher::new(launcher::Menu::default()));
-        handle_batch([key(Key::Escape)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.launcher, None);
     }
 
     #[test]
@@ -2682,12 +2663,10 @@ mod tests {
         let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
         model.apply(homelab, live_sample(1_000, None), now);
         handle_batch([key(Key::Char('c'))].into_iter(), &mut model, &mut links).unwrap();
-        assert!(model.launcher.is_some());
-        let shown = screen(&model);
-        assert!(
-            shown.contains("couldn't ask for its projects: that machine isn't connected"),
-            "{shown}"
-        );
+        assert!(asked_and_failed(
+            &model,
+            "couldn't ask for its projects: that machine isn't connected"
+        ));
         model.folders.insert(homelab, model::Folders::Asking);
         model.apply(
             homelab,
@@ -2698,6 +2677,6 @@ mod tests {
             now,
         );
         handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        assert!(screen(&model).contains("cielago isn't installed"));
+        assert!(asked_and_failed(&model, "cielago isn't installed"));
     }
 }

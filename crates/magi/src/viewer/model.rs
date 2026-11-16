@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
-use super::launcher::{self, Launcher, Listing, Menu, Place};
+use super::launcher::{self, Listing, Menu, Place};
 use super::namer;
 use super::projects::{Projects, Resolved};
 use crate::proto::{
@@ -428,7 +428,6 @@ pub struct Model {
     pub shown: Option<Focus>,
     pub namer_asked_at: Option<Instant>,
     pub alerts: Alerts,
-    pub showing_alerts: bool,
     focus: Option<Focus>,
     started: Instant,
     flash: Option<Flash>,
@@ -438,7 +437,6 @@ pub struct Model {
     following: Option<Following>,
     pub folders: BTreeMap<Endpoint, Folders>,
     pub codex_models: BTreeMap<Endpoint, Vec<CodexModel>>,
-    pub launcher: Option<Launcher>,
     pub tools_expanded: bool,
     pub cell_size: Option<(u32, u32)>,
     pub shared_sent: u64,
@@ -637,7 +635,6 @@ impl Model {
             shown: None,
             namer_asked_at: None,
             alerts,
-            showing_alerts: false,
             focus: None,
             started: now,
             flash: None,
@@ -647,7 +644,6 @@ impl Model {
             following: None,
             folders: BTreeMap::new(),
             codex_models: BTreeMap::new(),
-            launcher: None,
             tools_expanded: false,
             cell_size: None,
             shared_sent: 0,
@@ -953,7 +949,7 @@ impl Model {
     }
 
     pub fn wanted_watch(&self, now: Instant) -> Option<Watched> {
-        if self.showing_alerts || self.projects.zen() {
+        if self.projects.zen() {
             return None;
         }
         let (id, child) = match self.detail_focus(now)? {
