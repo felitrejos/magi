@@ -1,8 +1,8 @@
 mod alerts;
 mod base64;
+mod browse;
 mod chart;
 mod diacritics;
-mod diff;
 mod fleet;
 mod graphics;
 mod input;
@@ -63,6 +63,27 @@ pub enum Event {
 pub use fleet::print as fleet;
 pub use launcher::run as launch;
 pub use page::{Page, run as page};
+
+pub fn print_document(path: &std::path::Path, width: usize) -> io::Result<()> {
+    if let Ok(palette) = std::env::var("MAGI_PALETTE") {
+        style::adopt_palette(&palette);
+    }
+    let text = std::fs::read_to_string(path)?;
+    let markdown = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "md" | "markdown" | "mdx"));
+    let shown = if markdown {
+        view::markdown_ansi(&text, width.max(20))
+    } else {
+        text.chars()
+            .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+            .collect()
+    };
+    let mut out = io::stdout().lock();
+    out.write_all(shown.as_bytes())?;
+    out.flush()
+}
 
 pub fn run(config: Config) -> io::Result<()> {
     let (sender, events) = mpsc::sync_channel(EVENT_BACKLOG);
@@ -214,6 +235,9 @@ fn event_loop(
         {
             return Ok(());
         }
+        if let Some(cell) = model.cell_size.take() {
+            graphics.set_cell(cell);
+        }
         dirty = true;
     }
 }
@@ -287,7 +311,7 @@ enum Action {
     RenameProject,
     Tools,
     Diff,
-    Plan,
+    Outputs,
 }
 
 fn action(key: &Key) -> Option<Action> {
@@ -311,7 +335,7 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('P') => Action::RenameProject,
         Key::Char('t') => Action::Tools,
         Key::Char('d') => Action::Diff,
-        Key::Char('v') => Action::Plan,
+        Key::Char('v') => Action::Outputs,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
         _ => return None,
     })
@@ -644,7 +668,7 @@ fn ask_to_show(model: &mut Model, links: &Links, what: proto::Showing, now: Inst
     };
     let what_text = match what {
         proto::Showing::Diff => "changes",
-        proto::Showing::Plan => "plan",
+        proto::Showing::Outputs => "outputs",
     };
     let request = proto::Request::Show { session, what };
     match links.request(endpoint, &request) {
@@ -654,24 +678,36 @@ fn ask_to_show(model: &mut Model, links: &Links, what: proto::Showing, now: Inst
 }
 
 fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instant) {
-    let text = match shown.text {
-        Ok(text) => text,
+    let body = match shown.body {
+        Ok(body) => body,
         Err(reason) => return model.flash(reason, false, now),
     };
-    let diff = shown.what == proto::Showing::Diff;
-    let browsed = if diff {
-        net::state_dir().and_then(|state| diff::browser(&text, &shown.title, &state.join("popups")))
-    } else {
-        Ok(None)
+    let popups = match net::state_dir() {
+        Ok(state) => state.join("popups"),
+        Err(error) => return model.flash(format!("couldn't save it to show: {error}"), false, now),
+    };
+    let browsed = match &body {
+        proto::Showed::Diff(text) => browse::diff(text, &shown.title, &popups),
+        proto::Showed::Outputs(files) => {
+            browse::outputs(files, &shown.title, &style::palette_env(), &popups)
+        }
     };
     let command = match browsed {
-        Ok(Some(command)) => command,
-        Ok(None) => match page_command(&text, &shown.title, diff) {
-            Ok(command) => command,
-            Err(error) => {
-                return model.flash(format!("couldn't save it to show: {error}"), false, now);
+        Ok(Some(command)) => Ok(command),
+        Ok(None) => match body {
+            proto::Showed::Diff(text) => page_command(&text, &shown.title, true),
+            proto::Showed::Outputs(files) => {
+                let joined: String = files
+                    .iter()
+                    .map(|file| format!("# {}\n\n{}\n\n", file.path, file.text))
+                    .collect();
+                page_command(&joined, &shown.title, false)
             }
         },
+        Err(error) => Err(error),
+    };
+    let command = match command {
+        Ok(command) => command,
         Err(error) => return model.flash(format!("couldn't save it to show: {error}"), false, now),
     };
     let label = format!("magi: {}", shown.title);
@@ -990,7 +1026,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::RenameProject) => start_naming(model, true, now),
             Some(Action::Tools) => model.tools_expanded = !model.tools_expanded,
             Some(Action::Diff) => ask_to_show(model, links, proto::Showing::Diff, now),
-            Some(Action::Plan) => ask_to_show(model, links, proto::Showing::Plan, now),
+            Some(Action::Outputs) => ask_to_show(model, links, proto::Showing::Outputs, now),
             None => {}
         },
         Event::Named(asked, result) => named(model, asked, result),
@@ -1013,7 +1049,8 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
         Event::Input(Input::Theme(reply)) => {
             style::update(&reply);
         }
-        Event::Input(Input::Resize) => {}
+        Event::Input(Input::Resize) => write_terminal(terminal::CELL_SIZE)?,
+        Event::Input(Input::Cells { width, height }) => model.cell_size = Some((width, height)),
         Event::Input(Input::Closed) => return Ok(Flow::Quit),
         Event::Input(Input::Click { column, row }) => click(model, column, row, now),
         Event::Topology(topology) => {

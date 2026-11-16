@@ -17,6 +17,7 @@ pub enum Input {
     Recheck,
     Theme(Vec<u8>),
     Resize,
+    Cells { width: u32, height: u32 },
     Closed,
     Click { column: u16, row: u16 },
 }
@@ -173,11 +174,18 @@ fn csi(colours: &mut Vec<u8>, body: &[u8]) -> Option<Input> {
         ([b'1' | b'7'], b'~') => Some(Input::Key(Key::First)),
         ([b'4' | b'8'], b'~') => Some(Input::Key(Key::Last)),
         ([b'2', b'7', b';', .., b';', b'1', b'3'], b'~') => Some(Input::Key(Key::Newline)),
+        ([b'6', b';', size @ ..], b't') => cell_size(size),
         ([b'?', ..], _) => None,
         ([b'<', mouse @ ..], b'M') => mouse_press(mouse),
         ([b'<', ..], _) => None,
         _ => final_key(last).map(Input::Key),
     }
+}
+
+fn cell_size(params: &[u8]) -> Option<Input> {
+    let (height, width) = std::str::from_utf8(params).ok()?.split_once(';')?;
+    let (height, width): (u32, u32) = (height.parse().ok()?, width.parse().ok()?);
+    (height > 0 && width > 0).then_some(Input::Cells { width, height })
 }
 
 fn mouse_press(params: &[u8]) -> Option<Input> {
@@ -350,6 +358,20 @@ mod tests {
     }
 
     #[test]
+    fn a_cell_size_reply_becomes_its_own_input() {
+        let mut parser = Parser::default();
+        let mut out = Vec::new();
+        parser.feed(b"\x1b[6;34;16t\x1b[6;0;16t", &mut out);
+        assert_eq!(
+            out,
+            [Input::Cells {
+                width: 16,
+                height: 34
+            }]
+        );
+    }
+
+    #[test]
     fn keys_in_every_encoding_map_to_the_same_key() {
         assert_eq!(
             parse(&[b"\x1b[A\x1bOB\x1b[C\x1bOD\x1b[1;5A\x1b[H\x1b[1~\x1b[F\x1b[8~\r\x1bOM\x7f\x08\t\x1b[Z\x03"]),
@@ -494,7 +516,7 @@ mod tests {
     #[test]
     fn other_terminal_answers_are_swallowed_whole() {
         assert_eq!(
-            parse(&[b"\x1bP>|rex 0.1\x1b\\\x1b_Gi=7;ENOENT\x1b\\\x1b[6;16;8t\x1b[?2031;2$yq"]),
+            parse(&[b"\x1bP>|rex 0.1\x1b\\\x1b_Gi=7;ENOENT\x1b\\\x1b[?2031;2$yq"]),
             [Input::Key(Key::Char('q'))]
         );
     }

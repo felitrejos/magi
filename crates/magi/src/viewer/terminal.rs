@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
 const GRAPHICS: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[>q";
+pub const CELL_SIZE: &[u8] = b"\x1b[16t";
 pub const COLOURS: &[u8] = concat!(
     "\x1b]10;?\x1b\\",
     "\x1b]11;?\x1b\\",

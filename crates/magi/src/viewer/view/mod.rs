@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -84,6 +84,43 @@ pub fn areas(full: Rect, machines: usize, plans: usize, agents: usize) -> Areas 
             horizontal: 1,
             vertical: 0,
         }),
+    }
+}
+
+pub fn markdown_ansi(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    for line in markdown::markdown(text, width) {
+        for span in &line.spans {
+            out.push_str(&sgr(span.style));
+            out.push_str(&span.content);
+            out.push_str("\x1b[0m");
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn sgr(style: Style) -> String {
+    let mut codes: Vec<String> = Vec::new();
+    for (modifier, code) in [
+        (Modifier::BOLD, "1"),
+        (Modifier::DIM, "2"),
+        (Modifier::ITALIC, "3"),
+        (Modifier::UNDERLINED, "4"),
+    ] {
+        if style.add_modifier.contains(modifier) {
+            codes.push(code.into());
+        }
+    }
+    for (color, layer) in [(style.fg, 38), (style.bg, 48)] {
+        if let Some(Color::Rgb(r, g, b)) = color {
+            codes.push(format!("{layer};2;{r};{g};{b}"));
+        }
+    }
+    if codes.is_empty() {
+        String::new()
+    } else {
+        format!("\x1b[{}m", codes.join(";"))
     }
 }
 
@@ -635,7 +672,7 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         actions.push(("o", "open in Rex"));
     }
     if agent.live {
-        actions.extend([("d", "diff"), ("v", "plan")]);
+        actions.extend([("d", "diff"), ("v", "outputs")]);
     }
     if agent.live && agent.session.agent == Agent::ClaudeCode {
         if !in_rex {

@@ -10,11 +10,9 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::graphics::Graphics;
 use super::input::{self, Input, Key};
 use super::style::{self, theme};
 use super::terminal;
-use super::typeset::{Typesetter, draw_rows};
 use super::view::markdown;
 
 pub struct Page {
@@ -27,17 +25,9 @@ pub fn run(path: &Path, page: Page, remove: bool) -> io::Result<()> {
     if remove {
         let _ = fs::remove_file(path);
     }
-    let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut terminal = ratatui::try_init()?;
     let reply = terminal::probe(&mut io::stdout())?;
     style::update(&reply);
-    let mut graphics = Graphics::from_reply(&reply);
-    let mut typeset = (!page.diff && graphics.cell().is_some())
-        .then(Typesetter::new)
-        .flatten();
-    if let Some(typeset) = &mut typeset {
-        typeset.show(&text, &base);
-    }
     let (sender, inputs) = mpsc::channel();
     let early = terminal::unanswered(&reply).to_vec();
     thread::Builder::new().name("input".into()).spawn(move || {
@@ -48,16 +38,8 @@ pub fn run(path: &Path, page: Page, remove: bool) -> io::Result<()> {
         loop {
             let mut height = 0;
             terminal.draw(|frame| {
-                height = draw(
-                    frame,
-                    &page,
-                    &text,
-                    &mut top,
-                    &mut graphics,
-                    typeset.as_mut(),
-                );
+                height = draw(frame, &page, &text, &mut top);
             })?;
-            graphics.flush(&mut io::stdout())?;
             let step = height.max(1);
             match inputs.recv() {
                 Ok(Input::Key(Key::Char('q') | Key::Escape | Key::Interrupt)) | Err(_) => {
@@ -74,20 +56,12 @@ pub fn run(path: &Path, page: Page, remove: bool) -> io::Result<()> {
             }
         }
     })();
-    let _ = graphics.clear(&mut io::stdout());
     ratatui::try_restore()?;
     io::stdout().flush()?;
     result
 }
 
-fn draw(
-    frame: &mut Frame,
-    page: &Page,
-    text: &str,
-    top: &mut usize,
-    graphics: &mut Graphics,
-    typeset: Option<&mut Typesetter>,
-) -> usize {
+fn draw(frame: &mut Frame, page: &Page, text: &str, top: &mut usize) -> usize {
     let area = frame.area();
     frame
         .buffer_mut()
@@ -102,26 +76,15 @@ fn draw(
     let width = inner.width as usize;
     let body = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 3);
     let room = body.height as usize;
-    let total = match (typeset, graphics.cell()) {
-        (Some(typeset), Some((cell_width, cell_height))) => {
-            typeset.fit(u32::from(body.width) * cell_width, cell_height);
-            let total = typeset.rows();
-            *top = (*top).min(total.saturating_sub(room));
-            draw_rows(frame.buffer_mut(), graphics, typeset, body, *top, "page");
-            total
-        }
-        _ => {
-            let lines = if page.diff {
-                diff_lines(text)
-            } else {
-                markdown::markdown(text, width)
-            };
-            *top = (*top).min(lines.len().saturating_sub(room));
-            let shown: Vec<Line<'static>> = lines.iter().skip(*top).take(room).cloned().collect();
-            frame.render_widget(Paragraph::new(shown), body);
-            lines.len()
-        }
+    let lines = if page.diff {
+        diff_lines(text)
+    } else {
+        markdown::markdown(text, width)
     };
+    *top = (*top).min(lines.len().saturating_sub(room));
+    let shown: Vec<Line<'static>> = lines.iter().skip(*top).take(room).cloned().collect();
+    frame.render_widget(Paragraph::new(shown), body);
+    let total = lines.len();
     let position = if total > room {
         let percent = ((*top + room).min(total) * 100) / total.max(1);
         format!("{percent}%")
@@ -137,7 +100,7 @@ fn draw(
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
     let keys = Line::from(vec![
-        Span::styled("q", style::bold(theme().text)),
+        Span::styled("esc", style::bold(theme().text)),
         Span::styled(" close   ", style::fg(theme().faint)),
         Span::styled("j k", style::bold(theme().text)),
         Span::styled(" scroll   ", style::fg(theme().faint)),

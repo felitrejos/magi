@@ -119,7 +119,7 @@ impl Writer {
             width,
             lines: Vec::new(),
             inline: Vec::new(),
-            styles: vec![style::fg(theme().text)],
+            styles: vec![style::fg(theme().prose)],
             nest: Vec::new(),
             lists: Vec::new(),
             gap: false,
@@ -304,10 +304,7 @@ impl Writer {
     }
 
     fn style(&self) -> Style {
-        self.styles
-            .last()
-            .copied()
-            .unwrap_or_else(|| style::fg(theme().prose))
+        self.styles.last().copied().unwrap_or_default()
     }
 
     fn text(&mut self, text: &str, style: Style) {

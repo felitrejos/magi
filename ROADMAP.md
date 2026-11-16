@@ -66,16 +66,13 @@ Done:
   shell's output.
 
 Next:
-1. **Rex popups.** Floating layers made with `session.new_layer`, closed with
-   `session.close_layer`, minimized with `session.set_layer_state`:
-   - `d`: the session's diff, reviewable, with a way to send a selection and
-     a question back to the session (the idea from leaf's `@`).
-   - `v`: the session's plan, and any Markdown file it wrote.
-   - Files the agent changed, images, and the machine graphs.
-2. **Pages, not cells.** Markdown typeset with kitty graphics on the Mac,
-   built on [mddog](https://github.com/qu8n/mddog)'s engine (MIT): done for
-   Markdown popups (`magi page`) and the conversation. Next, search,
-   selection and links. The cell renderer stays for Linux.
+1. **Rex popups.** `d` lists the session's changed files with each diff
+   beside it, and `v` its outputs (its plan and the documents it wrote), in
+   floating panes. Next: send a selection and a question back to the session
+   from the diff (the idea from leaf's `@`), and images.
+2. **Pages, not cells.** The conversation is typeset with kitty graphics on
+   the Mac, built on [mddog](https://github.com/qu8n/mddog)'s engine (MIT).
+   Next, search, selection and links. The cell renderer stays for Linux.
 
 ## Phase 5: the rest of the redesign
 

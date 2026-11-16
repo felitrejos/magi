@@ -7,10 +7,14 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::bounded;
+use crate::proto::OutputFile;
 
 const GIT_LIMIT: Duration = Duration::from_secs(10);
-const MAX_DIFF_BYTES: usize = 4 << 20;
-const MAX_FILE_BYTES: u64 = 1 << 20;
+const MAX_DIFF_BYTES: usize = 900 << 10;
+const MAX_OUTPUTS: usize = 40;
+const MAX_OUTPUT_FILE_BYTES: usize = 256 << 10;
+const MAX_OUTPUT_BYTES: usize = 768 << 10;
+const DOCUMENTS: [&str; 7] = ["md", "markdown", "mdx", "txt", "rst", "html", "csv"];
 const TRANSCRIPT_TAIL_BYTES: u64 = 16 << 20;
 const MAX_UNTRACKED: usize = 50;
 
@@ -59,12 +63,22 @@ fn git(cwd: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-pub fn plan(transcript: &Path) -> Result<(String, String), String> {
+pub fn outputs(transcript: &Path, cwd: &str) -> Result<Vec<OutputFile>, String> {
     let tail =
         read_tail(transcript).map_err(|error| format!("can't read the transcript: {error}"))?;
-    let mut found: Option<(String, String)> = None;
+    let mut plan = None;
+    let mut touched: Vec<String> = Vec::new();
+    let mut touch = |path: &str| {
+        let path = if path.starts_with('/') || cwd.is_empty() {
+            path.to_string()
+        } else {
+            format!("{cwd}/{path}")
+        };
+        touched.retain(|known| *known != path);
+        touched.push(path);
+    };
     for line in tail.lines() {
-        if !line.contains("\"tool_use\"") {
+        if !line.contains("\"tool_use\"") && !line.contains("apply_patch") {
             continue;
         }
         let Ok(value) = serde_json::from_str::<Value>(line) else {
@@ -77,45 +91,83 @@ pub fn plan(transcript: &Path) -> Result<(String, String), String> {
             let input = &block["input"];
             match block["name"].as_str() {
                 Some("ExitPlanMode") => {
-                    if let Some(plan) = input["plan"]
+                    plan = input["plan"]
                         .as_str()
                         .filter(|plan| !plan.trim().is_empty())
-                    {
-                        found = Some(("Plan".into(), plan.to_string()));
-                    }
+                        .map(str::to_string)
+                        .or(plan);
                 }
-                Some("Write" | "Edit" | "MultiEdit") => {
-                    if let Some(path) = input["file_path"]
-                        .as_str()
-                        .filter(|path| path.ends_with(".md") || path.ends_with(".markdown"))
-                    {
-                        found = Some((path.to_string(), String::new()));
+                Some("Write" | "Edit" | "MultiEdit" | "NotebookEdit") => {
+                    if let Some(path) = input["file_path"].as_str() {
+                        touch(path);
                     }
                 }
                 _ => {}
             }
         }
-    }
-    match found {
-        Some((title, text)) if !text.is_empty() => Ok((title, text)),
-        Some((path, _)) => {
-            let file = Path::new(&path);
-            let size = file
-                .metadata()
-                .map_err(|_| format!("{path} isn't there any more"))?
-                .len();
-            if size > MAX_FILE_BYTES {
-                return Err(format!("{path} is too large to show"));
+        let payload = &value["payload"];
+        if payload["name"] == "apply_patch" {
+            let patch = payload["input"]
+                .as_str()
+                .or_else(|| payload["arguments"].as_str())
+                .unwrap_or_default();
+            for path in patch.lines().filter_map(|line| {
+                line.strip_prefix("*** Add File: ")
+                    .or_else(|| line.strip_prefix("*** Update File: "))
+            }) {
+                touch(path.trim());
             }
-            let text =
-                fs::read_to_string(file).map_err(|error| format!("can't read {path}: {error}"))?;
-            let name = file
-                .file_name()
-                .map_or(path.clone(), |name| name.to_string_lossy().into_owned());
-            Ok((name, text))
         }
-        None => Err("this session hasn't made a plan or written a Markdown file".into()),
     }
+    let mut files: Vec<OutputFile> = plan
+        .map(|text| OutputFile {
+            path: "Plan".into(),
+            text: capped_text(text),
+        })
+        .into_iter()
+        .collect();
+    let mut total = files.iter().map(|file| file.text.len()).sum::<usize>();
+    let inside = format!("{}/", cwd.trim_end_matches('/'));
+    for path in touched.iter().rev() {
+        if files.len() >= MAX_OUTPUTS || total >= MAX_OUTPUT_BYTES {
+            break;
+        }
+        let Some(relative) = path.strip_prefix(&inside).filter(|_| !cwd.is_empty()) else {
+            continue;
+        };
+        let document = Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| DOCUMENTS.contains(&extension.to_ascii_lowercase().as_str()));
+        if !document {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let text = capped_text(text);
+        total += text.len();
+        files.push(OutputFile {
+            path: relative.to_string(),
+            text,
+        });
+    }
+    if files.is_empty() {
+        return Err("this session hasn't made a plan or written a document yet".into());
+    }
+    Ok(files)
+}
+
+fn capped_text(mut text: String) -> String {
+    if text.len() > MAX_OUTPUT_FILE_BYTES {
+        let mut cut = MAX_OUTPUT_FILE_BYTES;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str("\n\n… the rest is too long to show here\n");
+    }
+    text
 }
 
 fn read_tail(path: &Path) -> std::io::Result<String> {
@@ -146,39 +198,46 @@ mod tests {
     }
 
     #[test]
-    fn the_latest_plan_or_markdown_file_is_shown() {
-        let dir = scratch("plan");
+    fn outputs_are_the_plan_then_the_documents_it_touched_inside_its_folder_newest_first() {
+        let dir = scratch("outputs");
+        let cwd = dir.to_str().unwrap();
+        for (name, text) in [
+            ("NOTES.md", "# Notes"),
+            ("README.md", "# Read me"),
+            ("main.rs", "fn main() {}"),
+        ] {
+            fs::write(dir.join(name), text).unwrap();
+        }
+        let outside = scratch("outputs-outside").join("ELSEWHERE.md");
+        fs::write(&outside, "away").unwrap();
+        let write = |path: &std::path::Path| {
+            tool(
+                "Write",
+                &format!(r#"{{"file_path":"{}","content":"x"}}"#, path.display()),
+            )
+        };
         let transcript = dir.join("s.jsonl");
-        let notes = dir.join("NOTES.md");
-        fs::write(&notes, "# Notes\nwritten").unwrap();
         fs::write(
             &transcript,
             [
-                tool("ExitPlanMode", r#"{"plan":"1. Add retries\n2. Test them"}"#),
-                tool("Bash", r#"{"command":"ls"}"#),
+                write(&dir.join("README.md")),
+                tool("ExitPlanMode", r#"{"plan":"1. Add retries"}"#),
+                write(&dir.join("NOTES.md")),
+                write(&dir.join("main.rs")),
+                write(&outside),
+                write(&dir.join("README.md")),
+                write(&dir.join("GONE.md")),
             ]
             .join("\n"),
         )
         .unwrap();
-        assert_eq!(
-            plan(&transcript).unwrap(),
-            ("Plan".into(), "1. Add retries\n2. Test them".into())
-        );
-        let write = tool(
-            "Write",
-            &format!(r#"{{"file_path":"{}","content":"x"}}"#, notes.display()),
-        );
-        fs::write(
-            &transcript,
-            [tool("ExitPlanMode", r#"{"plan":"old"}"#), write].join("\n"),
-        )
-        .unwrap();
-        assert_eq!(
-            plan(&transcript).unwrap(),
-            ("NOTES.md".into(), "# Notes\nwritten".into())
-        );
+        let found = outputs(&transcript, cwd).unwrap();
+        let paths: Vec<&str> = found.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["Plan", "README.md", "NOTES.md"]);
+        assert_eq!(found[0].text, "1. Add retries");
+        assert_eq!(found[1].text, "# Read me");
         fs::write(&transcript, tool("Bash", r#"{"command":"ls"}"#)).unwrap();
-        assert!(plan(&transcript).is_err());
+        assert!(outputs(&transcript, cwd).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
 

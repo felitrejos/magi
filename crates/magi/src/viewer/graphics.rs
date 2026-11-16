@@ -233,6 +233,16 @@ impl Graphics {
         self.cell
     }
 
+    pub fn set_cell(&mut self, cell: (u32, u32)) -> bool {
+        if self.cell.is_none_or(|known| known == cell) {
+            return false;
+        }
+        self.cell = Some(cell);
+        self.stale
+            .extend(self.slots.drain().map(|(_, slot)| slot.id));
+        true
+    }
+
     pub fn strip(
         &mut self,
         buf: &mut Buffer,

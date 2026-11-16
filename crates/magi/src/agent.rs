@@ -15,7 +15,7 @@ use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
     self, AgentMessage, AgentSession, ChildKind, Content, Hello, Identity, PROTOCOL_VERSION, Reply,
-    Request, Said, Screen, Showing, Shown, StatusReport, Welcome,
+    Request, Said, Screen, Showed, Showing, Shown, StatusReport, Welcome,
 };
 use crate::screen::Capturer;
 use crate::sessions::rex::Location;
@@ -136,23 +136,21 @@ impl Agent {
                     .map(|(_, path)| path.clone()),
             )
         };
-        let (title, text) = match what {
-            Showing::Diff => ("Changes".to_string(), show::diff(&cwd)),
-            Showing::Plan => {
-                match transcript.ok_or("that session's transcript isn't on this machine") {
-                    Ok(path) => match show::plan(&path) {
-                        Ok((title, text)) => (title, Ok(text)),
-                        Err(reason) => ("Plan".into(), Err(reason)),
-                    },
-                    Err(reason) => ("Plan".into(), Err(reason.to_string())),
-                }
-            }
+        let (title, body) = match what {
+            Showing::Diff => ("Changes", show::diff(&cwd).map(Showed::Diff)),
+            Showing::Outputs => (
+                "Outputs",
+                transcript
+                    .ok_or_else(|| "that session's transcript isn't on this machine".to_string())
+                    .and_then(|path| show::outputs(&path, &cwd))
+                    .map(Showed::Outputs),
+            ),
         };
         Shown {
             session,
             what,
-            title,
-            text,
+            title: title.to_string(),
+            body,
         }
     }
 
