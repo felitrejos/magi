@@ -117,38 +117,34 @@ Done:
 - Codex sessions aren't suggested for a move, since cielago only moves Claude
   Code sessions. Moving Codex sessions is in Phase 9.
 
-## Phase 8: Rex between machines
+## Phase 8: Rex between machines (done)
 
 Each machine runs its own Rex server, and a Rex client reaches the others by
-host label (`rex -S homelab`) over Tailscale HTTPS or SSH, with the list of
-hosts kept by your home server. What that can replace:
+host label (`rex -S homelab`) over Tailscale HTTPS or SSH.
 
-1. **Events instead of polling.** Done for state: each agent follows
-   `rex events --all --json` on its machine and keeps every pane's own
-   status report (Claude Code reports working, idle or blocked, with a line
-   on what it's doing). A report, bell, notification or exit updates magi at
-   once, and the report's line shows as the session's activity. Next: drop
-   the `block ls` refresh for `process_changed`.
-2. **Live screens.** `data.connect` streams a block's content as it changes,
-   for remote sessions too, instead of capturing it.
-3. **Find panes through Rex.** `rex block ls -A --json` with
-   `rex block call process` (foreground pid, argv, cwd, last exit) instead of
-   reading process environments, which works on every host.
-4. **Port forwards.** Done: a moved session's dev ports go through
-   `rex forward` as tunnel blocks in its Rex session on the new machine,
-   reconnecting on their own (SSH stays only for tmux hosts). Next: show each
-   forward's state (active, away, orphaned) on its session.
-5. **Folders and files.** `list_dir` to browse any machine's folders when
-   starting a session; `download_begin` and `upload_begin` to fetch a file for
-   a popup or attach an image to a message.
-6. **Land on the agent.** `rex zoom --on` the agent's pane when opening its
-   tab, and label agent panes with `session.set_block_label`.
+- **Events instead of polling.** Each agent follows `rex events --all --json`
+  for every pane's own status report (Claude Code reports working, idle or
+  blocked, with a line on what it's doing), and for layout changes: a pane's
+  window is listed again when its session's layout changes, otherwise once a
+  minute.
+- **Opening a session on another machine.** `↵` goes through that machine's
+  Rex host, found by label or endpoint, and the Rex app's client there, and
+  focuses the agent's own pane, not just its tab.
+- **Port forwards** go through `rex forward` as tunnel blocks. A forward whose
+  session has ended or moved on shows on the machine running it, with the
+  command that closes it.
 
-Popups for a session on another machine get their content (a diff, a plan, a
-file) through the magi agent there, which already talks to the viewer over
-Tailscale, and draw it locally. SSH stays only for what Rex has no call for:
-copying a work tree when a session moves, and running git on the machine it
-moves to.
+Decided against, for now:
+- **Live screens over `data.connect`.** It needs a persistent control
+  connection, a binary WebSocket protocol and a terminal emulator in magi, to
+  replace one `rex capture` a second that runs only while a session is
+  waiting on you.
+- **Finding panes and folders through Rex.** The magi agent on each machine
+  already reads process environments, folders and files itself; `block call
+  process`, `list_dir` and `download_begin` would add a call per pane.
+- **Attaching an image to a message.** Dropping it on the session's own Rex
+  pane already uploads it to that machine. From magi it would need Rex's
+  upload stream, which has no CLI, or a larger request limit in magi.
 
 Rex is in preview, so magi and cielago follow its latest release only
 (today 0.1.0-preview.19, API revision 14), with no fallbacks for older

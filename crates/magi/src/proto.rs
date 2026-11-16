@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 24;
+pub const PROTOCOL_VERSION: u16 = 25;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -148,6 +148,7 @@ pub struct Usage {
 pub struct RexPane {
     pub session: String,
     pub window: String,
+    pub block: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

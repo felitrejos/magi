@@ -8,8 +8,8 @@ use super::namer;
 use super::projects::{Projects, Resolved};
 use super::units;
 use crate::proto::{
-    self, Agent, AgentSession, Child, CodexModel, FULL, ForwardState, Identity, MAX_PROMPT_CHARS,
-    Plan, Reply, Sample, Screen, SessionState, SharedProjects, Welcome,
+    self, Agent, AgentSession, Child, CodexModel, FULL, Forward, ForwardState, Identity,
+    MAX_PROMPT_CHARS, Plan, Reply, Sample, Screen, SessionState, SharedProjects, Welcome,
 };
 use crate::tailscale::Peer;
 use unicode_segmentation::UnicodeSegmentation;
@@ -711,6 +711,11 @@ pub struct MoveSuggestion {
     pub target: MoveTarget,
 }
 
+fn same_machine(name: &str, machine: &str) -> bool {
+    let short = |name: &str| name.split('.').next().unwrap_or(name).to_string();
+    !name.is_empty() && short(name).eq_ignore_ascii_case(&short(machine))
+}
+
 impl Model {
     pub fn new(port: u16, now: Instant, alerts: Alerts) -> Self {
         Self {
@@ -976,16 +981,47 @@ impl Model {
         plans
     }
 
+    pub fn orphaned_forwards(&self, machine: &str, now: Instant) -> Vec<Forward> {
+        let rows = self.rows(now);
+        let agents = self.agents(now);
+        let Some(sample) = rows
+            .iter()
+            .find(|row| row.name == machine)
+            .and_then(Row::machine)
+            .and_then(|machine| machine.latest.as_ref())
+        else {
+            return Vec::new();
+        };
+        sample
+            .forwards
+            .iter()
+            .filter(|forward| {
+                let host = rows.iter().find(|row| {
+                    same_machine(&forward.host, &row.name) || same_machine(&forward.ssh, &row.name)
+                });
+                host.is_some_and(|host| {
+                    host.state() == Some(&LinkState::Live)
+                        && host
+                            .machine()
+                            .is_some_and(|machine| machine.latest.is_some())
+                        && !agents.iter().any(|agent| {
+                            agent.live
+                                && agent.machine == host.name
+                                && agent.session.id == forward.session
+                        })
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn forwards_to(
         &self,
         session: &str,
         machine: &str,
         now: Instant,
     ) -> Vec<(u16, ForwardState)> {
-        let names = |name: &str| {
-            let short = name.split('.').next().unwrap_or(name);
-            short.eq_ignore_ascii_case(machine.split('.').next().unwrap_or(machine))
-        };
+        let names = |name: &str| same_machine(name, machine);
         let mut ports: Vec<(u16, ForwardState)> = self
             .rows(now)
             .into_iter()

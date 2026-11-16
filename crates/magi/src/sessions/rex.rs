@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::bounded;
 use crate::proto::RexPane;
 
-const REFRESH_EVERY: Duration = Duration::from_secs(10);
+const REFRESH_EVERY: Duration = Duration::from_secs(60);
 const RETRY_MISSING_AFTER: Duration = Duration::from_secs(5);
 const LIST_LIMIT: Duration = Duration::from_secs(2);
 const REREAD_PROCESS_AFTER: Duration = Duration::from_secs(60);
@@ -60,6 +60,11 @@ struct Block {
 }
 
 impl Panes {
+    pub fn forget(&mut self, sessions: &HashSet<String>) {
+        self.servers
+            .retain(|(_, session), _| !sessions.contains(session));
+    }
+
     pub fn find(&mut self, pid: i32, now: Instant) -> Option<(RexPane, Location)> {
         let here = self.locate(pid, now)?;
         let key = (here.server.clone(), here.session.clone());
@@ -84,6 +89,7 @@ impl Panes {
         let pane = RexPane {
             session: here.session.clone(),
             window,
+            block: here.block.clone(),
         };
         Some((pane, here))
     }

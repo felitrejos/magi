@@ -334,10 +334,11 @@ fn open_selected(model: &mut Model, links: &Links, now: Instant) -> io::Result<(
         model.flash(reason, false, now);
         return Ok(());
     };
+    let elsewhere = (agent.endpoint != model::Endpoint::Local).then(|| agent.machine.clone());
     model.opening = true;
     let sender = links.sender.clone();
     thread::Builder::new().name("open".into()).spawn(move || {
-        let _ = sender.send(Event::Opened(rex::open(&pane)));
+        let _ = sender.send(Event::Opened(rex::open(&pane, elsewhere.as_deref())));
     })?;
     Ok(())
 }
@@ -1529,6 +1530,7 @@ mod tests {
             Some(RexPane {
                 session: "session:1".into(),
                 window: "window:2".into(),
+                block: "block:3".into(),
             }),
         );
         assert!(
@@ -1726,6 +1728,7 @@ mod tests {
         session.pane = Some(RexPane {
             session: "session:1".into(),
             window: "window:2".into(),
+            block: "block:3".into(),
         });
         model.apply(Endpoint::Local, live_sample(1_000, Some(session)), now);
         select_first_session(&mut model);
@@ -1919,6 +1922,7 @@ mod tests {
         session.pane = Some(RexPane {
             session: "session:1".into(),
             window: "window:2".into(),
+            block: "block:3".into(),
         });
         session
     }
@@ -2383,6 +2387,13 @@ mod tests {
                 ports: vec![4000],
                 state: crate::proto::ForwardState::Connected,
             },
+            crate::proto::Forward {
+                session: "gone".into(),
+                host: "homelab".into(),
+                ssh: "homelab".into(),
+                ports: vec![5000],
+                state: crate::proto::ForwardState::Connected,
+            },
         ];
         model.apply(Endpoint::Local, LinkUpdate::Sample(here), now);
         model.apply(homelab, live_sample(1_000, Some(claude("s1", 0))), now);
@@ -2392,6 +2403,15 @@ mod tests {
         let shown = screen(&model);
         assert!(shown.contains("localhost:3000 waiting"), "{shown}");
         assert!(!shown.contains("localhost:4000"), "{shown}");
+        assert!(!shown.contains("localhost:5000"), "{shown}");
+        model.selected = 0;
+        let shown = screen(&model);
+        assert!(
+            shown.contains("localhost:5000 → homelab for a session that left"),
+            "{shown}"
+        );
+        assert!(shown.contains("cielago forwards close gone"), "{shown}");
+        assert!(!shown.contains("localhost:4000 →"), "{shown}");
     }
 
     #[test]

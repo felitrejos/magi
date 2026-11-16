@@ -24,6 +24,13 @@ const WAKING: [&str; 6] = [
     "desktop_notification",
     "child_exited",
 ];
+const LAYOUT: [&str; 5] = [
+    "session_view_changed",
+    "block_created",
+    "block_closed",
+    "window_created",
+    "window_closed",
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
@@ -62,6 +69,7 @@ struct Shared {
     outdated: Option<String>,
     statuses: HashMap<String, Status>,
     asked: HashSet<String>,
+    rearranged: HashSet<String>,
     woken: bool,
 }
 
@@ -131,6 +139,10 @@ impl Events {
         )
     }
 
+    pub fn rearranged(&self) -> HashSet<String> {
+        std::mem::take(&mut self.lock().rearranged)
+    }
+
     pub fn wait(&self, longest: Duration) -> bool {
         let (lock, changed) = &*self.shared;
         let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -182,6 +194,10 @@ impl Events {
     }
 
     fn read(&self, line: &str) {
+        if let Some(session) = layout_event(line) {
+            self.lock().rearranged.insert(session);
+            return;
+        }
         let Some((block, name, payload)) = block_event(line) else {
             return;
         };
@@ -226,6 +242,13 @@ fn too_old(revision: u64) -> Option<String> {
              (revision {REX_API}). Update Rex and restart its server."
         )
     })
+}
+
+fn layout_event(line: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let kind = value["payload"]["event"]["type"].as_str()?;
+    (value["type"] == "session_event" && LAYOUT.contains(&kind))
+        .then(|| value["payload"]["session_id"].as_str().map(str::to_string))?
 }
 
 fn block_event(line: &str) -> Option<(String, String, Value)> {
@@ -298,6 +321,17 @@ mod tests {
             r#"{"ids":[""],"reason":"prompt"}"#,
         ));
         assert_eq!(events.known("b1"), None);
+    }
+
+    #[test]
+    fn a_layout_change_marks_its_session_for_a_fresh_pane_listing() {
+        let events = Events::default();
+        events.read(
+            r#"{"type":"session_event","payload":{"session_id":"s9","event":{"type":"session_view_changed","payload":{}}}}"#,
+        );
+        events.read(&event("title_changed", "{}"));
+        assert_eq!(events.rearranged(), HashSet::from(["s9".to_string()]));
+        assert!(events.rearranged().is_empty());
     }
 
     #[test]

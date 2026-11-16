@@ -72,7 +72,7 @@ pub fn float(label: &str, command: &[String], bounds: [f32; 4]) -> Result<(), St
     .map(|_| ())
 }
 
-pub fn open(pane: &RexPane) -> Result<(), String> {
+pub fn open(pane: &RexPane, machine: Option<&str>) -> Result<(), String> {
     let here = here().ok_or("open magi in a Rex pane to jump to agents")?;
     let listing = rex(&here, &["block", "ls", "--json", "-s", &here.session])?;
     let listing: Listing = serde_json::from_slice(&listing)
@@ -83,18 +83,100 @@ pub fn open(pane: &RexPane) -> Result<(), String> {
         .find(|block| block.block_id == here.block)
         .and_then(|block| block.owner)
         .ok_or("no Rex app is showing this pane right now")?;
-    rex(
-        &here,
-        &[
-            "-C",
-            &owner,
-            "do",
-            "session.select",
-            &format!("session_id={}", pane.session),
-            &format!("window_id={}", pane.window),
-        ],
-    )?;
+    let (server, client) = match machine {
+        None => (Vec::new(), owner),
+        Some(machine) => {
+            let host = host_label(&here, machine)?;
+            let server = vec!["-S".to_string(), host];
+            let app = clients(&here, &[])?
+                .into_iter()
+                .find(|client| client.client_id == owner)
+                .and_then(|client| client.info.label)
+                .ok_or("the Rex app showing magi has no label to find it by")?;
+            let there = clients(&here, &server)?
+                .into_iter()
+                .find(|client| {
+                    client.info.kind == "app" && client.info.label.as_ref() == Some(&app)
+                })
+                .ok_or_else(|| format!("the Rex app isn't connected to {machine}"))?;
+            (server, there.client_id)
+        }
+    };
+    let on = |args: &[&str]| -> Result<Vec<u8>, String> {
+        let mut all: Vec<&str> = server.iter().map(String::as_str).collect();
+        all.extend_from_slice(args);
+        rex(&here, &all)
+    };
+    on(&[
+        "-C",
+        &client,
+        "do",
+        "session.select",
+        &format!("session_id={}", pane.session),
+        &format!("window_id={}", pane.window),
+    ])?;
+    let focus = serde_json::json!({"session_id": pane.session, "block_id": pane.block});
+    on(&["api", "call", "session.focus_block", &focus.to_string()])?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct Clients {
+    clients: Vec<Client>,
+}
+
+#[derive(Deserialize)]
+struct Client {
+    client_id: String,
+    info: ClientInfo,
+}
+
+#[derive(Deserialize)]
+struct ClientInfo {
+    kind: String,
+    label: Option<String>,
+}
+
+fn clients(here: &Here, server: &[String]) -> Result<Vec<Client>, String> {
+    let mut args: Vec<&str> = server.iter().map(String::as_str).collect();
+    args.extend(["client", "ls", "--json"]);
+    let listing = rex(here, &args)?;
+    serde_json::from_slice::<Clients>(&listing)
+        .map(|clients| clients.clients)
+        .map_err(|error| format!("Rex listed its clients in a form magi can't read: {error}"))
+}
+
+fn host_label(here: &Here, machine: &str) -> Result<String, String> {
+    let listing = rex(here, &["hosts", "list", "--json"])?;
+    let hosts: Hosts = serde_json::from_slice(&listing)
+        .map_err(|error| format!("Rex listed its hosts in a form magi can't read: {error}"))?;
+    hosts
+        .hosts
+        .into_iter()
+        .find_map(|listed| {
+            let label = listed.host.label?;
+            names_machine(&label, &listed.host.endpoints, machine).then_some(label)
+        })
+        .ok_or_else(|| {
+            format!("{machine} isn't one of Rex's hosts. Add it in Rex to open its sessions")
+        })
+}
+
+fn names_machine(label: &str, endpoints: &[String], machine: &str) -> bool {
+    label.eq_ignore_ascii_case(machine)
+        || endpoints.iter().any(|endpoint| {
+            let host = endpoint
+                .split_once("://")
+                .map_or(endpoint.as_str(), |(_, rest)| rest)
+                .split(['.', ':', '/'])
+                .next()
+                .unwrap_or_default();
+            host.eq_ignore_ascii_case(machine)
+                || host
+                    .to_ascii_lowercase()
+                    .strip_prefix(&machine.to_ascii_lowercase())
+                    .is_some_and(|rest| rest.starts_with('-'))
+        })
 }
 
 #[derive(Deserialize)]
@@ -111,6 +193,8 @@ struct Listed {
 struct Host {
     label: Option<String>,
     icon: Option<String>,
+    #[serde(default)]
+    endpoints: Vec<String>,
 }
 
 pub fn host_icons() -> HashMap<String, String> {
@@ -170,4 +254,22 @@ fn rex(here: &Here, args: &[&str]) -> Result<Vec<u8>, String> {
         .unwrap_or("rex failed")
         .trim_start_matches("Error: ");
     Err(format!("Rex couldn't open it: {reason}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_machine_is_found_among_rex_hosts_by_label_or_by_its_endpoints() {
+        let endpoints = [
+            "https://homelab-rex.taile4be02.ts.net".to_string(),
+            "ssh://homelab".to_string(),
+        ];
+        assert!(names_machine("homelab", &[], "Homelab"));
+        assert!(names_machine("server", &endpoints, "homelab"));
+        assert!(names_machine("server", &endpoints[..1], "homelab"));
+        assert!(!names_machine("server", &endpoints, "home"));
+        assert!(!names_machine("nas", &[], "homelab"));
+    }
 }

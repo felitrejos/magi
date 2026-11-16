@@ -169,11 +169,13 @@ pub fn render_detail(
     frame: &mut Frame,
     area: Rect,
     row: &Row<'_>,
-    label: Option<&str>,
-    port: u16,
+    model: &Model,
     now: Instant,
     graphics: &mut Graphics,
 ) {
+    let label = model.projects.machine_label(&row.name);
+    let orphans = model.orphaned_forwards(&row.name, now);
+    let port = model.port;
     if area.height < 4 || area.width < 16 {
         return;
     }
@@ -204,6 +206,34 @@ pub fn render_detail(
     let mut cursor = Cursor::new(Rect::new(area.x, area.y - 1, area.width, area.height + 1));
     if let Some(machine) = row.machine() {
         cursor.line(frame, Line::from(clip(facts(machine), width)));
+    }
+    for forward in &orphans {
+        let ports: Vec<String> = forward
+            .ports
+            .iter()
+            .map(|port| format!("localhost:{port}"))
+            .collect();
+        let short: String = forward.session.chars().take(8).collect();
+        cursor.line(
+            frame,
+            Line::from(clip(
+                vec![
+                    Span::styled(
+                        format!(
+                            "{} → {} for a session that left  ",
+                            ports.join(", "),
+                            forward.host
+                        ),
+                        style::fg(theme().warn),
+                    ),
+                    Span::styled(
+                        format!("cielago forwards close {short}"),
+                        style::fg(theme().dim),
+                    ),
+                ],
+                width,
+            )),
+        );
     }
     let Some((machine, sample)) = row
         .machine()

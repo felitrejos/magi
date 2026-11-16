@@ -255,15 +255,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         match model.detail_focus(now) {
             Some(Focus::Machine(name)) => {
                 if let Some(row) = rows.iter().find(|row| row.name == name) {
-                    machines::render_detail(
-                        frame,
-                        detail_area,
-                        row,
-                        model.projects.machine_label(&row.name),
-                        model.port,
-                        now,
-                        graphics,
-                    );
+                    machines::render_detail(frame, detail_area, row, model, now, graphics);
                 }
             }
             Some(Focus::Agent(id)) => {
