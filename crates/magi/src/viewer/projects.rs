@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -14,6 +14,10 @@ pub struct Projects {
     repos: BTreeMap<String, String>,
     #[serde(default)]
     groups: BTreeMap<String, String>,
+    #[serde(default)]
+    suggested: BTreeMap<String, String>,
+    #[serde(default)]
+    known: Option<BTreeSet<String>>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -56,10 +60,41 @@ impl Projects {
             return named(name);
         }
         let key = automatic_key(repo);
-        match self.groups.get(&key) {
-            Some(name) => named(name),
+        if let Some(name) = self.groups.get(&key) {
+            return named(name);
+        }
+        match self.suggested.get(&repo.to_lowercase()) {
+            Some(name) => match self.groups.get(&name.to_lowercase()) {
+                Some(renamed) => named(renamed),
+                None => named(name),
+            },
             None => Resolved { key, name: None },
         }
+    }
+
+    pub fn has_seen_any(&self) -> bool {
+        self.known.is_some()
+    }
+
+    pub fn is_new(&self, repo: &str) -> bool {
+        let repo = repo.to_lowercase();
+        self.known
+            .as_ref()
+            .is_some_and(|known| !known.contains(&repo))
+            && !self.repos.contains_key(&repo)
+    }
+
+    pub fn learn<'a>(&mut self, repos: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
+        let known = self.known.get_or_insert_default();
+        known.extend(repos.into_iter().map(str::to_lowercase));
+        self.save()
+    }
+
+    pub fn suggest(&mut self, asked: &[String], names: BTreeMap<String, String>) -> io::Result<()> {
+        for (repo, name) in names {
+            self.suggested.insert(repo.to_lowercase(), clean(&name));
+        }
+        self.learn(asked.iter().map(String::as_str))
     }
 
     pub fn move_repo(&mut self, repo: &str, name: &str) -> io::Result<()> {
@@ -145,6 +180,39 @@ mod tests {
         projects.rename("stampr", "").unwrap();
         assert_eq!(resolved(&projects, "notes"), ("notes".into(), None));
         assert_eq!(resolved(&projects, "stampr"), ("stampr".into(), None));
+    }
+
+    #[test]
+    fn suggestions_place_new_repos_below_your_own_edits() {
+        let mut projects = Projects::default();
+        assert!(!projects.is_new("ping"));
+        projects.learn(["magi"]).unwrap();
+        assert!(projects.is_new("Ping") && !projects.is_new("magi"));
+        projects
+            .suggest(
+                &["ping".into(), "stampr-site".into()],
+                BTreeMap::from([
+                    ("ping".into(), "Network Pong".into()),
+                    ("stampr-site".into(), "magi".into()),
+                ]),
+            )
+            .unwrap();
+        assert!(!projects.is_new("ping"));
+        assert_eq!(
+            resolved(&projects, "ping"),
+            ("network pong".into(), Some("Network Pong".into()))
+        );
+        assert_eq!(
+            resolved(&projects, "stampr-site"),
+            ("magi".into(), Some("magi".into()))
+        );
+        projects.rename("magi", "Monitor").unwrap();
+        assert_eq!(
+            resolved(&projects, "stampr-site"),
+            ("monitor".into(), Some("Monitor".into()))
+        );
+        projects.move_repo("ping", "Games").unwrap();
+        assert_eq!(resolved(&projects, "ping").1, Some("Games".into()));
     }
 
     #[test]

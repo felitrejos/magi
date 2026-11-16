@@ -7,6 +7,7 @@ mod graphics;
 mod input;
 mod link;
 mod model;
+mod namer;
 mod projects;
 mod rex;
 mod style;
@@ -16,7 +17,7 @@ mod topology;
 mod units;
 mod view;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -35,6 +36,8 @@ use input::{Input, Key};
 use link::{Dial, LinkHandle};
 use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
+const LEARN_EXISTING_FOR: Duration = Duration::from_secs(30);
+const ASK_NAMER_EVERY: Duration = Duration::from_secs(60);
 const FRAME: Duration = Duration::from_millis(33);
 const TICK: Duration = Duration::from_secs(1);
 const THEME_CHECK: Duration = Duration::from_secs(2);
@@ -47,6 +50,7 @@ pub struct Config {
 pub enum Event {
     Input(input::Input),
     Opened(Result<(), String>),
+    Named(Vec<String>, Result<BTreeMap<String, String>, String>),
     Topology(Topology),
     Link(Endpoint, u64, LinkUpdate),
 }
@@ -653,7 +657,64 @@ fn handle_batch(
     }
     model.reselect(Instant::now());
     sync_watch(model, links);
+    ask_namer(model, links);
     Ok(Flow::Continue)
+}
+
+fn ask_namer(model: &mut Model, links: &Links) {
+    let now = Instant::now();
+    if model.namer_busy {
+        return;
+    }
+    if !model.projects.has_seen_any() {
+        if model.since_start(now) >= LEARN_EXISTING_FOR {
+            let repos = model.repos(now);
+            let _ = model.projects.learn(repos.iter().map(String::as_str));
+        }
+        return;
+    }
+    if model
+        .namer_asked_at
+        .is_some_and(|at| now.duration_since(at) < ASK_NAMER_EVERY)
+    {
+        return;
+    }
+    let Some((asked, request)) = model.naming_request(now) else {
+        return;
+    };
+    model.namer_asked_at = Some(now);
+    let Some(claude) = crate::handoff::find("claude", &crate::handoff::search_dirs()) else {
+        let _ = model.projects.suggest(&asked, BTreeMap::new());
+        return;
+    };
+    let Ok(workdir) = net::state_dir().map(|dir| dir.join("namer")) else {
+        return;
+    };
+    model.namer_busy = true;
+    let sender = links.sender.clone();
+    let _ = thread::Builder::new().name("namer".into()).spawn(move || {
+        let named = namer::ask(&claude, &workdir, &request);
+        let _ = sender.send(Event::Named(asked, named));
+    });
+}
+
+fn named(model: &mut Model, asked: Vec<String>, named: Result<BTreeMap<String, String>, String>) {
+    let now = Instant::now();
+    model.namer_busy = false;
+    let names = named.unwrap_or_default();
+    let said: Vec<String> = names
+        .iter()
+        .filter(|(repo, name)| !repo.eq_ignore_ascii_case(name))
+        .map(|(repo, name)| format!("{repo} in {name}"))
+        .collect();
+    match model.projects.suggest(&asked, names) {
+        Ok(()) if !said.is_empty() => {
+            let text = format!("Grouped {} · P renames", said.join(", "));
+            model.flash(text, true, now);
+        }
+        Ok(()) => {}
+        Err(error) => model.flash(format!("couldn't save projects: {error}"), false, now),
+    }
 }
 
 fn sync_watch(model: &mut Model, links: &Links) {
@@ -711,6 +772,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::RenameProject) => start_naming(model, true, now),
             None => {}
         },
+        Event::Named(asked, result) => named(model, asked, result),
         Event::Opened(result) => {
             model.opening = false;
             if let Err(reason) = result {
@@ -1290,6 +1352,46 @@ mod tests {
             .position(|item| matches!(&item.entry, model::Entry::Session(agent) if agent.session.id == id))
             .unwrap();
         model.selected = model.rows(now).len() + index;
+    }
+
+    #[test]
+    fn the_namer_is_asked_only_about_repos_it_has_not_seen_with_their_session_titles() {
+        let (mut model, _links) = fleet();
+        let now = Instant::now();
+        let mut ping = claude("s2", 0);
+        ping.project = "ping".into();
+        ping.title = "two player pong".into();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(claude("s1", 0))),
+            now,
+        );
+        assert!(model.naming_request(now).is_none());
+        model.projects.learn(["api"]).unwrap();
+        model.apply(
+            Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2)),
+            live_sample(1_000, Some(ping)),
+            now,
+        );
+        let (asked, request) = model.naming_request(now).unwrap();
+        assert_eq!(asked, ["ping"]);
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({
+                "projects": [{"name": "api", "repos": ["api"]}],
+                "new": [{"repo": "ping", "sessions": ["two player pong"]}],
+            })
+        );
+        named(
+            &mut model,
+            asked,
+            Ok(BTreeMap::from([("ping".into(), "Network Pong".into())])),
+        );
+        assert!(model.naming_request(now).is_none());
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some(("Grouped ping in Network Pong · P renames", true))
+        );
     }
 
     #[test]

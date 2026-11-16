@@ -3,6 +3,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
+use super::namer;
 use super::projects::{Projects, Resolved};
 use crate::proto::{
     self, Agent, AgentSession, FULL, ForwardState, Identity, MAX_PROMPT_CHARS, Plan, Reply, Sample,
@@ -14,6 +15,7 @@ use unicode_segmentation::UnicodeSegmentation;
 pub const HISTORY: usize = 300;
 const SEARCH_GRACE: Duration = Duration::from_secs(8);
 const FLASH_FOR: Duration = Duration::from_secs(5);
+const MAX_NEW_PER_ASK: usize = 20;
 const FOLD_AFTER_SECS: u32 = 24 * 60 * 60;
 const FOLLOW_FOR: Duration = Duration::from_secs(300);
 const AWAIT_FOR: Duration = Duration::from_secs(60);
@@ -333,6 +335,8 @@ pub struct Model {
     pub host_icons: HashMap<String, String>,
     pub projects: Projects,
     pub naming: Option<Naming>,
+    pub namer_busy: bool,
+    pub namer_asked_at: Option<Instant>,
     pub alerts: Alerts,
     pub showing_alerts: bool,
     focus: Option<Focus>,
@@ -489,6 +493,8 @@ impl Model {
             host_icons: HashMap::new(),
             projects: Projects::default(),
             naming: None,
+            namer_busy: false,
+            namer_asked_at: None,
             alerts,
             showing_alerts: false,
             focus: None,
@@ -829,6 +835,70 @@ impl Model {
             Entry::Session(agent) => Some(agent),
             Entry::Fold { .. } => None,
         }
+    }
+
+    pub fn since_start(&self, now: Instant) -> Duration {
+        now.duration_since(self.started)
+    }
+
+    pub fn repos(&self, now: Instant) -> Vec<String> {
+        let mut repos: Vec<String> = self
+            .agents(now)
+            .iter()
+            .map(|agent| agent.session.project.clone())
+            .filter(|repo| !repo.is_empty())
+            .collect();
+        repos.sort_by_key(|repo| repo.to_lowercase());
+        repos.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        repos
+    }
+
+    pub fn naming_request(&self, now: Instant) -> Option<(Vec<String>, namer::Request)> {
+        let new: Vec<String> = self
+            .repos(now)
+            .into_iter()
+            .filter(|repo| self.projects.is_new(repo))
+            .take(MAX_NEW_PER_ASK)
+            .collect();
+        if new.is_empty() {
+            return None;
+        }
+        let agents = self.agents(now);
+        let mut projects: Vec<ProjectGroup<'_>> = Vec::new();
+        for agent in self
+            .agents(now)
+            .into_iter()
+            .filter(|agent| !new.contains(&agent.session.project))
+        {
+            add_to_project(&mut projects, &self.projects, agent);
+        }
+        let request = namer::Request {
+            projects: projects
+                .into_iter()
+                .map(|(_, name, members)| {
+                    let mut repos: Vec<String> = members
+                        .iter()
+                        .map(|agent| agent.session.project.clone())
+                        .collect();
+                    repos.dedup();
+                    namer::Project {
+                        name: project_name(name, &members),
+                        repos,
+                    }
+                })
+                .collect(),
+            new: new
+                .iter()
+                .map(|repo| {
+                    let titles = agents
+                        .iter()
+                        .filter(|agent| agent.session.project == *repo)
+                        .map(|agent| agent.session.title.clone());
+                    namer::new_repo(repo, titles)
+                })
+                .collect(),
+        };
+        Some((new, request))
     }
 
     pub fn project_names(&self, now: Instant) -> Vec<String> {

@@ -29,6 +29,11 @@
   renews it, so Claude Code's own sign-in is left as it was. The token goes
   to `curl` on its standard input, never on a command line, and is not kept,
   logged or sent anywhere else; only the percentages and reset times are.
+- When a repo the viewer hasn't seen before shows up, the viewer asks Claude
+  (Haiku, through `claude -p` with no tools, no MCP servers and no saved
+  session) which project it belongs to. It sends only repo names, project
+  names and up to three of the new repo's session titles, once per repo; the
+  repos already there when it first ran are never sent.
 - When no Codex session has reported its usage limits in the last five
   minutes, the agent asks Codex itself, at most every five minutes: it runs
   `codex app-server` and sends only the `account/rateLimits/read` request,
