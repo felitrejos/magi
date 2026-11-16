@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use ratatui::Frame;
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{clip, draw_panel, panel};
+use super::{body, clip, draw_panel, panel};
 use crate::log;
 use crate::viewer::alerts::{Alerts, Event, Severity};
 use crate::viewer::style::{self, theme};
@@ -15,10 +15,7 @@ pub fn render(frame: &mut Frame, area: Rect, alerts: &Alerts) {
     if area.height < 3 || area.width < 16 {
         return;
     }
-    let inner = area.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
+    let inner = body(area);
     let mut right = vec![Span::styled(
         format!("{active} active"),
         if active > 0 {

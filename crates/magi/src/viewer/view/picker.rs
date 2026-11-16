@@ -1,8 +1,8 @@
 use ratatui::Frame;
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use super::{Cursor, clip, draw_panel, panel, spans_width, spread, tail};
+use super::{Cursor, body, clip, draw_panel, panel, spans_width, spread, tail};
 use crate::viewer::model::Picker;
 use crate::viewer::style::{self, theme};
 
@@ -22,10 +22,7 @@ pub fn render(frame: &mut Frame, area: Rect, picker: &Picker, recent: &[String],
             None,
         ),
     );
-    let inner = area.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
+    let inner = body(area);
     let width = inner.width as usize;
     let list = Rect::new(
         inner.x,

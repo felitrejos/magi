@@ -10,6 +10,7 @@ use super::Found;
 use super::ledger::{Counted, Ledger};
 use super::pricing::{self, OpenAiUsage};
 use super::process;
+use super::repo;
 use super::tail::{self, Lines, Tail};
 use crate::proto::{Agent, AgentSession, BasisPoints, FULL, Plan, SessionState, Tokens, Window};
 
@@ -415,9 +416,8 @@ impl State {
 fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<AgentSession> {
     let id = state.id.clone()?;
     let cwd = state.cwd.clone().unwrap_or_default();
-    let project = Path::new(&cwd)
-        .file_name()
-        .map_or_else(|| cwd.clone(), |name| name.to_string_lossy().into_owned());
+    let repo = repo::locate(&cwd);
+    let project = repo.project.clone();
     let title: String = titles
         .and_then(|titles| titles.0.get(&id))
         .cloned()
@@ -452,6 +452,8 @@ fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<Agent
         pane: None,
         usage: None,
         children: Vec::new(),
+        branch: repo.branch,
+        worktree: repo.worktree,
     })
 }
 

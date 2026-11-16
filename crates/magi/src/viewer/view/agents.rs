@@ -1,81 +1,49 @@
 use std::time::Duration;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::{
-    Composed, Cursor, clip, draw_panel, markdown, panel, selected_style, spans_width, spread, tail,
+    Cursor, body, clip, draw_panel, machine_tag, markdown, panel, selected_style, spans_width,
+    spread, tail, truncate,
 };
 use crate::proto::{
     Agent, AgentSession, BOLD, Child, Content, DIM, FULL, ForwardState, INVERSE, ITALIC, Run,
     SessionState, Shade, UNDERLINE, Waiting,
 };
-use crate::viewer::graphics::Graphics;
-use crate::viewer::model::{AgentRow, Draft, Entry, Group, Listed, Model, MoveTarget};
+use crate::viewer::model::{AgentRow, Draft, Endpoint, Entry, Group, Listed, Model, MoveTarget};
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
 use unicode_width::UnicodeWidthStr;
 
 const HIGH_CPU_SHARE: f32 = 0.4;
 const MIN_TITLE: usize = 28;
+const MAX_BADGE: usize = 10;
 const DRAFT_ROWS: usize = 6;
 const TAB: &str = "    ";
-
-pub struct Top {
-    pub cost: (u64, bool),
-    pub limits: Option<Composed>,
-}
 
 pub fn render_list(
     frame: &mut Frame,
     area: Rect,
     model: &Model,
     listed: &[Listed<'_>],
-    top: Top,
     offset: usize,
-    graphics: &mut Graphics,
+    machines: &[&str],
 ) {
-    let Top {
-        cost: (cost_total, complete),
-        limits,
-    } = top;
-    let block = panel(
-        vec![Span::styled("Agents", style::bold(theme().text))],
-        (!listed.is_empty()).then(|| {
-            vec![Span::styled(
-                format!(
-                    "{}{} in total",
-                    if complete { "" } else { "≥" },
-                    units::dollars(cost_total)
-                ),
-                style::fg(theme().dim),
-            )]
-        }),
-    );
-    let mut inner = block.inner(area);
-    draw_panel(frame, area, block);
-    if let Some(limits) = limits.filter(|line| line.width() > 0 && inner.height > 2) {
-        let row = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(1), 1);
-        limits.draw(frame, graphics, row, Style::new());
-        inner = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 2);
-    }
-    let width = inner.width as usize;
+    let width = area.width as usize;
     if listed.is_empty() {
         frame.render_widget(
             Paragraph::new(vec![
+                Line::from(Span::styled(" No sessions yet", style::fg(theme().dim))),
                 Line::from(Span::styled(
-                    "No coding agents running.",
-                    style::fg(theme().dim),
-                )),
-                Line::from(Span::styled(
-                    "Claude Code and Codex sessions show up here.",
+                    " Press c to start one",
                     style::fg(theme().faint),
                 )),
             ]),
-            inner,
+            area,
         );
         return;
     }
@@ -88,14 +56,15 @@ pub fn render_list(
             if group.is_some() {
                 lines.push(Line::default());
             }
-            lines.push(heading(&item.group));
+            if let Some(heading) = heading(&item.group) {
+                lines.push(heading);
+            }
             group = Some(&item.group);
         }
         let is_selected = selected == Some(index);
         match &item.entry {
             Entry::Session(agent) => {
-                let away = item.group == Group::NeedsYou;
-                lines.push(session_line(agent, is_selected, away, width));
+                lines.push(session_line(agent, machines, is_selected, width));
                 lines.extend(
                     agent
                         .session
@@ -104,7 +73,7 @@ pub fn render_list(
                         .map(|child| child_line(child, width)),
                 );
             }
-            Entry::Fold { count, open, .. } => {
+            Entry::Fold { count, open } => {
                 lines.push(fold_line(*count, *open, is_selected, width));
             }
         }
@@ -112,30 +81,43 @@ pub fn render_list(
             selected_end = lines.len();
         }
     }
-    let visible = inner.height as usize;
+    let visible = area.height as usize;
     let first = selected_end.saturating_sub(visible);
     let shown: Vec<Line<'static>> = lines.into_iter().skip(first).take(visible).collect();
-    frame.render_widget(Paragraph::new(shown), inner);
+    frame.render_widget(Paragraph::new(shown), area);
 }
 
-fn heading(group: &Group) -> Line<'static> {
-    match group {
-        Group::NeedsYou => Line::from(Span::styled(" Needs you", style::bold(theme().warn))),
-        Group::Machine(name) => {
-            Line::from(Span::styled(format!(" {name}"), style::fg(theme().dim)))
-        }
-    }
+fn heading(group: &Group) -> Option<Line<'static>> {
+    let (text, color) = match group {
+        Group::NeedsYou => ("Needs you".to_string(), theme().warn),
+        Group::Project(name) => (name.clone(), theme().dim),
+        Group::Earlier => return None,
+    };
+    Some(Line::from(Span::styled(
+        format!(" {text}"),
+        style::bold(color),
+    )))
 }
 
 fn session_line(
     agent: &AgentRow<'_>,
+    machines: &[&str],
     is_selected: bool,
-    away: bool,
     width: usize,
 ) -> Line<'static> {
     let session = agent.session;
     let (mark, color) = style::agent(session.agent);
-    let right = vec![state_span(session, agent.live)];
+    let mut right = Vec::new();
+    if agent.endpoint != Endpoint::Local {
+        right.push(Span::styled(
+            format!(
+                "{} ",
+                truncate(machine_tag(&agent.machine, machines), MAX_BADGE)
+            ),
+            style::fg(theme().faint),
+        ));
+    }
+    right.push(row_state(session, agent.live));
     spread(
         vec![
             Span::styled(
@@ -151,19 +133,21 @@ fn session_line(
                     style::fg(theme().text)
                 },
             ),
-            Span::styled(
-                if away {
-                    format!(" · {}", agent.machine)
-                } else {
-                    String::new()
-                },
-                style::fg(theme().faint),
-            ),
         ],
         right,
         width,
     )
     .style(selected_style(is_selected))
+}
+
+fn row_state(session: &AgentSession, live: bool) -> Span<'static> {
+    let age = units::duration(Duration::from_secs(u64::from(session.state_secs)));
+    match session.state {
+        _ if !live => Span::styled("lost", style::fg(theme().faint)),
+        SessionState::Working { .. } => Span::styled("●", style::fg(theme().accent)),
+        SessionState::Waiting(_) => Span::styled(age, style::bold(theme().warn)),
+        SessionState::Idle => Span::styled(age, style::fg(theme().faint)),
+    }
 }
 
 fn child_line(child: &Child, width: usize) -> Line<'static> {
@@ -182,9 +166,9 @@ fn child_line(child: &Child, width: usize) -> Line<'static> {
 
 fn fold_line(count: usize, open: bool, is_selected: bool, width: usize) -> Line<'static> {
     let text = if open {
-        "▾ idle for a day or more".to_string()
+        "▾ Earlier".to_string()
     } else {
-        format!("▸ {count} idle for a day or more")
+        format!("▸ Earlier · {count}")
     };
     Line::from(clip(
         vec![
@@ -284,11 +268,10 @@ pub fn render_detail(
         room,
     );
     draw_panel(frame, area, panel(title, Some(facts)));
-    let inner = area.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
+    let inner = body(area);
     let width = inner.width as usize;
+    let context = Rect::new(inner.x, inner.y - 1, inner.width, 1);
+    frame.render_widget(Paragraph::new(context_line(agent, width)), context);
     let draft = draft.filter(|draft| draft.session == session.id);
     let shown = draft.map(|draft| {
         let lines: Vec<String> = draft
@@ -302,8 +285,9 @@ pub fn render_detail(
     let rows = shown
         .as_ref()
         .map_or(1, |(lines, hidden)| lines.len() - hidden);
-    let [view, input] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1 + rows as u16)]).areas(inner);
+    let [view, input] = Layout::vertical([Constraint::Min(0), Constraint::Length(2 + rows as u16)])
+        .spacing(1)
+        .areas(inner);
     let mut cursor = Cursor::new(view);
     if let Some(target) = suggestion {
         cursor.line(
@@ -327,13 +311,32 @@ pub fn render_detail(
         cursor.skip();
     }
     live_view(&mut cursor, frame, preview, width);
-    let mut cursor = Cursor::new(input);
+    let mut frame_box = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(style::fg(if shown.is_some() {
+            theme().accent
+        } else {
+            theme().border
+        }));
+    if let Some((_, hidden)) = shown.as_ref().filter(|(_, hidden)| *hidden > 0) {
+        frame_box = frame_box.title(
+            Line::from(Span::styled(
+                format!(" {hidden} more above "),
+                style::fg(theme().faint),
+            ))
+            .alignment(Alignment::Right),
+        );
+    }
+    let field = frame_box.inner(input).inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
+    frame.render_widget(frame_box, input);
+    let width = field.width as usize;
+    let mut cursor = Cursor::new(field);
     let Some((lines, hidden)) = shown else {
-        cursor.line(frame, rule(width, None));
         return cursor.line(frame, input_line(agent, width));
     };
-    let above = (hidden > 0).then(|| format!(" {hidden} more above"));
-    cursor.line(frame, rule(width, above));
     let multi_line = lines.len() > 1;
     let last = lines.len() - 1;
     for (index, line) in lines.into_iter().enumerate().skip(hidden) {
@@ -344,13 +347,30 @@ pub fn render_detail(
     }
 }
 
-fn rule(width: usize, label: Option<String>) -> Line<'static> {
-    let label = label.unwrap_or_default();
-    let rule = "─".repeat(width.saturating_sub(label.width()));
-    Line::from(vec![
-        Span::styled(rule, style::fg(theme().rule)),
-        Span::styled(label, style::fg(theme().faint)),
-    ])
+fn context_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
+    let session = agent.session;
+    let dot = || Span::styled(" · ", style::fg(theme().faint));
+    let mut spans = vec![Span::styled(
+        session.project.clone(),
+        style::fg(theme().dim),
+    )];
+    if let Some(branch) = &session.branch {
+        spans.extend([
+            dot(),
+            Span::styled(format!("⎇ {branch}"), style::fg(theme().dim)),
+        ]);
+    }
+    if let Some(worktree) = &session.worktree {
+        spans.extend([
+            dot(),
+            Span::styled(format!("worktree {worktree}"), style::fg(theme().dim)),
+        ]);
+    }
+    spans.extend([
+        dot(),
+        Span::styled(agent.machine.clone(), style::fg(theme().dim)),
+    ]);
+    Line::from(clip(spans, width))
 }
 
 fn draft_line(
@@ -623,23 +643,20 @@ fn run_span(run: &Run) -> Span<'static> {
     )
 }
 
-pub fn render_fold(frame: &mut Frame, area: Rect, machine: &str, count: usize) {
+pub fn render_fold(frame: &mut Frame, area: Rect, count: usize) {
     draw_panel(
         frame,
         area,
         panel(
-            vec![Span::styled(machine.to_string(), style::bold(theme().text))],
+            vec![Span::styled("Earlier", style::bold(theme().text))],
             None,
         ),
     );
-    let inner = area.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
+    let inner = body(area);
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
-                format!("{count} sessions on {machine} have been idle for a day or more."),
+                format!("{count} sessions have been idle for a day or more."),
                 style::fg(theme().text),
             )),
             Line::from(Span::styled(

@@ -7,10 +7,10 @@ mod picker;
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
 use super::model::{Entry, Model};
@@ -20,55 +20,58 @@ use crate::proto::{Agent, FULL, Plan, SessionState};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const WIDE: u16 = 110;
+const WIDE: u16 = 90;
+const SIDEBAR_SHARE: u32 = 28;
+const SIDEBAR_MIN: u16 = 30;
+const SIDEBAR_MAX: u16 = 38;
 
 pub struct Areas {
+    pub sidebar: Rect,
     pub machines: Rect,
+    pub plans: Rect,
     pub agents: Rect,
     pub detail: Rect,
     pub footer: Rect,
-    pub wide: bool,
 }
 
-pub fn areas(full: Rect, machines: usize, agents: usize) -> Areas {
-    let area = full.inner(Margin {
+pub fn areas(full: Rect, machines: usize, plans: usize, agents: usize) -> Areas {
+    let [body, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(full);
+    let (sidebar, detail) = if body.width >= WIDE && body.height >= 12 {
+        let width = (u32::from(body.width) * SIDEBAR_SHARE / 100) as u16;
+        let [sidebar, detail] = Layout::horizontal([
+            Constraint::Length(width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)),
+            Constraint::Min(0),
+        ])
+        .areas(body);
+        (sidebar, detail)
+    } else {
+        let wanted = (machines + plans + agents * 2 + 6) as u16;
+        let height = wanted.min(body.height * 2 / 5).max(6);
+        let [sidebar, detail] =
+            Layout::vertical([Constraint::Length(height), Constraint::Min(0)]).areas(body);
+        (sidebar, detail)
+    };
+    let inner = sidebar.inner(Margin {
         horizontal: 1,
-        vertical: 0,
+        vertical: 1,
     });
-    let [body, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
-    if body.width >= WIDE && body.height >= 14 {
-        let left_width = (u32::from(body.width) * 42 / 100).clamp(46, 70) as u16;
-        let [left, right] =
-            Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
-                .spacing(1)
-                .areas(body);
-        let machines_height = (machines as u16 + 2).min(left.height / 2);
-        let [machines, agents] =
-            Layout::vertical([Constraint::Length(machines_height), Constraint::Min(0)]).areas(left);
-        return Areas {
-            machines,
-            agents,
-            detail: right,
-            footer,
-            wide: true,
-        };
-    }
-    let machines_height = (machines as u16 + 2).min(body.height / 4).max(3);
-    let agents_height = (agents.max(1) as u16 * 2 + 2)
-        .min(body.height * 2 / 5)
-        .max(3);
-    let [machines, agents, detail] = Layout::vertical([
-        Constraint::Length(machines_height),
-        Constraint::Length(agents_height),
+    let [machines, plans, agents] = Layout::vertical([
+        Constraint::Length((machines as u16).min(inner.height / 3)),
+        Constraint::Length(plans as u16),
         Constraint::Min(0),
     ])
-    .areas(body);
+    .spacing(1)
+    .areas(inner);
     Areas {
+        sidebar,
         machines,
+        plans,
         agents,
         detail,
-        footer,
-        wide: false,
+        footer: footer.inner(Margin {
+            horizontal: 1,
+            vertical: 0,
+        }),
     }
 }
 
@@ -85,31 +88,31 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     let agents = model.agents(now);
     let plans = model.plans(now);
     let Areas {
+        sidebar,
         machines: machine_area,
+        plans: plan_area,
         agents: agent_area,
         detail: detail_area,
         footer,
-        wide,
-    } = areas(full, rows.len(), agents.len());
+    } = areas(full, rows.len(), plans.len(), agents.len());
+    frame
+        .buffer_mut()
+        .set_style(sidebar, Style::new().bg(theme().panel));
     render_footer(frame, footer, model, now);
-    machines::render_list(frame, machine_area, model, &rows, wide, now, graphics);
-    let listed = model.listed(now);
-    let total = (
-        agents.iter().map(|agent| agent.session.cost_micros).sum(),
-        agents.iter().all(|agent| agent.session.cost_complete),
-    );
-    let limits = |room: usize| {
-        [true, false]
+    machines::render_list(frame, machine_area, model, &rows, now, graphics);
+    let mut cursor = Cursor::new(plan_area);
+    for plan in &plans {
+        let room = plan_area.width as usize;
+        let line = [6, 3, 0]
             .into_iter()
-            .map(|meters| plans_line(&plans, meters))
+            .map(|meter| plans_line(&[*plan], meter))
             .find(|line| line.width() <= room)
-    };
-    let limits = limits(agent_area.width.saturating_sub(4) as usize);
-    let top = agents::Top {
-        cost: total,
-        limits,
-    };
-    agents::render_list(frame, agent_area, model, &listed, top, rows.len(), graphics);
+            .unwrap_or_else(|| plans_line(&[*plan], 0));
+        cursor.composed(frame, graphics, line);
+    }
+    let listed = model.listed(now);
+    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    agents::render_list(frame, agent_area, model, &listed, rows.len(), &names);
 
     if let Some(picker) = &model.picker {
         let recent = model.recent_projects(picker.endpoint, now);
@@ -146,35 +149,58 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                     &model.forwards_to(&agent.session.id, &agent.machine, now),
                 );
             }
-            Entry::Fold { machine, count, .. } => {
-                agents::render_fold(frame, detail_area, machine, *count);
-            }
+            Entry::Fold { count, .. } => agents::render_fold(frame, detail_area, *count),
         }
     }
 }
 
-fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Block<'a> {
-    let mut title = title;
-    title.insert(0, Span::raw(" "));
-    title.push(Span::raw(" "));
-    let mut block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(style::fg(theme().border))
-        .title(Line::from(title));
-    if let Some(mut right) = right {
-        right.insert(0, Span::raw(" "));
-        right.push(Span::raw(" "));
-        block = block.title(Line::from(right).alignment(Alignment::Right));
-    }
-    block
+struct Header<'a> {
+    title: Vec<Span<'a>>,
+    right: Option<Vec<Span<'a>>>,
 }
 
-fn draw_panel(frame: &mut Frame, area: Rect, block: Block<'_>) {
-    let inside = block.inner(area);
-    frame.render_widget(block, area);
+fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Header<'a> {
+    Header { title, right }
+}
+
+fn draw_panel(frame: &mut Frame, area: Rect, header: Header<'static>) {
+    let band = Rect::new(area.x, area.y, area.width, area.height.min(1));
     frame
         .buffer_mut()
-        .set_style(inside, Style::new().bg(theme().panel));
+        .set_style(band, Style::new().bg(theme().panel));
+    let row = band.inner(Margin {
+        horizontal: 2,
+        vertical: 0,
+    });
+    let line = spread(
+        header.title,
+        header.right.unwrap_or_default(),
+        row.width as usize,
+    );
+    frame.render_widget(Paragraph::new(line), row);
+}
+
+fn machine_tag<'a>(name: &'a str, names: &[&str]) -> &'a str {
+    let tag = first_word(name);
+    let shared = names
+        .iter()
+        .filter(|other| first_word(other) == tag)
+        .count()
+        > 1;
+    if shared { name } else { tag }
+}
+
+fn first_word(name: &str) -> &str {
+    name.split(['-', '.', '_', ' ']).next().unwrap_or(name)
+}
+
+fn body(area: Rect) -> Rect {
+    Rect::new(
+        area.x + 2,
+        area.y + 2,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+    )
 }
 
 fn rule(
@@ -323,7 +349,7 @@ impl Cursor {
     }
 }
 
-fn plans_line(plans: &[&Plan], meters: bool) -> Composed {
+fn plans_line(plans: &[&Plan], meter: usize) -> Composed {
     let mut line = Composed::default();
     for plan in plans {
         if line.width() > 0 {
@@ -343,9 +369,9 @@ fn plans_line(plans: &[&Plan], meters: bool) -> Composed {
                 format!("{} ", window.label()),
                 style::fg(theme().dim),
             ));
-            if meters {
+            if meter > 0 {
                 line.bar(
-                    6,
+                    meter,
                     fraction,
                     style::load(fraction),
                     format!("plan:{:?}:{}", plan.agent, window.minutes),
@@ -373,10 +399,6 @@ fn short_name(agent: Agent) -> &'static str {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
-    let area = area.inner(Margin {
-        horizontal: 2,
-        vertical: 0,
-    });
     let width = area.width as usize;
     let keys = |pairs: &[(&str, &str)]| -> Vec<Span<'static>> {
         let mut spans = Vec::new();

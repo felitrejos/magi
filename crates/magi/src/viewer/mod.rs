@@ -291,7 +291,12 @@ fn click(model: &mut Model, column: u16, row: u16, now: Instant) {
         return;
     };
     let full = ratatui::layout::Rect::new(0, 0, width, height);
-    let areas = view::areas(full, model.rows(now).len(), model.agents(now).len());
+    let areas = view::areas(
+        full,
+        model.rows(now).len(),
+        model.plans(now).len(),
+        model.agents(now).len(),
+    );
     let on_detail = areas
         .detail
         .contains(ratatui::layout::Position::new(column, row));
@@ -788,6 +793,8 @@ mod tests {
             pane,
             usage: None,
             children: Vec::new(),
+            branch: None,
+            worktree: None,
         };
         let sample = Sample {
             sessions: vec![session],
@@ -890,6 +897,8 @@ mod tests {
                 memory: 0,
             }),
             children: Vec::new(),
+            branch: None,
+            worktree: None,
         }
     }
 

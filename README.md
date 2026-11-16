@@ -45,9 +45,10 @@ to the machine that has room.
   branch and uncommitted work included, to continue there in seconds. Claude
   can also send tests and side tasks to the lightest machine.
 - **Every session, every machine.** Each Mac and Linux box on your tailnet
-  running a magi agent shows up on its own, with its load beside its sessions:
-  what each one is doing and costs, and whether it's waiting on you. No server
-  or config file.
+  running a magi agent shows up on its own, with its load. Sessions are
+  grouped by project, related repos together (`stampr` and `stampr-ops`), with
+  the ones waiting on you on top and their branch and worktree beside them.
+  No server or config file.
 - **Start, read and answer.** `c` starts a Claude Code or Codex session in any
   project on any machine, in that project's Rex tab. Select a session to read
   its conversation, drawn as Markdown with highlighted code; `↵` writes to it,

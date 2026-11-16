@@ -241,22 +241,19 @@ pub fn grade(subsystem: Subsystem, value: f32) -> Level {
 pub enum Focus {
     Machine(String),
     Agent(String),
-    Fold(String),
+    Earlier,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Group {
     NeedsYou,
-    Machine(String),
+    Project(String),
+    Earlier,
 }
 
 pub enum Entry<'a> {
     Session(AgentRow<'a>),
-    Fold {
-        machine: String,
-        count: usize,
-        open: bool,
-    },
+    Fold { count: usize, open: bool },
 }
 
 pub struct Listed<'a> {
@@ -280,8 +277,29 @@ pub struct Capacity {
 fn focus_of(entry: &Entry<'_>) -> Focus {
     match entry {
         Entry::Session(agent) => Focus::Agent(agent.session.id.clone()),
-        Entry::Fold { machine, .. } => Focus::Fold(machine.clone()),
+        Entry::Fold { .. } => Focus::Earlier,
     }
+}
+
+pub fn project_key(project: &str) -> String {
+    project.split('-').next().unwrap_or(project).to_lowercase()
+}
+
+fn add_to_project<'a>(projects: &mut Vec<(String, Vec<AgentRow<'a>>)>, agent: AgentRow<'a>) {
+    let key = project_key(&agent.session.project);
+    match projects.iter_mut().find(|(known, _)| *known == key) {
+        Some((_, agents)) => agents.push(agent),
+        None => projects.push((key, vec![agent])),
+    }
+}
+
+fn project_name(agents: &[AgentRow<'_>]) -> String {
+    agents
+        .iter()
+        .map(|agent| agent.session.project.as_str())
+        .min_by_key(|name| (name.len(), *name))
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn urgency(agent: &AgentRow<'_>) -> (u8, i64) {
@@ -772,22 +790,26 @@ impl Model {
 
     pub fn listed(&self, now: Instant) -> Vec<Listed<'_>> {
         let mut needs_you = Vec::new();
-        let mut by_machine: Vec<(String, Vec<AgentRow<'_>>)> = Vec::new();
+        let mut asleep = Vec::new();
+        let mut projects: Vec<(String, Vec<AgentRow<'_>>)> = Vec::new();
         for agent in self.agents(now) {
             if agent.live && matches!(agent.session.state, SessionState::Waiting(_)) {
                 needs_you.push(agent);
-                continue;
-            }
-            match by_machine
-                .iter_mut()
-                .find(|(machine, _)| *machine == agent.machine)
+            } else if agent.live
+                && agent.session.state == SessionState::Idle
+                && agent.session.state_secs >= FOLD_AFTER_SECS
             {
-                Some((_, agents)) => agents.push(agent),
-                None => by_machine.push((agent.machine.clone(), vec![agent])),
+                asleep.push(agent);
+            } else {
+                add_to_project(&mut projects, agent);
             }
         }
-        let order: Vec<String> = self.rows(now).into_iter().map(|row| row.name).collect();
-        by_machine.sort_by_key(|(machine, _)| order.iter().position(|name| name == machine));
+        if asleep.len() < FOLD_AT_LEAST {
+            for agent in asleep.drain(..) {
+                add_to_project(&mut projects, agent);
+            }
+        }
+        projects.sort_by_cached_key(|(key, _)| key.clone());
         let mut listed: Vec<Listed<'_>> = needs_you
             .into_iter()
             .map(|agent| Listed {
@@ -795,45 +817,33 @@ impl Model {
                 entry: Entry::Session(agent),
             })
             .collect();
-        for (machine, agents) in by_machine {
-            let group = Group::Machine(machine.clone());
-            let (asleep, awake): (Vec<_>, Vec<_>) = agents.into_iter().partition(|agent| {
-                agent.live
-                    && agent.session.state == SessionState::Idle
-                    && agent.session.state_secs >= FOLD_AFTER_SECS
-            });
-            let awake_entries = awake.into_iter().map(Entry::Session);
-            if asleep.len() < FOLD_AT_LEAST {
-                listed.extend(
-                    awake_entries
-                        .chain(asleep.into_iter().map(Entry::Session))
-                        .map(|entry| Listed {
-                            group: group.clone(),
-                            entry,
-                        }),
-                );
-                continue;
-            }
-            let open = match &self.focus {
-                Some(Focus::Fold(folded)) => *folded == machine,
-                Some(Focus::Agent(id)) => asleep.iter().any(|agent| agent.session.id == *id),
-                _ => false,
-            };
-            let fold = Entry::Fold {
-                machine,
+        for (_, agents) in projects {
+            let group = Group::Project(project_name(&agents));
+            listed.extend(agents.into_iter().map(|agent| Listed {
+                group: group.clone(),
+                entry: Entry::Session(agent),
+            }));
+        }
+        if asleep.is_empty() {
+            return listed;
+        }
+        let open = match &self.focus {
+            Some(Focus::Earlier) => true,
+            Some(Focus::Agent(id)) => asleep.iter().any(|agent| agent.session.id == *id),
+            _ => false,
+        };
+        listed.push(Listed {
+            group: Group::Earlier,
+            entry: Entry::Fold {
                 count: asleep.len(),
                 open,
-            };
-            let folded = asleep.into_iter().filter(|_| open).map(Entry::Session);
-            listed.extend(
-                awake_entries
-                    .chain(std::iter::once(fold))
-                    .chain(folded)
-                    .map(|entry| Listed {
-                        group: group.clone(),
-                        entry,
-                    }),
-            );
+            },
+        });
+        if open {
+            listed.extend(asleep.into_iter().map(|agent| Listed {
+                group: Group::Earlier,
+                entry: Entry::Session(agent),
+            }));
         }
         listed
     }
@@ -1138,6 +1148,8 @@ mod tests {
             pane: None,
             usage: None,
             children: Vec::new(),
+            branch: None,
+            worktree: None,
         };
         let mac = Sample {
             sessions: vec![

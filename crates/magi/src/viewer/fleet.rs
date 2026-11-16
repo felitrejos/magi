@@ -256,6 +256,8 @@ mod tests {
                 memory: 1 << 30,
             }),
             children: Vec::new(),
+            branch: None,
+            worktree: None,
         };
         assert_eq!(
             session(&busy),

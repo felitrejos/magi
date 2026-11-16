@@ -1,13 +1,14 @@
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{
-    Composed, Cursor, clip, draw_panel, icon, pad, panel, selected_style, spans_width, truncate,
+    Composed, Cursor, body, clip, draw_panel, icon, pad, panel, selected_style, spans_width,
+    truncate,
 };
 use crate::proto::FULL;
 use crate::viewer::graphics::{Chart, Graphics, Kind, Series};
@@ -21,46 +22,35 @@ use unicode_width::UnicodeWidthStr;
 
 const GUTTER: u16 = 9;
 
-const GAUGE_TEXT: usize = 31;
-const MIN_BAR: usize = 4;
+const SIDEBAR_BAR: usize = 5;
+const SIDEBAR_GAUGE: usize = SIDEBAR_BAR + 5;
 
 pub fn render_list(
     frame: &mut Frame,
     area: Rect,
     model: &Model,
     rows: &[Row<'_>],
-    wide: bool,
     now: Instant,
     graphics: &mut Graphics,
 ) {
-    let block = panel(
-        vec![Span::styled("Machines", style::bold(theme().text))],
-        None,
-    );
-    let inner = block.inner(area);
-    draw_panel(frame, area, block);
-    if inner.height == 0 {
+    if area.height == 0 {
         return;
     }
-    let width = inner.width as usize;
-    let visible = (inner.height as usize).max(1);
+    let width = area.width as usize;
+    let visible = area.height as usize;
     let first = if model.selected < rows.len() {
         model.selected.saturating_sub(visible - 1)
     } else {
         0
     };
-    let longest = rows.iter().map(|row| row.name.width()).max().unwrap_or(0);
-    let name_room = if wide {
-        width.saturating_sub(3 + GAUGE_TEXT + 2 * MIN_BAR)
-    } else {
-        width / 2
-    };
-    let name_width = longest.clamp(6, name_room.clamp(6, 22));
-    let mut cursor = Cursor::new(inner);
+    let name_width = rows
+        .iter()
+        .map(|row| row.name.width())
+        .max()
+        .unwrap_or(0)
+        .clamp(6, width.saturating_sub(SIDEBAR_GAUGE + 2).max(6));
+    let mut cursor = Cursor::new(area);
     for (index, row) in rows.iter().enumerate().skip(first).take(visible) {
-        if cursor.left() == 0 {
-            break;
-        }
         let selected = index == model.selected;
         let name_style = if selected {
             style::bold(theme().text)
@@ -71,52 +61,42 @@ pub fn render_list(
             .machine()
             .filter(|_| row.state() == Some(&LinkState::Live))
             .and_then(|machine| machine.latest.as_ref().map(|_| machine));
-        let mut line = Composed::of(vec![
+        let line = Composed::of(vec![
             Span::styled(if selected { "▎" } else { " " }, style::fg(theme().accent)),
-            Span::styled(
-                pad(&truncate(&row.name, name_width), name_width + 2),
-                name_style,
-            ),
+            Span::styled(truncate(&row.name, name_width), name_style),
         ]);
-        let room = width.saturating_sub(name_width + 3);
-        match live {
-            Some(machine) if wide => gauges(&mut line, machine, index, room),
-            Some(machine) => {
-                for span in compact_gauges(machine, room) {
-                    line.push(span);
-                }
-            }
-            None => line.push(status_span(row, model.port, now, room)),
-        }
-        line.draw(frame, graphics, cursor.row(), selected_style(selected));
+        let room = width.saturating_sub(name_width + 2);
+        let right = match live {
+            Some(machine) => sidebar_gauge(machine, index),
+            None => Composed::of(vec![status_span(row, model.port, now, room)]),
+        };
+        line.spread(right, width)
+            .draw(frame, graphics, cursor.row(), selected_style(selected));
         cursor.skip();
     }
 }
 
-fn gauges(line: &mut Composed, machine: &Machine, index: usize, width: usize) {
-    let bar = (width.saturating_sub(GAUGE_TEXT) / 2).clamp(MIN_BAR, 10);
-    for (label, value, subsystem) in [
-        ("cpu", machine.smoothed_cpu(), Subsystem::Cpu),
-        ("mem", machine.memory_fraction(), Subsystem::Memory),
-    ] {
-        line.push(Span::styled(format!("{label} "), style::fg(theme().dim)));
-        line.bar(
-            bar,
-            value,
-            style::level(model::grade(subsystem, value)),
-            format!("{label}:{index}"),
-        );
-        line.push(Span::styled(
-            format!("{:>5}  ", units::percent(value).trim()),
-            style::fg(theme().text),
+fn sidebar_gauge(machine: &Machine, index: usize) -> Composed {
+    let cpu = machine.smoothed_cpu();
+    let memory = machine.memory_fraction();
+    let mut gauge = Composed::default();
+    if model::grade(Subsystem::Memory, memory) != Level::Normal {
+        gauge.push(Span::styled(
+            format!("mem {}  ", units::percent(memory).trim()),
+            style::fg(level_text(memory, Subsystem::Memory)),
         ));
     }
-    let disk = machine.fullest_filesystem();
-    line.push(Span::styled("disk ", style::fg(theme().dim)));
-    line.push(Span::styled(
-        units::percent(disk).trim().to_string(),
-        style::fg(level_text(disk, Subsystem::Storage)),
+    gauge.bar(
+        SIDEBAR_BAR,
+        cpu,
+        style::level(model::grade(Subsystem::Cpu, cpu)),
+        format!("sidebar:cpu:{index}"),
+    );
+    gauge.push(Span::styled(
+        format!(" {:>4}", units::percent(cpu).trim()),
+        style::fg(level_text(cpu, Subsystem::Cpu)),
     ));
+    gauge
 }
 
 fn level_text(value: f32, subsystem: Subsystem) -> Color {
@@ -124,28 +104,6 @@ fn level_text(value: f32, subsystem: Subsystem) -> Color {
         Level::Normal => theme().text,
         level => style::level(level),
     }
-}
-
-fn compact_gauges(machine: &Machine, room: usize) -> Vec<Span<'static>> {
-    let text = |label: &str, value: f32, subsystem| {
-        vec![
-            Span::styled(format!("{label} "), style::fg(theme().dim)),
-            Span::styled(
-                format!("{:<5}", units::percent(value).trim()),
-                style::fg(level_text(value, subsystem)),
-            ),
-        ]
-    };
-    let mut spans = text("cpu", machine.smoothed_cpu(), Subsystem::Cpu);
-    spans.extend(text("mem", machine.memory_fraction(), Subsystem::Memory));
-    if room >= 30 {
-        spans.extend(text(
-            "disk",
-            machine.fullest_filesystem(),
-            Subsystem::Storage,
-        ));
-    }
-    spans
 }
 
 fn short_os(os: &str) -> &str {
@@ -199,10 +157,7 @@ pub fn render_detail(
             Some(vec![Span::styled(place, style::fg(theme().dim))]),
         ),
     );
-    let area = area.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
+    let area = body(area);
     let width = area.width as usize;
     let mut cursor = Cursor::new(area);
     if let Some(machine) = row.machine() {

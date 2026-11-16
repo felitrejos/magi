@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::registry::{self, Registry, Status};
+use super::repo;
 use super::transcript::Transcript;
 use super::{Board, Found};
 use crate::proto::{
@@ -310,9 +311,8 @@ fn session_cwd(session: &Seen, tracked: &Tracked) -> String {
 fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>) -> AgentSession {
     let main = tracked.transcript.as_ref();
     let cwd = session_cwd(&session, tracked);
-    let project = Path::new(&cwd)
-        .file_name()
-        .map_or_else(|| cwd.clone(), |name| name.to_string_lossy().into_owned());
+    let repo = repo::locate(&cwd);
+    let project = repo.project.clone();
     let title: String = session
         .name
         .unwrap_or_else(|| project.clone())
@@ -359,6 +359,8 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
                 detail: subagent.subagent_type.clone(),
             })
             .collect(),
+        branch: repo.branch,
+        worktree: repo.worktree,
     }
 }
 

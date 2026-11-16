@@ -5,6 +5,7 @@ mod ledger;
 mod pricing;
 mod process;
 mod registry;
+mod repo;
 pub mod rex;
 mod tail;
 mod tasks;

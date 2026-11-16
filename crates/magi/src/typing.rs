@@ -207,6 +207,8 @@ mod tests {
             pane: None,
             usage: None,
             children: Vec::new(),
+            branch: None,
+            worktree: None,
         }
     }
 

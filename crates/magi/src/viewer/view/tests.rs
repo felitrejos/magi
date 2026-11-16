@@ -54,25 +54,29 @@ fn agent(title: &str, state: SessionState, context_used: Option<u16>) -> AgentSe
         pane: None,
         usage: None,
         children: Vec::new(),
+        branch: None,
+        worktree: None,
     }
 }
 
 fn agents() -> Vec<AgentSession> {
-    vec![
-        agent(
-            "refactor the collectors with a very long session title",
-            SessionState::Working {
-                tool: Some("Bash".into()),
-            },
-            Some(3_400),
-        ),
-        agent(
-            "deploy fix",
-            SessionState::Waiting(Waiting::Permission(Some("Bash".into()))),
-            None,
-        ),
-        agent("notes", SessionState::Idle, Some(800)),
-    ]
+    let mut working = agent(
+        "refactor the collectors with a very long session title",
+        SessionState::Working {
+            tool: Some("Bash".into()),
+        },
+        Some(3_400),
+    );
+    working.branch = Some("refactor/collectors".into());
+    let mut deploy = agent(
+        "deploy fix",
+        SessionState::Waiting(Waiting::Permission(Some("Bash".into()))),
+        None,
+    );
+    deploy.project = "stampr-ops".into();
+    let mut notes = agent("notes", SessionState::Idle, Some(800));
+    notes.project = "stampr".into();
+    vec![working, deploy, notes]
 }
 
 fn sample(load: f32, cores: usize) -> Sample {
@@ -286,8 +290,7 @@ fn wide_screen_reads_in_plain_words() {
     }
     let screen = draw(&model, 160, 40, now);
     for text in [
-        "Machines",
-        "Agents",
+        "Needs you",
         "Memory",
         "Storage",
         "Network",
@@ -315,6 +318,23 @@ fn no_line_overflows_the_pane() {
 }
 
 #[test]
+fn a_machine_is_tagged_by_its_first_word_unless_another_shares_it() {
+    let names = ["felipes-macbook-pro", "homelab", "build.lan", "build-2"];
+    assert_eq!(super::machine_tag("felipes-macbook-pro", &names), "felipes");
+    assert_eq!(super::machine_tag("homelab", &names), "homelab");
+    assert_eq!(super::machine_tag("build.lan", &names), "build.lan");
+}
+
+#[test]
+#[ignore = "prints the screen: cargo test -- --ignored --nocapture print_wide"]
+fn print_wide() {
+    let now = Instant::now();
+    let mut model = fleet(2, now);
+    model.selected = 3;
+    println!("{}", draw(&model, 130, 34, now));
+}
+
+#[test]
 #[ignore = "prints the screen: cargo test -- --ignored --nocapture print_phone"]
 fn print_phone() {
     let now = Instant::now();
@@ -325,44 +345,32 @@ fn print_phone() {
 fn phone_width_keeps_names_cpu_and_memory() {
     let now = Instant::now();
     let screen = draw(&fleet(2, now), 46, 30, now);
-    assert!(screen.contains("host-0"));
-    assert!(screen.contains("cpu") && screen.contains("mem"));
+    assert!(
+        screen.contains("host-0") && screen.contains("37%"),
+        "{screen}"
+    );
 }
 
 #[test]
-fn agents_that_need_you_come_first_and_plan_limits_sit_in_the_agents_panel() {
+fn sessions_that_need_you_come_first_then_projects_with_plans_above() {
     let now = Instant::now();
     let model = fleet(2, now);
     let screen = draw(&model, 160, 40, now);
     let lines: Vec<&str> = screen.lines().collect();
-    assert!(
-        lines[0].contains("╭ Machines"),
-        "no header row above the panels\n{screen}"
-    );
-    let agents = lines
-        .iter()
-        .position(|line| line.contains("╭ Agents"))
-        .unwrap();
-    assert!(lines[agents + 1].contains("Claude 5h"), "{screen}");
-    assert!(lines[agents + 1].contains("Codex 5h"), "{screen}");
     let at = |text: &str| lines.iter().position(|line| line.contains(text));
+    let claude = at("Claude 5h").expect("Claude's plan");
+    let codex = at("Codex 5h").expect("Codex's plan");
     let needs_you = at(" Needs you").expect("a Needs you group");
-    let first_idle = at("idle 12m").expect("an idle session");
-    assert!(needs_you < first_idle, "{screen}");
+    let magi = at("  magi ").expect("the magi project");
+    let stampr = at("  stampr ").expect("stampr, with stampr-ops merged in");
+    assert!(claude < codex && codex < needs_you, "{screen}");
+    assert!(needs_you < magi && magi < stampr, "{screen}");
+    assert!(lines[needs_you + 1].contains("✻ deploy fix"), "{screen}");
+    assert!(!screen.contains("stampr-ops "), "{screen}");
     assert!(
-        lines[needs_you + 1].contains("needs you · Bash"),
-        "{screen}"
-    );
-    assert!(
-        !screen.contains("opus 5.5  ctx"),
+        !lines[needs_you + 1].contains("opus 5.5"),
         "model and context stay in the detail\n{screen}"
     );
-    assert!(screen.contains("Claude 5h"), "{screen}");
-    assert!(
-        screen.contains("12%") && screen.contains("Codex 5h"),
-        "{screen}"
-    );
-    assert!(screen.contains("✻ deploy fix"), "{screen}");
 }
 
 #[test]
@@ -574,9 +582,8 @@ fn each_machine_is_one_line_and_its_details_stay_in_the_detail() {
     let screen = draw(&model, 160, 40, now);
     let machine_lines = screen
         .lines()
-        .filter(|line| line.contains(" cpu ") && line.contains(" mem "))
+        .filter(|line| line.contains("host-") && line.contains('%'))
         .count();
     assert_eq!(machine_lines, 3, "{screen}");
     assert!(!screen.contains("up 3d 2h"), "{screen}");
-    assert!(screen.contains("disk 75%"), "{screen}");
 }
