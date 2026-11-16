@@ -91,13 +91,14 @@ pub fn render_list(
                         width,
                     ));
                 }
-                lines.extend(
-                    agent
-                        .session
-                        .children
-                        .iter()
-                        .map(|child| child_line(child, depth, width)),
-                );
+            }
+            Entry::Child { child, .. } => {
+                let depth = match (&item.group, item.nested) {
+                    (Group::Project(_), true) => 2,
+                    (Group::Project(_), false) => 1,
+                    _ => 0,
+                };
+                lines.push(child_line(child, depth, is_selected, width));
             }
             Entry::Project {
                 name, count, open, ..
@@ -209,16 +210,37 @@ fn row_state(session: &AgentSession, live: bool) -> Span<'static> {
     }
 }
 
-fn child_line(child: &Child, depth: usize, width: usize) -> Line<'static> {
-    let glyph = match child.kind {
+fn child_glyph(kind: ChildKind) -> &'static str {
+    match kind {
         ChildKind::Subagent => "◇",
         ChildKind::Shell => "$",
         ChildKind::Task => "⇢",
-    };
+    }
+}
+
+fn child_state(child: &Child) -> Span<'static> {
+    let age = short(&units::duration(Duration::from_secs(u64::from(child.secs))));
+    match child.state {
+        ChildState::Running => Span::styled("●", style::fg(theme().accent)),
+        ChildState::Done => Span::styled(format!("✓ {age}"), style::fg(theme().faint)),
+        ChildState::Failed => Span::styled("failed", style::fg(theme().crit)),
+        ChildState::Stopped => Span::styled("stopped", style::fg(theme().faint)),
+    }
+}
+
+fn child_line(child: &Child, depth: usize, is_selected: bool, width: usize) -> Line<'static> {
+    let glyph = child_glyph(child.kind);
     let mut left = vec![
         Span::raw(" ".repeat(3 + depth * 2)),
         Span::styled(format!("{glyph} "), style::fg(theme().faint)),
-        Span::styled(child.label.clone(), style::fg(theme().dim)),
+        Span::styled(
+            child.label.clone(),
+            style::fg(if is_selected {
+                theme().text
+            } else {
+                theme().dim
+            }),
+        ),
     ];
     if !child.detail.is_empty() {
         left.push(Span::styled(
@@ -226,14 +248,57 @@ fn child_line(child: &Child, depth: usize, width: usize) -> Line<'static> {
             style::fg(theme().faint),
         ));
     }
-    let age = short(&units::duration(Duration::from_secs(u64::from(child.secs))));
-    let right = match child.state {
-        ChildState::Running => Span::styled("●", style::fg(theme().accent)),
-        ChildState::Done => Span::styled(format!("✓ {age}"), style::fg(theme().faint)),
-        ChildState::Failed => Span::styled("failed", style::fg(theme().crit)),
-        ChildState::Stopped => Span::styled("stopped", style::fg(theme().faint)),
+    spread(left, vec![child_state(child)], width).style(selected_style(is_selected))
+}
+
+pub fn render_child(
+    frame: &mut Frame,
+    area: Rect,
+    agent: &AgentRow<'_>,
+    child: &Child,
+    preview: Preview<'_>,
+) {
+    if area.height < 5 || area.width < 16 {
+        return;
+    }
+    let kind = match child.kind {
+        ChildKind::Subagent => "subagent",
+        ChildKind::Shell => "background command",
+        ChildKind::Task => "task on another machine",
     };
-    spread(left, vec![right], width)
+    draw_panel(
+        frame,
+        area,
+        panel(
+            vec![
+                Span::styled(
+                    format!("{} ", child_glyph(child.kind)),
+                    style::fg(theme().dim),
+                ),
+                Span::styled(child.label.clone(), style::bold(theme().text)),
+            ],
+            Some(vec![
+                Span::styled(format!("{kind} · "), style::fg(theme().dim)),
+                child_state(child),
+            ]),
+        ),
+    );
+    let inner = body(area);
+    let width = inner.width as usize;
+    let context = Rect::new(inner.x, inner.y - 1, inner.width, 1);
+    let mut from = vec![
+        Span::styled("from ", style::fg(theme().faint)),
+        Span::styled(agent.session.title.clone(), style::fg(theme().dim)),
+    ];
+    if !child.detail.is_empty() {
+        from.push(Span::styled(
+            format!(" · {}", child.detail),
+            style::fg(theme().faint),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(clip(from, width))), context);
+    let mut cursor = Cursor::new(inner);
+    live_view(&mut cursor, frame, preview, width);
 }
 
 fn worktree_line(

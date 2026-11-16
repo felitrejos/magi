@@ -164,6 +164,32 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                     render_session(frame, detail_area, model, agent, now);
                 }
             }
+            Some(Focus::Child(id, child_id)) => {
+                let found = agents
+                    .iter()
+                    .find(|agent| agent.session.id == id)
+                    .and_then(|agent| {
+                        let child = agent
+                            .session
+                            .children
+                            .iter()
+                            .find(|child| child.id == child_id)?;
+                        Some((agent, child))
+                    });
+                if let Some((agent, child)) = found {
+                    let preview = match model.screen(&id, Some(&child_id)) {
+                        None if agent.live => {
+                            agents::Preview::Waiting(agents::Source::Conversation)
+                        }
+                        None => agents::Preview::Gone,
+                        Some(screen) => match &screen.view {
+                            Ok(content) => agents::Preview::Ready(content),
+                            Err(reason) => agents::Preview::Failed(reason),
+                        },
+                    };
+                    agents::render_child(frame, detail_area, agent, child, preview);
+                }
+            }
             _ => {}
         }
     }
@@ -182,7 +208,7 @@ fn render_session(
     } else {
         agents::Source::Conversation
     };
-    let preview = match model.screen(&agent.session.id) {
+    let preview = match model.screen(&agent.session.id, None) {
         None if agent.live => agents::Preview::Waiting(source),
         None => agents::Preview::Gone,
         Some(screen) => match &screen.view {

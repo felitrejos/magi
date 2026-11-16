@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::UnixListener;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
@@ -12,13 +14,13 @@ use crate::conversation::Reader;
 use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
-    self, AgentMessage, AgentSession, Content, Hello, Identity, PROTOCOL_VERSION, Reply, Request,
-    Screen, StatusReport, Welcome,
+    self, AgentMessage, AgentSession, ChildKind, Content, Hello, Identity, PROTOCOL_VERSION, Reply,
+    Request, Said, Screen, StatusReport, Welcome,
 };
 use crate::screen::Capturer;
 use crate::sessions::rex::Location;
 use crate::sessions::{Board, Sessions, Snapshot};
-use crate::{log, opener, tailscale, typing};
+use crate::{children, log, opener, tailscale, typing};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -106,7 +108,10 @@ fn spawn_identity_refresh(info: SystemInfo, agent: Arc<Agent>) -> io::Result<()>
 struct Watcher {
     screen: Capturer,
     conversation: Reader,
+    subagents: HashMap<String, PathBuf>,
 }
+
+type Target = (String, Option<String>);
 
 struct Agent {
     identity: RwLock<Identity>,
@@ -119,7 +124,63 @@ struct Agent {
 }
 
 impl Agent {
-    fn capture(&self, session: &str, watcher: &mut Watcher) -> Result<Content, String> {
+    fn capture_child(
+        &self,
+        session: &str,
+        child: &str,
+        watcher: &mut Watcher,
+    ) -> Result<Content, String> {
+        let (found, transcript) = {
+            let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+            let found = snapshot
+                .sessions
+                .iter()
+                .find(|found| found.id == session)
+                .and_then(|found| found.children.iter().find(|known| known.id == child))
+                .map(|known| (known.kind, known.task.clone()));
+            (found, snapshot.transcripts.get(session).cloned())
+        };
+        let (kind, task) = found.ok_or("that has finished and isn't listed any more")?;
+        let (_, parent) = transcript.ok_or("that session's transcript isn't on this machine")?;
+        match kind {
+            ChildKind::Subagent => {
+                let path = match watcher.subagents.get(child) {
+                    Some(path) => path.clone(),
+                    None => {
+                        let path = children::subagent_transcript(&parent, child)
+                            .ok_or("its transcript isn't there yet")?;
+                        watcher.subagents.insert(child.to_string(), path.clone());
+                        path
+                    }
+                };
+                watcher
+                    .conversation
+                    .read(&path, proto::Agent::ClaudeCode)
+                    .map(Content::Conversation)
+            }
+            ChildKind::Shell => {
+                let task = task.ok_or("it hasn't started yet")?;
+                let session_id = parent
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .ok_or("that session's transcript has an odd name")?;
+                children::shell_output(session_id, &task).map(|output| {
+                    Content::Conversation(vec![Said::Reply(format!("````\n{output}\n````"))])
+                })
+            }
+            ChildKind::Task => Err("cielago keeps this task's result: run cielago tasks".into()),
+        }
+    }
+
+    fn capture(
+        &self,
+        session: &str,
+        child: Option<&str>,
+        watcher: &mut Watcher,
+    ) -> Result<Content, String> {
+        if let Some(child) = child {
+            return self.capture_child(session, child, watcher);
+        }
         let (pane, transcript, asking) = {
             let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
             let asking = snapshot
@@ -444,7 +505,7 @@ fn spawn_requests(
         .name("requests".into())
         .spawn(move || {
             let mut buf = Vec::new();
-            let mut watcher: Option<mpsc::Sender<Option<String>>> = None;
+            let mut watcher: Option<mpsc::Sender<Option<Target>>> = None;
             while let Ok(request) =
                 proto::read_frame_within::<Request, _>(&mut *conn, &mut buf, REQUEST_MAX_BYTES)
             {
@@ -503,13 +564,14 @@ fn spawn_requests(
                             Err(text) => reply(replies, false, text),
                         });
                     }
-                    Request::Watch { session } => {
+                    Request::Watch { session, child } => {
+                        let target = session.map(|session| (session, child));
                         let delivered = watcher
                             .as_ref()
-                            .is_some_and(|watcher| watcher.send(session.clone()).is_ok());
-                        if !delivered && session.is_some() {
+                            .is_some_and(|watcher| watcher.send(target.clone()).is_ok());
+                        if !delivered && target.is_some() {
                             watcher =
-                                spawn_watcher(session, replies.clone(), Arc::clone(&agent)).ok();
+                                spawn_watcher(target, replies.clone(), Arc::clone(&agent)).ok();
                         }
                     }
                 }
@@ -519,10 +581,10 @@ fn spawn_requests(
 }
 
 fn spawn_watcher(
-    first: Option<String>,
+    first: Option<Target>,
     replies: SyncSender<Frame>,
     agent: Arc<Agent>,
-) -> io::Result<mpsc::Sender<Option<String>>> {
+) -> io::Result<mpsc::Sender<Option<Target>>> {
     let (watch, changes) = mpsc::channel();
     thread::Builder::new()
         .name("screen".into())
@@ -531,10 +593,11 @@ fn spawn_watcher(
             let mut capturer = Watcher::default();
             let mut last: Option<Screen> = None;
             loop {
-                if let Some(session) = &watching {
+                if let Some((session, child)) = &watching {
                     let screen = Screen {
                         session: session.clone(),
-                        view: agent.capture(session, &mut capturer),
+                        child: child.clone(),
+                        view: agent.capture(session, child.as_deref(), &mut capturer),
                     };
                     if last.as_ref() != Some(&screen) {
                         let Ok(frame) = proto::encode_frame(&AgentMessage::Screen(screen.clone()))
@@ -898,6 +961,7 @@ mod tests {
             &mut stream,
             &Request::Watch {
                 session: Some("elsewhere".into()),
+                child: None,
             },
         )
         .unwrap();
@@ -914,10 +978,18 @@ mod tests {
             screen,
             Screen {
                 session: "elsewhere".into(),
+                child: None,
                 view: Err("that session has ended".into()),
             }
         );
-        proto::write_frame(&mut stream, &Request::Watch { session: None }).unwrap();
+        proto::write_frame(
+            &mut stream,
+            &Request::Watch {
+                session: None,
+                child: None,
+            },
+        )
+        .unwrap();
     }
 
     #[test]

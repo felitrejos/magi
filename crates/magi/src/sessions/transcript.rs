@@ -328,6 +328,7 @@ impl Transcript {
                 detail: tracked.detail.clone(),
                 state: tracked.state,
                 secs: u32::try_from(now_secs.saturating_sub(tracked.at)).unwrap_or(u32::MAX),
+                task: tracked.task.clone(),
             })
             .collect()
     }

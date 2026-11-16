@@ -9,6 +9,7 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::proto::{Agent, Change, Said};
 
+const HANDBACK_TOOL: &str = "SubagentHandback";
 const TAIL_WINDOWS: [u64; 3] = [1 << 20, 4 << 20, 8 << 20];
 const SKIM_OVER: usize = 64 * 1024;
 const MAX_ENTRIES: usize = 80;
@@ -138,6 +139,9 @@ fn claude(value: &Value) -> Vec<Said> {
             .flatten()
             .filter_map(|block| match block["type"].as_str() {
                 Some("text") => text(block["text"].as_str()?).map(Said::Reply),
+                Some("tool_use") if block["name"] == HANDBACK_TOOL => {
+                    text(block["input"]["message"].as_str()?).map(Said::Reply)
+                }
                 Some("tool_use") => {
                     let name = block["name"].as_str()?;
                     Some(Said::Tool {
@@ -358,6 +362,7 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"Running them now."},{"type":"tool_use","name":"Bash","input":{"command":"cargo test -q\nsecond line","description":"Run tests"}}]}}"#,
             r#"{"type":"user","toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#,
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.rs"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"SubagentHandback","input":{"message":"All seven pass."}}]}}"#,
             "not json",
         ]
         .join("\n");
@@ -376,6 +381,7 @@ mod tests {
                     detail: "/src/main.rs".into(),
                     change: None
                 },
+                Said::Reply("All seven pass.".into()),
             ]
         );
     }

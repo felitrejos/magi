@@ -137,6 +137,7 @@ fn child(id: String, record: Record) -> Option<((i32, i64), Child)> {
             detail: format!("on {} · {state}", record.host),
             state: ChildState::Running,
             secs: 0,
+            task: None,
         },
     ))
 }
@@ -165,6 +166,7 @@ mod tests {
                 detail: "on homelab · running".into(),
                 state: ChildState::Running,
                 secs: 0,
+                task: None,
             }
         );
         let (_, delegated) = child("task:t1".into(), record(

@@ -39,23 +39,19 @@ Done:
 
 ## Phase 4: the redesign
 
-1. **Projects.** Sessions grouped by the project folder group cielago already
-   uses (`~/developer/stampr/` holds `stampr` and `stampr-ops`), the same
-   project on every machine. Rename, move and merge projects with a key;
-   magi saves your edits and they always win. A small model (Haiku through
-   `claude -p`) names a group only when a new folder or a loose session
-   appears, the way Dia names tab groups.
-2. **Layout.** A narrow, borderless sidebar (about 30 columns): Needs you,
-   then projects, then sessions with a machine badge. One line on top for
-   each machine's load and the plans' usage, which only turns amber or red
-   when something's wrong; the machine graphs open on a key. The
-   conversation takes the rest, with approvals inline above the input,
-   the only boxed element. Contrast, not borders, separates areas.
-3. **Session family tree.** Running and finished subagents with what they
-   were asked and what they returned, background shells, the worktree and
-   branch a session works in, agent-team teammates, and sessions an agent
-   started in other Rex tabs, nested under their parent with their own state.
-   Any of them can be selected and read.
+Done:
+- **Projects:** related repos grouped across machines, foldable rows, `p`
+  and `P` to move and rename (your edits always win), and Haiku naming the
+  projects of new repos.
+- **Layout, after Dia:** a narrow borderless sidebar with machines (and
+  their Rex icons), sessions and plan usage in three zones; the
+  conversation on an inset card; the selected row as a pill.
+- **Session family tree:** subagents, background shells, worktrees and
+  sessions started inside another, nested under their session with their
+  state. Selecting one shows a subagent's own conversation, live, or a
+  shell's output.
+
+Next:
 4. **Rex popups.** Floating layers made with `session.new_layer`, closed with
    `session.close_layer`, minimized with `session.set_layer_state`:
    - `d`: the session's diff, reviewable, with a way to send a selection and

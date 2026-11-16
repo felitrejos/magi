@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 13;
+pub const PROTOCOL_VERSION: u16 = 14;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -111,6 +111,7 @@ pub struct Child {
     pub detail: String,
     pub state: ChildState,
     pub secs: u32,
+    pub task: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +199,7 @@ pub enum Request {
     },
     Watch {
         session: Option<String>,
+        child: Option<String>,
     },
     Prompt {
         session: String,
@@ -230,6 +232,7 @@ pub enum Request {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Screen {
     pub session: String,
+    pub child: Option<String>,
     pub view: Result<Content, String>,
 }
 

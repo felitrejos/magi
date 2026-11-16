@@ -78,6 +78,7 @@ fn agents() -> Vec<AgentSession> {
             detail: "Explore".into(),
             state: ChildState::Running,
             secs: 40,
+            task: None,
         },
         Child {
             id: "toolu_b".into(),
@@ -86,6 +87,7 @@ fn agents() -> Vec<AgentSession> {
             detail: String::new(),
             state: ChildState::Done,
             secs: 300,
+            task: Some("bash_1".into()),
         },
     ];
     let mut deploy = agent(

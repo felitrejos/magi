@@ -750,12 +750,17 @@ fn sync_watch(model: &mut Model, links: &Links) {
     if wanted == model.watching {
         return;
     }
-    if let Some((endpoint, _)) = &model.watching {
-        let _ = links.request(*endpoint, &proto::Request::Watch { session: None });
+    if let Some((endpoint, _, _)) = &model.watching {
+        let request = proto::Request::Watch {
+            session: None,
+            child: None,
+        };
+        let _ = links.request(*endpoint, &request);
     }
-    let started = wanted.filter(|(endpoint, session)| {
+    let started = wanted.filter(|(endpoint, session, child)| {
         let request = proto::Request::Watch {
             session: Some(session.clone()),
+            child: child.clone(),
         };
         links.request(*endpoint, &request).is_ok()
     });
@@ -1195,12 +1200,13 @@ mod tests {
         select_first_session(&mut model);
         assert_eq!(
             model.wanted_watch(now),
-            Some((Endpoint::Local, "s1".to_string()))
+            Some((Endpoint::Local, "s1".to_string(), None))
         );
         model.watch(model.wanted_watch(now));
         let screen = |text: &str| {
             LinkUpdate::Screen(crate::proto::Screen {
                 session: "s1".into(),
+                child: None,
                 view: Ok(crate::proto::Content::Screen(vec![vec![
                     crate::proto::Run {
                         text: text.into(),
@@ -1235,16 +1241,17 @@ mod tests {
     fn a_reconnect_forgets_the_watch_so_it_is_asked_for_again_and_stale_screens_are_ignored() {
         let (mut model, _) = fleet();
         let now = Instant::now();
-        model.watch(Some((Endpoint::Local, "s1".into())));
+        model.watch(Some((Endpoint::Local, "s1".into(), None)));
         model.apply(
             Endpoint::Local,
             LinkUpdate::Screen(crate::proto::Screen {
                 session: "other".into(),
+                child: None,
                 view: Err("old".into()),
             }),
             now,
         );
-        assert_eq!(model.screen("other"), None);
+        assert_eq!(model.screen("other", None), None);
         let identity = Identity {
             hostname: "mac".into(),
             tailscale_node: Some("mac".into()),
@@ -1277,7 +1284,7 @@ mod tests {
         select_first_session(&mut model);
         assert_eq!(
             model.wanted_watch(now),
-            Some((Endpoint::Local, "s1".to_string()))
+            Some((Endpoint::Local, "s1".to_string(), None))
         );
         model.watch(model.wanted_watch(now));
         let long = "word ".repeat(60);
@@ -1285,6 +1292,7 @@ mod tests {
             Endpoint::Local,
             LinkUpdate::Screen(crate::proto::Screen {
                 session: "s1".into(),
+                child: None,
                 view: Ok(crate::proto::Content::Conversation(vec![
                     crate::proto::Said::You("run the tests".into()),
                     crate::proto::Said::Reply(format!("**Done.** {}", long.trim())),
@@ -1516,6 +1524,52 @@ mod tests {
     }
 
     #[test]
+    fn selecting_a_subagent_watches_it_and_shows_what_it_was_asked_and_answered() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let mut parent = claude("s1", 0);
+        parent.children = vec![crate::proto::Child {
+            id: "toolu_a".into(),
+            kind: crate::proto::ChildKind::Subagent,
+            label: "Find the parser".into(),
+            detail: "Explore".into(),
+            state: crate::proto::ChildState::Running,
+            secs: 12,
+            task: None,
+        }];
+        model.apply(Endpoint::Local, live_sample(1_000, Some(parent)), now);
+        select_first_session(&mut model);
+        handle_batch([key(Key::Down)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(
+            model.wanted_watch(now),
+            Some((Endpoint::Local, "s1".into(), Some("toolu_a".into())))
+        );
+        model.watch(model.wanted_watch(now));
+        model.apply(
+            Endpoint::Local,
+            LinkUpdate::Screen(crate::proto::Screen {
+                session: "s1".into(),
+                child: Some("toolu_a".into()),
+                view: Ok(crate::proto::Content::Conversation(vec![
+                    crate::proto::Said::You("Where is the config parser?".into()),
+                    crate::proto::Said::Reply("In src/config.rs".into()),
+                ])),
+            }),
+            now,
+        );
+        let shown = screen(&model);
+        for text in [
+            "◇ Find the parser",
+            "subagent ·",
+            "from run the tests · Explore",
+            "Where is the config parser?",
+            "In src/config.rs",
+        ] {
+            assert!(shown.contains(text), "missing {text:?}\n{shown}");
+        }
+    }
+
+    #[test]
     fn enter_on_a_project_folds_it_to_a_count_and_opens_it_again() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
@@ -1537,6 +1591,7 @@ mod tests {
                 model::Entry::Session(agent) => agent.session.id.clone(),
                 model::Entry::Fold { .. } => "earlier".into(),
                 model::Entry::NewSession => "new".into(),
+                model::Entry::Child { child, .. } => child.id.clone(),
             })
             .collect();
         assert_eq!(entries, ["api 1 false", "new"]);

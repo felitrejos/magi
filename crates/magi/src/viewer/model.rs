@@ -6,8 +6,8 @@ use super::alerts::Alerts;
 use super::namer;
 use super::projects::{Projects, Resolved};
 use crate::proto::{
-    self, Agent, AgentSession, FULL, ForwardState, Identity, MAX_PROMPT_CHARS, Plan, Reply, Sample,
-    Screen, SessionState, Welcome,
+    self, Agent, AgentSession, Child, FULL, ForwardState, Identity, MAX_PROMPT_CHARS, Plan, Reply,
+    Sample, Screen, SessionState, Welcome,
 };
 use crate::tailscale::Peer;
 use unicode_segmentation::UnicodeSegmentation;
@@ -245,9 +245,21 @@ pub enum Focus {
     Machine(String),
     Agent(String),
     Project(String),
+    Child(String, String),
     Earlier,
     NewSession,
 }
+
+impl Focus {
+    fn session(&self) -> Option<&str> {
+        match self {
+            Focus::Agent(id) | Focus::Child(id, _) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+pub type Watched = (Endpoint, String, Option<String>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Group {
@@ -259,6 +271,10 @@ pub enum Group {
 
 pub enum Entry<'a> {
     Session(AgentRow<'a>),
+    Child {
+        session: &'a AgentSession,
+        child: &'a Child,
+    },
     Project {
         key: String,
         name: String,
@@ -294,6 +310,7 @@ pub struct Capacity {
 fn focus_of(entry: &Entry<'_>) -> Focus {
     match entry {
         Entry::Session(agent) => Focus::Agent(agent.session.id.clone()),
+        Entry::Child { session, child } => Focus::Child(session.id.clone(), child.id.clone()),
         Entry::Project { key, .. } => Focus::Project(key.clone()),
         Entry::Fold { .. } => Focus::Earlier,
         Entry::NewSession => Focus::NewSession,
@@ -317,6 +334,21 @@ fn add_to_project<'a>(
         }
         None => groups.push((key, name, vec![agent])),
     }
+}
+
+fn with_children<'a>(group: &Group, agent: AgentRow<'a>, nested: bool) -> Vec<Listed<'a>> {
+    let session = agent.session;
+    std::iter::once(Listed {
+        group: group.clone(),
+        entry: Entry::Session(agent),
+        nested,
+    })
+    .chain(session.children.iter().map(|child| Listed {
+        group: group.clone(),
+        entry: Entry::Child { session, child },
+        nested,
+    }))
+    .collect()
 }
 
 fn family_order(agents: Vec<AgentRow<'_>>) -> Vec<(AgentRow<'_>, bool)> {
@@ -396,8 +428,8 @@ pub struct Model {
     following: Option<Following>,
     pub picker: Option<Picker>,
     awaiting: Option<Awaiting>,
-    pub watching: Option<(Endpoint, String)>,
-    screens: HashMap<String, Screen>,
+    pub watching: Option<Watched>,
+    screens: HashMap<(String, Option<String>), Screen>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -592,12 +624,11 @@ impl Model {
                     return;
                 }
                 LinkUpdate::Screen(screen) => {
-                    if self
-                        .watching
-                        .as_ref()
-                        .is_some_and(|(_, id)| *id == screen.session)
-                    {
-                        self.screens.insert(screen.session.clone(), screen);
+                    if self.watching.as_ref().is_some_and(|(_, id, child)| {
+                        *id == screen.session && *child == screen.child
+                    }) {
+                        self.screens
+                            .insert((screen.session.clone(), screen.child.clone()), screen);
                     }
                     return;
                 }
@@ -605,7 +636,7 @@ impl Model {
                     if self
                         .watching
                         .as_ref()
-                        .is_some_and(|(at, _)| *at == endpoint) =>
+                        .is_some_and(|(at, _, _)| *at == endpoint) =>
                 {
                     self.watching = None;
                     update
@@ -823,27 +854,33 @@ impl Model {
             .map(|flash| (flash.text.as_str(), flash.good))
     }
 
-    pub fn screen(&self, session: &str) -> Option<&Screen> {
-        self.screens.get(session)
+    pub fn screen(&self, session: &str, child: Option<&str>) -> Option<&Screen> {
+        self.screens
+            .get(&(session.to_string(), child.map(str::to_string)))
     }
 
-    pub fn wanted_watch(&self, now: Instant) -> Option<(Endpoint, String)> {
+    pub fn wanted_watch(&self, now: Instant) -> Option<Watched> {
         if self.showing_alerts {
             return None;
         }
-        let Some(Focus::Agent(id)) = self.detail_focus(now) else {
-            return None;
+        let (id, child) = match self.detail_focus(now)? {
+            Focus::Agent(id) => (id, None),
+            Focus::Child(id, child) => (id, Some(child)),
+            _ => return None,
         };
         let agents = self.agents(now);
         let agent = agents.iter().find(|agent| agent.session.id == id)?;
         agent
             .live
-            .then(|| (agent.endpoint, agent.session.id.clone()))
+            .then(|| (agent.endpoint, agent.session.id.clone(), child))
     }
 
-    pub fn watch(&mut self, watching: Option<(Endpoint, String)>) {
-        self.screens
-            .retain(|id, _| watching.as_ref().is_some_and(|(_, watched)| watched == id));
+    pub fn watch(&mut self, watching: Option<Watched>) {
+        self.screens.retain(|(id, child), _| {
+            watching
+                .as_ref()
+                .is_some_and(|(_, watched, watched_child)| watched == id && watched_child == child)
+        });
         self.watching = watching;
     }
 
@@ -886,7 +923,10 @@ impl Model {
         let index = self.selected.checked_sub(machines)?;
         match self.listed(now).into_iter().nth(index)?.entry {
             Entry::Session(agent) => Some(agent),
-            Entry::Project { .. } | Entry::Fold { .. } | Entry::NewSession => None,
+            Entry::Project { .. }
+            | Entry::Fold { .. }
+            | Entry::NewSession
+            | Entry::Child { .. } => None,
         }
     }
 
@@ -895,7 +935,9 @@ impl Model {
         let index = self.selected.checked_sub(machines)?;
         match self.listed(now).into_iter().nth(index)?.entry {
             Entry::Project { key, .. } => Some(key),
-            Entry::Session(_) | Entry::Fold { .. } | Entry::NewSession => None,
+            Entry::Session(_) | Entry::Fold { .. } | Entry::NewSession | Entry::Child { .. } => {
+                None
+            }
         }
     }
 
@@ -1002,14 +1044,16 @@ impl Model {
     }
 
     pub fn note_shown(&mut self, now: Instant) {
-        if let Some(focus @ (Focus::Machine(_) | Focus::Agent(_))) = self.selection(now) {
+        if let Some(focus @ (Focus::Machine(_) | Focus::Agent(_) | Focus::Child(..))) =
+            self.selection(now)
+        {
             self.shown = Some(focus);
         }
     }
 
     pub fn detail_focus(&self, now: Instant) -> Option<Focus> {
         match self.selection(now) {
-            Some(focus @ (Focus::Machine(_) | Focus::Agent(_))) => Some(focus),
+            Some(focus @ (Focus::Machine(_) | Focus::Agent(_) | Focus::Child(..))) => Some(focus),
             _ => self.shown.clone(),
         }
     }
@@ -1049,17 +1093,16 @@ impl Model {
         projects.sort_by(|a, b| a.0.cmp(&b.0));
         let mut listed: Vec<Listed<'_>> = needs_you
             .into_iter()
-            .map(|agent| Listed {
-                group: Group::NeedsYou,
-                entry: Entry::Session(agent),
-                nested: false,
-            })
+            .flat_map(|agent| with_children(&Group::NeedsYou, agent, false))
             .collect();
         for (key, name, agents) in projects {
             let name = project_name(name, &agents);
             let group = Group::Project(name.clone());
-            let focused = matches!(&self.focus, Some(Focus::Agent(id))
-                if agents.iter().any(|agent| agent.session.id == *id));
+            let focused = self
+                .focus
+                .as_ref()
+                .and_then(Focus::session)
+                .is_some_and(|id| agents.iter().any(|agent| agent.session.id == id));
             let open = focused || !self.projects.is_folded(&key);
             listed.push(Listed {
                 group: group.clone(),
@@ -1075,11 +1118,7 @@ impl Model {
                 listed.extend(
                     family_order(agents)
                         .into_iter()
-                        .map(|(agent, nested)| Listed {
-                            group: group.clone(),
-                            entry: Entry::Session(agent),
-                            nested,
-                        }),
+                        .flat_map(|(agent, nested)| with_children(&group, agent, nested)),
                 );
             }
         }
@@ -1088,7 +1127,9 @@ impl Model {
         }
         let open = match &self.focus {
             Some(Focus::Earlier) => true,
-            Some(Focus::Agent(id)) => asleep.iter().any(|agent| agent.session.id == *id),
+            Some(focus @ (Focus::Agent(_) | Focus::Child(..))) => asleep
+                .iter()
+                .any(|agent| Some(agent.session.id.as_str()) == focus.session()),
             _ => false,
         };
         listed.push(Listed {
@@ -1100,11 +1141,11 @@ impl Model {
             nested: false,
         });
         if open {
-            listed.extend(asleep.into_iter().map(|agent| Listed {
-                group: Group::Earlier,
-                entry: Entry::Session(agent),
-                nested: false,
-            }));
+            listed.extend(
+                asleep
+                    .into_iter()
+                    .flat_map(|agent| with_children(&Group::Earlier, agent, false)),
+            );
         }
         listed
     }
@@ -1221,7 +1262,7 @@ impl Model {
                 .map(|index| rows.len() + index),
             None => None,
         };
-        let fallback = if matches!(self.focus, Some(Focus::Agent(_))) {
+        let fallback = if matches!(self.focus, Some(Focus::Agent(_) | Focus::Child(..))) {
             let clamped = self.selected.min(count.saturating_sub(1));
             let end = clamped.saturating_sub(rows.len()).min(listed.len());
             listed[..end]
