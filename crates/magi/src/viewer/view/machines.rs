@@ -23,7 +23,7 @@ use unicode_width::UnicodeWidthStr;
 
 const GUTTER: u16 = 9;
 
-const SIDEBAR_BAR: usize = 5;
+const SIDEBAR_BAR: usize = 3;
 const ICON_WIDTH: u16 = 2;
 const ICON_GAP: &str = "   ";
 const SIDEBAR_GAUGE: usize = SIDEBAR_BAR + 5;
@@ -49,7 +49,11 @@ pub fn render_list(
     };
     let name_width = rows
         .iter()
-        .map(|row| row.name.width())
+        .map(|row| {
+            marks
+                .get(&row.name)
+                .map_or(row.name.width(), |mark| mark.tag.width())
+        })
         .max()
         .unwrap_or(0)
         .clamp(6, width.saturating_sub(SIDEBAR_GAUGE + 5).max(6));
@@ -69,7 +73,15 @@ pub fn render_list(
         let line = Composed::of(vec![
             Span::raw(" "),
             Span::raw(if icons { ICON_GAP } else { "" }),
-            Span::styled(truncate(&row.name, name_width), name_style),
+            Span::styled(
+                truncate(
+                    marks
+                        .get(&row.name)
+                        .map_or(row.name.as_str(), |mark| mark.tag.as_str()),
+                    name_width,
+                ),
+                name_style,
+            ),
         ]);
         let room = width.saturating_sub(name_width + 2);
         let right = match live {

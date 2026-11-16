@@ -23,9 +23,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const WIDE: u16 = 90;
 const STALE_PLAN_SECS: u64 = 15 * 60;
-const SIDEBAR_SHARE: u32 = 28;
-const SIDEBAR_MIN: u16 = 30;
-const SIDEBAR_MAX: u16 = 38;
+const SIDEBAR_SHARE: u32 = 22;
+const SIDEBAR_MIN: u16 = 24;
+const SIDEBAR_MAX: u16 = 30;
 
 pub struct Areas {
     pub machines: Rect,
