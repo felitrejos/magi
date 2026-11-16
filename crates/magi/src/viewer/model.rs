@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
 use crate::proto::{
-    Agent, AgentSession, FULL, ForwardState, Identity, MAX_PROMPT_CHARS, Plan, Reply, Sample,
+    self, Agent, AgentSession, FULL, ForwardState, Identity, MAX_PROMPT_CHARS, Plan, Reply, Sample,
     Screen, SessionState, Welcome,
 };
 use crate::tailscale::Peer;
@@ -413,11 +413,7 @@ impl Draft {
 
     pub fn type_in(&mut self, text: &str) {
         let room = MAX_PROMPT_CHARS.saturating_sub(self.text.chars().count());
-        self.text.extend(
-            text.chars()
-                .map(|c| if c.is_control() { ' ' } else { c })
-                .take(room),
-        );
+        self.text.extend(proto::prompt_chars(text).take(room));
     }
 }
 

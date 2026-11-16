@@ -2,8 +2,10 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use serde_json::json;
+
 use crate::bounded;
-use crate::proto::{AgentSession, MAX_PROMPT_CHARS, SessionState, Waiting};
+use crate::proto::{self, AgentSession, MAX_PROMPT_CHARS, SessionState, Waiting};
 use crate::sessions::rex::Location;
 
 const REX_LIMIT: Duration = Duration::from_secs(3);
@@ -27,7 +29,7 @@ pub fn prompt(
     let text = prompt_text(text)?;
     ready_for_prompt(session)?;
     let _typing = TYPING.lock().unwrap_or_else(PoisonError::into_inner);
-    send(pane, &text)?;
+    paste(pane, &text)?;
     thread::sleep(SUBMIT_AFTER);
     send(pane, "\r")?;
     Ok(format!("Sent to {}", session.title))
@@ -110,10 +112,7 @@ fn not_in_rex(session: &AgentSession) -> String {
 }
 
 fn prompt_text(text: &str) -> Result<String, String> {
-    let text: String = text
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
+    let text: String = proto::prompt_chars(text).collect();
     let text = text.trim();
     if text.is_empty() {
         return Err("there's nothing to send".into());
@@ -145,14 +144,33 @@ fn ready_for_prompt(session: &AgentSession) -> Result<(), String> {
 }
 
 fn send(pane: &Location, text: &str) -> Result<(), String> {
-    let output = bounded::output(
-        &mut pane.rex(
-            "2s",
-            &["send", "-s", &pane.session, "-b", &pane.block, "--", text],
-        ),
-        REX_LIMIT,
+    rex(
+        pane,
+        &["send", "-s", &pane.session, "-b", &pane.block, "--", text],
     )
-    .map_err(|error| format!("can't run rex: {error}"))?;
+}
+
+fn paste(pane: &Location, text: &str) -> Result<(), String> {
+    let event = json!({
+        "block_id": pane.block,
+        "event": {"type": "paste", "payload": {"text": text}},
+    });
+    rex(
+        pane,
+        &[
+            "api",
+            "call",
+            "-s",
+            &pane.session,
+            "block.event",
+            &event.to_string(),
+        ],
+    )
+}
+
+fn rex(pane: &Location, args: &[&str]) -> Result<(), String> {
+    let output = bounded::output(&mut pane.rex("2s", args), REX_LIMIT)
+        .map_err(|error| format!("can't run rex: {error}"))?;
     if output.status.success() {
         return Ok(());
     }
@@ -193,10 +211,10 @@ mod tests {
     }
 
     #[test]
-    fn prompts_become_one_clean_line_within_the_limit() {
+    fn prompts_keep_their_lines_and_lose_other_control_characters() {
         assert_eq!(
-            prompt_text("  run\nthe\ttests\x1b[2J "),
-            Ok("run the tests [2J".into())
+            prompt_text(" \n run\r\nthe\ttests\rnow\x1b[2J \n"),
+            Ok("run\nthe\ttests\nnow [2J".into())
         );
         assert!(prompt_text(" \n ").is_err());
         assert!(prompt_text(&"x".repeat(MAX_PROMPT_CHARS)).is_ok());

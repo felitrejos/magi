@@ -30,6 +30,7 @@ pub enum Key {
     First,
     Last,
     Enter,
+    Newline,
     Escape,
     Backspace,
     Tab,
@@ -127,6 +128,10 @@ impl Parser {
                 out.push(Input::Key(Key::Escape));
                 Some(1)
             }
+            b'\r' | b'\n' => {
+                out.push(Input::Key(Key::Newline));
+                Some(2)
+            }
             _ => Some(2),
         }
     }
@@ -193,7 +198,8 @@ fn mouse_press(params: &[u8]) -> Option<Input> {
 fn plain_key(rest: &[u8]) -> Option<(Option<Key>, usize)> {
     let key = match rest[0] {
         0x03 => Key::Interrupt,
-        b'\r' | b'\n' => Key::Enter,
+        b'\r' => Key::Enter,
+        b'\n' => Key::Newline,
         0x7f | 0x08 => Key::Backspace,
         b'\t' => Key::Tab,
         byte @ 0x20..=0x7e => Key::Char(char::from(byte)),
@@ -356,6 +362,14 @@ mod tests {
                 Key::Interrupt,
             ]
             .map(Input::Key)
+        );
+    }
+
+    #[test]
+    fn ctrl_j_and_alt_enter_start_a_new_line() {
+        assert_eq!(
+            parse(&[b"\n\x1b\r\x1b\n\r"]),
+            [Key::Newline, Key::Newline, Key::Newline, Key::Enter].map(Input::Key)
         );
     }
 

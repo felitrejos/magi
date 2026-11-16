@@ -13,10 +13,10 @@ Done:
 - `r` continues a session from the Claude desktop app or another terminal in a
   Rex tab, as a copy, so magi can message, approve and move it. The original
   is left alone; archive it in the app when you like.
+- Multi-line messages and pastes (`ctrl-j` for a new line), sent with Rex's
+  paste event.
 
 Next:
-- **Multi-line messages and pastes**, sent as a bracketed paste with Rex's
-  `block.event` paste event rather than typed line by line.
 - **Messages while it works.** Queue them the way Claude Code does, safely,
   so they can't land in a prompt that opens meanwhile.
 - **Permission mode.** Switch a session between ask, accept edits, plan and

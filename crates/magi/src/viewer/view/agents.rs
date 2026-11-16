@@ -21,6 +21,8 @@ use unicode_width::UnicodeWidthStr;
 
 const HIGH_CPU_SHARE: f32 = 0.4;
 const MIN_TITLE: usize = 28;
+const DRAFT_ROWS: usize = 6;
+const TAB: &str = "    ";
 
 pub struct Top {
     pub cost: (u64, bool),
@@ -287,7 +289,21 @@ pub fn render_detail(
         vertical: 1,
     });
     let width = inner.width as usize;
-    let [view, input] = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(inner);
+    let draft = draft.filter(|draft| draft.session == session.id);
+    let shown = draft.map(|draft| {
+        let lines: Vec<String> = draft
+            .text
+            .split('\n')
+            .map(|line| line.replace('\t', TAB))
+            .collect();
+        let hidden = lines.len().saturating_sub(DRAFT_ROWS);
+        (lines, hidden)
+    });
+    let rows = shown
+        .as_ref()
+        .map_or(1, |(lines, hidden)| lines.len() - hidden);
+    let [view, input] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1 + rows as u16)]).areas(inner);
     let mut cursor = Cursor::new(view);
     if let Some(target) = suggestion {
         cursor.line(
@@ -312,11 +328,69 @@ pub fn render_detail(
     }
     live_view(&mut cursor, frame, preview, width);
     let mut cursor = Cursor::new(input);
-    cursor.line(
-        frame,
-        Line::from(Span::styled("─".repeat(width), style::fg(theme().rule))),
-    );
-    cursor.line(frame, input_line(agent, draft, width));
+    let Some((lines, hidden)) = shown else {
+        cursor.line(frame, rule(width, None));
+        return cursor.line(frame, input_line(agent, width));
+    };
+    let above = (hidden > 0).then(|| format!(" {hidden} more above"));
+    cursor.line(frame, rule(width, above));
+    let multi_line = lines.len() > 1;
+    let last = lines.len() - 1;
+    for (index, line) in lines.into_iter().enumerate().skip(hidden) {
+        cursor.line(
+            frame,
+            draft_line(index, line, index == last, multi_line, width),
+        );
+    }
+}
+
+fn rule(width: usize, label: Option<String>) -> Line<'static> {
+    let label = label.unwrap_or_default();
+    let rule = "─".repeat(width.saturating_sub(label.width()));
+    Line::from(vec![
+        Span::styled(rule, style::fg(theme().rule)),
+        Span::styled(label, style::fg(theme().faint)),
+    ])
+}
+
+fn draft_line(
+    index: usize,
+    text: String,
+    last: bool,
+    multi_line: bool,
+    width: usize,
+) -> Line<'static> {
+    let prompt = if index == 0 { "› " } else { "  " };
+    let prompt = Span::styled(prompt, style::fg(theme().accent));
+    let text_style = style::fg(theme().text);
+    if !last {
+        return Line::from(clip(vec![prompt, Span::styled(text, text_style)], width));
+    }
+    let mut pairs = vec![("↵", "send")];
+    if !multi_line {
+        pairs.push(("ctrl-j", "new line"));
+    }
+    pairs.push(("esc", "cancel"));
+    let right = keys(&pairs);
+    let room = width.saturating_sub(spans_width(&right) + 4);
+    spread(
+        vec![
+            prompt,
+            Span::styled(tail(&text, room), text_style),
+            Span::styled("▏", style::fg(theme().accent)),
+        ],
+        right,
+        width,
+    )
+}
+
+fn keys(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (key, label) in pairs {
+        spans.push(Span::styled(format!("   {key}"), style::bold(theme().text)));
+        spans.push(Span::styled(format!(" {label}"), style::fg(theme().faint)));
+    }
+    spans
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -380,31 +454,10 @@ fn facts(
     facts
 }
 
-fn input_line(agent: &AgentRow<'_>, draft: Option<&Draft>, width: usize) -> Line<'static> {
+fn input_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
     let session = agent.session;
     let prompt = |color| Span::styled("› ", style::fg(color));
     let hint = |text: &str| Span::styled(text.to_string(), style::fg(theme().faint));
-    let keys = |pairs: &[(&str, &str)]| -> Vec<Span<'static>> {
-        let mut spans = Vec::new();
-        for (key, label) in pairs {
-            spans.push(Span::styled(format!("   {key}"), style::bold(theme().text)));
-            spans.push(Span::styled(format!(" {label}"), style::fg(theme().faint)));
-        }
-        spans
-    };
-    if let Some(draft) = draft.filter(|draft| draft.session == session.id) {
-        let right = keys(&[("↵", "send"), ("esc", "cancel")]);
-        let room = width.saturating_sub(spans_width(&right) + 4);
-        return spread(
-            vec![
-                prompt(theme().accent),
-                Span::styled(tail(&draft.text, room), style::fg(theme().text)),
-                Span::styled("▏", style::fg(theme().accent)),
-            ],
-            right,
-            width,
-        );
-    }
     if !agent.live {
         return Line::from(vec![
             prompt(theme().faint),

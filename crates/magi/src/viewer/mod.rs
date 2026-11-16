@@ -330,6 +330,7 @@ fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Ke
     match key {
         Key::Char(c) => draft.type_in(c.encode_utf8(&mut [0; 4])),
         Key::Paste(text) => draft.type_in(&text),
+        Key::Newline => draft.type_in("\n"),
         Key::Backspace => draft.erase(),
         Key::Escape | Key::Interrupt => return,
         Key::Enter if !draft.text.trim().is_empty() => {
@@ -428,7 +429,7 @@ fn edit_picker(
             }
             return;
         }
-        Key::Char(_) => {}
+        Key::Char(_) | Key::Newline => {}
     }
     model.picker = Some(picker);
 }
@@ -1190,12 +1191,15 @@ mod tests {
             &mut links,
         )
         .unwrap();
-        assert_eq!(model.draft.as_ref().unwrap().text, "qjmy one tw");
-        assert!(
-            screen(&model).contains("› qjmy one tw▏"),
-            "{}",
-            screen(&model)
-        );
+        assert_eq!(model.draft.as_ref().unwrap().text, "qjmy one\ntw");
+        let shown = screen(&model);
+        assert!(shown.contains("› qjmy one "), "{shown}");
+        assert!(shown.contains("  tw▏"), "{shown}");
+        let lines = (0..8).flat_map(|n| [key(Key::Newline), key(Key::Char(char::from(b'a' + n)))]);
+        handle_batch(lines, &mut model, &mut links).unwrap();
+        let shown = screen(&model);
+        assert!(shown.contains("4 more above"), "{shown}");
+        assert!(shown.contains("  h▏") && !shown.contains("qjmy"), "{shown}");
         handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.draft, None);
         assert_eq!(

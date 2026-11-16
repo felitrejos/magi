@@ -38,12 +38,14 @@
   acts only on sessions it found itself, checks the machine name, and runs
   `rex` and `cielago` with arguments, never through a shell, each with a time
   limit after which it and anything it started are stopped.
-- A message is typed only into the session's own Rex pane, as one line of at
-  most 2,000 characters with control characters removed, and only while the
-  session is idle, so it can't land in a prompt that opened meanwhile. An
-  answer is a single key (`1` to allow, `Esc` to deny), sent only while that
-  session still waits on the same prompt the viewer saw: same tool, waiting
-  as long. Messages and answers to one machine are typed one at a time. Since
+- A message goes only into the session's own Rex pane, as a bracketed paste
+  through Rex's paste event, then Enter. It is at most 16,000 characters,
+  keeps its lines and tabs, has every other control character removed (Rex
+  also strips escapes from pastes, so a message can't end the paste early),
+  and is sent only while the session is idle, so it can't land in a prompt
+  that opened meanwhile. An answer is a single key (`1` to allow, `Esc` to
+  deny), sent only while that session still waits on the same prompt the
+  viewer saw: same tool, waiting as long. Messages and answers to one machine are typed one at a time. Since
   a message can ask the agent to do anything, only viewers signed in as you
   can send one, like everything else.
 - `magi statusline install` edits only `statusLine` in

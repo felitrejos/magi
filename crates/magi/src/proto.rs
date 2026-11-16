@@ -3,10 +3,24 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 9;
+pub const PROTOCOL_VERSION: u16 = 10;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
-pub const MAX_PROMPT_CHARS: usize = 2000;
+pub const MAX_PROMPT_CHARS: usize = 16_000;
+
+pub fn prompt_chars(text: &str) -> impl Iterator<Item = char> + '_ {
+    let mut chars = text.chars().peekable();
+    std::iter::from_fn(move || {
+        let c = chars.next()?;
+        Some(match c {
+            '\r' if chars.peek() == Some(&'\n') => chars.next()?,
+            '\r' => '\n',
+            '\n' | '\t' => c,
+            c if c.is_control() => ' ',
+            c => c,
+        })
+    })
+}
 
 pub type BasisPoints = u16;
 pub const FULL: BasisPoints = 10_000;
