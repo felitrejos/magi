@@ -354,7 +354,7 @@ fn phone_width_keeps_names_cpu_and_memory() {
 }
 
 #[test]
-fn sessions_that_need_you_come_first_then_projects_with_plans_above() {
+fn sessions_that_need_you_come_first_then_projects_with_plans_at_the_bottom() {
     let now = Instant::now();
     let model = fleet(2, now);
     let screen = draw(&model, 160, 40, now);
@@ -365,8 +365,8 @@ fn sessions_that_need_you_come_first_then_projects_with_plans_above() {
     let needs_you = at(" Needs you").expect("a Needs you group");
     let magi = at("  magi ").expect("the magi project");
     let stampr = at("  stampr ").expect("stampr, with stampr-ops merged in");
-    assert!(claude < codex && codex < needs_you, "{screen}");
     assert!(needs_you < magi && magi < stampr, "{screen}");
+    assert!(stampr < claude && claude < codex, "{screen}");
     assert!(lines[needs_you + 1].contains("✻ deploy fix"), "{screen}");
     assert!(!screen.contains("stampr-ops "), "{screen}");
     assert!(

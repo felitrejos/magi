@@ -167,13 +167,17 @@ fn session_line(
     (line, icon_at)
 }
 
+fn short(age: &str) -> String {
+    age.split(' ').next().unwrap_or(age).to_string()
+}
+
 fn row_state(session: &AgentSession, live: bool) -> Span<'static> {
     let age = units::duration(Duration::from_secs(u64::from(session.state_secs)));
     match session.state {
         _ if !live => Span::styled("lost", style::fg(theme().faint)),
         SessionState::Working { .. } => Span::styled("●", style::fg(theme().accent)),
-        SessionState::Waiting(_) => Span::styled(age, style::bold(theme().warn)),
-        SessionState::Idle => Span::styled(age, style::fg(theme().faint)),
+        SessionState::Waiting(_) => Span::styled(short(&age), style::bold(theme().warn)),
+        SessionState::Idle => Span::styled(short(&age), style::fg(theme().faint)),
     }
 }
 

@@ -32,6 +32,7 @@ pub struct Areas {
     pub machines: Rect,
     pub plans: Rect,
     pub agents: Rect,
+    pub rules: [Rect; 2],
     pub detail: Rect,
     pub footer: Rect,
 }
@@ -57,18 +58,27 @@ pub fn areas(full: Rect, machines: usize, plans: usize, agents: usize) -> Areas 
         horizontal: 1,
         vertical: 1,
     });
-    let [machines, plans, agents] = Layout::vertical([
+    let usage = if plans > 0 { 1 } else { 0 };
+    let [machines, _, top_rule, _, agents, bottom_rule, _, plans] = Layout::vertical([
         Constraint::Length((machines as u16).min(inner.height / 3)),
-        Constraint::Length(plans as u16),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Min(0),
+        Constraint::Length(usage),
+        Constraint::Length(usage),
+        Constraint::Length(plans as u16),
     ])
-    .spacing(1)
     .areas(inner);
     Areas {
         sidebar,
         machines,
-        plans,
+        plans: plans.inner(Margin {
+            horizontal: 1,
+            vertical: 0,
+        }),
         agents,
+        rules: [top_rule, bottom_rule],
         detail,
         footer: footer.inner(Margin {
             horizontal: 1,
@@ -94,6 +104,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         machines: machine_area,
         plans: plan_area,
         agents: agent_area,
+        rules,
         detail: detail_area,
         footer,
     } = areas(full, rows.len(), plans.len(), agents.len());
@@ -101,6 +112,13 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         .buffer_mut()
         .set_style(sidebar, Style::new().bg(theme().panel));
     render_footer(frame, footer, model, now);
+    for rule in rules.into_iter().filter(|rule| !rule.is_empty()) {
+        let line = "─".repeat(rule.width as usize);
+        frame.render_widget(
+            Paragraph::new(Span::styled(line, style::fg(theme().rule))),
+            rule,
+        );
+    }
     let marks = marks(model, &rows);
     machines::render_list(frame, machine_area, model, &rows, &marks, now, graphics);
     let mut cursor = Cursor::new(plan_area);
