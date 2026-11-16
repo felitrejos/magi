@@ -132,7 +132,114 @@ impl Canvas {
     }
 }
 
-pub fn render(name: &str, width: u32, height: u32, (r, g, b): (u8, u8, u8)) -> Option<Vec<u8>> {
+pub fn render(name: &str, width: u32, height: u32, color: (u8, u8, u8)) -> Option<Vec<u8>> {
+    let name = system_name(name);
+    #[cfg(target_os = "macos")]
+    if let Some(pixels) = appkit::render(name, width, height, color) {
+        return Some(pixels);
+    }
+    drawn(name, width, height, color)
+}
+
+fn system_name(name: &str) -> &str {
+    match name {
+        "server" | "servers" => "server.rack",
+        "laptop" => "laptopcomputer",
+        "desktop" => "desktopcomputer",
+        "mini" => "macmini",
+        "studio" => "macstudio",
+        other => other,
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod appkit {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{
+        NSBitmapImageRep, NSColor, NSCompositingOperation, NSDeviceRGBColorSpace,
+        NSGraphicsContext, NSImage, NSRectFillUsingOperation,
+    };
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+
+    const FILL: f64 = 0.8;
+
+    pub fn render(name: &str, width: u32, height: u32, (r, g, b): (u8, u8, u8)) -> Option<Vec<u8>> {
+        let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(name),
+            None,
+        )?;
+        let size = image.size();
+        if size.width <= 0.0 || size.height <= 0.0 {
+            return None;
+        }
+        let rep = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(),
+                std::ptr::null_mut(),
+                width as isize,
+                height as isize,
+                8,
+                4,
+                true,
+                false,
+                NSDeviceRGBColorSpace,
+                0,
+                0,
+            )
+        }?;
+        let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+        let (w, h) = (f64::from(width), f64::from(height));
+        let scale = (h * FILL / size.height).min(w * FILL / size.width);
+        let (drawn_w, drawn_h) = (size.width * scale, size.height * scale);
+        let target = NSRect::new(
+            NSPoint::new((w - drawn_w) / 2.0, (h - drawn_h) / 2.0),
+            NSSize::new(drawn_w, drawn_h),
+        );
+        NSGraphicsContext::saveGraphicsState_class();
+        NSGraphicsContext::setCurrentContext(Some(&context));
+        image.drawInRect_fromRect_operation_fraction(
+            target,
+            NSRect::ZERO,
+            NSCompositingOperation::SourceOver,
+            1.0,
+        );
+        NSColor::colorWithSRGBRed_green_blue_alpha(
+            f64::from(r) / 255.0,
+            f64::from(g) / 255.0,
+            f64::from(b) / 255.0,
+            1.0,
+        )
+        .set();
+        NSRectFillUsingOperation(
+            NSRect::new(NSPoint::ZERO, NSSize::new(w, h)),
+            NSCompositingOperation::SourceAtop,
+        );
+        context.flushGraphics();
+        NSGraphicsContext::restoreGraphicsState_class();
+        let data = rep.bitmapData();
+        if data.is_null() {
+            return None;
+        }
+        let stride = rep.bytesPerRow() as usize;
+        let row_bytes = width as usize * 4;
+        let mut pixels = Vec::with_capacity(row_bytes * height as usize);
+        for row in 0..height as usize {
+            let line = unsafe { std::slice::from_raw_parts(data.add(row * stride), row_bytes) };
+            pixels.extend_from_slice(line);
+        }
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            let alpha = u16::from(pixel[3]);
+            for channel in &mut pixel[..3] {
+                if let Some(value) = (u16::from(*channel) * 255).checked_div(alpha) {
+                    *channel = value.min(255) as u8;
+                }
+            }
+        }
+        Some(pixels)
+    }
+}
+
+fn drawn(name: &str, width: u32, height: u32, (r, g, b): (u8, u8, u8)) -> Option<Vec<u8>> {
     let shape = shape(name)?;
     let pixmap = Pixmap::new(width, height)?;
     let side = width.min(height) as f32 * FILL;
@@ -205,19 +312,27 @@ mod tests {
             "cloud",
             "globe",
         ] {
-            let pixels = render(name, 32, 32, (200, 100, 50)).expect(name);
-            assert_eq!(pixels.len(), 32 * 32 * 4);
-            let solid: Vec<&[u8; 4]> = pixels
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .filter(|pixel| pixel[3] == 255)
-                .collect();
-            assert!(!solid.is_empty(), "{name} drew nothing");
-            assert!(
-                solid.iter().all(|pixel| pixel[..3] == [200, 100, 50]),
-                "{name}"
-            );
+            for pixels in [
+                render(name, 32, 32, (200, 100, 50)),
+                drawn(system_name(name), 32, 32, (200, 100, 50)),
+            ] {
+                let pixels = pixels.expect(name);
+                assert_eq!(pixels.len(), 32 * 32 * 4);
+                let solid: Vec<&[u8; 4]> = pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| pixel[3] > 160)
+                    .collect();
+                assert!(!solid.is_empty(), "{name} drew nothing");
+                assert!(
+                    solid.iter().all(|pixel| pixel[..3]
+                        .iter()
+                        .zip([200u8, 100, 50])
+                        .all(|(got, want)| got.abs_diff(want) <= 3)),
+                    "{name}"
+                );
+            }
         }
         assert!(render("no.such.icon", 32, 32, (0, 0, 0)).is_none());
     }
