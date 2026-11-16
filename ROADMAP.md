@@ -63,15 +63,29 @@ Next:
    Markdown popups (`magi page`) and the conversation. Next, search,
    selection and links. The cell renderer stays for Linux.
 
-## Phase 5: placement, as recommendations
+## Phase 5: the rest of the redesign
 
-- `c` suggests the machine to start on, with its reason ("homelab: 12% CPU,
-  9 GB free"); Tab picks another.
+1. **Machine view.** A calm summary first: CPU, memory, disk and network,
+   one line each with a small history beside it; then what's using the
+   machine (top processes by CPU and memory, with the session each belongs
+   to), the cores (so one maxed-out core stands out), and temperature.
+2. **The launcher.** `c` opens a Rex floating pane, like a modal: pick the
+   project and the machine (magi suggests the machine with its reason, such
+   as "homelab: 12% CPU, 9 GB free", and Tab picks another), choose Claude or
+   Codex, and Enter starts it. The pane closes itself and magi selects the
+   new session.
+3. **Alerts.** The history as a quiet feed grouped by day, in a popup.
+4. **Shared project edits.** Keep `p` and `P` edits on the agents so every
+   viewer shows the same projects.
+5. **Pages.** Search, text selection and clickable links in typeset pages.
+
+## Phase 6: placement, as recommendations
+
 - Move suggestions weigh CPU, memory and sustained load, and cover Codex.
 - Warnings before a plan's usage runs out, suggesting Codex for the next one.
 - magi never moves or starts a session by itself.
 
-## Phase 6: Rex between machines
+## Phase 7: Rex between machines
 
 Each machine runs its own Rex server, and a Rex client reaches the others by
 host label (`rex -S homelab`) over Tailscale HTTPS or SSH, with the list of
@@ -104,7 +118,7 @@ moves to.
 Rex is in preview, so magi should check its API revision
 (`rex version --json`) and keep working when a call it relies on changes.
 
-## Phase 7: sessions
+## Phase 8: sessions
 
 - **Messages while it works.** Queue them the way Claude Code does, safely,
   so they can't land in a prompt that opens meanwhile.
@@ -112,8 +126,7 @@ Rex is in preview, so magi should check its API revision
   auto from magi.
 - **Starting in a new folder.** Claude asks whether to trust a folder it has
   never opened; decide whether starting it from magi should answer that.
-- PR status, Codex approval prompts, and machine detail with top processes
-  and temperature.
+- PR status and Codex approval prompts.
 - Forwards: clean up one that points at a machine the session moved on from,
   and handle dev servers listening on IPv6 localhost.
 
@@ -122,3 +135,4 @@ Rex is in preview, so magi should check its API revision
 - A dry run of the release workflow, which now builds magi and cielago into
   one archive, and of `install.sh` installing both.
 - Release notes, and magi and cielago versioned together.
+- Re-record the README's GIFs, which show the old interface.
