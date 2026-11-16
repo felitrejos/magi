@@ -165,7 +165,9 @@ Done:
 
 Open:
 - **Starting in a new folder.** Claude asks whether to trust a folder it has
-  never opened; show it as waiting, and `y` trusts it.
+  never opened, and writes no session file until it's answered, so magi
+  doesn't see that session yet. Look for it by the pane cielago just opened,
+  show it as waiting, and let `y` trust it.
 - PR status for a session's branch.
 - Moving Codex sessions with cielago, and suggesting them for a move.
 - Forwards: clean up one that points at a machine the session moved on from,
@@ -191,11 +193,14 @@ and magi puts every session in the right place and keeps watch.
   `y`/`n` answer a permission prompt, `⇧tab` switches mode, `m` moves it,
   `d`/`v` show its diff and outputs, `c` starts one. Zen stays.
 
-## Phase 11: fleet client and CLI
+## Phase 11: fleet client and CLI (done)
 
-One client, shared with the viewer, and commands with JSON output:
-`magi sessions | send | answer | mode | move | start | events --json`.
-`send` queues for a busy session.
+One client, shared with `magi fleet`, and commands: `magi sessions
+[--json] | send | answer | choose | mode | move | start | events`. A session
+is named by the start of its id, its title, or a part of its title at least
+four letters long. `send` queues for a busy session, `move` waits for the
+move to finish, `events` prints what needs you as JSON lines (raised,
+updated, resolved).
 
 ## Phase 12: `magi mcp`
 

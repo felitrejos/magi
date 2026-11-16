@@ -87,6 +87,21 @@ cielago init          # on each machine
 claude plugin marketplace add felitrejos/magi && claude plugin install cielago@magi
 ```
 
+### From scripts and other tools
+
+The same actions work from the command line, so another orchestrator, a
+script or Claude itself can use magi underneath:
+
+```bash
+magi sessions --json            # every session on every machine
+magi send fix-login "now run the tests"   # queued until it's idle
+magi answer fix-login yes       # or: magi choose fix-login 2
+magi mode fix-login plan
+magi move fix-login homelab
+magi start homelab ~/developer/stampr/stampr --project Stampr
+magi events                     # what needs you, as JSON lines
+```
+
 ## How it works
 
 Each machine runs `magi agent` in the background (launchd or a systemd user

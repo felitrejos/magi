@@ -14,6 +14,9 @@
 
 ## On each machine
 
+- The command-line client (`magi sessions`, `send`, `answer` and the rest)
+  connects exactly as the viewer does, so it reaches only the agents a viewer
+  could, and can do only what a viewer can.
 - Local viewers, the status line and the new-session launcher (which the
   viewer opens in a Rex floating pane and talks to for one choice) use Unix
   sockets in `~/.local/state/magi/`, a folder only you can open. The viewer

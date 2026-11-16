@@ -39,6 +39,17 @@ Usage:
   magi md [--width N] FILE                             print a Markdown file in magi's colours
   magi alerts                                          the alert history as a feed, by day
   magi follow TRANSCRIPT                               a subagent's work, live, for its mirror tab
+  magi sessions [--json]                               every session on every machine
+  magi send SESSION TEXT                               message a session, queued until it's idle
+  magi answer SESSION yes|no                           allow or deny what it asks to run
+  magi choose SESSION N                                pick option N of its question
+  magi mode SESSION [manual|accept-edits|plan|auto]    switch its permission mode, or cycle it
+  magi move SESSION MACHINE                            move it to another machine, and wait
+  magi start MACHINE FOLDER|--chat [--project NAME] [--codex] [--model M]
+                                                       start a session there, in its project's Rex tab
+  magi events                                          what needs you, as JSON lines, as it happens
+
+  SESSION is the start of its id or a unique part of its title.
   magi --version
   magi --help
 
@@ -60,6 +71,7 @@ enum Command {
     Document(std::path::PathBuf, usize),
     Alerts,
     Follow(std::path::PathBuf),
+    Cli(u16, viewer::Cli),
     Version,
     Help,
 }
@@ -86,6 +98,7 @@ fn main() -> ExitCode {
         Command::Document(path, width) => viewer::print_document(&path, width),
         Command::Alerts => viewer::alerts(),
         Command::Follow(transcript) => viewer::follow(&transcript),
+        Command::Cli(port, command) => viewer::cli(port, command),
         Command::Version => {
             println!("magi {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -104,7 +117,7 @@ fn main() -> ExitCode {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Viewer,
     Fleet,
@@ -119,6 +132,118 @@ enum Mode {
     Document,
     Alerts,
     Follow,
+    Sessions,
+    Send,
+    Answer,
+    Choose,
+    Permissions,
+    Move,
+    Start,
+    Events,
+}
+
+const CLI_COMMANDS: [(&str, Mode); 8] = [
+    ("sessions", Mode::Sessions),
+    ("send", Mode::Send),
+    ("answer", Mode::Answer),
+    ("choose", Mode::Choose),
+    ("mode", Mode::Permissions),
+    ("move", Mode::Move),
+    ("start", Mode::Start),
+    ("events", Mode::Events),
+];
+
+fn is_cli(mode: Mode) -> bool {
+    CLI_COMMANDS.iter().any(|(_, known)| *known == mode)
+}
+
+fn cli(
+    mode: Mode,
+    rest: Vec<String>,
+    json: bool,
+    codex: bool,
+    chat: bool,
+    model: Option<String>,
+    project: Option<String>,
+) -> Result<viewer::Cli, lexopt::Error> {
+    let mut rest = rest.into_iter();
+    let mut next = |what: &str| {
+        rest.next()
+            .ok_or_else(|| lexopt::Error::from(format!("missing {what}")))
+    };
+    Ok(match mode {
+        Mode::Sessions => viewer::Cli::Sessions { json },
+        Mode::Events => viewer::Cli::Events,
+        Mode::Send => {
+            let session = next("the session")?;
+            let words: Vec<String> = std::iter::from_fn(|| next("").ok()).collect();
+            if words.is_empty() {
+                return Err("missing the message".into());
+            }
+            viewer::Cli::Send {
+                session,
+                text: words.join(" "),
+            }
+        }
+        Mode::Answer => {
+            let session = next("the session")?;
+            let allow = match next("yes or no")?.as_str() {
+                "yes" | "y" | "allow" => true,
+                "no" | "n" | "deny" => false,
+                other => return Err(format!("answer yes or no, not {other:?}").into()),
+            };
+            viewer::Cli::Answer { session, allow }
+        }
+        Mode::Choose => {
+            let session = next("the session")?;
+            let option = next("the option number")?
+                .parse::<u8>()
+                .ok()
+                .filter(|option| (1..=9).contains(option))
+                .ok_or("the option is a number from 1 to 9")?;
+            viewer::Cli::Choose { session, option }
+        }
+        Mode::Permissions => {
+            let session = next("the session")?;
+            let to = match next("").ok().as_deref() {
+                None => None,
+                Some("manual" | "default") => Some(proto::PermissionMode::Manual),
+                Some("accept-edits" | "edits") => Some(proto::PermissionMode::AcceptEdits),
+                Some("plan") => Some(proto::PermissionMode::Plan),
+                Some("auto") => Some(proto::PermissionMode::Auto),
+                Some(other) => {
+                    return Err(format!(
+                        "{other:?} isn't a mode: manual, accept-edits, plan or auto"
+                    )
+                    .into());
+                }
+            };
+            viewer::Cli::Mode { session, to }
+        }
+        Mode::Move => {
+            let session = next("the session")?;
+            viewer::Cli::Move {
+                session,
+                to: next("the machine")?,
+            }
+        }
+        Mode::Start => {
+            let machine = next("the machine")?;
+            let place = if chat {
+                proto::OpenIn::Chats
+            } else {
+                proto::OpenIn::Folder(next("the folder")?)
+            };
+            viewer::Cli::Start {
+                machine,
+                place,
+                project,
+                codex,
+                model,
+            }
+        }
+        _ => unreachable!("only the commands for other clients come here"),
+    })
 }
 
 fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
@@ -133,8 +258,28 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
     let mut remove = false;
     let mut width: usize = 80;
     let mut file = None;
+    let mut rest: Vec<String> = Vec::new();
+    let mut codex = false;
+    let mut chat = false;
+    let mut model = None;
+    let mut project = None;
     while let Some(arg) = parser.next()? {
         match arg {
+            Value(value)
+                if mode == Mode::Viewer && CLI_COMMANDS.iter().any(|(name, _)| value == *name) =>
+            {
+                mode = CLI_COMMANDS
+                    .iter()
+                    .find(|(name, _)| value == *name)
+                    .map(|(_, mode)| *mode)
+                    .expect("checked just above");
+            }
+            Long("json") if mode == Mode::Sessions => json = true,
+            Long("codex") if mode == Mode::Start => codex = true,
+            Long("chat") if mode == Mode::Start => chat = true,
+            Long("model") if mode == Mode::Start => model = Some(parser.value()?.string()?),
+            Long("project") if mode == Mode::Start => project = Some(parser.value()?.string()?),
+            Value(value) if is_cli(mode) => rest.push(value.string()?),
             Value(value) if value == "agent" && mode == Mode::Viewer => mode = Mode::Agent,
             Value(value) if value == "fleet" && mode == Mode::Viewer => mode = Mode::Fleet,
             Long("json") if mode == Mode::Fleet => json = true,
@@ -170,7 +315,7 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
                 if matches!(
                     mode,
                     Mode::Viewer | Mode::Fleet | Mode::Agent | Mode::Install
-                ) =>
+                ) || is_cli(mode) =>
             {
                 port = parser.value()?.parse()?
             }
@@ -189,6 +334,10 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         port,
         interval: Duration::from_millis(u64::from(interval_ms)),
     };
+    if is_cli(mode) {
+        return cli(mode, rest, json, codex, chat, model, project)
+            .map(|command| Command::Cli(port, command));
+    }
     Ok(match mode {
         Mode::Viewer => Command::Viewer(viewer::Config { port }),
         Mode::Fleet => Command::Fleet(viewer::Config { port }, json),
@@ -211,5 +360,69 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
             }
             Command::Page(file, page, remove)
         }
+        _ => unreachable!("the commands for other clients returned above"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cli(args: &[&str]) -> Result<viewer::Cli, String> {
+        match parse(lexopt::Parser::from_args(args.iter().copied())) {
+            Ok(Command::Cli(_, cli)) => Ok(cli),
+            Ok(_) => Err("not a command for other clients".into()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    #[test]
+    fn commands_for_other_clients_take_their_arguments_in_order() {
+        assert_eq!(
+            cli(&["send", "9fb6", "run", "the", "tests"]),
+            Ok(viewer::Cli::Send {
+                session: "9fb6".into(),
+                text: "run the tests".into()
+            })
+        );
+        assert_eq!(
+            cli(&["answer", "9fb6", "no"]),
+            Ok(viewer::Cli::Answer {
+                session: "9fb6".into(),
+                allow: false
+            })
+        );
+        assert!(
+            cli(&["answer", "9fb6", "maybe"])
+                .unwrap_err()
+                .contains("yes or no")
+        );
+        assert_eq!(
+            cli(&["mode", "9fb6", "plan"]),
+            Ok(viewer::Cli::Mode {
+                session: "9fb6".into(),
+                to: Some(proto::PermissionMode::Plan)
+            })
+        );
+        assert!(cli(&["choose", "9fb6", "12"]).is_err());
+        assert_eq!(
+            cli(&["start", "homelab", "--chat", "--codex"]),
+            Ok(viewer::Cli::Start {
+                machine: "homelab".into(),
+                place: proto::OpenIn::Chats,
+                project: None,
+                codex: true,
+                model: None
+            })
+        );
+        assert!(
+            cli(&["send", "9fb6"])
+                .unwrap_err()
+                .contains("missing the message")
+        );
+        assert_eq!(
+            cli(&["sessions", "--json"]),
+            Ok(viewer::Cli::Sessions { json: true })
+        );
+    }
 }

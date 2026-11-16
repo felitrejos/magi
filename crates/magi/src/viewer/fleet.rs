@@ -1,47 +1,20 @@
-use std::collections::HashMap;
 use std::io::{self, Write};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use super::model::{Endpoint, LinkState, Model, Presence, Row};
-use super::{Config, EVENT_BACKLOG, Event, Links, alerts, handle, net, topology};
-use crate::proto::{Agent, AgentSession, FULL, Plan, SessionState};
-
-const WAIT: Duration = Duration::from_secs(3);
+use super::Config;
+use super::client::Client;
+use super::model::{LinkState, Row};
+use crate::proto::{
+    Agent, AgentSession, ChildState, FULL, PermissionMode, Plan, SessionState, Waiting,
+};
 
 pub fn print(config: Config, as_json: bool) -> io::Result<()> {
-    let (sender, events) = mpsc::sync_channel(EVENT_BACKLOG);
-    let mut links = Links {
-        handles: HashMap::new(),
-        next_generation: 0,
-        port: config.port,
-        socket: net::local_socket()?,
-        sender: sender.clone(),
-        floats: false,
-        launch: None,
-    };
-    let started = Instant::now();
-    let mut model = Model::new(config.port, started, alerts::Alerts::in_memory(started));
-    links.reconcile(&mut model, &[Endpoint::Local])?;
-    topology::spawn(sender)?;
-    let deadline = started + WAIT;
-    let mut found_peers = false;
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let Ok(event) = events.recv_timeout(left) else {
-            break;
-        };
-        found_peers |= matches!(event, Event::Topology(_));
-        handle(event, &mut model, &mut links)?;
-        if found_peers && settled(&model, Instant::now()) {
-            break;
-        }
-    }
+    let client = Client::connect(config.port)?;
     let now = Instant::now();
-    let machines: Vec<Value> = model.rows(now).iter().map(describe).collect();
-    let plans: Vec<Value> = model.plans(now).into_iter().map(plan).collect();
+    let machines: Vec<Value> = client.model.rows(now).iter().map(describe).collect();
+    let plans: Vec<Value> = client.model.plans(now).into_iter().map(plan).collect();
     let mut out = io::stdout().lock();
     if as_json {
         serde_json::to_writer(&mut out, &json!({ "machines": machines, "plans": plans }))?;
@@ -49,20 +22,6 @@ pub fn print(config: Config, as_json: bool) -> io::Result<()> {
     } else {
         table(&mut out, &machines)
     }
-}
-
-fn settled(model: &Model, now: Instant) -> bool {
-    model.rows(now).iter().all(|row| match row.presence {
-        Presence::Agent(link) => match link.state {
-            LinkState::Live => row
-                .machine()
-                .is_some_and(|machine| machine.latest.is_some()),
-            LinkState::Connecting => false,
-            LinkState::Lost { .. } | LinkState::Rejected(_) => true,
-        },
-        Presence::Searching => false,
-        Presence::NoAgent => true,
-    })
 }
 
 fn describe(row: &Row<'_>) -> Value {
@@ -106,19 +65,34 @@ fn describe(row: &Row<'_>) -> Value {
     })
 }
 
-fn session(session: &AgentSession) -> Value {
+pub(super) fn session(session: &AgentSession) -> Value {
     let usage = session.usage;
+    let asking = match &session.state {
+        SessionState::Waiting(Waiting::Permission(tool)) => json!({"permission": tool}),
+        SessionState::Waiting(Waiting::Input(question)) => json!({"question": question}),
+        _ => Value::Null,
+    };
     json!({
         "id": session.id,
         "agent": agent_key(session.agent),
         "title": session.title,
         "project": session.project,
+        "branch": session.branch,
         "state": match session.state {
             SessionState::Working { .. } => "working",
             SessionState::Waiting(_) => "waiting",
             SessionState::Idle => "idle",
         },
+        "asking": asking,
         "activity": session.activity,
+        "mode": session.mode.map(PermissionMode::name),
+        "queued": session.queued,
+        "in_rex": session.pane.is_some(),
+        "subagents": session.children.iter().map(|child| json!({
+            "id": child.id,
+            "label": child.label,
+            "running": child.state == ChildState::Running,
+        })).collect::<Vec<_>>(),
         "cpu": usage.and_then(|usage| usage.cpu).map(|millicores| f64::from(millicores) / 1000.0),
         "memory": usage.map(|usage| usage.memory),
     })
@@ -135,7 +109,7 @@ fn plan(plan: &Plan) -> Value {
     })
 }
 
-fn agent_key(agent: Agent) -> &'static str {
+pub(super) fn agent_key(agent: Agent) -> &'static str {
     match agent {
         Agent::ClaudeCode => "claude",
         Agent::Codex => "codex",
@@ -178,7 +152,9 @@ fn table(out: &mut impl Write, machines: &[Value]) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::proto::{Identity, Memory, Sample, Welcome};
-    use crate::viewer::model::{Link, LinkUpdate};
+    use crate::viewer::alerts;
+    use crate::viewer::client::settled;
+    use crate::viewer::model::{Endpoint, Link, LinkUpdate, Model};
 
     #[test]
     fn a_live_machine_reports_its_load_and_agents_and_a_lost_one_its_reason() {
@@ -270,8 +246,17 @@ mod tests {
         assert_eq!(
             session(&busy),
             json!({"id": "c1", "agent": "codex", "title": "run the tests", "project": "api",
-                   "state": "working", "activity": null, "cpu": 2.5, "memory": 1u64 << 30})
+                   "branch": null, "state": "working", "asking": null, "activity": null,
+                   "mode": null, "queued": null, "in_rex": false, "subagents": [],
+                   "cpu": 2.5, "memory": 1u64 << 30})
         );
+        let asking = AgentSession {
+            state: SessionState::Waiting(Waiting::Permission(Some("Bash".into()))),
+            mode: Some(PermissionMode::Plan),
+            ..busy.clone()
+        };
+        assert_eq!(session(&asking)["asking"], json!({"permission": "Bash"}));
+        assert_eq!(session(&asking)["mode"], json!("plan"));
         let unmeasured = AgentSession {
             usage: None,
             ..busy

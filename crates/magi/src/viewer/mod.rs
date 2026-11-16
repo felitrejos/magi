@@ -2,6 +2,8 @@ mod alerts;
 mod base64;
 mod browse;
 mod chart;
+mod cli;
+mod client;
 mod diacritics;
 mod feed;
 mod fleet;
@@ -63,6 +65,7 @@ pub enum Event {
     Launched(u32, Option<launcher::Choice>),
 }
 
+pub use cli::{Cli, run as cli};
 pub use feed::run as alerts;
 pub use fleet::print as fleet;
 pub use follow::run as follow;
@@ -167,7 +170,7 @@ pub fn run(config: Config) -> io::Result<()> {
         port: config.port,
         socket: net::local_socket()?,
         sender: sender.clone(),
-        floats: true,
+        rex: true,
         launch: None,
     };
     let alerts = alerts::Alerts::open(net::state_dir()?.join("alerts.jsonl"), Instant::now())?;
@@ -215,7 +218,7 @@ struct Links {
     port: u16,
     socket: PathBuf,
     sender: SyncSender<Event>,
-    floats: bool,
+    rex: bool,
     launch: Option<launcher::Host>,
 }
 
@@ -328,6 +331,9 @@ fn open_selected(model: &mut Model, links: &Links, now: Instant) -> io::Result<(
         model.flash(reason, false, now);
         return Ok(());
     };
+    if !links.rex {
+        return Ok(());
+    }
     let elsewhere = (agent.endpoint != model::Endpoint::Local).then(|| agent.machine.clone());
     model.opening = true;
     let sender = links.sender.clone();
@@ -461,7 +467,7 @@ fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
         };
         model.folders.insert(endpoint, asked);
     }
-    if !links.floats {
+    if !links.rex {
         return;
     }
     let sender = links.sender.clone();
@@ -681,6 +687,9 @@ fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instan
         Ok(body) => body,
         Err(reason) => return model.flash(reason, false, now),
     };
+    if !links.rex {
+        return;
+    }
     let popups = match net::state_dir() {
         Ok(state) => state.join("popups"),
         Err(error) => return model.flash(format!("couldn't save it to show: {error}"), false, now),
@@ -724,7 +733,7 @@ fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instan
 }
 
 fn open_alerts(links: &Links) {
-    if !links.floats {
+    if !links.rex {
         return;
     }
     let command = vec![
@@ -1203,7 +1212,7 @@ mod tests {
             port: 2015,
             socket: PathBuf::new(),
             sender,
-            floats: false,
+            rex: false,
             launch: None,
         };
         let now = Instant::now();
