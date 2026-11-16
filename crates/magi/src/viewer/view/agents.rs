@@ -16,7 +16,7 @@ use crate::proto::{
 };
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{
-    AgentRow, Draft, Endpoint, Entry, Group, Listed, Model, MoveTarget, TalkScroll,
+    AgentRow, Draft, Endpoint, Entry, Group, Listed, Model, MoveSuggestion, TalkScroll,
 };
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
@@ -423,7 +423,7 @@ pub(super) fn cost(session: &AgentSession) -> String {
 
 pub struct Detail<'a> {
     pub agent: &'a AgentRow<'a>,
-    pub suggestion: Option<&'a MoveTarget>,
+    pub suggestion: Option<&'a MoveSuggestion>,
     pub preview: Preview<'a>,
     pub draft: Option<&'a Draft>,
     pub forwards: &'a [(u16, ForwardState)],
@@ -493,7 +493,7 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
         .spacing(1)
         .areas(inner);
     let mut cursor = Cursor::new(view);
-    if let Some(target) = suggestion {
+    if let Some(MoveSuggestion { pressure, target }) = suggestion {
         cursor.line(
             frame,
             Line::from(clip(
@@ -501,10 +501,11 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
                     Span::styled("⇢ ", style::bold(theme().warn)),
                     Span::styled(
                         format!(
-                            "{} is busy and {} is at {}. Press m to move this session there.",
-                            agent.machine,
+                            "{}, and {} has room (CPU {}, memory {}). m moves this session there.",
+                            pressure.describe(&agent.machine),
                             target.machine,
-                            units::percent(target.cpu).trim()
+                            units::percent(target.cpu).trim(),
+                            units::percent(target.memory).trim()
                         ),
                         style::fg(theme().warn),
                     ),

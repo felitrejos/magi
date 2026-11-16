@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use super::base64;
 use super::model::{self, Level, LinkState, Model, Subsystem};
-use crate::proto::{FULL, SessionState, Waiting};
+use super::units;
+use crate::proto::{FULL, Plan, SessionState, Waiting, Window};
 
 const KEPT: usize = 200;
 const REWRITE_AT: usize = KEPT * 2;
@@ -18,6 +19,9 @@ const CRITICAL_FOR: Duration = Duration::from_secs(60);
 const CLEAR_AFTER: Duration = Duration::from_secs(30);
 const LOST_REMEMBERED_SECS: u64 = 24 * 60 * 60;
 const PLAN_ALERT_AT: u16 = 9_000;
+const PACE_FROM: u16 = 5_000;
+const PACE_AFTER_SECS: u64 = 10 * 60;
+const PACE_ROUNDING_SECS: u64 = 5 * 60;
 const INHERIT_GRACE: Duration = Duration::from_secs(30);
 const FILE_MODE: u32 = 0o600;
 
@@ -377,27 +381,74 @@ pub fn conditions(model: &Model, now: Instant, now_secs: u64) -> Vec<Condition> 
             });
         }
     }
-    for plan in model.plans(now) {
-        for window in plan
-            .windows
-            .iter()
-            .filter(|window| window.used >= PLAN_ALERT_AT)
-        {
+    found.extend(plan_conditions(&model.plans(now), now_secs));
+    found
+}
+
+fn plan_conditions(plans: &[&Plan], now_secs: u64) -> Vec<Condition> {
+    let mut found = Vec::new();
+    for plan in plans {
+        for window in &plan.windows {
+            let runs_out = runs_out_in(window, now_secs);
+            if window.used < PLAN_ALERT_AT && runs_out.is_none() {
+                continue;
+            }
             let label = window.label();
+            let mut text = format!(
+                "{} {label} plan {}% used",
+                plan.agent.name(),
+                u32::from(window.used) * 100 / u32::from(FULL)
+            );
+            if let Some(secs) = runs_out.filter(|secs| *secs > 0) {
+                let rounded = secs.div_ceil(PACE_ROUNDING_SECS) * PACE_ROUNDING_SECS;
+                text.push_str(&format!(
+                    ", runs out in about {} at this pace",
+                    units::duration(Duration::from_secs(rounded))
+                ));
+            }
+            if let Some(other) = plans
+                .iter()
+                .find(|other| other.agent != plan.agent && has_room(other, now_secs))
+            {
+                text.push_str(&format!(
+                    ". Start the next session in {}",
+                    other.agent.name()
+                ));
+            }
             found.push(Condition {
                 key: format!("plan/{:?}/{label}", plan.agent),
                 machine: String::new(),
-                text: format!(
-                    "{} {label} plan {}% used",
-                    plan.agent.name(),
-                    u32::from(window.used) * 100 / u32::from(FULL)
-                ),
+                text,
                 severity: Severity::Error,
                 hold: Duration::ZERO,
             });
         }
     }
     found
+}
+
+fn runs_out_in(window: &Window, now_secs: u64) -> Option<u64> {
+    let left = u64::from(FULL.saturating_sub(window.used));
+    if left == 0 {
+        return Some(0);
+    }
+    let started = window
+        .resets_at
+        .checked_sub(u64::from(window.minutes) * 60)?;
+    let elapsed = now_secs.checked_sub(started)?;
+    if window.used < PACE_FROM || elapsed < PACE_AFTER_SECS || now_secs >= window.resets_at {
+        return None;
+    }
+    let secs = left * elapsed / u64::from(window.used);
+    (now_secs + secs < window.resets_at).then_some(secs)
+}
+
+fn has_room(plan: &Plan, now_secs: u64) -> bool {
+    !plan.windows.is_empty()
+        && plan
+            .windows
+            .iter()
+            .all(|window| window.used < PLAN_ALERT_AT && runs_out_in(window, now_secs).is_none())
 }
 
 pub fn report(changes: &Changes) -> String {

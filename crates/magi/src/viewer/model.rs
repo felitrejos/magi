@@ -6,6 +6,7 @@ use super::alerts::Alerts;
 use super::launcher::{self, Listing, Menu, Place};
 use super::namer;
 use super::projects::{Projects, Resolved};
+use super::units;
 use crate::proto::{
     self, Agent, AgentSession, Child, CodexModel, FULL, ForwardState, Identity, MAX_PROMPT_CHARS,
     Plan, Reply, Sample, Screen, SessionState, SharedProjects, Welcome,
@@ -22,8 +23,14 @@ const FOLLOW_FOR: Duration = Duration::from_secs(300);
 const AWAIT_FOR: Duration = Duration::from_secs(60);
 const FOLD_AT_LEAST: usize = 2;
 const HEAVY_SESSION_MILLICORES: u32 = 1_000;
-const BUSY_MACHINE: f32 = 0.8;
-const IDLE_MACHINE: f32 = 0.5;
+const HEAVY_SESSION_BYTES: u64 = 1 << 30;
+const SUSTAINED_SAMPLES: usize = 60;
+const BUSY_CPU: f32 = 0.8;
+const BUSY_MEMORY: f32 = 0.9;
+const BUSY_LOAD_PER_CORE: f32 = 1.0;
+const ROOM_CPU: f32 = 0.5;
+const ROOM_MEMORY: f32 = 0.75;
+const ROOM_LOAD_PER_CORE: f32 = 0.7;
 const CPU_SMOOTHING_SAMPLES: usize = 5;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -110,6 +117,46 @@ impl Machine {
 
     pub fn smoothed_cpu(&self) -> f32 {
         self.cpu.recent_mean(CPU_SMOOTHING_SAMPLES)
+    }
+
+    fn sustained_cpu(&self) -> f32 {
+        self.cpu.recent_mean(SUSTAINED_SAMPLES)
+    }
+
+    fn load_per_core(&self) -> f32 {
+        self.latest.as_ref().map_or(0.0, |sample| {
+            sample.load[1] / sample.cores.len().max(1) as f32
+        })
+    }
+
+    pub fn pressure(&self) -> Option<Pressure> {
+        let sample = self.latest.as_ref()?;
+        let cpu = self.sustained_cpu();
+        let memory = self.memory_fraction();
+        if memory >= BUSY_MEMORY {
+            Some(Pressure::Memory(memory))
+        } else if cpu >= BUSY_CPU {
+            Some(Pressure::Cpu(cpu))
+        } else if self.load_per_core() >= BUSY_LOAD_PER_CORE {
+            Some(Pressure::Load {
+                load: sample.load[1],
+                cores: sample.cores.len(),
+            })
+        } else {
+            None
+        }
+    }
+
+    fn crowding(&self) -> f32 {
+        self.sustained_cpu()
+            .max(self.memory_fraction())
+            .max(self.load_per_core())
+    }
+
+    fn has_room(&self) -> bool {
+        self.sustained_cpu() < ROOM_CPU
+            && self.memory_fraction() < ROOM_MEMORY
+            && self.load_per_core() < ROOM_LOAD_PER_CORE
     }
 
     pub fn memory_fraction(&self) -> f32 {
@@ -615,10 +662,53 @@ impl Draft {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Pressure {
+    Cpu(f32),
+    Memory(f32),
+    Load { load: f32, cores: usize },
+}
+
+impl Pressure {
+    fn weighs_on(self, usage: proto::Usage) -> bool {
+        match self {
+            Self::Memory(_) => usage.memory >= HEAVY_SESSION_BYTES,
+            Self::Cpu(_) | Self::Load { .. } => {
+                usage.cpu.is_some_and(|cpu| cpu >= HEAVY_SESSION_MILLICORES)
+            }
+        }
+    }
+
+    pub fn describe(self, machine: &str) -> String {
+        match self {
+            Self::Cpu(cpu) => format!(
+                "{machine}'s CPU has averaged {} for a minute",
+                units::percent(cpu).trim()
+            ),
+            Self::Memory(memory) => {
+                format!(
+                    "{machine}'s memory is {} full",
+                    units::percent(memory).trim()
+                )
+            }
+            Self::Load { load, cores } => {
+                format!("{machine} has a load of {load:.0} on {cores} cores")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MoveTarget {
     pub machine: String,
     pub cpu: f32,
+    pub memory: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveSuggestion {
+    pub pressure: Pressure,
+    pub target: MoveTarget,
 }
 
 impl Model {
@@ -980,31 +1070,40 @@ impl Model {
             .filter_map(|row| {
                 let machine = row.machine()?;
                 machine.latest.as_ref()?;
-                Some(MoveTarget {
-                    machine: row.name.clone(),
-                    cpu: machine.smoothed_cpu(),
-                })
+                Some((row.name.clone(), machine))
             })
-            .min_by(|a, b| a.cpu.total_cmp(&b.cpu))
+            .min_by(|(_, a), (_, b)| a.crowding().total_cmp(&b.crowding()))
+            .map(|(name, machine)| MoveTarget {
+                machine: name,
+                cpu: machine.sustained_cpu(),
+                memory: machine.memory_fraction(),
+            })
     }
 
-    pub fn move_suggestion(&self, agent: &AgentRow<'_>, now: Instant) -> Option<MoveTarget> {
+    pub fn move_suggestion(&self, agent: &AgentRow<'_>, now: Instant) -> Option<MoveSuggestion> {
         if agent.session.agent != Agent::ClaudeCode || !agent.live {
             return None;
         }
-        let heavy = agent
-            .session
-            .usage
-            .and_then(|usage| usage.cpu)
-            .is_some_and(|cpu| cpu >= HEAVY_SESSION_MILLICORES);
-        let busy = self
-            .rows(now)
+        let rows = self.rows(now);
+        let pressure = rows
             .iter()
             .find(|row| row.name == agent.machine)
-            .and_then(Row::machine)
-            .is_some_and(|machine| machine.smoothed_cpu() >= BUSY_MACHINE);
+            .and_then(Row::machine)?
+            .pressure()?;
+        if !agent
+            .session
+            .usage
+            .is_some_and(|usage| pressure.weighs_on(usage))
+        {
+            return None;
+        }
         let target = self.move_target(agent, now)?;
-        (heavy && busy && target.cpu < IDLE_MACHINE).then_some(target)
+        let roomy = rows
+            .iter()
+            .find(|row| row.name == target.machine)
+            .and_then(Row::machine)
+            .is_some_and(Machine::has_room);
+        roomy.then_some(MoveSuggestion { pressure, target })
     }
 
     pub fn selected_agent(&self, now: Instant) -> Option<AgentRow<'_>> {

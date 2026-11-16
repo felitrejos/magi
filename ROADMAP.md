@@ -102,11 +102,20 @@ Done:
   is useful without magi.
 - The README presents the two apps, short.
 
-## Phase 7: placement, as recommendations
+## Phase 7: placement, as recommendations (done)
 
-- Move suggestions weigh CPU, memory and sustained load, and cover Codex.
-- Warnings before a plan's usage runs out, suggesting Codex for the next one.
+- A move is suggested when a machine is under sustained pressure (CPU
+  averaging 80% over a minute, a 5-minute load at or above its core count,
+  or memory 90% full), the session is one of the causes (a core of CPU, or a
+  gigabyte of memory when memory is short), and another machine has room.
+  The suggestion says why, and the machine with the most room is the target
+  `m` proposes.
+- A plan warns before it runs out: from half used, if its pace would use it
+  up before it resets, with when, and the next session suggested in the other
+  agent when that plan has room.
 - magi never moves or starts a session by itself.
+- Codex sessions aren't suggested for a move, since cielago only moves Claude
+  Code sessions. Moving Codex sessions is in Phase 9.
 
 ## Phase 8: Rex between machines
 
@@ -154,6 +163,7 @@ servers: bump `REX_API` and `rexAPI` with each Rex release.
 - **Starting in a new folder.** Claude asks whether to trust a folder it has
   never opened; decide whether starting it from magi should answer that.
 - PR status and Codex approval prompts.
+- Moving Codex sessions with cielago, and suggesting them for a move.
 - Forwards: clean up one that points at a machine the session moved on from,
   and handle dev servers listening on IPv6 localhost.
 

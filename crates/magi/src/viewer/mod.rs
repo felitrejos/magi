@@ -1595,7 +1595,7 @@ mod tests {
         assert_eq!(
             model
                 .move_suggestion(&agent, now)
-                .map(|target| target.machine),
+                .map(|suggestion| suggestion.target.machine),
             Some("nas".into())
         );
         handle_batch([key(Key::Char('m'))].into_iter(), &mut model, &mut links).unwrap();
@@ -1622,28 +1622,80 @@ mod tests {
     }
 
     #[test]
-    fn a_move_is_only_suggested_for_a_heavy_session_on_a_busy_machine_with_room_elsewhere() {
-        let suggestion = |machine_cpu: u16, session_millicores: u32, other_cpu: u16| {
+    fn a_move_is_suggested_when_a_session_weighs_on_a_machine_under_sustained_pressure() {
+        struct Machine {
+            cpu: u16,
+            memory: f32,
+            load: f32,
+        }
+        let quiet = Machine {
+            cpu: 1_000,
+            memory: 0.3,
+            load: 1.0,
+        };
+        let sample = |machine: &Machine, session: Option<AgentSession>| {
+            LinkUpdate::Sample(Box::new(Sample {
+                cpu: machine.cpu,
+                cores: vec![0; 8],
+                load: [machine.load; 3],
+                memory: crate::proto::Memory {
+                    total: 16 << 30,
+                    used: ((16u64 << 30) as f32 * machine.memory) as u64,
+                    ..Default::default()
+                },
+                sessions: session.into_iter().collect(),
+                ..Sample::default()
+            }))
+        };
+        let suggestion = |here: Machine, millicores: u32, gigabytes: u64, there: &Machine| {
             let (mut model, _) = fleet();
             let now = Instant::now();
-            model.apply(
-                Endpoint::Local,
-                live_sample(machine_cpu, Some(claude("s1", session_millicores))),
-                now,
-            );
-            model.apply(
-                Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2)),
-                live_sample(other_cpu, None),
-                now,
-            );
+            let mut session = claude("s1", millicores);
+            session.usage = Some(crate::proto::Usage {
+                cpu: Some(millicores),
+                memory: gigabytes << 30,
+            });
+            model.apply(Endpoint::Local, sample(&here, Some(session)), now);
+            let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
+            model.apply(homelab, sample(there, None), now);
             select_first_session(&mut model);
             let agent = model.selected_agent(now).unwrap();
-            model.move_suggestion(&agent, now).is_some()
+            model
+                .move_suggestion(&agent, now)
+                .map(|suggestion| suggestion.pressure.describe("mac"))
         };
-        assert!(suggestion(9_000, 2_000, 1_000));
-        assert!(!suggestion(5_000, 2_000, 1_000));
-        assert!(!suggestion(9_000, 500, 1_000));
-        assert!(!suggestion(9_000, 2_000, 6_000));
+        let busy_cpu = || Machine {
+            cpu: 9_000,
+            ..quiet
+        };
+        assert_eq!(
+            suggestion(busy_cpu(), 2_000, 0, &quiet).as_deref(),
+            Some("mac's CPU has averaged 90% for a minute")
+        );
+        assert_eq!(suggestion(busy_cpu(), 500, 4, &quiet), None);
+        let crowded = Machine {
+            cpu: 6_000,
+            ..quiet
+        };
+        assert_eq!(suggestion(busy_cpu(), 2_000, 0, &crowded), None);
+        let full = || Machine {
+            memory: 0.95,
+            ..quiet
+        };
+        assert_eq!(
+            suggestion(full(), 0, 4, &quiet).as_deref(),
+            Some("mac's memory is 95% full")
+        );
+        assert_eq!(suggestion(full(), 3_000, 0, &quiet), None);
+        let loaded = Machine {
+            load: 12.0,
+            ..quiet
+        };
+        assert_eq!(
+            suggestion(loaded, 1_500, 0, &quiet).as_deref(),
+            Some("mac has a load of 12 on 8 cores")
+        );
+        assert_eq!(suggestion(Machine { ..quiet }, 4_000, 8, &quiet), None);
     }
 
     #[test]
