@@ -52,13 +52,13 @@ Done:
   shell's output.
 
 Next:
-4. **Rex popups.** Floating layers made with `session.new_layer`, closed with
+1. **Rex popups.** Floating layers made with `session.new_layer`, closed with
    `session.close_layer`, minimized with `session.set_layer_state`:
    - `d`: the session's diff, reviewable, with a way to send a selection and
      a question back to the session (the idea from leaf's `@`).
-   - `p`: the session's plan, and any Markdown file it wrote.
+   - `v`: the session's plan, and any Markdown file it wrote.
    - Files the agent changed, images, and the machine graphs.
-5. **Pages, not cells.** Markdown drawn as a typeset page with kitty graphics,
+2. **Pages, not cells.** Markdown drawn as a typeset page with kitty graphics,
    built on [mddog](https://github.com/qu8n/mddog)'s engine (MIT, macOS): it
    lays out Markdown with CoreText and returns any slice of the page as
    pixels, with search, selection and links. The conversation and every
