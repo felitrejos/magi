@@ -469,8 +469,10 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
     if !offered {
         return;
     }
-    let Some(endpoint) = model
-        .rows(now)
+    let rows = model.rows(now);
+    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    let label = model.machine_label(&choice.machine, &names);
+    let Some(endpoint) = rows
         .iter()
         .find(|row| row.name == choice.machine)
         .map(|row| row.endpoint)
@@ -487,11 +489,7 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
             let name = choice.dir.rsplit('/').next().unwrap_or(&choice.dir);
             model.await_session(endpoint, name, now);
             let agent = if choice.codex { "Codex" } else { "Claude" };
-            model.flash(
-                format!("Opening {agent} in {name} on {}…", choice.machine),
-                true,
-                now,
-            );
+            model.flash(format!("Opening {agent} in {name} on {label}…"), true, now);
         }
         Err(error) => model.flash(format!("couldn't open it: {error}"), false, now),
     }
@@ -511,6 +509,23 @@ fn refresh_launcher(model: &mut Model, links: &Links, now: Instant) {
 }
 
 fn start_naming(model: &mut Model, whole_project: bool, now: Instant) {
+    if let Some(row) = model
+        .rows(now)
+        .get(model.selected)
+        .filter(|_| whole_project)
+    {
+        let name = row.name.clone();
+        let text = model
+            .projects
+            .machine_label(&name)
+            .unwrap_or_default()
+            .to_string();
+        model.naming = Some(model::Naming {
+            what: model::Renaming::Machine(name),
+            text,
+        });
+        return;
+    }
     if let Some((key, name, _)) = model.selected_folder(now).filter(|_| whole_project) {
         model.naming = Some(model::Naming {
             what: model::Renaming::Project {
@@ -566,6 +581,14 @@ fn edit_naming(model: &mut Model, mut naming: model::Naming, key: Key, now: Inst
 fn apply_naming(model: &mut Model, naming: model::Naming, now: Instant) {
     let name = projects::clean(&naming.text);
     let (saved, said) = match naming.what {
+        model::Renaming::Machine(machine) => (
+            model.projects.label_machine(&machine, &name),
+            if name.is_empty() {
+                format!("{machine} shows its own name again")
+            } else {
+                format!("{machine} is now labelled {name}")
+            },
+        ),
         model::Renaming::Repo(repo) => (
             model.projects.move_repo(&repo, &name),
             if name.is_empty() {
@@ -2189,6 +2212,34 @@ mod tests {
                 .map(|agent| agent.session.id.clone()),
             Some("new".into())
         );
+    }
+
+    #[test]
+    fn p_on_a_machine_labels_it_everywhere_and_an_empty_label_brings_its_name_back() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(claude("s1", 0))),
+            now,
+        );
+        model.selected = 0;
+        let name = model.rows(now)[0].name.clone();
+        assert!(screen(&model).contains("P label"), "{}", screen(&model));
+        let mut keys = vec![key(Key::Char('P'))];
+        keys.extend("Studio".chars().map(|c| key(Key::Char(c))));
+        keys.push(key(Key::Enter));
+        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.projects.machine_label(&name), Some("Studio"));
+        let shown = screen(&model);
+        assert!(shown.contains("Studio"), "{shown}");
+        assert!(shown.contains(&format!("{name} · this machine")), "{shown}");
+        let mut keys = vec![key(Key::Char('P'))];
+        keys.extend((0..6).map(|_| key(Key::Backspace)));
+        keys.push(key(Key::Enter));
+        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.projects.machine_label(&name), None);
+        assert!(!screen(&model).contains("Studio"));
     }
 
     #[test]

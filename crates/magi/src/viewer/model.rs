@@ -445,6 +445,7 @@ pub struct Model {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Renaming {
+    Machine(String),
     Repo(String),
     Project { key: String, name: String },
 }
@@ -1165,6 +1166,12 @@ impl Model {
         self.reselect(now);
     }
 
+    pub fn machine_label(&self, name: &str, names: &[&str]) -> String {
+        self.projects
+            .machine_label(name)
+            .map_or_else(|| machine_tag(name, names).to_string(), str::to_string)
+    }
+
     pub fn end_launch(&mut self) {
         self.folders.clear();
         self.codex_models.clear();
@@ -1191,7 +1198,7 @@ impl Model {
             let machine = menu.machines.len();
             menu.machines.push(Place {
                 name: row.name.clone(),
-                tag: machine_tag(&row.name, &names).to_string(),
+                tag: self.machine_label(&row.name, &names),
                 cpu: row.machine().map_or(0.0, Machine::smoothed_cpu),
                 free: sample.map_or(0, |sample| {
                     sample.memory.total.saturating_sub(sample.memory.used)

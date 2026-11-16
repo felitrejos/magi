@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
-use super::model::{self, AgentRow, Focus, Model, Naming, Renaming, Row};
+use super::model::{AgentRow, Focus, Model, Naming, Renaming, Row};
 use super::style::{self, theme};
 use super::typeset::Typesetter;
 use super::units;
@@ -157,7 +157,15 @@ pub fn render(
         match model.detail_focus(now) {
             Some(Focus::Machine(name)) => {
                 if let Some(row) = rows.iter().find(|row| row.name == name) {
-                    machines::render_detail(frame, detail_area, row, model.port, now, graphics);
+                    machines::render_detail(
+                        frame,
+                        detail_area,
+                        row,
+                        model.projects.machine_label(&row.name),
+                        model.port,
+                        now,
+                        graphics,
+                    );
                 }
             }
             Some(Focus::Agent(id)) => {
@@ -285,7 +293,7 @@ fn marks(model: &Model, rows: &[Row<'_>]) -> HashMap<String, Mark> {
                 .cloned()
                 .chain(default_symbols(row).iter().map(|symbol| symbol.to_string()))
                 .collect();
-            let tag = model::machine_tag(&row.name, &names).to_string();
+            let tag = model.machine_label(&row.name, &names);
             (row.name.clone(), Mark { tag, symbols })
         })
         .collect()
@@ -503,7 +511,11 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         spans
     };
     let line = if let Some(naming) = &model.naming {
-        naming_line(naming, &model.project_names(now), width)
+        let names = match naming.what {
+            Renaming::Machine(_) => Vec::new(),
+            _ => model.project_names(now),
+        };
+        naming_line(naming, &names, width)
     } else if let Some(pending) = &model.pending_move {
         let question = format!(
             "Move {} from {} to {}?",
@@ -557,6 +569,7 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
 
 fn naming_line(naming: &Naming, names: &[String], width: usize) -> Line<'static> {
     let question = match &naming.what {
+        Renaming::Machine(name) => format!("Label {name} as "),
         Renaming::Repo(repo) => format!("Move {repo} to project "),
         Renaming::Project { name, .. } => format!("Rename {name} to "),
     };
@@ -578,10 +591,10 @@ fn naming_line(naming: &Naming, names: &[String], width: usize) -> Line<'static>
         right.push(Span::styled(key, style::bold(theme().text)));
         right.push(Span::styled(format!(" {label}"), style::fg(theme().faint)));
     }
-    let hint = if naming.text.is_empty() && ghost.is_empty() {
-        "empty puts it back where magi would"
-    } else {
-        ""
+    let hint = match &naming.what {
+        _ if !naming.text.is_empty() || !ghost.is_empty() => "",
+        Renaming::Machine(_) => "empty shows its own name",
+        _ => "empty puts it back where magi would",
     };
     spread(
         vec![
@@ -603,6 +616,9 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     }
     if model.selection(now) == Some(Focus::NewSession) {
         return vec![("↵", "new session")];
+    }
+    if model.selected < model.rows(now).len() {
+        return vec![("P", "label"), ("c", "new session")];
     }
     let Some(agent) = model.selected_agent(now) else {
         return vec![("c", "new session")];

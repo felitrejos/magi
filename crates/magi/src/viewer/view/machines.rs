@@ -168,6 +168,7 @@ pub fn render_detail(
     frame: &mut Frame,
     area: Rect,
     row: &Row<'_>,
+    label: Option<&str>,
     port: u16,
     now: Instant,
     graphics: &mut Graphics,
@@ -184,8 +185,17 @@ pub fn render_detail(
         frame,
         area,
         panel(
-            vec![Span::styled(row.name.clone(), style::bold(theme().text))],
-            Some(vec![Span::styled(place, style::fg(theme().dim))]),
+            vec![Span::styled(
+                label.unwrap_or(&row.name).to_string(),
+                style::bold(theme().text),
+            )],
+            Some(vec![Span::styled(
+                match label {
+                    Some(_) => format!("{} · {place}", row.name),
+                    None => place.to_string(),
+                },
+                style::fg(theme().dim),
+            )]),
         ),
     );
     let area = body(area);

@@ -20,6 +20,8 @@ pub struct Projects {
     known: Option<BTreeSet<String>>,
     #[serde(default)]
     folded: BTreeSet<String>,
+    #[serde(default)]
+    machines: BTreeMap<String, String>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -138,6 +140,23 @@ impl Projects {
         self.save()
     }
 
+    pub fn machine_label(&self, machine: &str) -> Option<&str> {
+        self.machines
+            .get(&machine.to_lowercase())
+            .map(String::as_str)
+    }
+
+    pub fn label_machine(&mut self, machine: &str, label: &str) -> io::Result<()> {
+        let label = clean(label);
+        let machine = machine.to_lowercase();
+        if label.is_empty() {
+            self.machines.remove(&machine);
+        } else {
+            self.machines.insert(machine, label);
+        }
+        self.save()
+    }
+
     fn save(&self) -> io::Result<()> {
         let Some(path) = &self.path else {
             return Ok(());
@@ -234,6 +253,9 @@ mod tests {
         let _ = fs::remove_file(&path);
         let mut projects = Projects::open(path.clone());
         projects.move_repo("ping", "Games\u{7}").unwrap();
+        projects
+            .label_machine("Felipes-MacBook-Pro", " MacBook ")
+            .unwrap();
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
@@ -242,6 +264,10 @@ mod tests {
         assert_eq!(
             resolved(&reopened, "ping"),
             ("games".into(), Some("Games".into()))
+        );
+        assert_eq!(
+            reopened.machine_label("felipes-macbook-pro"),
+            Some("MacBook")
         );
         fs::remove_file(path).unwrap();
     }
