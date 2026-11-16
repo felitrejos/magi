@@ -21,10 +21,10 @@ const SIDEBAR_BAR: usize = 3;
 const TWO_COLUMNS: u16 = 70;
 const TILE_GAP: u16 = 3;
 const ROW_GAP: u16 = 1;
-const GUTTER: u16 = 8;
-const MIN_AXIS_ROWS: u16 = 4;
-const CORE_GAP: u16 = 2;
-const MIN_CORE_WIDTH: u16 = 8;
+const MIN_LABELLED_ROWS: u16 = 5;
+const CORE_GAP: u16 = 3;
+const MIN_CORE_WIDTH: u16 = 18;
+const CORE_PERCENT: u16 = 4;
 const MAX_FILESYSTEMS: usize = 3;
 const FS_PERCENT: usize = 4;
 const ICON_WIDTH: u16 = 2;
@@ -205,8 +205,7 @@ pub fn render_detail(
     cursor.skip();
     let columns: u16 = if area.width >= TWO_COLUMNS { 2 } else { 1 };
     let tile_width = (area.width - (columns - 1) * TILE_GAP) / columns;
-    let window =
-        (usize::from(tile_width.saturating_sub(GUTTER)) * graphics.samples_per_cell()).min(HISTORY);
+    let window = (usize::from(tile_width) * graphics.samples_per_cell()).min(HISTORY);
     let tiles = tiles(machine, sample, window, tile_width);
     let sections = (tiles.len() as u16 + 2).div_ceil(columns);
     let height = (cursor.left() + ROW_GAP) / sections;
@@ -241,14 +240,12 @@ struct Tile {
 
 struct Scale {
     top: String,
-    middle: String,
     bottom: String,
 }
 
 fn percent_scale() -> Scale {
     Scale {
         top: "100%".into(),
-        middle: "50%".into(),
         bottom: "0%".into(),
     }
 }
@@ -256,7 +253,6 @@ fn percent_scale() -> Scale {
 fn rate_scale(peak: f32) -> Scale {
     Scale {
         top: units::rate(peak as u64),
-        middle: units::rate((peak / 2.0) as u64),
         bottom: "0".into(),
     }
 }
@@ -430,43 +426,39 @@ fn draw_scaled(
     scale: &Scale,
     shown: Duration,
 ) {
-    if area.height == 0 || area.width <= GUTTER {
+    if area.height == 0 {
         return;
     }
-    let axis = area.height >= MIN_AXIS_ROWS;
-    let rows = area.height - u16::from(axis);
-    let label = |frame: &mut Frame, y: u16, text: &str| {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!("{text:>width$} ", width = usize::from(GUTTER) - 1),
-                style::fg(theme().faint),
-            )),
-            Rect::new(area.x, y, GUTTER, 1),
-        );
-    };
-    if rows > 1 {
-        label(frame, area.y, &scale.top);
-        label(frame, area.y + rows - 1, &scale.bottom);
-    }
-    if rows >= 5 && rows % 2 == 1 {
-        label(frame, area.y + rows / 2, &scale.middle);
-        chart.guide = true;
-    }
-    let plot = Rect::new(area.x + GUTTER, area.y, area.width - GUTTER, rows);
-    graphics.chart(frame.buffer_mut(), plot, slot, &chart);
-    if !axis {
+    let labelled = area.height >= MIN_LABELLED_ROWS;
+    let rows = area.height - if labelled { 2 } else { 0 };
+    let top = area.y + u16::from(labelled);
+    chart.guide = rows >= 3;
+    graphics.chart(
+        frame.buffer_mut(),
+        Rect::new(area.x, top, area.width, rows),
+        slot,
+        &chart,
+    );
+    if !labelled {
         return;
     }
+    let faint = |text: String| Span::styled(text, style::fg(theme().faint));
+    let width = usize::from(area.width);
+    frame.render_widget(
+        Paragraph::new(Line::from(faint(scale.top.clone()))),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
     frame.render_widget(
         Paragraph::new(spread_line(
-            vec![Span::styled(
-                format!("{} ago", units::duration(shown)),
-                style::fg(theme().faint),
-            )],
-            vec![Span::styled("now", style::fg(theme().faint))],
-            usize::from(plot.width),
+            vec![faint(format!(
+                "{} · {} ago",
+                scale.bottom,
+                units::duration(shown)
+            ))],
+            vec![faint("now".into())],
+            width,
         )),
-        Rect::new(plot.x, plot.y + rows, plot.width, 1),
+        Rect::new(area.x, top + rows, area.width, 1),
     );
 }
 
@@ -484,7 +476,6 @@ fn draw_cores(
         return;
     }
     let busiest = f32::from(cores.iter().copied().max().unwrap_or(0)) / f32::from(FULL);
-    let width = usize::from(area.width);
     frame.render_widget(
         Paragraph::new(spread_line(
             vec![Span::styled("Cores", style::bold(theme().text))],
@@ -492,23 +483,28 @@ fn draw_cores(
                 format!("busiest {}", units::percent(busiest).trim()),
                 style::fg(theme().dim),
             )],
-            width,
+            usize::from(area.width),
         )),
         Rect::new(area.x, area.y, area.width, 1),
     );
     let grid = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
-    let (columns, cell_height) = core_grid(cores.len() as u16, grid);
+    let count = cores.len() as u16;
+    let columns = core_columns(count, grid);
+    let lines = count.div_ceil(columns);
+    let cell_height = (grid.height / lines).max(1);
+    let chart_height = if cell_height >= 3 {
+        cell_height - 1
+    } else {
+        cell_height
+    };
     let cell_width = (grid.width + CORE_GAP) / columns - CORE_GAP;
+    let label_width = count.to_string().len() as u16 + 1;
     for (index, core) in cores.iter().enumerate() {
         let index = index as u16;
-        let (column, line) = (index % columns, index / columns);
-        let cell = Rect::new(
-            grid.x + column * (cell_width + CORE_GAP),
-            grid.y + line * cell_height,
-            cell_width,
-            cell_height,
-        );
-        if cell.y + cell.height > grid.y + grid.height {
+        let (column, line) = (index / lines, index % lines);
+        let x = grid.x + column * (cell_width + CORE_GAP);
+        let y = grid.y + line * cell_height;
+        if y >= grid.y + grid.height {
             break;
         }
         let fraction = f32::from(*core) / f32::from(FULL);
@@ -517,26 +513,33 @@ fn draw_cores(
             level => style::level(level),
         };
         frame.render_widget(
-            Paragraph::new(spread_line(
-                vec![Span::styled(
-                    format!("{}", index + 1),
-                    style::fg(theme().faint),
-                )],
-                vec![percent_span(fraction, Subsystem::Cpu)],
-                usize::from(cell.width),
+            Paragraph::new(Span::styled(
+                format!(
+                    "{:>width$}",
+                    index + 1,
+                    width = usize::from(label_width) - 1
+                ),
+                style::fg(theme().faint),
             )),
-            Rect::new(cell.x, cell.y, cell.width, 1),
+            Rect::new(x, y, label_width, 1),
         );
-        if cell.height < 2 {
-            continue;
-        }
+        frame.render_widget(
+            Paragraph::new(Line::from(percent_span(fraction, Subsystem::Cpu)).right_aligned()),
+            Rect::new(x + cell_width - CORE_PERCENT, y, CORE_PERCENT, 1),
+        );
         let history = machine
             .core_history
             .get(usize::from(index))
             .map_or_else(Vec::new, |history| history.tail(window));
+        let plot = Rect::new(
+            x + label_width,
+            y,
+            cell_width.saturating_sub(label_width + CORE_PERCENT + 1),
+            chart_height.min(grid.y + grid.height - y),
+        );
         graphics.chart(
             frame.buffer_mut(),
-            Rect::new(cell.x, cell.y + 1, cell.width, cell.height - 1),
+            plot,
             format!("core:{index}"),
             &Chart {
                 kind: Kind::Area,
@@ -551,20 +554,12 @@ fn draw_cores(
     }
 }
 
-fn core_grid(cores: u16, grid: Rect) -> (u16, u16) {
-    let fits = |columns: u16, least: u16| {
-        let rows = cores.div_ceil(columns);
-        let height = grid.height / rows;
-        let width = (grid.width + CORE_GAP) / columns;
-        (height >= least && width > MIN_CORE_WIDTH).then_some((columns, height))
+fn core_columns(cores: u16, grid: Rect) -> u16 {
+    let widest = ((grid.width + CORE_GAP) / (MIN_CORE_WIDTH + CORE_GAP)).max(1);
+    let fits = |least: u16| {
+        (1..=widest.min(cores)).find(|columns| cores.div_ceil(*columns) * least <= grid.height)
     };
-    (1..=cores)
-        .find_map(|columns| fits(columns, 3))
-        .or_else(|| (1..=cores).find_map(|columns| fits(columns, 1)))
-        .unwrap_or((
-            cores.min(grid.width / (MIN_CORE_WIDTH + CORE_GAP)).max(1),
-            1,
-        ))
+    fits(2).or_else(|| fits(1)).unwrap_or(widest.min(cores))
 }
 
 fn draw_processes(frame: &mut Frame, area: Rect, sample: &crate::proto::Sample) {

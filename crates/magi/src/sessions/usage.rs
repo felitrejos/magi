@@ -4,8 +4,8 @@ use std::time::Instant;
 use crate::proto::Usage;
 
 const MAX_DEPTH: usize = 64;
-const TOP_BY_CPU: usize = 5;
-const TOP_BY_MEMORY: usize = 3;
+const TOP_BY_CPU: usize = 16;
+const TOP_BY_MEMORY: usize = 8;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Process {
