@@ -5,13 +5,19 @@ use std::path::{Path, PathBuf};
 use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
+use super::claude_limits::unix_secs;
 use super::ledger::{Counted, Ledger};
 use super::pricing::{self, Usage};
 use super::tail::{self, Lines, Tail};
-use crate::proto::Tokens;
+use crate::proto::{Child, ChildKind, ChildState, Tokens};
 
 const ASSISTANT_MARK: &[u8] = b"\"type\":\"assistant\"";
 const RESULT_MARK: &[u8] = b"\"tool_result\"";
+const NOTICE_MARK: &[u8] = b"<task-notification>";
+const STOP_TOOLS: [&str; 3] = ["TaskStop", "KillShell", "KillBash"];
+const MAX_LABEL_CHARS: usize = 60;
+const KEEP_FINISHED_SECS: u64 = 10 * 60;
+const MAX_TRACKED: usize = 40;
 
 pub struct Transcript {
     tail: Tail,
@@ -28,18 +34,22 @@ pub struct Summary {
     pub ended_turn: bool,
     pub cwd: Option<String>,
     open_tools: Vec<OpenTool>,
+    tracked: Vec<Tracked>,
+}
+
+struct Tracked {
+    id: String,
+    task: Option<String>,
+    kind: ChildKind,
+    label: String,
+    detail: String,
+    state: ChildState,
+    at: u64,
 }
 
 struct OpenTool {
     id: String,
     name: String,
-    subagent: Option<Subagent>,
-}
-
-#[derive(Clone)]
-pub struct Subagent {
-    pub description: String,
-    pub subagent_type: String,
 }
 
 #[derive(Deserialize)]
@@ -48,21 +58,134 @@ struct ToolInput {
     description: Option<serde_json::Value>,
     #[serde(default)]
     subagent_type: Option<serde_json::Value>,
+    #[serde(default)]
+    command: Option<serde_json::Value>,
+    #[serde(default)]
+    run_in_background: Option<serde_json::Value>,
+    #[serde(default)]
+    task_id: Option<serde_json::Value>,
+    #[serde(default)]
+    shell_id: Option<serde_json::Value>,
+}
+
+fn text(value: &Option<serde_json::Value>) -> &str {
+    value
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+}
+
+fn label(text: &str) -> String {
+    let first = text.lines().next().unwrap_or_default().trim();
+    let mut label: String = first.chars().take(MAX_LABEL_CHARS).collect();
+    if first.chars().count() > MAX_LABEL_CHARS {
+        label.push('…');
+    }
+    label
 }
 
 impl ToolInput {
-    fn subagent(&self) -> Subagent {
-        let text = |value: &Option<serde_json::Value>| {
-            value
+    fn tracked(&self, id: &str, name: &str, at: u64) -> Option<Tracked> {
+        let (kind, label, detail) = if SUBAGENT_TOOLS.contains(&name) {
+            let description = text(&self.description);
+            let what = if description.is_empty() {
+                "subagent"
+            } else {
+                description
+            };
+            (
+                ChildKind::Subagent,
+                label(what),
+                text(&self.subagent_type).to_string(),
+            )
+        } else if name == "Bash"
+            && self
+                .run_in_background
                 .as_ref()
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string()
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        {
+            let description = text(&self.description);
+            let what = if description.is_empty() {
+                text(&self.command)
+            } else {
+                description
+            };
+            (ChildKind::Shell, label(what), String::new())
+        } else {
+            return None;
         };
-        Subagent {
-            description: text(&self.description),
-            subagent_type: text(&self.subagent_type),
+        Some(Tracked {
+            id: id.to_string(),
+            task: None,
+            kind,
+            label,
+            detail,
+            state: ChildState::Running,
+            at,
+        })
+    }
+
+    fn stopped_task(&self) -> Option<&str> {
+        [&self.task_id, &self.shell_id]
+            .into_iter()
+            .map(text)
+            .find(|id| !id.is_empty())
+    }
+}
+
+#[derive(Default)]
+struct ResultInfo {
+    task: Option<String>,
+    is_async: bool,
+}
+
+fn result_info<'de, D: Deserializer<'de>>(deserializer: D) -> Result<ResultInfo, D::Error> {
+    deserializer.deserialize_any(ResultInfoVisitor)
+}
+
+struct ResultInfoVisitor;
+
+impl<'de> Visitor<'de> for ResultInfoVisitor {
+    type Value = ResultInfo;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a tool result")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<ResultInfo, A::Error> {
+        let mut info = ResultInfo::default();
+        while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+            match key.as_ref() {
+                "backgroundTaskId" | "agentId" => {
+                    if let Some(id) = map.next_value::<Option<String>>()? {
+                        info.task.get_or_insert(id);
+                    }
+                }
+                "isAsync" => info.is_async = map.next_value::<Option<bool>>()?.unwrap_or(false),
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
         }
+        Ok(info)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<ResultInfo, A::Error> {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(ResultInfo::default())
+    }
+
+    fn visit_str<E: de::Error>(self, _: &str) -> Result<ResultInfo, E> {
+        Ok(ResultInfo::default())
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> Result<ResultInfo, E> {
+        Ok(ResultInfo::default())
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<ResultInfo, E> {
+        Ok(ResultInfo::default())
     }
 }
 
@@ -77,6 +200,10 @@ struct Line {
     kind: String,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default)]
+    timestamp: Option<String>,
+    #[serde(default, rename = "toolUseResult", deserialize_with = "result_info")]
+    result: ResultInfo,
     #[serde(default)]
     message: Option<Message>,
 }
@@ -105,6 +232,8 @@ struct Block {
     name: Option<String>,
     #[serde(default)]
     tool_use_id: Option<String>,
+    #[serde(default)]
+    is_error: Option<bool>,
     #[serde(default)]
     input: Option<ToolInput>,
 }
@@ -184,11 +313,23 @@ impl Transcript {
         self.state.open_tools.last().map(|open| open.name.as_str())
     }
 
-    pub fn running_subagents(&self) -> impl Iterator<Item = &Subagent> {
+    pub fn children(&self, now_secs: u64) -> Vec<Child> {
         self.state
-            .open_tools
+            .tracked
             .iter()
-            .filter_map(|open| open.subagent.as_ref())
+            .filter(|tracked| {
+                tracked.state == ChildState::Running
+                    || now_secs.saturating_sub(tracked.at) < KEEP_FINISHED_SECS
+            })
+            .map(|tracked| Child {
+                id: tracked.id.clone(),
+                kind: tracked.kind,
+                label: tracked.label.clone(),
+                detail: tracked.detail.clone(),
+                state: tracked.state,
+                secs: u32::try_from(now_secs.saturating_sub(tracked.at)).unwrap_or(u32::MAX),
+            })
+            .collect()
     }
 
     pub fn release(&self, claims: &mut HashSet<String>) {
@@ -217,12 +358,20 @@ impl Lines for Feed<'_> {
     }
 
     fn line(&mut self, line: &[u8]) {
+        if tail::contains(line, NOTICE_MARK) {
+            return self.state.notice(line);
+        }
         if !tail::contains(line, ASSISTANT_MARK) && !tail::contains(line, RESULT_MARK) {
             return;
         }
         let Ok(parsed) = serde_json::from_slice::<Line>(line) else {
             return;
         };
+        let at = parsed
+            .timestamp
+            .as_deref()
+            .and_then(unix_secs)
+            .unwrap_or_default();
         let Some(message) = parsed.message else {
             return;
         };
@@ -238,32 +387,66 @@ impl Lines for Feed<'_> {
                     .filter(|block| block.kind == "tool_use")
                 {
                     if let (Some(id), Some(name)) = (&block.id, &block.name) {
-                        let subagent = SUBAGENT_TOOLS
-                            .contains(&name.as_str())
-                            .then(|| block.input.as_ref().map(ToolInput::subagent))
-                            .flatten();
                         state.open_tools.push(OpenTool {
                             id: id.clone(),
                             name: name.clone(),
-                            subagent,
                         });
+                        let Some(input) = &block.input else {
+                            continue;
+                        };
+                        if STOP_TOOLS.contains(&name.as_str())
+                            && let Some(task) = input.stopped_task()
+                        {
+                            state.finish_task(task, ChildState::Stopped, at);
+                        }
+                        if let Some(tracked) = input.tracked(id, name, at) {
+                            state.track(tracked);
+                        }
                     }
                 }
                 state.ended_turn = message.stop_reason.as_deref() == Some("end_turn");
                 if state.ended_turn {
                     state.open_tools.clear();
+                    for tracked in &mut state.tracked {
+                        if tracked.state == ChildState::Running && tracked.task.is_none() {
+                            tracked.state = ChildState::Stopped;
+                            tracked.at = at;
+                        }
+                    }
                 }
                 state.count(&message, self.claims);
             }
             "user" => {
                 state.ended_turn = false;
-                for id in message
+                for block in message
                     .content
                     .iter()
                     .filter(|block| block.kind == "tool_result")
-                    .filter_map(|block| block.tool_use_id.as_ref())
                 {
+                    let Some(id) = &block.tool_use_id else {
+                        continue;
+                    };
                     state.open_tools.retain(|open| open.id != *id);
+                    let Some(tracked) = state.tracked.iter_mut().find(|tracked| tracked.id == *id)
+                    else {
+                        continue;
+                    };
+                    let failed = block.is_error == Some(true);
+                    match (&parsed.result.task, failed) {
+                        (Some(task), false)
+                            if tracked.kind == ChildKind::Shell || parsed.result.is_async =>
+                        {
+                            tracked.task = Some(task.clone());
+                        }
+                        _ => {
+                            tracked.state = if failed {
+                                ChildState::Failed
+                            } else {
+                                ChildState::Done
+                            };
+                            tracked.at = at;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -272,6 +455,56 @@ impl Lines for Feed<'_> {
 }
 
 impl Summary {
+    fn track(&mut self, tracked: Tracked) {
+        self.tracked.retain(|known| known.id != tracked.id);
+        self.tracked.push(tracked);
+        if self.tracked.len() > MAX_TRACKED {
+            let finished = self
+                .tracked
+                .iter()
+                .position(|tracked| tracked.state != ChildState::Running)
+                .unwrap_or(0);
+            self.tracked.remove(finished);
+        }
+    }
+
+    fn finish_task(&mut self, task: &str, state: ChildState, at: u64) {
+        if let Some(tracked) = self.tracked.iter_mut().find(|tracked| {
+            tracked.task.as_deref() == Some(task) && tracked.state == ChildState::Running
+        }) {
+            tracked.state = state;
+            tracked.at = at;
+        }
+    }
+
+    fn notice(&mut self, line: &[u8]) {
+        let text = String::from_utf8_lossy(line);
+        let tag = |name: &str| {
+            let open = format!("<{name}>");
+            let start = text.find(&open)? + open.len();
+            let end = start + text[start..].find(&format!("</{name}>"))?;
+            Some(text[start..end].to_string())
+        };
+        let (Some(id), Some(status)) = (tag("tool-use-id"), tag("status")) else {
+            return;
+        };
+        let state = match status.as_str() {
+            "completed" => ChildState::Done,
+            "failed" => ChildState::Failed,
+            "killed" | "stopped" => ChildState::Stopped,
+            _ => return,
+        };
+        let at = notice_time(&text);
+        if let Some(tracked) = self
+            .tracked
+            .iter_mut()
+            .find(|tracked| tracked.id == id && tracked.state == ChildState::Running)
+        {
+            tracked.state = state;
+            tracked.at = at.unwrap_or(tracked.at);
+        }
+    }
+
     fn count(&mut self, message: &Message, claims: &mut HashSet<String>) {
         let (Some(id), Some(usage), Some(model)) = (&message.id, &message.usage, &message.model)
         else {
@@ -318,6 +551,12 @@ impl Summary {
             claims,
         );
     }
+}
+
+fn notice_time(line: &str) -> Option<u64> {
+    let start = line.find("\"timestamp\":\"")? + "\"timestamp\":\"".len();
+    let end = start + line[start..].find('"')?;
+    unix_secs(&line[start..end])
 }
 
 #[cfg(test)]
@@ -383,41 +622,151 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 
+    fn children(transcript: &Transcript, now: u64) -> Vec<(String, ChildKind, String, ChildState)> {
+        transcript
+            .children(now)
+            .into_iter()
+            .map(|child| (child.id, child.kind, child.label, child.state))
+            .collect()
+    }
+
+    const T0: u64 = 1_794_787_200;
+
     #[test]
-    fn open_subagent_calls_are_the_running_subagents_until_their_results_arrive() {
-        let path = temp("subagents");
-        let explore = r#"{"type":"tool_use","id":"toolu_a","name":"Agent","input":{"description":"Find the parser","subagent_type":"Explore","prompt":"a long prompt that is not kept"}}"#;
-        let legacy = r#"{"type":"tool_use","id":"toolu_t","name":"Task","input":{"description":"Run the tests"}}"#;
-        let write = r#"{"type":"tool_use","id":"toolu_w","name":"Write","input":{"file_path":"/x","content":"…"}}"#;
+    fn subagents_and_background_shells_are_followed_until_they_finish() {
+        let path = temp("children");
+        let explore = r#"{"type":"tool_use","id":"toolu_a","name":"Agent","input":{"description":"Find the parser","subagent_type":"Explore","prompt":"kept out"}}"#;
+        let shell = r#"{"type":"tool_use","id":"toolu_b","name":"Bash","input":{"command":"pnpm dev\nmore","run_in_background":true}}"#;
+        let quick = r#"{"type":"tool_use","id":"toolu_c","name":"Bash","input":{"command":"ls"}}"#;
+        let started = "2026-11-16T00:00:00.000Z";
         append(
             &path,
             &format!(
                 "{}\n",
                 assistant(
-                    "msg_s",
-                    &format!("{explore},{legacy},{write}"),
+                    "msg_1",
+                    &format!("{explore},{shell},{quick}"),
                     10,
                     "tool_use",
-                    NOW
+                    started
                 )
             ),
         );
         let mut transcript = Transcript::new(path.clone());
         read(&mut transcript);
-        let running: Vec<(String, String)> = transcript
-            .running_subagents()
-            .map(|subagent| (subagent.description.clone(), subagent.subagent_type.clone()))
-            .collect();
         assert_eq!(
-            running,
+            children(&transcript, T0),
             [
-                ("Find the parser".into(), "Explore".into()),
-                ("Run the tests".into(), String::new())
+                (
+                    "toolu_a".into(),
+                    ChildKind::Subagent,
+                    "Find the parser".into(),
+                    ChildState::Running
+                ),
+                (
+                    "toolu_b".into(),
+                    ChildKind::Shell,
+                    "pnpm dev".into(),
+                    ChildState::Running
+                ),
             ]
         );
-        append(&path, &format!("{}\n", result("toolu_a")));
+        append(
+            &path,
+            &format!(
+                "{}\n{}\n",
+                r#"{"type":"user","timestamp":"2026-11-16T00:01:00.000Z","toolUseResult":{"stdout":"","backgroundTaskId":"bash_1"},"message":{"role":"user","content":[{"tool_use_id":"toolu_b","type":"tool_result","content":"started"}]}}"#,
+                r#"{"type":"user","timestamp":"2026-11-16T00:02:00.000Z","toolUseResult":{"status":"completed"},"message":{"role":"user","content":[{"tool_use_id":"toolu_a","type":"tool_result","content":"found it"}]}}"#
+            ),
+        );
         read(&mut transcript);
-        assert_eq!(transcript.running_subagents().count(), 1);
+        let states: Vec<ChildState> = children(&transcript, T0 + 120)
+            .into_iter()
+            .map(|child| child.3)
+            .collect();
+        assert_eq!(states, [ChildState::Done, ChildState::Running]);
+        append(
+            &path,
+            r#"{"type":"queue-operation","timestamp":"2026-11-16T00:03:00.000Z","content":"<task-notification>\n<task-id>bash_1</task-id>\n<tool-use-id>toolu_b</tool-use-id>\n<status>failed</status>\n</task-notification>"}
+"#,
+        );
+        read(&mut transcript);
+        assert_eq!(children(&transcript, T0 + 180)[1].3, ChildState::Failed);
+        assert!(children(&transcript, T0 + 180 + 601).is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_background_subagent_runs_until_stopped_and_an_interrupted_turn_stops_the_rest() {
+        let path = temp("async-children");
+        let background = r#"{"type":"tool_use","id":"toolu_x","name":"Agent","input":{"description":"Review the diff","run_in_background":true}}"#;
+        let inline = r#"{"type":"tool_use","id":"toolu_y","name":"Task","input":{"description":"Run the tests"}}"#;
+        append(
+            &path,
+            &format!(
+                "{}\n{}\n",
+                assistant(
+                    "msg_2",
+                    &format!("{background},{inline}"),
+                    10,
+                    "tool_use",
+                    "2026-11-16T00:00:00.000Z"
+                ),
+                r#"{"type":"user","timestamp":"2026-11-16T00:00:01.000Z","toolUseResult":{"isAsync":true,"agentId":"agent_9","status":"async_launched"},"message":{"role":"user","content":[{"tool_use_id":"toolu_x","type":"tool_result","content":"launched"}]}}"#
+            ),
+        );
+        let mut transcript = Transcript::new(path.clone());
+        read(&mut transcript);
+        append(
+            &path,
+            &format!(
+                "{}\n",
+                assistant("msg_3", "", 5, "end_turn", "2026-11-16T00:00:05.000Z")
+            ),
+        );
+        read(&mut transcript);
+        let states: Vec<ChildState> = children(&transcript, T0 + 5)
+            .into_iter()
+            .map(|child| child.3)
+            .collect();
+        assert_eq!(states, [ChildState::Running, ChildState::Stopped]);
+        let stop =
+            r#"{"type":"tool_use","id":"toolu_z","name":"TaskStop","input":{"task_id":"agent_9"}}"#;
+        append(
+            &path,
+            &format!(
+                "{}\n",
+                assistant("msg_4", stop, 5, "tool_use", "2026-11-16T00:00:09.000Z")
+            ),
+        );
+        read(&mut transcript);
+        assert_eq!(children(&transcript, T0 + 9)[0].3, ChildState::Stopped);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_subagent_that_errors_reads_as_failed() {
+        let path = temp("failed-child");
+        let agent = r#"{"type":"tool_use","id":"toolu_f","name":"Agent","input":{}}"#;
+        append(
+            &path,
+            &format!(
+                "{}\n{}\n",
+                assistant("msg_5", agent, 10, "tool_use", "2026-11-16T00:00:00.000Z"),
+                r#"{"type":"user","timestamp":"2026-11-16T00:00:02.000Z","toolUseResult":"Error: boom","message":{"role":"user","content":[{"tool_use_id":"toolu_f","type":"tool_result","is_error":true,"content":"boom"}]}}"#
+            ),
+        );
+        let mut transcript = Transcript::new(path.clone());
+        read(&mut transcript);
+        assert_eq!(
+            children(&transcript, T0 + 2),
+            [(
+                "toolu_f".into(),
+                ChildKind::Subagent,
+                "subagent".into(),
+                ChildState::Failed
+            )]
+        );
         fs::remove_file(path).unwrap();
     }
 
@@ -433,7 +782,7 @@ mod tests {
         read(&mut transcript);
         assert_eq!(transcript.state.ledger.tokens.output, 70);
         assert_eq!(transcript.running_tool(), Some("mcp__x__y"));
-        assert_eq!(transcript.running_subagents().count(), 0);
+        assert!(transcript.children(0).is_empty());
         fs::remove_file(path).unwrap();
     }
 

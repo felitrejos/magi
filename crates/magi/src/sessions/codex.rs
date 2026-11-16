@@ -455,6 +455,7 @@ fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<Agent
         children: Vec::new(),
         branch: repo.branch,
         worktree: repo.worktree,
+        parent: None,
     })
 }
 

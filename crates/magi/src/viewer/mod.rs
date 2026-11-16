@@ -947,6 +947,7 @@ mod tests {
             children: Vec::new(),
             branch: None,
             worktree: None,
+            parent: None,
         };
         let sample = Sample {
             sessions: vec![session],
@@ -1051,6 +1052,7 @@ mod tests {
             children: Vec::new(),
             branch: None,
             worktree: None,
+            parent: None,
         }
     }
 
@@ -1409,6 +1411,37 @@ mod tests {
             model.flashed(Instant::now()),
             Some(("Grouped ping in Network Pong · P renames", true))
         );
+    }
+
+    #[test]
+    fn a_session_started_by_another_sits_nested_right_under_it() {
+        let (mut model, _links) = fleet();
+        let now = Instant::now();
+        let mut child = claude("kid", 0);
+        child.parent = Some("s1".into());
+        let mut other = claude("s3", 0);
+        other.title = "another".into();
+        model.apply(
+            Endpoint::Local,
+            LinkUpdate::Sample(Box::new(Sample {
+                cpu: 1_000,
+                cores: vec![0; 8],
+                sessions: vec![child, other, claude("s1", 0)],
+                ..Sample::default()
+            })),
+            now,
+        );
+        let order: Vec<(String, bool)> = model
+            .listed(now)
+            .into_iter()
+            .filter_map(|item| match item.entry {
+                model::Entry::Session(agent) => Some((agent.session.id.clone(), item.nested)),
+                _ => None,
+            })
+            .collect();
+        let kid = order.iter().position(|(id, _)| id == "kid").unwrap();
+        assert_eq!(order[kid - 1].0, "s1");
+        assert!(order[kid].1 && !order[kid - 1].1);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 12;
+pub const PROTOCOL_VERSION: u16 = 13;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -100,19 +100,32 @@ pub struct AgentSession {
     pub children: Vec<Child>,
     pub branch: Option<String>,
     pub worktree: Option<String>,
+    pub parent: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Child {
+    pub id: String,
     pub kind: ChildKind,
     pub label: String,
     pub detail: String,
+    pub state: ChildState,
+    pub secs: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildKind {
     Subagent,
+    Shell,
     Task,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildState {
+    Running,
+    Done,
+    Failed,
+    Stopped,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]

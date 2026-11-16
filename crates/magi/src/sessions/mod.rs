@@ -209,7 +209,11 @@ impl Sessions {
             snapshot.plans.extend(plan);
         }
         let pids: Vec<i32> = found.iter().filter_map(|found| found.pid).collect();
-        let usage = self.meter.measure(&pids, now);
+        let measured = self.meter.measure(&pids, now);
+        let ids: HashMap<i32, String> = found
+            .iter()
+            .filter_map(|found| Some((found.pid?, found.session.id.clone())))
+            .collect();
         for Found {
             session,
             pid,
@@ -234,10 +238,15 @@ impl Sessions {
             if let (Some(pid), Some(tasks)) = (pid, &mut self.tasks) {
                 children.extend(tasks.started_by(pid, now));
             }
+            let parent = pid
+                .and_then(|pid| measured.parents.get(&pid))
+                .and_then(|parent| ids.get(parent))
+                .cloned();
             snapshot.sessions.push(AgentSession {
                 pane,
-                usage: pid.and_then(|pid| usage.get(&pid).copied()),
+                usage: pid.and_then(|pid| measured.usage.get(&pid).copied()),
                 children,
+                parent,
                 ..session
             });
         }

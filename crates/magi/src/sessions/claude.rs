@@ -8,9 +8,7 @@ use super::registry::{self, Registry, Status};
 use super::repo;
 use super::transcript::Transcript;
 use super::{Board, Found};
-use crate::proto::{
-    Agent, AgentSession, BasisPoints, Child, ChildKind, SessionState, Tokens, Waiting,
-};
+use crate::proto::{Agent, AgentSession, BasisPoints, SessionState, Tokens, Waiting};
 
 const FIND_TRANSCRIPT_EVERY: Duration = Duration::from_secs(10);
 const ACTIVE_WITHIN: Duration = Duration::from_secs(30 * 60);
@@ -347,21 +345,18 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
         pane: None,
         usage: None,
         children: main
-            .into_iter()
-            .flat_map(Transcript::running_subagents)
-            .map(|subagent| Child {
-                kind: ChildKind::Subagent,
-                label: if subagent.description.is_empty() {
-                    "subagent".into()
-                } else {
-                    subagent.description.chars().take(MAX_TITLE_CHARS).collect()
-                },
-                detail: subagent.subagent_type.clone(),
-            })
-            .collect(),
+            .map(|transcript| transcript.children(unix_now()))
+            .unwrap_or_default(),
         branch: repo.branch,
         worktree: repo.worktree,
+        parent: None,
     }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 #[cfg(test)]

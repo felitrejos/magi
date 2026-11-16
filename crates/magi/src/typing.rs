@@ -209,6 +209,7 @@ mod tests {
             children: Vec::new(),
             branch: None,
             worktree: None,
+            parent: None,
         }
     }
 

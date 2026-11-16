@@ -12,8 +12,8 @@ use super::{
     tail, truncate,
 };
 use crate::proto::{
-    Agent, AgentSession, BOLD, Child, Content, DIM, FULL, ForwardState, INVERSE, ITALIC, Run,
-    SessionState, Shade, UNDERLINE, Waiting,
+    Agent, AgentSession, BOLD, Child, ChildKind, ChildState, Content, DIM, FULL, ForwardState,
+    INVERSE, ITALIC, Run, SessionState, Shade, UNDERLINE, Waiting,
 };
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Draft, Endpoint, Entry, Group, Listed, Model, MoveTarget};
@@ -72,19 +72,31 @@ pub fn render_list(
             Entry::Session(agent) => {
                 let mark = marks.get(&agent.machine);
                 let remote = agent.endpoint != Endpoint::Local;
-                let indent = matches!(item.group, Group::Project(_));
+                let depth = match (&item.group, item.nested) {
+                    (Group::Project(_), true) => 2,
+                    (Group::Project(_), false) => 1,
+                    _ => 0,
+                };
                 let (line, icon_at) =
-                    session_line(agent, mark, icons, remote, indent, is_selected, width);
+                    session_line(agent, mark, icons, remote, depth, is_selected, width);
                 if let (Some(column), Some(mark)) = (icon_at, mark) {
                     placed.push((lines.len(), column, mark));
                 }
                 lines.push(line);
+                if let Some(worktree) = &agent.session.worktree {
+                    lines.push(worktree_line(
+                        worktree,
+                        agent.session.branch.as_deref(),
+                        depth,
+                        width,
+                    ));
+                }
                 lines.extend(
                     agent
                         .session
                         .children
                         .iter()
-                        .map(|child| child_line(child, width)),
+                        .map(|child| child_line(child, depth, width)),
                 );
             }
             Entry::Project {
@@ -139,7 +151,7 @@ fn session_line(
     mark: Option<&Mark>,
     icons: bool,
     remote: bool,
-    indent: bool,
+    depth: usize,
     is_selected: bool,
     width: usize,
 ) -> (Line<'static>, Option<usize>) {
@@ -158,7 +170,7 @@ fn session_line(
     let icon_at = (mark.is_some() && icons).then(|| width.saturating_sub(spans_width(&right)));
     let line = spread(
         vec![
-            Span::raw(if indent { "   " } else { " " }),
+            Span::raw(" ".repeat(1 + depth * 2)),
             Span::styled(format!("{agent_mark} "), style::fg(color)),
             Span::styled(
                 session.title.clone(),
@@ -190,18 +202,51 @@ fn row_state(session: &AgentSession, live: bool) -> Span<'static> {
     }
 }
 
-fn child_line(child: &Child, width: usize) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled("     ↳ ", style::fg(theme().faint)),
+fn child_line(child: &Child, depth: usize, width: usize) -> Line<'static> {
+    let glyph = match child.kind {
+        ChildKind::Subagent => "◇",
+        ChildKind::Shell => "$",
+        ChildKind::Task => "⇢",
+    };
+    let mut left = vec![
+        Span::raw(" ".repeat(3 + depth * 2)),
+        Span::styled(format!("{glyph} "), style::fg(theme().faint)),
         Span::styled(child.label.clone(), style::fg(theme().dim)),
     ];
     if !child.detail.is_empty() {
-        spans.push(Span::styled(
+        left.push(Span::styled(
             format!(" · {}", child.detail),
             style::fg(theme().faint),
         ));
     }
-    Line::from(clip(spans, width))
+    let age = short(&units::duration(Duration::from_secs(u64::from(child.secs))));
+    let right = match child.state {
+        ChildState::Running => Span::styled("●", style::fg(theme().accent)),
+        ChildState::Done => Span::styled(format!("✓ {age}"), style::fg(theme().faint)),
+        ChildState::Failed => Span::styled("failed", style::fg(theme().crit)),
+        ChildState::Stopped => Span::styled("stopped", style::fg(theme().faint)),
+    };
+    spread(left, vec![right], width)
+}
+
+fn worktree_line(
+    worktree: &str,
+    branch: Option<&str>,
+    depth: usize,
+    width: usize,
+) -> Line<'static> {
+    let mut left = vec![
+        Span::raw(" ".repeat(3 + depth * 2)),
+        Span::styled("⎇ ", style::fg(theme().faint)),
+        Span::styled(worktree.to_string(), style::fg(theme().dim)),
+    ];
+    if let Some(branch) = branch.filter(|branch| !branch.ends_with(worktree)) {
+        left.push(Span::styled(
+            format!(" · {branch}"),
+            style::fg(theme().faint),
+        ));
+    }
+    Line::from(clip(left, width))
 }
 
 fn folder_line(

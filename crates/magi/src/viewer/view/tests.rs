@@ -6,7 +6,7 @@ use ratatui::backend::TestBackend;
 use std::time::Duration;
 
 use super::*;
-use crate::proto::{Agent, Sample};
+use crate::proto::{Agent, Child, ChildKind, ChildState, Sample};
 use crate::proto::{
     AgentSession, DiskIo, FIVE_HOURS, Filesystem, Identity, Memory, NetIo, ONE_WEEK, Plan,
     SessionState, Tokens, Waiting, Welcome, Window,
@@ -56,6 +56,7 @@ fn agent(title: &str, state: SessionState, context_used: Option<u16>) -> AgentSe
         children: Vec::new(),
         branch: None,
         worktree: None,
+        parent: None,
     }
 }
 
@@ -67,7 +68,26 @@ fn agents() -> Vec<AgentSession> {
         },
         Some(3_400),
     );
-    working.branch = Some("refactor/collectors".into());
+    working.branch = Some("claude/quiet-fox".into());
+    working.worktree = Some("quiet-fox".into());
+    working.children = vec![
+        Child {
+            id: "toolu_a".into(),
+            kind: ChildKind::Subagent,
+            label: "Find the parser".into(),
+            detail: "Explore".into(),
+            state: ChildState::Running,
+            secs: 40,
+        },
+        Child {
+            id: "toolu_b".into(),
+            kind: ChildKind::Shell,
+            label: "pnpm dev".into(),
+            detail: String::new(),
+            state: ChildState::Done,
+            secs: 300,
+        },
+    ];
     let mut deploy = agent(
         "deploy fix",
         SessionState::Waiting(Waiting::Permission(Some("Bash".into()))),

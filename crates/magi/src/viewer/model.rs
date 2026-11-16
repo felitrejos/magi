@@ -272,6 +272,7 @@ pub enum Entry<'a> {
 pub struct Listed<'a> {
     pub group: Group,
     pub entry: Entry<'a>,
+    pub nested: bool,
 }
 
 pub struct AgentRow<'a> {
@@ -312,6 +313,37 @@ fn add_to_project<'a>(
         }
         None => groups.push((key, name, vec![agent])),
     }
+}
+
+fn family_order(agents: Vec<AgentRow<'_>>) -> Vec<(AgentRow<'_>, bool)> {
+    let ids: Vec<String> = agents
+        .iter()
+        .map(|agent| agent.session.id.clone())
+        .collect();
+    let is_nested = |agent: &AgentRow<'_>| {
+        agent
+            .session
+            .parent
+            .as_ref()
+            .is_some_and(|parent| ids.contains(parent))
+    };
+    let (kids, roots): (Vec<_>, Vec<_>) = agents.into_iter().partition(|agent| is_nested(agent));
+    let mut kids: Vec<Option<AgentRow<'_>>> = kids.into_iter().map(Some).collect();
+    let mut ordered = Vec::new();
+    for root in roots {
+        let id = root.session.id.clone();
+        ordered.push((root, false));
+        for kid in kids.iter_mut() {
+            if kid
+                .as_ref()
+                .is_some_and(|kid| kid.session.parent.as_deref() == Some(id.as_str()))
+            {
+                ordered.extend(kid.take().map(|kid| (kid, true)));
+            }
+        }
+    }
+    ordered.extend(kids.into_iter().flatten().map(|kid| (kid, true)));
+    ordered
 }
 
 fn project_name(name: Option<String>, agents: &[AgentRow<'_>]) -> String {
@@ -976,6 +1008,7 @@ impl Model {
             .map(|agent| Listed {
                 group: Group::NeedsYou,
                 entry: Entry::Session(agent),
+                nested: false,
             })
             .collect();
         for (key, name, agents) in projects {
@@ -992,12 +1025,18 @@ impl Model {
                     count: agents.len(),
                     open,
                 },
+                nested: false,
             });
             if open {
-                listed.extend(agents.into_iter().map(|agent| Listed {
-                    group: group.clone(),
-                    entry: Entry::Session(agent),
-                }));
+                listed.extend(
+                    family_order(agents)
+                        .into_iter()
+                        .map(|(agent, nested)| Listed {
+                            group: group.clone(),
+                            entry: Entry::Session(agent),
+                            nested,
+                        }),
+                );
             }
         }
         if asleep.is_empty() {
@@ -1014,11 +1053,13 @@ impl Model {
                 count: asleep.len(),
                 open,
             },
+            nested: false,
         });
         if open {
             listed.extend(asleep.into_iter().map(|agent| Listed {
                 group: Group::Earlier,
                 entry: Entry::Session(agent),
+                nested: false,
             }));
         }
         listed
@@ -1326,6 +1367,7 @@ mod tests {
             children: Vec::new(),
             branch: None,
             worktree: None,
+            parent: None,
         };
         let mac = Sample {
             sessions: vec![

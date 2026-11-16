@@ -13,18 +13,25 @@ pub struct Process {
 }
 
 #[derive(Default)]
+pub struct Measured {
+    pub usage: HashMap<i32, Usage>,
+    pub parents: HashMap<i32, i32>,
+}
+
+#[derive(Default)]
 pub struct Meter {
     previous: Option<(Instant, HashMap<i32, u64>)>,
 }
 
 impl Meter {
-    pub fn measure(&mut self, roots: &[i32], now: Instant) -> HashMap<i32, Usage> {
+    pub fn measure(&mut self, roots: &[i32], now: Instant) -> Measured {
         if roots.is_empty() {
             self.previous = None;
-            return HashMap::new();
+            return Measured::default();
         }
         let processes = snapshot();
         let usage = usage(&processes, roots, self.previous.as_ref(), now);
+        let parents = parents(&processes, roots);
         self.previous = Some((
             now,
             processes
@@ -32,8 +39,20 @@ impl Meter {
                 .map(|(pid, process)| (*pid, process.cpu_ns))
                 .collect(),
         ));
-        usage
+        Measured { usage, parents }
     }
+}
+
+fn parents(processes: &HashMap<i32, Process>, roots: &[i32]) -> HashMap<i32, i32> {
+    let tracked: HashMap<i32, (u64, u64)> = roots.iter().map(|root| (*root, (0, 0))).collect();
+    roots
+        .iter()
+        .filter_map(|root| {
+            let parent = processes.get(root)?.parent;
+            let owner = owner(parent, processes, &tracked)?;
+            (owner != *root).then_some((*root, owner))
+        })
+        .collect()
 }
 
 fn usage(
@@ -230,6 +249,20 @@ mod tests {
             then + Duration::from_secs(1),
         );
         assert_eq!(usage[&100].cpu, Some(1750));
+    }
+
+    #[test]
+    fn a_session_started_inside_another_names_it_as_its_parent() {
+        let processes = HashMap::from([
+            (10, process(1, 0, 0)),
+            (11, process(10, 0, 0)),
+            (12, process(11, 0, 0)),
+            (20, process(1, 0, 0)),
+        ]);
+        assert_eq!(
+            parents(&processes, &[10, 12, 20]),
+            HashMap::from([(12, 10)])
+        );
     }
 
     #[test]

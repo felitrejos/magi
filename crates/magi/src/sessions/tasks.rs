@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::proto::{Child, ChildKind};
+use crate::proto::{Child, ChildKind, ChildState};
 
 const READ_EVERY: Duration = Duration::from_secs(2);
 const START_TOLERANCE_SECS: i64 = 2;
@@ -99,14 +99,18 @@ fn read(dir: &Path) -> HashMap<(i32, i64), Vec<Child>> {
         else {
             continue;
         };
-        if let Some((caller, child)) = child(record) {
+        let id = path
+            .file_stem()
+            .map(|stem| format!("task:{}", stem.to_string_lossy()))
+            .unwrap_or_default();
+        if let Some((caller, child)) = child(id, record) {
             by_caller.entry(caller).or_default().push(child);
         }
     }
     by_caller
 }
 
-fn child(record: Record) -> Option<((i32, i64), Child)> {
+fn child(id: String, record: Record) -> Option<((i32, i64), Child)> {
     let caller = (record.caller_pid?, record.caller_started?);
     if FINISHED.contains(&record.state.as_str()) {
         return None;
@@ -127,9 +131,12 @@ fn child(record: Record) -> Option<((i32, i64), Child)> {
     Some((
         caller,
         Child {
+            id,
             kind: ChildKind::Task,
             label,
             detail: format!("on {} · {state}", record.host),
+            state: ChildState::Running,
+            secs: 0,
         },
     ))
 }
@@ -144,7 +151,7 @@ mod tests {
 
     #[test]
     fn a_task_is_named_by_what_it_runs_and_says_where_and_how_it_is_doing() {
-        let (caller, task) = child(record(
+        let (caller, task) = child("task:t1".into(), record(
             r#"{"kind":"run","host":"homelab","name":"","command":"cargo test --workspace\nsecond","state":"running","caller_pid":42,"caller_started":1000}"#,
         ))
         .unwrap();
@@ -152,12 +159,15 @@ mod tests {
         assert_eq!(
             task,
             Child {
+                id: "task:t1".into(),
                 kind: ChildKind::Task,
                 label: "cargo test --workspace".into(),
-                detail: "on homelab · running".into()
+                detail: "on homelab · running".into(),
+                state: ChildState::Running,
+                secs: 0,
             }
         );
-        let (_, delegated) = child(record(
+        let (_, delegated) = child("task:t1".into(), record(
             r#"{"kind":"delegate","host":"homelab","prompt":"Fix the flaky login test","caller_pid":42,"caller_started":1000}"#,
         ))
         .unwrap();
@@ -168,18 +178,26 @@ mod tests {
     #[test]
     fn finished_tasks_and_ones_started_from_the_command_line_are_not_nested() {
         assert!(
-            child(record(
-                r#"{"state":"collected","caller_pid":1,"caller_started":1}"#
-            ))
+            child(
+                "task:t1".into(),
+                record(r#"{"state":"collected","caller_pid":1,"caller_started":1}"#)
+            )
             .is_none()
         );
         assert!(
-            child(record(
-                r#"{"state":"gone","caller_pid":1,"caller_started":1}"#
-            ))
+            child(
+                "task:t1".into(),
+                record(r#"{"state":"gone","caller_pid":1,"caller_started":1}"#)
+            )
             .is_none()
         );
-        assert!(child(record(r#"{"state":"running","command":"make"}"#)).is_none());
+        assert!(
+            child(
+                "task:t1".into(),
+                record(r#"{"state":"running","command":"make"}"#)
+            )
+            .is_none()
+        );
     }
 
     #[test]
