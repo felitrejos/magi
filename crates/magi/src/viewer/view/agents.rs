@@ -368,7 +368,7 @@ fn draft_line(
     }
     let mut pairs = vec![("↵", "send")];
     if !multi_line {
-        pairs.push(("ctrl-j", "new line"));
+        pairs.push(("⇧↵", "new line"));
     }
     pairs.push(("esc", "cancel"));
     let right = keys(&pairs);

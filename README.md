@@ -119,9 +119,9 @@ x86_64 or arm64, after checking their SHA-256. Every machine needs
   `claude plugin marketplace add felitrejos/magi && claude plugin install cielago@magi`.
 
 Keys: `↑↓` select, `c` new session, `↵` or a click on the conversation to
-write (`ctrl-j` for a new line; pastes keep theirs), `y`/`n` allow or deny, `1`–`9` choose, `x` stop, `r` continue in Rex,
-`o` open in Rex, `m` move, `a` alerts, `q` quit. `magi fleet --json` prints the same picture once,
-for scripts.
+write (`⇧↵` for a new line), `y`/`n` allow or deny, `1`–`9` choose, `x` stop,
+`r` continue in Rex, `o` open in Rex, `m` move, `a` alerts, `q` quit.
+`magi fleet --json` prints the same picture once, for scripts.
 
 ## In Rex and other terminals
 

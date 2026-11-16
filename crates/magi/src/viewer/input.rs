@@ -169,6 +169,7 @@ fn csi(colours: &mut Vec<u8>, body: &[u8]) -> Option<Input> {
         ([b'?', b'9', b'9', b'7', b';', ..], b'n') | ([], b'I') => Some(Input::Recheck),
         ([b'1' | b'7'], b'~') => Some(Input::Key(Key::First)),
         ([b'4' | b'8'], b'~') => Some(Input::Key(Key::Last)),
+        ([b'2', b'7', b';', .., b';', b'1', b'3'], b'~') => Some(Input::Key(Key::Newline)),
         ([b'?', ..], _) => None,
         ([b'<', mouse @ ..], b'M') => mouse_press(mouse),
         ([b'<', ..], _) => None,
@@ -366,10 +367,17 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_j_and_alt_enter_start_a_new_line() {
+    fn shift_enter_alt_enter_and_ctrl_j_start_a_new_line() {
         assert_eq!(
-            parse(&[b"\n\x1b\r\x1b\n\r"]),
-            [Key::Newline, Key::Newline, Key::Newline, Key::Enter].map(Input::Key)
+            parse(&[b"\x1b[27;2;13~\n\x1b\r\x1b\n\r\x1b[27;2;9~"]),
+            [
+                Key::Newline,
+                Key::Newline,
+                Key::Newline,
+                Key::Newline,
+                Key::Enter
+            ]
+            .map(Input::Key)
         );
     }
 

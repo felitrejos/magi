@@ -13,7 +13,7 @@ Done:
 - `r` continues a session from the Claude desktop app or another terminal in a
   Rex tab, as a copy, so magi can message, approve and move it. The original
   is left alone; archive it in the app when you like.
-- Multi-line messages and pastes (`ctrl-j` for a new line), sent with Rex's
+- Multi-line messages and pastes (`⇧↵` for a new line), sent with Rex's
   paste event.
 
 Next:
