@@ -75,20 +75,21 @@ Next:
 ## Phase 5: the rest of the redesign
 
 Done:
-- **Zen view:** `z` switches magi into a monitoring room. Every session
-  across your machines on one board, grouped by needs you, working and
-  quiet, each with its machine, time and what it's doing or waiting for, and
-  the selected one's details below. No conversation and no typing: `↵` takes
-  you to the session's Rex tab (or use Remote Control in the Claude app),
-  and `m` moves it. magi remembers the view you left it in.
-
-Next:
-
-1. **Alerts.** The history as a quiet feed grouped by day, in a popup.
-2. **Shared project edits.** Keep `p` and `P` edits on the agents so every
-   viewer shows the same projects.
-3. **Pages.** Search, text selection and clickable links in the conversation
-   and the Outputs preview.
+- **Zen view:** `z` switches to a layout of its own for watching rather
+  than talking: a summary of the fleet and plan usage on top, then a column
+  per machine with its load, memory and temperature, and its sessions as
+  quiet two-line cards (needs you first, with what each is doing or waiting
+  for). Arrows move between cards, `↵` opens the session's Rex tab, and `m`
+  moves it, ←→ picking the machine. No conversation is read in Zen.
+- **Alerts feed:** `a` opens the alert history in a Rex floating pane, by
+  day, each alert with how long it took to resolve, live as it changes.
+- **Shared project edits:** project moves, renames, machine labels and the
+  namer's suggestions travel through the agents, newest wins, so every
+  viewer shows the same projects; folds and the view stay per viewer.
+- **Search:** `/` in the conversation highlights matches; `n` and `N` step
+  through them and scroll each into view.
+- **Links:** links in the conversation and the Outputs preview are real
+  terminal hyperlinks, so Rex opens them on a click.
 
 ## Phase 6: Rex only
 

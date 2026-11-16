@@ -8,7 +8,7 @@ use super::namer;
 use super::projects::{Projects, Resolved};
 use crate::proto::{
     self, Agent, AgentSession, Child, CodexModel, FULL, ForwardState, Identity, MAX_PROMPT_CHARS,
-    Plan, Reply, Sample, Screen, SessionState, Welcome,
+    Plan, Reply, Sample, Screen, SessionState, SharedProjects, Welcome,
 };
 use crate::tailscale::Peer;
 use unicode_segmentation::UnicodeSegmentation;
@@ -43,6 +43,7 @@ pub enum LinkUpdate {
     Screen(Screen),
     Folders(Vec<String>),
     Models(Vec<CodexModel>),
+    Projects(SharedProjects),
     Shown(crate::proto::Shown),
 }
 
@@ -440,6 +441,8 @@ pub struct Model {
     pub launcher: Option<Launcher>,
     pub tools_expanded: bool,
     pub cell_size: Option<(u32, u32)>,
+    pub shared_sent: u64,
+    pub search: Option<Search>,
     pub talk: TalkScroll,
     awaiting: Option<Awaiting>,
     pub watching: Option<Watched>,
@@ -501,12 +504,21 @@ fn first_word(name: &str) -> &str {
     name.split(['-', '.', '_', ' ']).next().unwrap_or(name)
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Search {
+    pub query: String,
+    pub typing: bool,
+    pub index: usize,
+}
+
 #[derive(Default)]
 pub struct TalkScroll {
     shown: std::cell::RefCell<String>,
     from_bottom: std::cell::Cell<usize>,
     total: std::cell::Cell<usize>,
     room: std::cell::Cell<usize>,
+    matches: std::cell::Cell<usize>,
+    links: std::cell::RefCell<Vec<(String, String)>>,
 }
 
 impl TalkScroll {
@@ -514,6 +526,30 @@ impl TalkScroll {
         let at = self.from_bottom.get().saturating_add_signed(lines);
         let most = self.total.get().saturating_sub(self.room.get());
         self.from_bottom.set(at.min(most));
+    }
+
+    pub fn set_links(&self, links: Vec<(String, String)>) {
+        *self.links.borrow_mut() = links;
+    }
+
+    pub fn links(&self) -> Vec<(String, String)> {
+        self.links.borrow().clone()
+    }
+
+    pub fn matches(&self) -> usize {
+        self.matches.get()
+    }
+
+    pub fn found(&self, matches: usize) {
+        self.matches.set(matches);
+    }
+
+    pub fn reveal(&self, line: usize, total: usize, room: usize) {
+        let below = total.saturating_sub(line + 1);
+        let at = below
+            .saturating_sub(room / 2)
+            .min(total.saturating_sub(room));
+        self.from_bottom.set(at);
     }
 
     pub fn page(&self, back: bool) {
@@ -614,6 +650,8 @@ impl Model {
             launcher: None,
             tools_expanded: false,
             cell_size: None,
+            shared_sent: 0,
+            search: None,
             talk: TalkScroll::default(),
             awaiting: None,
             watching: None,
@@ -645,6 +683,17 @@ impl Model {
                     }
                     return;
                 }
+                LinkUpdate::Projects(shared) => {
+                    let updated = shared.updated_ms;
+                    match self.projects.adopt(shared) {
+                        Ok(true) => self.shared_sent = updated,
+                        Ok(false) => {}
+                        Err(error) => {
+                            self.flash(format!("couldn't save projects: {error}"), false, now)
+                        }
+                    }
+                    return;
+                }
                 LinkUpdate::Models(models) => {
                     if self.folders.contains_key(&endpoint) {
                         self.codex_models.insert(endpoint, models);
@@ -671,6 +720,9 @@ impl Model {
                 }
                 update => update,
             };
+        if matches!(update, LinkUpdate::Welcome(_)) {
+            self.shared_sent = 0;
+        }
         let Some(link) = self.links.get_mut(&endpoint) else {
             return;
         };
@@ -718,6 +770,7 @@ impl Model {
             | LinkUpdate::Screen(_)
             | LinkUpdate::Folders(_)
             | LinkUpdate::Models(_)
+            | LinkUpdate::Projects(_)
             | LinkUpdate::Shown(_) => {
                 unreachable!("replies, screens and folders are handled before a link is looked up")
             }
@@ -1388,6 +1441,65 @@ impl Model {
         }
         if now.duration_since(following.since) > FOLLOW_FOR {
             self.following = None;
+        }
+    }
+
+    pub fn zen_board(&self, now: Instant) -> Vec<(String, Vec<String>)> {
+        let agents = self.agents(now);
+        let rank = |agent: &AgentRow<'_>| match agent.session.state {
+            SessionState::Waiting(_) if agent.live => 0,
+            SessionState::Working { .. } if agent.live => 1,
+            _ => 2,
+        };
+        self.rows(now)
+            .iter()
+            .map(|row| {
+                let mut mine: Vec<&AgentRow<'_>> = agents
+                    .iter()
+                    .filter(|agent| agent.endpoint == row.endpoint)
+                    .collect();
+                mine.sort_by_key(|agent| (rank(agent), agent.session.state_secs));
+                (
+                    row.name.clone(),
+                    mine.iter().map(|agent| agent.session.id.clone()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    pub fn zen_step(&mut self, down: isize, across: isize, now: Instant) {
+        let board: Vec<Vec<Focus>> = self
+            .zen_board(now)
+            .into_iter()
+            .map(|(name, ids)| {
+                std::iter::once(Focus::Machine(name))
+                    .chain(ids.into_iter().map(Focus::Agent))
+                    .collect()
+            })
+            .collect();
+        let current = self.selection(now);
+        let at = current.as_ref().and_then(|focus| {
+            board.iter().enumerate().find_map(|(column, items)| {
+                Some((column, items.iter().position(|item| item == focus)?))
+            })
+        });
+        let next = match at {
+            None => board.first().and_then(|items| items.first()).cloned(),
+            Some((column, row)) if across != 0 => {
+                let count = board.len() as isize;
+                let column = (column as isize + across).rem_euclid(count) as usize;
+                let items = &board[column];
+                items.get(row.min(items.len() - 1)).cloned()
+            }
+            Some((column, row)) => {
+                let items = &board[column];
+                let row = (row as isize + down).clamp(0, items.len() as isize - 1) as usize;
+                items.get(row).cloned()
+            }
+        };
+        if let Some(focus) = next {
+            self.focus = Some(focus);
+            self.reselect(now);
         }
     }
 

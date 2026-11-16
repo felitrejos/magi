@@ -133,7 +133,7 @@ write (`⇧↵` for a new line), `y`/`n` allow or deny, `1`–`9` choose, `x` st
 beside it, through fzf and delta when they're installed) and `v` its
 outputs (its plan and everything it wrote: documents, images, PDFs and pages, previewed beside the list, ↵ opens one) in a floating pane over magi, `t` show or fold its tool calls, the wheel or `PgUp`/`PgDn` over the conversation to scroll back, `p` move its repo to another project, `P`
 rename its project (onto another name to merge them) or, on a machine, give
-it a label to show instead of its name, `z` Zen, a calmer board of every session to watch rather than talk to, `a` alerts, `q` quit.
+it a label to show instead of its name, `/` search the conversation (`n` and `N` step through matches), `z` Zen, a separate view with a column per machine to watch and move sessions rather than talk to them, `a` the alert feed by day, `q` quit. Links in the conversation and the Outputs preview are clickable.
 `magi fleet --json` prints the same picture once, for scripts.
 
 ## In Rex and other terminals

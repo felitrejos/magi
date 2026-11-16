@@ -641,3 +641,44 @@ fn a_mac_shows_its_performance_cores_apart_from_its_efficiency_cores() {
     assert!(at("Cores") < at("Performance") && at("Performance") < at("Efficiency"));
     assert_eq!(screen.matches("2 cores").count(), 2, "{screen}");
 }
+
+#[test]
+fn links_are_kept_with_their_text_and_marked_where_they_land_on_screen() {
+    let text =
+        "See [the release notes](https://example.com/notes) and [this](javascript:alert(1)).";
+    let (_, links) = super::markdown::markdown_links(text, 80);
+    assert_eq!(
+        links,
+        [(
+            "the release notes".to_string(),
+            "https://example.com/notes".to_string()
+        )]
+    );
+    let printed = super::markdown_ansi(text, 80);
+    assert!(
+        printed.contains("\x1b]8;;https://example.com/notes\x1b\\"),
+        "{printed:?}"
+    );
+    assert!(!printed.contains("javascript:"), "{printed:?}");
+    let lines = super::markdown::markdown(
+        "Read [the release notes](https://example.com/notes) now",
+        16,
+    );
+    let mut terminal = Terminal::new(TestBackend::new(16, 4)).unwrap();
+    terminal
+        .draw(|frame| {
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(lines.clone()),
+                frame.area(),
+            );
+        })
+        .unwrap();
+    let overlay = super::hyperlinks(terminal.backend().buffer(), links);
+    assert_eq!(
+        overlay
+            .matches("\x1b]8;;https://example.com/notes\x1b\\")
+            .count(),
+        2,
+        "the wrapped link is marked on both of its lines: {overlay:?}"
+    );
+}

@@ -78,6 +78,11 @@
   `~/.local/state/magi/popups/`, shows them in a Rex floating pane on its
   own machine (through fzf, delta and `magi md`, which draw only from those
   files), and the pane deletes them when it closes.
+- Project names, project moves and machine labels you set in a viewer are
+  sent to every agent you're connected to, which keeps the newest set in
+  `~/.local/state/magi/shared-projects.json` (only you can read it) and
+  passes it to your other viewers. Only viewers signed in as you can send
+  or receive them, as with everything else.
 - `magi statusline install` edits only `statusLine` in
   `~/.claude/settings.json`, writes atomically, keeps the file's permissions
   and leaves a backup with the same permissions.

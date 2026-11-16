@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 23;
+pub const PROTOCOL_VERSION: u16 = 24;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -199,6 +199,7 @@ pub enum AgentMessage {
     Screen(Screen),
     Folders(Vec<String>),
     Models(Vec<CodexModel>),
+    Projects(SharedProjects),
     Shown(Shown),
 }
 
@@ -283,6 +284,16 @@ pub enum Request {
     Adopt {
         session: String,
     },
+    ShareProjects(SharedProjects),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct SharedProjects {
+    pub updated_ms: u64,
+    pub repos: std::collections::BTreeMap<String, String>,
+    pub groups: std::collections::BTreeMap<String, String>,
+    pub suggested: std::collections::BTreeMap<String, String>,
+    pub machines: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

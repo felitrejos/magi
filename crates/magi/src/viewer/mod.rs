@@ -3,6 +3,7 @@ mod base64;
 mod browse;
 mod chart;
 mod diacritics;
+mod feed;
 mod fleet;
 mod graphics;
 mod input;
@@ -62,6 +63,7 @@ pub enum Event {
     Launched(u32, Option<launcher::Choice>),
 }
 
+pub use feed::run as alerts;
 pub use fleet::print as fleet;
 pub use launcher::run as launch;
 pub use page::{Page, run as page};
@@ -274,10 +276,18 @@ fn event_loop(
             write_status(&alerts::report(&changes))?;
             let mut out = io::stdout();
             execute!(out, BeginSynchronizedUpdate)?;
+            let mut links = String::new();
             let drawn = terminal
-                .draw(|frame| view::render(frame, &model, now, graphics))
+                .draw(|frame| {
+                    view::render(frame, &model, now, graphics);
+                    links = view::hyperlinks(frame.buffer_mut(), model.talk.links());
+                })
                 .map(drop)
-                .and_then(|()| graphics.flush(&mut out));
+                .and_then(|()| graphics.flush(&mut out))
+                .and_then(|()| {
+                    out.write_all(links.as_bytes())?;
+                    out.flush()
+                });
             execute!(out, EndSynchronizedUpdate)?;
             drawn?;
             last_draw = now;
@@ -810,6 +820,28 @@ fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instan
     });
 }
 
+fn open_alerts(model: &mut Model, links: &Links) {
+    if !links.floats {
+        model.showing_alerts = !model.showing_alerts;
+        return;
+    }
+    let command = vec![
+        std::env::current_exe().map_or_else(
+            |_| "magi".to_string(),
+            |path| path.to_string_lossy().into_owned(),
+        ),
+        "alerts".into(),
+    ];
+    let sender = links.sender.clone();
+    let _ = thread::Builder::new().name("popup".into()).spawn(move || {
+        let _ = sender.send(Event::Opened(rex::float(
+            "magi: alerts",
+            &command,
+            rex::POPUP,
+        )));
+    });
+}
+
 fn page_command(text: &str, title: &str, diff: bool) -> io::Result<Vec<String>> {
     let path = popup_file(text, if diff { "diff" } else { "md" })?;
     let magi = std::env::current_exe().map_or_else(
@@ -992,7 +1024,64 @@ fn handle_batch(
     sync_watch(model, links);
     ask_namer(model, links);
     refresh_launcher(model, links, Instant::now());
+    share_projects(model, links);
     Ok(Flow::Continue)
+}
+
+fn edit_search(model: &mut Model, key: Key) {
+    let Some(search) = model.search.as_mut() else {
+        return;
+    };
+    match key {
+        Key::Char(c) if !c.is_control() => {
+            search.query.push(c);
+            search.index = 0;
+        }
+        Key::Paste(text) => {
+            search
+                .query
+                .extend(text.chars().filter(|c| !c.is_control()));
+            search.index = 0;
+        }
+        Key::Backspace => {
+            search.query.pop();
+            search.index = 0;
+        }
+        Key::Enter => search.typing = false,
+        Key::Escape | Key::Interrupt => model.search = None,
+        _ => {}
+    }
+}
+
+fn step_search(model: &mut Model, step: isize) {
+    let found = model.talk.matches();
+    if let Some(search) = model.search.as_mut()
+        && found > 0
+    {
+        search.index = (search.index as isize + step).rem_euclid(found as isize) as usize;
+    }
+}
+
+fn share_projects(model: &mut Model, links: &Links) {
+    let updated = model.projects.updated_ms();
+    if updated <= model.shared_sent {
+        return;
+    }
+    let request = proto::Request::ShareProjects(model.projects.shared());
+    let sent = links
+        .handles
+        .keys()
+        .filter(|endpoint| {
+            model
+                .links
+                .get(endpoint)
+                .is_some_and(|link| link.state == model::LinkState::Live)
+        })
+        .filter(|endpoint| links.request(**endpoint, &request).is_ok())
+        .count();
+    if sent > 0 {
+        model.shared_sent = updated;
+    }
 }
 
 fn ask_namer(model: &mut Model, links: &Links) {
@@ -1079,16 +1168,71 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
         Event::Input(Input::Key(key)) if let Some(launcher) = model.launcher.take() => {
             edit_launcher(model, links, launcher, key, now);
         }
+        Event::Input(Input::Key(key))
+            if model.search.as_ref().is_some_and(|search| search.typing) =>
+        {
+            edit_search(model, key);
+        }
+        Event::Input(Input::Key(key @ (Key::Char('n' | 'N') | Key::Escape)))
+            if model.search.is_some() =>
+        {
+            match key {
+                Key::Escape => model.search = None,
+                Key::Char('n') => step_search(model, 1),
+                _ => step_search(model, -1),
+            }
+        }
+        Event::Input(Input::Key(Key::Char('/')))
+            if !model.projects.zen()
+                && model.draft.is_none()
+                && model.selected_agent(now).is_some() =>
+        {
+            model.search = Some(model::Search {
+                typing: true,
+                ..model::Search::default()
+            });
+        }
         Event::Input(Input::Key(key)) if let Some(naming) = model.naming.take() => {
             edit_naming(model, naming, key, now);
         }
         Event::Input(Input::Key(key)) if let Some(draft) = model.draft.take() => {
             edit_draft(model, links, draft, key, now);
         }
-        Event::Input(Input::Key(key)) if let Some(pending) = model.pending_move.take() => {
-            if key == Key::Char('y') {
-                confirm_move(model, links, pending, now);
+        Event::Input(Input::Key(key)) if let Some(mut pending) = model.pending_move.take() => {
+            match key {
+                Key::Char('y') => confirm_move(model, links, pending, now),
+                Key::Left | Key::Right => {
+                    let targets: Vec<String> = model
+                        .rows(now)
+                        .iter()
+                        .filter(|row| {
+                            row.name != pending.from && row.state() == Some(&model::LinkState::Live)
+                        })
+                        .map(|row| row.name.clone())
+                        .collect();
+                    if let Some(at) = targets.iter().position(|name| *name == pending.to) {
+                        let step = if key == Key::Right {
+                            1
+                        } else {
+                            targets.len() - 1
+                        };
+                        pending.to = targets[(at + step) % targets.len()].clone();
+                    }
+                    model.pending_move = Some(pending);
+                }
+                _ => {}
             }
+        }
+        Event::Input(Input::Key(
+            key @ (Key::Up | Key::Down | Key::Left | Key::Right | Key::Char('j' | 'k' | 'h' | 'l')),
+        )) if model.projects.zen() && model.naming.is_none() => {
+            let (down, across) = match key {
+                Key::Up | Key::Char('k') => (-1, 0),
+                Key::Down | Key::Char('j') => (1, 0),
+                Key::Left | Key::Char('h') => (0, -1),
+                _ => (0, 1),
+            };
+            model.zen_step(down, across, now);
         }
         Event::Input(Input::Key(key)) => match action(&key).filter(|action| {
             !model.projects.zen()
@@ -1110,7 +1254,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Down) => model.move_selection(1, now),
             Some(Action::First) => model.move_selection(isize::MIN, now),
             Some(Action::Last) => model.move_selection(isize::MAX, now),
-            Some(Action::Alerts) => model.showing_alerts = !model.showing_alerts,
+            Some(Action::Alerts) => open_alerts(model, links),
             Some(Action::Open) => open_selected(model, links, now)?,
             Some(Action::Move) => propose_move(model, now),
             Some(Action::Message) => match (model.selected_project(now), model.selection(now)) {
@@ -2421,9 +2565,9 @@ mod tests {
         assert_eq!(model.wanted_watch(now), None);
         let shown = screen(&model);
         for text in [
-            "Sessions",
-            "Quiet",
-            "quiet for",
+            "all quiet",
+            "run the tests",
+            "no sessions",
             "↵ open in Rex",
             "z full view",
         ] {
@@ -2439,6 +2583,72 @@ mod tests {
         assert!(model.draft.is_none());
         handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
         assert!(!model.projects.zen());
+    }
+
+    #[test]
+    fn zen_arrows_walk_the_board_across_machines_and_pick_where_a_move_goes() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
+        let nas = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 3));
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(in_project("a", "api"))),
+            now,
+        );
+        model.apply(
+            homelab,
+            live_sample(1_000, Some(in_project("b", "web"))),
+            now,
+        );
+        model.apply(nas, live_sample(1_000, None), now);
+        handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
+        let selected = |model: &Model| {
+            model
+                .selected_agent(now)
+                .map(|agent| agent.session.id.clone())
+        };
+        handle_batch([key(Key::Down)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(selected(&model).as_deref(), Some("a"));
+        handle_batch([key(Key::Right)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(selected(&model).as_deref(), Some("b"));
+        handle_batch([key(Key::Left)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(selected(&model).as_deref(), Some("a"));
+        handle_batch([key(Key::Up)].into_iter(), &mut model, &mut links).unwrap();
+        let machine = model.selection(now);
+        assert!(
+            matches!(machine, Some(model::Focus::Machine(_))),
+            "{machine:?}"
+        );
+        handle_batch(
+            [key(Key::Left), key(Key::Char('P'))].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        let Some(model::Naming {
+            what: model::Renaming::Machine(name),
+            ..
+        }) = model.naming.take()
+        else {
+            panic!("P on a machine in Zen should start labelling it");
+        };
+        assert!(name.contains("nas"), "{name}");
+        handle_batch(
+            [key(Key::Right), key(Key::Down)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        assert_eq!(selected(&model).as_deref(), Some("a"));
+        handle_batch([key(Key::Char('m'))].into_iter(), &mut model, &mut links).unwrap();
+        let first = model.pending_move.clone().unwrap().to;
+        handle_batch([key(Key::Right)].into_iter(), &mut model, &mut links).unwrap();
+        let second = model.pending_move.clone().unwrap().to;
+        assert_ne!(first, second);
+        assert!(["homelab", "nas"].contains(&second.as_str()), "{second}");
+        handle_batch([key(Key::Right)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.pending_move.clone().unwrap().to, first);
     }
 
     #[test]

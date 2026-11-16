@@ -258,7 +258,7 @@ fn entry(condition: &Condition, event: Event, at: u64) -> Entry {
     }
 }
 
-fn read_history(path: &PathBuf) -> io::Result<VecDeque<Entry>> {
+pub fn read_history(path: &PathBuf) -> io::Result<VecDeque<Entry>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(VecDeque::new()),

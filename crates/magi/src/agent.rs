@@ -15,7 +15,7 @@ use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
     self, AgentMessage, AgentSession, ChildKind, Content, Hello, Identity, PROTOCOL_VERSION, Reply,
-    Request, Said, Screen, Showed, Showing, Shown, StatusReport, Welcome,
+    Request, Said, Screen, SharedProjects, Showed, Showing, Shown, StatusReport, Welcome,
 };
 use crate::screen::Capturer;
 use crate::sessions::rex::Location;
@@ -48,7 +48,12 @@ pub fn run(config: Config) -> io::Result<()> {
     let collector = Collector::new()?;
     let info = collector.info();
     let board = Board::saved_at(net::state_dir()?.join("plans.json"));
-    let agent = Arc::new(Agent::new(identity_of(&info), config.interval, board));
+    let agent = Arc::new(Agent::new(
+        identity_of(&info),
+        config.interval,
+        board,
+        shared_path().ok(),
+    ));
     let socket = net::local_socket()?;
     let local = net::bind_local(&socket)?;
     log::info(format!(
@@ -123,6 +128,8 @@ struct Agent {
     board: Board,
     sessions: Mutex<Snapshot>,
     fresh: Nudge,
+    shared: Mutex<Option<SharedProjects>>,
+    shared_file: Option<PathBuf>,
 }
 
 impl Agent {
@@ -241,7 +248,12 @@ impl Agent {
         }
     }
 
-    fn new(identity: Identity, interval: Duration, board: Board) -> Self {
+    fn new(
+        identity: Identity,
+        interval: Duration,
+        board: Board,
+        shared_file: Option<PathBuf>,
+    ) -> Self {
         Self {
             identity: RwLock::new(identity),
             interval,
@@ -251,6 +263,30 @@ impl Agent {
             board,
             sessions: Mutex::new(Snapshot::default()),
             fresh: Nudge::default(),
+            shared: Mutex::new(shared_file.as_deref().and_then(load_shared)),
+            shared_file,
+        }
+    }
+
+    fn share_projects(&self, shared: SharedProjects) {
+        {
+            let mut known = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+            if known
+                .as_ref()
+                .is_some_and(|known| known.updated_ms >= shared.updated_ms)
+            {
+                return;
+            }
+            *known = Some(shared.clone());
+        }
+        if let Some(path) = &self.shared_file
+            && let Err(error) = save_shared(path, &shared)
+        {
+            self.notices
+                .info(format!("couldn't keep the shared projects: {error}"));
+        }
+        if let Ok(frame) = proto::encode_frame(&AgentMessage::Projects(shared)) {
+            self.hub.publish(frame.into());
         }
     }
 
@@ -264,6 +300,26 @@ impl Agent {
                 .clone(),
         }
     }
+}
+
+fn shared_path() -> io::Result<PathBuf> {
+    Ok(net::state_dir()?.join("shared-projects.json"))
+}
+
+fn load_shared(path: &std::path::Path) -> Option<SharedProjects> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn save_shared(path: &std::path::Path, shared: &SharedProjects) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(shared).map_err(io::Error::other)?,
+    )?;
+    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::rename(&temporary, path)
 }
 
 #[derive(Default)]
@@ -550,6 +606,16 @@ fn serve(conn: &mut dyn Conn, agent: &Arc<Agent>, origin: Origin) -> io::Result<
         Origin::Tailnet(peer) => log::info(format!("viewer {peer} connected")),
     }
     let (replies, frames) = agent.hub.subscribe_with_replies();
+    let shared = agent
+        .shared
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    if let Some(frame) =
+        shared.and_then(|shared| proto::encode_frame(&AgentMessage::Projects(shared)).ok())
+    {
+        let _ = replies.try_send(frame.into());
+    }
     spawn_requests(conn.try_clone()?, replies, Arc::clone(agent))?;
     let streamed = frames
         .into_iter()
@@ -610,6 +676,9 @@ fn spawn_requests(
                                 let _ = replies.send(frame.into());
                             }
                         });
+                    }
+                    Request::ShareProjects(shared) => {
+                        agent.share_projects(shared);
                     }
                     Request::Folders => {
                         in_background(&replies, |replies| {
@@ -965,6 +1034,33 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn an_agent_keeps_the_newest_shared_projects_and_hands_them_to_every_viewer() {
+        let mut agent = Agent::new(identity(), Duration::from_secs(1), Board::default(), None);
+        let dir = std::env::temp_dir().join(format!("magi-shared-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shared-projects.json");
+        agent.shared_file = Some(path.clone());
+        let viewer = agent.hub.subscribe();
+        let mut newer = SharedProjects {
+            updated_ms: 20,
+            ..SharedProjects::default()
+        };
+        newer.repos.insert("ping".into(), "Games".into());
+        agent.share_projects(newer.clone());
+        let frame = viewer.try_recv().unwrap();
+        let mut buf = Vec::new();
+        let message: AgentMessage = proto::read_frame(&mut &frame[..], &mut buf).unwrap();
+        assert_eq!(message, AgentMessage::Projects(newer.clone()));
+        agent.share_projects(SharedProjects {
+            updated_ms: 10,
+            ..SharedProjects::default()
+        });
+        assert!(viewer.try_recv().is_err());
+        assert_eq!(load_shared(&path), Some(newer));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn identity() -> Identity {
         Identity {
             hostname: "test".into(),
@@ -992,7 +1088,7 @@ mod tests {
         let socket = std::env::temp_dir()
             .join(format!("magi-agent-{}-{name}", std::process::id()))
             .join("agent.sock");
-        let agent = Arc::new(Agent::new(identity(), interval, Board::default()));
+        let agent = Arc::new(Agent::new(identity(), interval, Board::default(), None));
         let listener = net::bind_local(&socket).unwrap();
         spawn_sampler(Collector::new().unwrap(), Arc::clone(&agent)).unwrap();
         thread::spawn(move || accept_local(&listener, &agent));
@@ -1183,7 +1279,7 @@ mod tests {
 
     #[test]
     fn status_reports_are_recorded_and_oversized_ones_dropped() {
-        let agent = Agent::new(identity(), Duration::from_secs(1), Board::default());
+        let agent = Agent::new(identity(), Duration::from_secs(1), Board::default(), None);
         let dir = std::env::temp_dir().join(format!("magi-status-{}", std::process::id()));
         let path = dir.join("status.sock");
         let listener = net::bind_local(&path).unwrap();

@@ -3,10 +3,14 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::proto::SharedProjects;
+
 const MAX_NAME_CHARS: usize = 60;
+const MAX_SHARED: usize = 2_000;
 
 #[derive(Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Projects {
@@ -24,6 +28,8 @@ pub struct Projects {
     machines: BTreeMap<String, String>,
     #[serde(default)]
     zen: bool,
+    #[serde(default)]
+    updated_ms: u64,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -53,6 +59,17 @@ impl Projects {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
+        let edited = [
+            &projects.repos,
+            &projects.groups,
+            &projects.suggested,
+            &projects.machines,
+        ]
+        .iter()
+        .any(|names| !names.is_empty());
+        if projects.updated_ms == 0 && edited {
+            projects.updated_ms = 1;
+        }
         projects.path = Some(path);
         projects
     }
@@ -111,7 +128,10 @@ impl Projects {
         for (repo, name) in names {
             self.suggested.insert(repo.to_lowercase(), clean(&name));
         }
-        self.learn(asked.iter().map(String::as_str))
+        self.known
+            .get_or_insert_default()
+            .extend(asked.iter().map(|repo| repo.to_lowercase()));
+        self.changed()
     }
 
     pub fn move_repo(&mut self, repo: &str, name: &str) -> io::Result<()> {
@@ -122,7 +142,7 @@ impl Projects {
         } else {
             self.repos.insert(repo, name);
         }
-        self.save()
+        self.changed()
     }
 
     pub fn rename(&mut self, key: &str, name: &str) -> io::Result<()> {
@@ -131,7 +151,7 @@ impl Projects {
             self.groups
                 .retain(|group, named| group != key && named.to_lowercase() != key);
             self.repos.retain(|_, named| named.to_lowercase() != key);
-            return self.save();
+            return self.changed();
         }
         for named in self.repos.values_mut().chain(self.groups.values_mut()) {
             if named.to_lowercase() == key {
@@ -139,7 +159,7 @@ impl Projects {
             }
         }
         self.groups.insert(key.to_string(), name);
-        self.save()
+        self.changed()
     }
 
     pub fn zen(&self) -> bool {
@@ -165,6 +185,54 @@ impl Projects {
         } else {
             self.machines.insert(machine, label);
         }
+        self.changed()
+    }
+
+    pub fn updated_ms(&self) -> u64 {
+        self.updated_ms
+    }
+
+    pub fn shared(&self) -> SharedProjects {
+        SharedProjects {
+            updated_ms: self.updated_ms,
+            repos: self.repos.clone(),
+            groups: self.groups.clone(),
+            suggested: self.suggested.clone(),
+            machines: self.machines.clone(),
+        }
+    }
+
+    pub fn adopt(&mut self, shared: SharedProjects) -> io::Result<bool> {
+        let sizes = [
+            shared.repos.len(),
+            shared.groups.len(),
+            shared.suggested.len(),
+            shared.machines.len(),
+        ];
+        if shared.updated_ms <= self.updated_ms || sizes.iter().any(|size| *size > MAX_SHARED) {
+            return Ok(false);
+        }
+        let tidy = |names: BTreeMap<String, String>| -> BTreeMap<String, String> {
+            names
+                .into_iter()
+                .map(|(key, name)| (clean(&key).to_lowercase(), clean(&name)))
+                .filter(|(key, name)| !key.is_empty() && !name.is_empty())
+                .collect()
+        };
+        self.repos = tidy(shared.repos);
+        self.groups = tidy(shared.groups);
+        self.suggested = tidy(shared.suggested);
+        self.machines = tidy(shared.machines);
+        self.updated_ms = shared.updated_ms;
+        self.save()?;
+        Ok(true)
+    }
+
+    fn changed(&mut self) -> io::Result<()> {
+        self.updated_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as u64)
+            .max(self.updated_ms + 1);
         self.save()
     }
 
@@ -256,6 +324,48 @@ mod tests {
         );
         projects.move_repo("ping", "Games").unwrap();
         assert_eq!(resolved(&projects, "ping").1, Some("Games".into()));
+    }
+
+    #[test]
+    fn an_edit_is_stamped_to_share_and_only_a_newer_shared_set_replaces_ours() {
+        let mut projects = Projects::default();
+        projects.move_repo("ping", "Games").unwrap();
+        projects.set_zen(true).unwrap();
+        let mine = projects.shared();
+        assert!(mine.updated_ms > 0);
+        assert_eq!(mine.repos.get("ping").map(String::as_str), Some("Games"));
+        let mut older = mine.clone();
+        older.updated_ms -= 1;
+        older.repos.clear();
+        assert!(!projects.adopt(older).unwrap());
+        let mut newer = mine.clone();
+        newer.updated_ms += 10;
+        newer
+            .machines
+            .insert("Homelab ".into(), " Server\u{7} ".into());
+        newer.repos.clear();
+        assert!(projects.adopt(newer).unwrap());
+        assert_eq!(projects.machine_label("homelab"), Some("Server"));
+        assert_eq!(resolved(&projects, "ping"), ("ping".into(), None));
+        assert!(projects.zen());
+        let mut flood = projects.shared();
+        flood.updated_ms += 10;
+        flood.repos = (0..=MAX_SHARED)
+            .map(|n| (n.to_string(), "x".into()))
+            .collect();
+        assert!(!projects.adopt(flood).unwrap());
+    }
+
+    #[test]
+    fn edits_saved_before_sharing_existed_are_shared_but_lose_to_any_new_edit() {
+        let path =
+            std::env::temp_dir().join(format!("magi-old-projects-{}.json", std::process::id()));
+        fs::write(&path, r#"{"repos":{"ping":"Games"}}"#).unwrap();
+        let projects = Projects::open(path.clone());
+        assert_eq!(projects.updated_ms(), 1);
+        fs::write(&path, "{}").unwrap();
+        assert_eq!(Projects::open(path.clone()).updated_ms(), 0);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -317,6 +317,7 @@ pub fn render_child(
     let mut cursor = Cursor::new(inner);
     let shown = format!("{}/{}", agent.session.id, child.id);
     let speech = Speech {
+        search: reading.search,
         working: child.state == ChildState::Running,
         activity: None,
         reading,
@@ -431,6 +432,7 @@ pub struct Detail<'a> {
 
 #[derive(Clone, Copy)]
 pub struct Reading<'a> {
+    pub search: Option<(&'a str, usize)>,
     pub expanded: bool,
     pub scroll: &'a TalkScroll,
 }
@@ -513,6 +515,7 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
         cursor.skip();
     }
     let speech = Speech {
+        search: reading.search,
         working: agent.live && matches!(session.state, SessionState::Working { .. }),
         activity: session.activity.as_deref(),
         reading,
@@ -782,6 +785,7 @@ pub enum Preview<'a> {
 }
 
 struct Speech<'a> {
+    search: Option<(&'a str, usize)>,
     working: bool,
     activity: Option<&'a str>,
     reading: Reading<'a>,
@@ -798,6 +802,7 @@ fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, speec
             working: speech.working,
             expanded: speech.reading.expanded,
             activity: speech.activity,
+            search: speech.search,
         };
         return super::talk::render(frame, cursor.rest(), talk);
     }

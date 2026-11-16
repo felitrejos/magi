@@ -88,14 +88,82 @@ pub fn areas(full: Rect, machines: usize, plans: usize, agents: usize) -> Areas 
 }
 
 pub fn markdown_ansi(text: &str, width: usize) -> String {
+    let (lines, links) = markdown::markdown_links(text, width);
+    let mut finder = LinkFinder::new(links);
     let mut out = String::new();
-    for line in markdown::markdown(text, width) {
+    for line in lines {
         for span in &line.spans {
+            let url = markdown::is_link_style(span.style)
+                .then(|| finder.url_for(&span.content))
+                .flatten();
+            if let Some(url) = &url {
+                out.push_str(&format!("\x1b]8;;{url}\x1b\\"));
+            }
             out.push_str(&sgr(span.style));
             out.push_str(&span.content);
             out.push_str("\x1b[0m");
+            if url.is_some() {
+                out.push_str("\x1b]8;;\x1b\\");
+            }
         }
         out.push('\n');
+    }
+    out
+}
+
+struct LinkFinder {
+    links: Vec<(String, String)>,
+    at: usize,
+}
+
+impl LinkFinder {
+    fn new(links: Vec<(String, String)>) -> Self {
+        Self { links, at: 0 }
+    }
+
+    fn url_for(&mut self, text: &str) -> Option<String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let found = self.links[self.at..]
+            .iter()
+            .position(|(label, _)| label.contains(text))?;
+        self.at += found;
+        Some(self.links[self.at].1.clone())
+    }
+}
+
+pub fn hyperlinks(buffer: &ratatui::buffer::Buffer, links: Vec<(String, String)>) -> String {
+    if links.is_empty() {
+        return String::new();
+    }
+    let mut finder = LinkFinder::new(links);
+    let area = buffer.area;
+    let mut out = String::new();
+    for y in area.y..area.y + area.height {
+        let mut x = area.x;
+        while x < area.x + area.width {
+            let style = buffer[(x, y)].style();
+            if !markdown::is_link_style(style) {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            let mut text = String::new();
+            while x < area.x + area.width && buffer[(x, y)].style() == style {
+                text.push_str(buffer[(x, y)].symbol());
+                x += 1;
+            }
+            if let Some(url) = finder.url_for(&text) {
+                out.push_str(&format!(
+                    "\x1b[{};{}H\x1b]8;;{url}\x1b\\{}{text}\x1b[0m\x1b]8;;\x1b\\",
+                    y + 1,
+                    start + 1,
+                    sgr(style)
+                ));
+            }
+        }
     }
     out
 }
@@ -132,6 +200,9 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
             full,
         );
         return;
+    }
+    if model.projects.zen() {
+        return zen::render(frame, model, now, graphics);
     }
     let rows = model.rows(now);
     let agents = model.agents(now);
@@ -200,22 +271,6 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                     );
                 }
             }
-            Some(Focus::Agent(id) | Focus::Child(id, _)) if model.projects.zen() => {
-                if let Some(agent) = agents.iter().find(|agent| agent.session.id == id) {
-                    let suggestion = model.move_suggestion(agent, now);
-                    let forwards = model.forwards_to(&agent.session.id, &agent.machine, now);
-                    zen::render(
-                        frame,
-                        detail_area,
-                        zen::Monitor {
-                            agents: &agents,
-                            agent,
-                            suggestion: suggestion.as_ref(),
-                            forwards: &forwards,
-                        },
-                    );
-                }
-            }
             Some(Focus::Agent(id)) => {
                 if let Some(agent) = agents.iter().find(|agent| agent.session.id == id) {
                     render_session(frame, detail_area, model, agent, now);
@@ -251,6 +306,10 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                         child,
                         preview,
                         agents::Reading {
+                            search: model
+                                .search
+                                .as_ref()
+                                .map(|search| (search.query.as_str(), search.index)),
                             expanded: model.tools_expanded,
                             scroll: &model.talk,
                         },
@@ -294,6 +353,10 @@ fn render_session(
             draft: model.draft.as_ref(),
             forwards: &forwards,
             reading: agents::Reading {
+                search: model
+                    .search
+                    .as_ref()
+                    .map(|search| (search.query.as_str(), search.index)),
                 expanded: model.tools_expanded,
                 scroll: &model.talk,
             },
@@ -563,12 +626,39 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
             _ => model.project_names(now),
         };
         naming_line(naming, &names, width)
+    } else if let Some(search) = &model.search {
+        let found = model.talk.matches();
+        let count = if search.query.is_empty() {
+            String::new()
+        } else if found == 0 {
+            "no matches".into()
+        } else {
+            format!("{} of {found}", search.index % found + 1)
+        };
+        let mut right = vec![Span::styled(format!("{count}   "), style::fg(theme().dim))];
+        right.extend(keys(if search.typing {
+            &[("↵", "keep"), ("esc", "clear")][..]
+        } else {
+            &[("n", "older"), ("N", "newer"), ("esc", "clear")][..]
+        }));
+        spread(
+            vec![
+                Span::styled("/ ", style::fg(theme().accent)),
+                Span::styled(search.query.clone(), style::bold(theme().text)),
+                Span::styled(
+                    if search.typing { "▏" } else { "" },
+                    style::fg(theme().accent),
+                ),
+            ],
+            right,
+            width,
+        )
     } else if let Some(pending) = &model.pending_move {
         let question = format!(
             "Move {} from {} to {}?",
             pending.title, pending.from, pending.to
         );
-        let answers = keys(&[("y", "move"), ("n", "cancel")]);
+        let answers = keys(&[("←→", "machine"), ("y", "move"), ("n", "cancel")]);
         let room = width.saturating_sub(spans_width(&answers) + 3);
         spread(
             vec![Span::styled(
@@ -675,14 +765,21 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         return vec![("↵", "new session")];
     }
     if model.selected < model.rows(now).len() {
+        if model.projects.zen() {
+            return vec![("↑↓←→", "pick"), ("P", "label"), ("c", "new session")];
+        }
         return vec![("P", "label"), ("c", "new session")];
     }
     let Some(agent) = model.selected_agent(now) else {
+        if model.projects.zen() {
+            return vec![("↑↓←→", "pick"), ("c", "new session")];
+        }
         return vec![("c", "new session")];
     };
     let mut actions = Vec::new();
     let in_rex = agent.session.pane.is_some();
     if model.projects.zen() {
+        actions.push(("↑↓←→", "pick"));
         if in_rex {
             actions.push(("↵", "open in Rex"));
         }
@@ -723,7 +820,11 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     actions
 }
 
-fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
+pub(in crate::viewer) fn spread(
+    left: Vec<Span<'static>>,
+    right: Vec<Span<'static>>,
+    width: usize,
+) -> Line<'static> {
     Line::from(Composed::of(left).spread(Composed::of(right), width).spans)
 }
 

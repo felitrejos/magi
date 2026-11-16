@@ -33,6 +33,7 @@ pub struct Talk<'a> {
     pub working: bool,
     pub expanded: bool,
     pub activity: Option<&'a str>,
+    pub search: Option<(&'a str, usize)>,
 }
 
 #[derive(Clone, Copy)]
@@ -97,6 +98,7 @@ pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>) {
     let plan_last = matches!(pieces.last(), Some(Piece::Plan(_)));
     let thinking = talk.activity.filter(|_| talk.working && !busy);
     let count = pieces.len();
+    let mut links = Vec::new();
     for (index, piece) in pieces.into_iter().enumerate() {
         if let Some(activity) = thinking.filter(|_| plan_last && index + 1 == count) {
             lines.push(Line::default());
@@ -107,7 +109,11 @@ pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>) {
         }
         lines.extend(match piece {
             Piece::Prompt(text) => prompt(text, width),
-            Piece::Reply(text) => markdown::markdown(text, width),
+            Piece::Reply(text) => {
+                let (lines, found) = markdown::markdown_links(text, width);
+                links.extend(found);
+                lines
+            }
             Piece::Tools(tools) => tool_lines(&tools, talk, now, width),
             Piece::Plan(steps) => plan_lines(steps, width),
         });
@@ -116,8 +122,26 @@ pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>) {
         lines.push(Line::default());
         lines.push(running_line(activity, None, now, width));
     }
+    talk.scroll.set_links(links);
     let room = usize::from(area.height);
     let back = talk.scroll.place(talk.shown, lines.len(), room);
+    let back = match talk.search.filter(|(query, _)| !query.is_empty()) {
+        Some((query, index)) => {
+            let found = highlight(&mut lines, query, index);
+            talk.scroll.found(found.len());
+            match found.len().checked_sub(1 + index % found.len().max(1)) {
+                Some(at) => {
+                    talk.scroll.reveal(found[at], lines.len(), room);
+                    talk.scroll.place(talk.shown, lines.len(), room)
+                }
+                None => back,
+            }
+        }
+        None => {
+            talk.scroll.found(0);
+            back
+        }
+    };
     let end = lines.len() - back;
     let start = end.saturating_sub(room);
     let top = area.y + (room - (end - start)) as u16;
@@ -140,6 +164,55 @@ pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>) {
             );
         }
     }
+}
+
+fn highlight(lines: &mut [Line<'static>], query: &str, index: usize) -> Vec<usize> {
+    let query = query.to_ascii_lowercase();
+    let total: usize = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.to_ascii_lowercase().matches(&query).count())
+                .sum::<usize>()
+        })
+        .sum();
+    let current = total.checked_sub(1 + index % total.max(1));
+    let t = theme();
+    let mut found = Vec::new();
+    let mut ordinal = 0;
+    for (number, line) in lines.iter_mut().enumerate() {
+        let mut spans = Vec::with_capacity(line.spans.len());
+        for span in line.spans.drain(..) {
+            let lower = span.content.to_ascii_lowercase();
+            if !lower.contains(&query) {
+                spans.push(span);
+                continue;
+            }
+            let text = span.content.to_string();
+            let mut at = 0;
+            for (start, _) in lower.match_indices(&query) {
+                if start > at {
+                    spans.push(Span::styled(text[at..start].to_string(), span.style));
+                }
+                let end = start + query.len();
+                let mark = if Some(ordinal) == current {
+                    span.style.fg(t.panel).bg(t.warn)
+                } else {
+                    span.style.bg(t.warn_tint)
+                };
+                spans.push(Span::styled(text[start..end].to_string(), mark));
+                found.push(number);
+                ordinal += 1;
+                at = end;
+            }
+            if at < text.len() {
+                spans.push(Span::styled(text[at..].to_string(), span.style));
+            }
+        }
+        line.spans = spans;
+    }
+    found
 }
 
 fn prompt(text: &str, width: usize) -> Vec<Line<'static>> {
@@ -478,6 +551,7 @@ mod tests {
             working: true,
             expanded: false,
             activity: None,
+            search: None,
         };
         let lines = texts(&tool_lines(&tools_of(&said), talk, 1_205, 80));
         assert_eq!(
@@ -515,6 +589,7 @@ mod tests {
                     working: false,
                     expanded: false,
                     activity: None,
+                    search: None,
                 };
                 render(frame, frame.area(), talk);
             })
@@ -559,12 +634,66 @@ mod tests {
             working: true,
             expanded: false,
             activity: Some("building the release"),
+            search: None,
         };
         let lines = texts(&tool_lines(&tools_of(&said), talk, 1_065, 80));
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(
             lines[1].ends_with("building the release  1m 5s"),
             "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_search_highlights_its_matches_counts_them_and_brings_the_current_one_into_view() {
+        let said: Vec<Said> = (0..30)
+            .map(|n| {
+                Said::Reply(format!(
+                    "reply {n} {}",
+                    if n % 10 == 3 { "Needle" } else { "hay" }
+                ))
+            })
+            .collect();
+        let scroll = TalkScroll::default();
+        let draw = |index: usize| -> (Vec<String>, ratatui::style::Style) {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 6)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let talk = Talk {
+                        said: &said,
+                        shown: "s",
+                        scroll: &scroll,
+                        working: false,
+                        expanded: false,
+                        activity: None,
+                        search: Some(("needle", index)),
+                    };
+                    render(frame, frame.area(), talk);
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let rows = (0..6)
+                .map(|y| (0..30).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            let marked = (0..6)
+                .flat_map(|y| (0..30).map(move |x| (x, y)))
+                .find(|(x, y)| buffer[(*x, *y)].bg == theme().warn)
+                .map(|(x, y)| buffer[(x, y)].style())
+                .unwrap_or_default();
+            (rows, marked)
+        };
+        let (rows, marked) = draw(0);
+        assert_eq!(scroll.matches(), 3);
+        assert!(
+            rows.iter().any(|row| row.starts_with("reply 23 Needle")),
+            "{rows:?}"
+        );
+        assert_eq!(marked.bg, Some(theme().warn));
+        let (rows, _) = draw(2);
+        assert!(
+            rows.iter().any(|row| row.starts_with("reply 3 Needle")),
+            "{rows:?}"
         );
     }
 

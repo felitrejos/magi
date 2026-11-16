@@ -59,6 +59,12 @@ pub(super) fn tool_name(name: &str) -> String {
 }
 
 pub fn markdown(text: &str, width: usize) -> Vec<Line<'static>> {
+    markdown_links(text, width).0
+}
+
+pub type Link = (String, String);
+
+pub fn markdown_links(text: &str, width: usize) -> (Vec<Line<'static>>, Vec<Link>) {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut writer = Writer::new(width);
@@ -66,7 +72,13 @@ pub fn markdown(text: &str, width: usize) -> Vec<Line<'static>> {
         writer.event(event);
     }
     writer.flush();
-    writer.lines
+    (writer.lines, writer.links)
+}
+
+const LINK_SCHEMES: [&str; 3] = ["https://", "http://", "mailto:"];
+
+pub fn is_link_style(style: Style) -> bool {
+    style.fg == Some(theme().codex) && style.add_modifier.contains(Modifier::UNDERLINED)
 }
 
 enum Nest {
@@ -111,6 +123,8 @@ struct Writer {
     gap: bool,
     code: Option<Code>,
     table: Option<Table>,
+    link: Option<Link>,
+    links: Vec<Link>,
 }
 
 impl Writer {
@@ -125,6 +139,8 @@ impl Writer {
             gap: false,
             code: None,
             table: None,
+            link: None,
+            links: Vec::new(),
         }
     }
 
@@ -133,7 +149,12 @@ impl Writer {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
-            Event::Text(text) => self.text(&text, self.style()),
+            Event::Text(text) => {
+                if let Some((label, _)) = &mut self.link {
+                    label.push_str(&text);
+                }
+                self.text(&text, self.style());
+            }
             Event::Code(text) | Event::InlineMath(text) => {
                 self.push(text.to_string(), self.style().fg(t.second));
             }
@@ -231,7 +252,15 @@ impl Writer {
                 self.styles
                     .push(self.style().add_modifier(Modifier::CROSSED_OUT));
             }
-            Tag::Link { .. } | Tag::Image { .. } => {
+            Tag::Link { dest_url, .. } => {
+                let url: String = dest_url.chars().filter(|c| !c.is_control()).collect();
+                if LINK_SCHEMES.iter().any(|scheme| url.starts_with(scheme)) {
+                    self.link = Some((String::new(), url));
+                }
+                self.styles
+                    .push(self.style().fg(t.codex).add_modifier(Modifier::UNDERLINED));
+            }
+            Tag::Image { .. } => {
                 self.styles
                     .push(self.style().fg(t.codex).add_modifier(Modifier::UNDERLINED));
             }
@@ -240,6 +269,11 @@ impl Writer {
     }
 
     fn end(&mut self, tag: TagEnd) {
+        if tag == TagEnd::Link
+            && let Some(link) = self.link.take()
+        {
+            self.links.push(link);
+        }
         match tag {
             TagEnd::Paragraph | TagEnd::HtmlBlock => {
                 self.flush();
