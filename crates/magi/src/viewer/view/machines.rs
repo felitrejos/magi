@@ -487,16 +487,8 @@ fn draw_cores(
         return;
     }
     let load = |index: usize| f32::from(cores[index]) / f32::from(FULL);
-    let busiest = (0..cores.len()).map(load).fold(0.0, f32::max);
     frame.render_widget(
-        Paragraph::new(spread_line(
-            vec![Span::styled("Cores", style::bold(theme().text))],
-            vec![Span::styled(
-                format!("busiest {}", units::percent(busiest).trim()),
-                style::fg(theme().dim),
-            )],
-            usize::from(area.width),
-        )),
+        Paragraph::new(Line::from(Span::styled("Cores", style::bold(theme().text)))),
         Rect::new(area.x, area.y, area.width, 1),
     );
     let groups = core_groups(&machine.identity.core_kinds, cores.len());

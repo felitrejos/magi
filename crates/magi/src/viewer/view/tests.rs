@@ -254,7 +254,6 @@ fn the_machine_view_reads_as_titled_charts_then_cores_then_what_uses_it() {
     for text in [
         "61 °C",
         "CPU",
-        "busiest 30%",
         "Memory",
         "swap",
         "Network",
