@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 26;
+pub const PROTOCOL_VERSION: u16 = 27;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -329,6 +329,7 @@ pub enum Request {
     Folders,
     Open {
         place: OpenIn,
+        project: Option<String>,
         codex: bool,
         model: Option<String>,
     },

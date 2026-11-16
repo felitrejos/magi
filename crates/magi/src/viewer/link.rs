@@ -187,7 +187,7 @@ impl Link {
             let update = match proto::read_frame::<AgentMessage, _>(&mut *conn, &mut buf) {
                 Ok(AgentMessage::Sample(sample)) => LinkUpdate::Sample(Box::new(sample)),
                 Ok(AgentMessage::Reply(reply)) => LinkUpdate::Reply(reply),
-                Ok(AgentMessage::Screen(screen)) => LinkUpdate::Screen(screen),
+                Ok(AgentMessage::Screen(_)) => continue,
                 Ok(AgentMessage::Folders(folders)) => LinkUpdate::Folders(folders),
                 Ok(AgentMessage::Models(models)) => LinkUpdate::Models(models),
                 Ok(AgentMessage::Projects(shared)) => LinkUpdate::Projects(shared),

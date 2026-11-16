@@ -15,6 +15,23 @@ struct Meta {
     tool_use_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct SubagentMeta {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub finished: bool,
+}
+
+pub fn subagent_meta(transcript: &Path) -> Option<SubagentMeta> {
+    let name = transcript.file_stem()?.to_str()?;
+    let path = transcript.with_file_name(format!("{name}.meta.json"));
+    if fs::metadata(&path).ok()?.len() > MAX_META_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
 pub fn subagent_transcript(parent: &Path, tool_use_id: &str) -> Option<PathBuf> {
     let dir = parent.with_extension("").join("subagents");
     fs::read_dir(dir).ok()?.flatten().find_map(|entry| {

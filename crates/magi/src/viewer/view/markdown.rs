@@ -48,16 +48,6 @@ static PAINTS: LazyLock<Vec<(Scope, Paint)>> = LazyLock::new(|| {
         .collect()
 });
 
-pub(super) fn tool_name(name: &str) -> String {
-    match name
-        .strip_prefix("mcp__")
-        .and_then(|rest| rest.split_once("__"))
-    {
-        Some((_, tool)) if !tool.is_empty() => tool.replace('_', " "),
-        _ => name.to_string(),
-    }
-}
-
 pub fn markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     markdown_links(text, width).0
 }
@@ -751,16 +741,5 @@ mod tests {
         for line in texts(&markdown(text, 20)) {
             assert!(line.width() <= 20, "{line:?}");
         }
-    }
-
-    #[test]
-    fn mcp_tools_show_by_their_own_name() {
-        assert_eq!(tool_name("mcp__ccd_turn__update_plan"), "update plan");
-        assert_eq!(
-            tool_name("mcp__plugin_cielago_cielago__run_elsewhere"),
-            "run elsewhere"
-        );
-        assert_eq!(tool_name("mcp__broken"), "mcp__broken");
-        assert_eq!(tool_name("Edit"), "Edit");
     }
 }

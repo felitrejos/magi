@@ -2,7 +2,6 @@ mod agents;
 pub(super) mod launcher;
 mod machines;
 pub(super) mod markdown;
-mod talk;
 mod zen;
 
 use std::collections::HashMap;
@@ -133,40 +132,6 @@ impl LinkFinder {
     }
 }
 
-pub fn hyperlinks(buffer: &ratatui::buffer::Buffer, links: Vec<(String, String)>) -> String {
-    if links.is_empty() {
-        return String::new();
-    }
-    let mut finder = LinkFinder::new(links);
-    let area = buffer.area;
-    let mut out = String::new();
-    for y in area.y..area.y + area.height {
-        let mut x = area.x;
-        while x < area.x + area.width {
-            let style = buffer[(x, y)].style();
-            if !markdown::is_link_style(style) {
-                x += 1;
-                continue;
-            }
-            let start = x;
-            let mut text = String::new();
-            while x < area.x + area.width && buffer[(x, y)].style() == style {
-                text.push_str(buffer[(x, y)].symbol());
-                x += 1;
-            }
-            if let Some(url) = finder.url_for(&text) {
-                out.push_str(&format!(
-                    "\x1b[{};{}H\x1b]8;;{url}\x1b\\{}{text}\x1b[0m\x1b]8;;\x1b\\",
-                    y + 1,
-                    start + 1,
-                    sgr(style)
-                ));
-            }
-        }
-    }
-    out
-}
-
 fn sgr(style: Style) -> String {
     let mut codes: Vec<String> = Vec::new();
     for (modifier, code) in [
@@ -276,31 +241,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                         Some((agent, child))
                     });
                 if let Some((agent, child)) = found {
-                    let preview = match model.screen(&id, Some(&child_id)) {
-                        None if agent.live => {
-                            agents::Preview::Waiting(agents::Source::Conversation)
-                        }
-                        None => agents::Preview::Gone,
-                        Some(screen) => match &screen.view {
-                            Ok(content) => agents::Preview::Ready(content),
-                            Err(reason) => agents::Preview::Failed(reason),
-                        },
-                    };
-                    agents::render_child(
-                        frame,
-                        detail_area,
-                        agent,
-                        child,
-                        preview,
-                        agents::Reading {
-                            search: model
-                                .search
-                                .as_ref()
-                                .map(|search| (search.query.as_str(), search.index)),
-                            expanded: model.tools_expanded,
-                            scroll: &model.talk,
-                        },
-                    );
+                    agents::render_child(frame, detail_area, agent, child);
                 }
             }
             _ => {}
@@ -316,19 +257,6 @@ fn render_session(
     now: Instant,
 ) {
     let suggestion = model.move_suggestion(agent, now);
-    let source = if agent.session.pane.is_some() && agent.session.state.is_waiting() {
-        agents::Source::Pane
-    } else {
-        agents::Source::Conversation
-    };
-    let preview = match model.screen(&agent.session.id, None) {
-        None if agent.live => agents::Preview::Waiting(source),
-        None => agents::Preview::Gone,
-        Some(screen) => match &screen.view {
-            Ok(content) => agents::Preview::Ready(content),
-            Err(reason) => agents::Preview::Failed(reason),
-        },
-    };
     let forwards = model.forwards_to(&agent.session.id, &agent.machine, now);
     agents::render_detail(
         frame,
@@ -336,17 +264,7 @@ fn render_session(
         agents::Detail {
             agent,
             suggestion: suggestion.as_ref(),
-            preview,
-            draft: model.draft.as_ref(),
             forwards: &forwards,
-            reading: agents::Reading {
-                search: model
-                    .search
-                    .as_ref()
-                    .map(|search| (search.query.as_str(), search.index)),
-                expanded: model.tools_expanded,
-                scroll: &model.talk,
-            },
         },
     );
 }
@@ -613,33 +531,6 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
             _ => model.project_names(now),
         };
         naming_line(naming, &names, width)
-    } else if let Some(search) = &model.search {
-        let found = model.talk.matches();
-        let count = if search.query.is_empty() {
-            String::new()
-        } else if found == 0 {
-            "no matches".into()
-        } else {
-            format!("{} of {found}", search.index % found + 1)
-        };
-        let mut right = vec![Span::styled(format!("{count}   "), style::fg(theme().dim))];
-        right.extend(keys(if search.typing {
-            &[("↵", "keep"), ("esc", "clear")][..]
-        } else {
-            &[("n", "older"), ("N", "newer"), ("esc", "clear")][..]
-        }));
-        spread(
-            vec![
-                Span::styled("/ ", style::fg(theme().accent)),
-                Span::styled(search.query.clone(), style::bold(theme().text)),
-                Span::styled(
-                    if search.typing { "▏" } else { "" },
-                    style::fg(theme().accent),
-                ),
-            ],
-            right,
-            width,
-        )
     } else if let Some(pending) = &model.pending_move {
         let question = format!(
             "Move {} from {} to {}?",
@@ -786,7 +677,7 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         actions.push(("⇧tab", "mode"));
     }
     if in_rex {
-        actions.push(("o", "open in Rex"));
+        actions.push(("↵", "open in Rex"));
     }
     if agent.live {
         actions.extend([("d", "diff"), ("v", "outputs")]);
@@ -797,14 +688,6 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         }
         actions.push(("m", "move"));
     }
-    actions.push((
-        "t",
-        if model.tools_expanded {
-            "fold tools"
-        } else {
-            "show tools"
-        },
-    ));
     actions.push(("p", "project"));
     actions.push(("c", "new session"));
     actions

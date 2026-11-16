@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::UnixListener;
@@ -21,7 +21,7 @@ use crate::proto::{
 use crate::screen::Capturer;
 use crate::sessions::rex::Location;
 use crate::sessions::{Board, Sessions, Snapshot};
-use crate::{children, log, opener, show, tailscale, typing};
+use crate::{children, log, mirrors, opener, show, tailscale, typing};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -133,6 +133,7 @@ struct Agent {
     shared_file: Option<PathBuf>,
     modes: Mutex<HashMap<String, Switched>>,
     queued: Mutex<HashMap<String, String>>,
+    mirrored: Mutex<HashSet<(String, String)>>,
 }
 
 struct Switched {
@@ -180,6 +181,36 @@ impl Agent {
             "Queued for {}: it goes in once the session is idle",
             session.title
         ))
+    }
+
+    fn mirror_subagents(&self, snapshot: &Snapshot) {
+        let wanted = mirrors::wanted(
+            snapshot,
+            &mut self.mirrored.lock().unwrap_or_else(PoisonError::into_inner),
+        );
+        if wanted.is_empty() {
+            return;
+        }
+        let Ok(magi) = std::env::current_exe() else {
+            return;
+        };
+        let spawned = thread::Builder::new()
+            .name("mirrors".into())
+            .spawn(move || {
+                for mirror in &wanted {
+                    if let Err(error) = mirrors::open(mirror, &magi) {
+                        log::info(format!(
+                            "couldn't open a tab for subagent {}: {error}",
+                            mirror.key.1
+                        ));
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            log::info(format!(
+                "could not start a thread for subagent tabs: {error}"
+            ));
+        }
     }
 
     fn settle(&self, snapshot: &mut Snapshot) {
@@ -353,6 +384,7 @@ impl Agent {
             shared_file,
             modes: Mutex::default(),
             queued: Mutex::default(),
+            mirrored: Mutex::default(),
         }
     }
 
@@ -450,6 +482,7 @@ fn spawn_sessions(mut sessions: Sessions, agent: Arc<Agent>) -> io::Result<()> {
                 }
                 let mut snapshot = sessions.poll(&agent.board);
                 agent.settle(&mut snapshot);
+                agent.mirror_subagents(&snapshot);
                 store(snapshot);
                 if woken {
                     agent.fresh.raise();
@@ -812,11 +845,13 @@ fn spawn_requests(
                     }
                     Request::Open {
                         place,
+                        project,
                         codex,
                         model,
                     } => {
                         in_background(&replies, move |replies| {
-                            match opener::open(&place, codex, model.as_deref()) {
+                            match opener::open(&place, project.as_deref(), codex, model.as_deref())
+                            {
                                 Ok(text) => reply(replies, true, text),
                                 Err(text) => reply(replies, false, text),
                             }

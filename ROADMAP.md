@@ -165,11 +165,51 @@ Done:
 
 Open:
 - **Starting in a new folder.** Claude asks whether to trust a folder it has
-  never opened; decide whether starting it from magi should answer that.
+  never opened; show it as waiting, and `y` trusts it.
 - PR status for a session's branch.
 - Moving Codex sessions with cielago, and suggesting them for a move.
 - Forwards: clean up one that points at a machine the session moved on from,
   and handle dev servers listening on IPv6 localhost.
+
+## Phase 10: Rex is the workspace, magi the overview (done)
+
+You work in the real tools, Claude Code and Codex in Rex or the Claude app,
+and magi puts every session in the right place and keeps watch.
+
+- **Placement.** Starting a session opens it in the project's Rex session
+  (one per project, as magi groups them) on the chosen machine, in the
+  repo's tab (one per repo, working directory checked), with Remote
+  Control on, and jumps there.
+- **Mirror tabs for subagents.** Agents keep their own subagents. When one
+  starts, the magi agent on that machine opens a tab beside its parent,
+  `↳ <subagent>`, running `magi follow`, which draws the subagent's work
+  live and read-only, shows its result briefly when it ends, then closes.
+  Delegated tasks are real sessions with their own tabs.
+- **The viewer becomes an overview.** The conversation view, message box,
+  search and links go. A session shows its state, what it's doing or asking,
+  context, cost, model, subagents, tasks and ports; `↵` goes to its pane,
+  `y`/`n` answer a permission prompt, `⇧tab` switches mode, `m` moves it,
+  `d`/`v` show its diff and outputs, `c` starts one. Zen stays.
+
+## Phase 11: fleet client and CLI
+
+One client, shared with the viewer, and commands with JSON output:
+`magi sessions | send | answer | mode | move | start | events --json`.
+`send` queues for a busy session.
+
+## Phase 12: `magi mcp`
+
+The same commands as MCP tools for Claude Desktop, Claude Code and other
+orchestrators: read tools (machines, sessions, a session's recent work,
+diff, alerts, plans) and action tools (message, answer, mode, move, start).
+cielago's MCP stays for work sent from inside a session.
+
+## Phase 13: desktop first
+
+Sessions magi starts run as named Remote Control sessions in their Rex tabs,
+so the Claude app on desktop or phone can drive them; `start` returns the
+link. Check first that they appear in the desktop app. Sessions the desktop
+app runs locally stay visible, with `r` to continue them in Rex.
 
 ## Before 0.6.0
 

@@ -8,11 +8,10 @@ use super::namer;
 use super::projects::{Projects, Resolved};
 use super::units;
 use crate::proto::{
-    self, Agent, AgentSession, Child, CodexModel, FULL, Forward, ForwardState, Identity,
-    MAX_PROMPT_CHARS, Plan, Reply, Sample, Screen, SessionState, SharedProjects, Welcome,
+    self, Agent, AgentSession, Child, CodexModel, FULL, Forward, ForwardState, Identity, Plan,
+    Reply, Sample, SessionState, SharedProjects, Welcome,
 };
 use crate::tailscale::Peer;
-use unicode_segmentation::UnicodeSegmentation;
 
 pub const HISTORY: usize = 300;
 const SEARCH_GRACE: Duration = Duration::from_secs(8);
@@ -47,7 +46,6 @@ pub enum LinkUpdate {
     Lost(String),
     Rejected(String),
     Reply(Reply),
-    Screen(Screen),
     Folders(Vec<String>),
     Models(Vec<CodexModel>),
     Projects(SharedProjects),
@@ -316,8 +314,6 @@ impl Focus {
     }
 }
 
-pub type Watched = (Endpoint, String, Option<String>);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Group {
     NeedsYou,
@@ -480,18 +476,12 @@ pub struct Model {
     flash: Option<Flash>,
     pub opening: bool,
     pub pending_move: Option<PendingMove>,
-    pub draft: Option<Draft>,
     following: Option<Following>,
     pub folders: BTreeMap<Endpoint, Folders>,
     pub codex_models: BTreeMap<Endpoint, Vec<CodexModel>>,
-    pub tools_expanded: bool,
     pub cell_size: Option<(u32, u32)>,
     pub shared_sent: u64,
-    pub search: Option<Search>,
-    pub talk: TalkScroll,
     awaiting: Option<Awaiting>,
-    pub watching: Option<Watched>,
-    screens: HashMap<(String, Option<String>), Screen>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -549,76 +539,6 @@ fn first_word(name: &str) -> &str {
     name.split(['-', '.', '_', ' ']).next().unwrap_or(name)
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Search {
-    pub query: String,
-    pub typing: bool,
-    pub index: usize,
-}
-
-#[derive(Default)]
-pub struct TalkScroll {
-    shown: std::cell::RefCell<String>,
-    from_bottom: std::cell::Cell<usize>,
-    total: std::cell::Cell<usize>,
-    room: std::cell::Cell<usize>,
-    matches: std::cell::Cell<usize>,
-    links: std::cell::RefCell<Vec<(String, String)>>,
-}
-
-impl TalkScroll {
-    pub fn scroll(&self, lines: isize) {
-        let at = self.from_bottom.get().saturating_add_signed(lines);
-        let most = self.total.get().saturating_sub(self.room.get());
-        self.from_bottom.set(at.min(most));
-    }
-
-    pub fn set_links(&self, links: Vec<(String, String)>) {
-        *self.links.borrow_mut() = links;
-    }
-
-    pub fn links(&self) -> Vec<(String, String)> {
-        self.links.borrow().clone()
-    }
-
-    pub fn matches(&self) -> usize {
-        self.matches.get()
-    }
-
-    pub fn found(&self, matches: usize) {
-        self.matches.set(matches);
-    }
-
-    pub fn reveal(&self, line: usize, total: usize, room: usize) {
-        let below = total.saturating_sub(line + 1);
-        let at = below
-            .saturating_sub(room / 2)
-            .min(total.saturating_sub(room));
-        self.from_bottom.set(at);
-    }
-
-    pub fn page(&self, back: bool) {
-        let page = self.room.get().saturating_sub(2).max(1) as isize;
-        self.scroll(if back { page } else { -page });
-    }
-
-    pub fn place(&self, shown: &str, total: usize, room: usize) -> usize {
-        let mut known = self.shown.borrow_mut();
-        if *known != shown {
-            shown.clone_into(&mut known);
-            self.from_bottom.set(0);
-        } else if self.from_bottom.get() > 0 && total > self.total.get() {
-            self.from_bottom
-                .set(self.from_bottom.get() + total - self.total.get());
-        }
-        self.total.set(total);
-        self.room.set(room);
-        let at = self.from_bottom.get().min(total.saturating_sub(room));
-        self.from_bottom.set(at);
-        at
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Folders {
     Asking,
@@ -640,27 +560,6 @@ struct Following {
     from: Endpoint,
     to: String,
     since: Instant,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Draft {
-    pub endpoint: Endpoint,
-    pub session: String,
-    pub title: String,
-    pub text: String,
-    pub had_queued: bool,
-}
-
-impl Draft {
-    pub fn erase(&mut self) {
-        let last = self.text.grapheme_indices(true).next_back();
-        self.text.truncate(last.map_or(0, |(start, _)| start));
-    }
-
-    pub fn type_in(&mut self, text: &str) {
-        let room = MAX_PROMPT_CHARS.saturating_sub(self.text.chars().count());
-        self.text.extend(proto::prompt_chars(text).take(room));
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -736,82 +635,57 @@ impl Model {
             flash: None,
             opening: false,
             pending_move: None,
-            draft: None,
             following: None,
             folders: BTreeMap::new(),
             codex_models: BTreeMap::new(),
-            tools_expanded: false,
             cell_size: None,
             shared_sent: 0,
-            search: None,
-            talk: TalkScroll::default(),
             awaiting: None,
-            watching: None,
-            screens: HashMap::new(),
         }
     }
 
     pub fn apply(&mut self, endpoint: Endpoint, update: LinkUpdate, now: Instant) {
-        let update =
-            match update {
-                LinkUpdate::Reply(reply) => {
-                    if !reply.ok {
-                        if self
-                            .awaiting
-                            .as_ref()
-                            .is_some_and(|awaiting| awaiting.endpoint == endpoint)
-                        {
-                            self.awaiting = None;
-                        }
-                        if let Some(folders @ Folders::Asking) = self.folders.get_mut(&endpoint) {
-                            *folders = Folders::Failed(reply.text.clone());
-                        }
-                    }
-                    return self.flash(reply.text, reply.ok, now);
-                }
-                LinkUpdate::Folders(folders) => {
-                    if let Some(asked) = self.folders.get_mut(&endpoint) {
-                        *asked = Folders::Listed(folders);
-                    }
-                    return;
-                }
-                LinkUpdate::Projects(shared) => {
-                    let updated = shared.updated_ms;
-                    match self.projects.adopt(shared) {
-                        Ok(true) => self.shared_sent = updated,
-                        Ok(false) => {}
-                        Err(error) => {
-                            self.flash(format!("couldn't save projects: {error}"), false, now)
-                        }
-                    }
-                    return;
-                }
-                LinkUpdate::Models(models) => {
-                    if self.folders.contains_key(&endpoint) {
-                        self.codex_models.insert(endpoint, models);
-                    }
-                    return;
-                }
-                LinkUpdate::Screen(screen) => {
-                    if self.watching.as_ref().is_some_and(|(_, id, child)| {
-                        *id == screen.session && *child == screen.child
-                    }) {
-                        self.screens
-                            .insert((screen.session.clone(), screen.child.clone()), screen);
-                    }
-                    return;
-                }
-                LinkUpdate::Welcome(_)
+        let update = match update {
+            LinkUpdate::Reply(reply) => {
+                if !reply.ok {
                     if self
-                        .watching
+                        .awaiting
                         .as_ref()
-                        .is_some_and(|(at, _, _)| *at == endpoint) =>
-                {
-                    self.watching = None;
-                    update
+                        .is_some_and(|awaiting| awaiting.endpoint == endpoint)
+                    {
+                        self.awaiting = None;
+                    }
+                    if let Some(folders @ Folders::Asking) = self.folders.get_mut(&endpoint) {
+                        *folders = Folders::Failed(reply.text.clone());
+                    }
                 }
-                update => update,
-            };
+                return self.flash(reply.text, reply.ok, now);
+            }
+            LinkUpdate::Folders(folders) => {
+                if let Some(asked) = self.folders.get_mut(&endpoint) {
+                    *asked = Folders::Listed(folders);
+                }
+                return;
+            }
+            LinkUpdate::Projects(shared) => {
+                let updated = shared.updated_ms;
+                match self.projects.adopt(shared) {
+                    Ok(true) => self.shared_sent = updated,
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.flash(format!("couldn't save projects: {error}"), false, now)
+                    }
+                }
+                return;
+            }
+            LinkUpdate::Models(models) => {
+                if self.folders.contains_key(&endpoint) {
+                    self.codex_models.insert(endpoint, models);
+                }
+                return;
+            }
+            update => update,
+        };
         if matches!(update, LinkUpdate::Welcome(_)) {
             self.shared_sent = 0;
         }
@@ -859,7 +733,6 @@ impl Model {
             }
             LinkUpdate::Rejected(reason) => link.state = LinkState::Rejected(reason),
             LinkUpdate::Reply(_)
-            | LinkUpdate::Screen(_)
             | LinkUpdate::Folders(_)
             | LinkUpdate::Models(_)
             | LinkUpdate::Projects(_)
@@ -1068,36 +941,6 @@ impl Model {
             .as_ref()
             .filter(|flash| now.duration_since(flash.at) < FLASH_FOR)
             .map(|flash| (flash.text.as_str(), flash.good))
-    }
-
-    pub fn screen(&self, session: &str, child: Option<&str>) -> Option<&Screen> {
-        self.screens
-            .get(&(session.to_string(), child.map(str::to_string)))
-    }
-
-    pub fn wanted_watch(&self, now: Instant) -> Option<Watched> {
-        if self.projects.zen() {
-            return None;
-        }
-        let (id, child) = match self.detail_focus(now)? {
-            Focus::Agent(id) => (id, None),
-            Focus::Child(id, child) => (id, Some(child)),
-            _ => return None,
-        };
-        let agents = self.agents(now);
-        let agent = agents.iter().find(|agent| agent.session.id == id)?;
-        agent
-            .live
-            .then(|| (agent.endpoint, agent.session.id.clone(), child))
-    }
-
-    pub fn watch(&mut self, watching: Option<Watched>) {
-        self.screens.retain(|(id, child), _| {
-            watching
-                .as_ref()
-                .is_some_and(|(_, watched, watched_child)| watched == id && watched_child == child)
-        });
-        self.watching = watching;
     }
 
     pub fn move_target(&self, agent: &AgentRow<'_>, now: Instant) -> Option<MoveTarget> {

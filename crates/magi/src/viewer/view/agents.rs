@@ -2,33 +2,27 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use super::{
     Cursor, Mark, body, clip, draw_panel, panel, selected_style, spans_width, spread, truncate,
 };
 use crate::proto::{
-    Agent, AgentSession, BOLD, Child, ChildKind, ChildState, Content, DIM, FULL, ForwardState,
-    INVERSE, ITALIC, Run, SessionState, Shade, UNDERLINE, Waiting,
+    Agent, AgentSession, Child, ChildKind, ChildState, FULL, ForwardState, SessionState, Waiting,
 };
 use crate::viewer::graphics::Graphics;
-use crate::viewer::model::{
-    AgentRow, Draft, Endpoint, Entry, Group, Listed, Model, MoveSuggestion, TalkScroll,
-};
+use crate::viewer::model::{AgentRow, Endpoint, Entry, Group, Listed, Model, MoveSuggestion};
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
-const DRAFT_INSET: usize = 7;
 const HIGH_CPU_SHARE: f32 = 0.4;
 const MIN_TITLE: usize = 28;
 const MAX_BADGE: usize = 7;
 const ICON_WIDTH: u16 = 2;
-const DRAFT_ROWS: usize = 6;
-const TAB: &str = "    ";
 
 pub fn render_list(
     frame: &mut Frame,
@@ -267,14 +261,7 @@ pub(super) fn child_line(
     spread(left, vec![child_state(child)], width).style(selected_style(is_selected))
 }
 
-pub fn render_child(
-    frame: &mut Frame,
-    area: Rect,
-    agent: &AgentRow<'_>,
-    child: &Child,
-    preview: Preview<'_>,
-    reading: Reading<'_>,
-) {
+pub fn render_child(frame: &mut Frame, area: Rect, agent: &AgentRow<'_>, child: &Child) {
     if area.height < 5 || area.width < 16 {
         return;
     }
@@ -302,7 +289,6 @@ pub fn render_child(
     );
     let inner = body(area);
     let width = inner.width as usize;
-    let context = Rect::new(inner.x, inner.y - 1, inner.width, 1);
     let mut from = vec![
         Span::styled("from ", style::fg(theme().faint)),
         Span::styled(agent.session.title.clone(), style::fg(theme().dim)),
@@ -313,17 +299,29 @@ pub fn render_child(
             style::fg(theme().faint),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(clip(from, width))), context);
-    let mut cursor = Cursor::new(inner);
-    let shown = format!("{}/{}", agent.session.id, child.id);
-    let speech = Speech {
-        search: reading.search,
-        working: child.state == ChildState::Running,
-        activity: None,
-        reading,
-        shown: &shown,
+    let mut cursor = Cursor::new(Rect::new(
+        inner.x,
+        inner.y - 1,
+        inner.width,
+        inner.height + 1,
+    ));
+    cursor.line(frame, Line::from(clip(from, width)));
+    cursor.skip();
+    let where_ = match (child.kind, child.state) {
+        (ChildKind::Subagent, ChildState::Running) => {
+            format!("Its work shows live in its own tab, ↳ {}", child.label)
+        }
+        (ChildKind::Subagent, _) => "It has finished and handed its result to the session".into(),
+        (ChildKind::Shell, _) => "Its output is in the session's own pane".into(),
+        (ChildKind::Task, _) => "cielago keeps its result: run cielago tasks".into(),
     };
-    live_view(&mut cursor, frame, preview, speech);
+    cursor.line(
+        frame,
+        Line::from(clip(
+            vec![Span::styled(where_, style::fg(theme().dim))],
+            width,
+        )),
+    );
 }
 
 fn worktree_line(
@@ -424,27 +422,14 @@ pub(super) fn cost(session: &AgentSession) -> String {
 pub struct Detail<'a> {
     pub agent: &'a AgentRow<'a>,
     pub suggestion: Option<&'a MoveSuggestion>,
-    pub preview: Preview<'a>,
-    pub draft: Option<&'a Draft>,
     pub forwards: &'a [(u16, ForwardState)],
-    pub reading: Reading<'a>,
-}
-
-#[derive(Clone, Copy)]
-pub struct Reading<'a> {
-    pub search: Option<(&'a str, usize)>,
-    pub expanded: bool,
-    pub scroll: &'a TalkScroll,
 }
 
 pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
     let Detail {
         agent,
         suggestion,
-        preview,
-        draft,
         forwards,
-        reading,
     } = detail;
     let session = agent.session;
     let (mark, color) = style::agent(session.agent);
@@ -473,26 +458,14 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
     draw_panel(frame, area, panel(title, Some(facts)));
     let inner = body(area);
     let width = inner.width as usize;
-    let context = Rect::new(inner.x, inner.y - 1, inner.width, 1);
-    frame.render_widget(Paragraph::new(context_line(agent, width)), context);
-    let draft = draft.filter(|draft| draft.session == session.id);
-    let text_width = width.saturating_sub(DRAFT_INSET).max(8);
-    let shown = draft.map(|draft| {
-        let lines: Vec<String> = draft
-            .text
-            .split('\n')
-            .flat_map(|line| wrap_draft(&line.replace('\t', TAB), text_width))
-            .collect();
-        let hidden = lines.len().saturating_sub(DRAFT_ROWS);
-        (lines, hidden)
-    });
-    let rows = shown
-        .as_ref()
-        .map_or(1, |(lines, hidden)| lines.len() - hidden);
-    let [view, input] = Layout::vertical([Constraint::Min(0), Constraint::Length(2 + rows as u16)])
-        .spacing(1)
-        .areas(inner);
-    let mut cursor = Cursor::new(view);
+    let mut cursor = Cursor::new(Rect::new(
+        inner.x,
+        inner.y - 1,
+        inner.width,
+        inner.height + 1,
+    ));
+    cursor.line(frame, context_line(agent, width));
+    cursor.skip();
     if let Some(MoveSuggestion { pressure, target }) = suggestion {
         cursor.line(
             frame,
@@ -515,76 +488,30 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
         );
         cursor.skip();
     }
-    let speech = Speech {
-        search: reading.search,
-        working: agent.live && matches!(session.state, SessionState::Working { .. }),
-        activity: session.activity.as_deref(),
-        reading,
-        shown: &session.id,
-    };
-    live_view(&mut cursor, frame, preview, speech);
-    let mut frame_box = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(style::fg(if shown.is_some() {
-            theme().accent
-        } else {
-            theme().border
-        }));
-    if let Some((_, hidden)) = shown.as_ref().filter(|(_, hidden)| *hidden > 0) {
-        frame_box = frame_box.title(
-            Line::from(Span::styled(
-                format!(" {hidden} more above "),
-                style::fg(theme().faint),
-            ))
-            .alignment(Alignment::Right),
+    cursor.line(frame, status_line(agent, width));
+    if let Some(queued) = &session.queued {
+        cursor.line(
+            frame,
+            Line::from(clip(
+                vec![
+                    Span::styled("  queued: ", style::fg(theme().accent)),
+                    Span::styled(queued.replace('\n', " "), style::fg(theme().dim)),
+                ],
+                width,
+            )),
         );
     }
-    if shown.is_some() {
-        let send = if session.state == SessionState::Idle {
-            "send"
-        } else {
-            "queue"
-        };
-        let mut hints = keys(&[("↵", send), ("esc", "cancel")]);
-        hints.push(Span::raw(" "));
-        frame_box = frame_box.title_bottom(Line::from(hints).alignment(Alignment::Right));
+    if session.children.is_empty() {
+        return;
     }
-    let field = frame_box.inner(input).inner(Margin {
-        horizontal: 1,
-        vertical: 0,
-    });
-    frame.render_widget(frame_box, input);
-    let width = field.width as usize;
-    let mut cursor = Cursor::new(field);
-    let Some((lines, hidden)) = shown else {
-        return cursor.line(frame, input_line(agent, width));
-    };
-    let last = lines.len() - 1;
-    for (index, line) in lines.into_iter().enumerate().skip(hidden) {
-        cursor.line(frame, draft_line(index, line, index == last));
+    cursor.skip();
+    cursor.line(
+        frame,
+        Line::from(Span::styled("Subagents and tasks", style::fg(theme().dim))),
+    );
+    for child in &session.children {
+        cursor.line(frame, child_line(child, 0, false, width));
     }
-}
-
-fn wrap_draft(line: &str, width: usize) -> Vec<String> {
-    let mut rows = vec![String::new()];
-    let mut used = 0;
-    for word in line.split_inclusive(' ') {
-        let size = word.width();
-        if used + size > width && used > 0 {
-            rows.push(String::new());
-            used = 0;
-        }
-        for c in word.chars() {
-            let size = c.width().unwrap_or(0);
-            if used + size > width {
-                rows.push(String::new());
-                used = 0;
-            }
-            rows.last_mut().expect("rows starts with one row").push(c);
-            used += size;
-        }
-    }
-    rows
 }
 
 pub(super) fn context_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
@@ -611,18 +538,6 @@ pub(super) fn context_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> 
         Span::styled(agent.machine.clone(), style::fg(theme().dim)),
     ]);
     Line::from(clip(spans, width))
-}
-
-fn draft_line(index: usize, text: String, last: bool) -> Line<'static> {
-    let prompt = if index == 0 { "› " } else { "  " };
-    let mut spans = vec![
-        Span::styled(prompt, style::fg(theme().accent)),
-        Span::styled(text, style::fg(theme().text)),
-    ];
-    if last {
-        spans.push(Span::styled("▏", style::fg(theme().accent)));
-    }
-    Line::from(spans)
 }
 
 fn keys(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
@@ -701,7 +616,7 @@ pub(super) fn facts(
     facts
 }
 
-fn input_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
+fn status_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
     let session = agent.session;
     let prompt = |color| Span::styled("› ", style::fg(color));
     let hint = |text: &str| Span::styled(text.to_string(), style::fg(theme().faint));
@@ -716,7 +631,9 @@ fn input_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
             return spread(
                 vec![
                     prompt(theme().faint),
-                    hint("continue it in Rex to message it here; the original stays"),
+                    hint(
+                        "not in Rex: continue it there to answer it from here; the original stays",
+                    ),
                 ],
                 keys(&[("r", "continue in Rex")]),
                 width,
@@ -725,7 +642,7 @@ fn input_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
         return Line::from(clip(
             vec![
                 prompt(theme().faint),
-                hint("messages and approvals work for sessions in Rex"),
+                hint("approvals from magi work for sessions in Rex"),
             ],
             width,
         ));
@@ -753,32 +670,17 @@ fn input_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
             keys(&[("1–9", "choose"), ("o", "open")]),
             width,
         ),
-        _ if session.queued.is_some() => spread(
-            vec![
-                prompt(theme().accent),
-                Span::styled("Queued: ", style::fg(theme().accent)),
-                hint(
-                    &session
-                        .queued
-                        .clone()
-                        .unwrap_or_default()
-                        .replace('\n', " "),
-                ),
-            ],
-            keys(&[("↵", "edit")]),
-            width,
-        ),
         SessionState::Working { .. } => spread(
             vec![
-                prompt(theme().faint),
-                hint("Working. A message waits until it's idle"),
+                prompt(theme().accent),
+                hint(session.activity.as_deref().unwrap_or("Working")),
             ],
-            keys(&[("↵", "queue")]),
+            keys(&[("↵", "open")]),
             width,
         ),
         SessionState::Idle => spread(
-            vec![prompt(theme().faint), hint("Message this session")],
-            keys(&[("↵", "write")]),
+            vec![prompt(theme().faint), hint("Idle, waiting for you")],
+            keys(&[("↵", "open")]),
             width,
         ),
     }
@@ -800,120 +702,4 @@ fn state_spans(agent: &AgentRow<'_>) -> Vec<Span<'static>> {
         ));
     }
     state
-}
-
-#[derive(Clone, Copy)]
-pub enum Source {
-    Pane,
-    Conversation,
-}
-
-pub enum Preview<'a> {
-    Waiting(Source),
-    Ready(&'a Content),
-    Failed(&'a str),
-    Gone,
-}
-
-struct Speech<'a> {
-    search: Option<(&'a str, usize)>,
-    working: bool,
-    activity: Option<&'a str>,
-    reading: Reading<'a>,
-    shown: &'a str,
-}
-
-fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, speech: Speech<'_>) {
-    let width = usize::from(cursor.area.width);
-    if let Preview::Ready(Content::Conversation(said)) = preview {
-        let talk = super::talk::Talk {
-            said,
-            shown: speech.shown,
-            scroll: speech.reading.scroll,
-            working: speech.working,
-            expanded: speech.reading.expanded,
-            activity: speech.activity,
-            search: speech.search,
-        };
-        return super::talk::render(frame, cursor.rest(), talk);
-    }
-    let note = |cursor: &mut Cursor, frame: &mut Frame, text: &str, color| {
-        cursor.line(
-            frame,
-            Line::from(clip(
-                vec![Span::styled(text.to_string(), style::fg(color))],
-                width,
-            )),
-        );
-    };
-    let lines: Vec<Line<'static>> = match preview {
-        Preview::Ready(Content::Screen(rows)) => rows
-            .iter()
-            .map(|row| Line::from(clip(row.iter().map(run_span).collect(), width)))
-            .collect(),
-        Preview::Ready(Content::Conversation(_)) => return,
-        Preview::Waiting(Source::Pane) => {
-            return note(cursor, frame, "connecting to the pane…", theme().faint);
-        }
-        Preview::Waiting(Source::Conversation) => {
-            return note(cursor, frame, "reading the conversation…", theme().faint);
-        }
-        Preview::Failed(reason) => return note(cursor, frame, reason, theme().warn),
-        Preview::Gone => {
-            return note(cursor, frame, "its machine isn't answering", theme().faint);
-        }
-    };
-    let room = cursor.left() as usize;
-    for line in lines
-        .into_iter()
-        .rev()
-        .take(room)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-    {
-        cursor.line(frame, line);
-    }
-}
-
-fn run_span(run: &Run) -> Span<'static> {
-    let color = |shade: Shade| match shade {
-        Shade::Default => None,
-        Shade::Indexed(index) => Some(Color::Indexed(index)),
-        Shade::Rgb(r, g, b) => Some(Color::Rgb(r, g, b)),
-    };
-    let modifiers = [
-        (BOLD, Modifier::BOLD),
-        (DIM, Modifier::DIM),
-        (ITALIC, Modifier::ITALIC),
-        (UNDERLINE, Modifier::UNDERLINED),
-        (INVERSE, Modifier::REVERSED),
-    ]
-    .into_iter()
-    .filter(|(flag, _)| run.flags & flag != 0)
-    .fold(Modifier::empty(), |all, (_, modifier)| all | modifier);
-    Span::styled(
-        run.text.clone(),
-        Style {
-            fg: color(run.fg),
-            bg: color(run.bg),
-            ..Style::new()
-        }
-        .add_modifier(modifiers),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_message_wraps_between_words_and_splits_only_words_wider_than_the_box() {
-        assert_eq!(
-            wrap_draft("fix the build please", 10),
-            ["fix the ", "build ", "please"]
-        );
-        assert_eq!(wrap_draft("abcdefghijkl", 5), ["abcde", "fghij", "kl"]);
-        assert_eq!(wrap_draft("", 5), [""]);
-    }
 }

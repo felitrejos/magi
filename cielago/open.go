@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -31,7 +32,7 @@ type openReport struct {
 
 func openCommand(args []string, out io.Writer) error {
 	asJSON, codex, list, chat := false, false, false, false
-	resume, model := "", ""
+	resume, model, project := "", "", ""
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
@@ -55,6 +56,12 @@ func openCommand(args []string, out io.Writer) error {
 			}
 			i++
 			model = args[i]
+		case "--group":
+			if i+1 >= len(args) {
+				return errors.New("--group needs a project name")
+			}
+			i++
+			project = args[i]
 		default:
 			rest = append(rest, a)
 		}
@@ -110,7 +117,7 @@ func openCommand(args []string, out io.Writer) error {
 		}
 	}
 	if len(rest) != 1 {
-		return fail(errors.New("usage: cielago open <folder> [--codex] [--model <model> | --resume <session-id>] [--json], cielago open --chat [--codex] [--model <model>] [--json], or cielago open --list [--json]"))
+		return fail(errors.New("usage: cielago open <folder> [--codex] [--group <project>] [--model <model> | --resume <session-id>] [--json], cielago open --chat [--codex] [--model <model>] [--json], or cielago open --list [--json]"))
 	}
 	if resume != "" && (codex || !sessionIDPattern.MatchString(resume)) {
 		return fail(fmt.Errorf("%q is not a Claude session id to continue", resume))
@@ -133,6 +140,12 @@ func openCommand(args []string, out io.Writer) error {
 		}
 		if group, err = localGroup(root, roots); err != nil {
 			return fail(err)
+		}
+		if project != "" {
+			if !validGroup(project) {
+				return fail(fmt.Errorf("%q can't name a Rex session", project))
+			}
+			group = project
 		}
 		name = baseName(root)
 	}
@@ -166,6 +179,18 @@ func openCommand(args []string, out io.Writer) error {
 		where += ", which is new"
 	}
 	return report(openReport{Event: "opened", OK: true, Message: where})
+}
+
+func validGroup(name string) bool {
+	if name == "" || len(name) > 64 || strings.HasPrefix(name, "-") || strings.ContainsRune(name, '/') {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func openRoots(m Machine) ([]string, error) {

@@ -5,6 +5,7 @@ mod chart;
 mod diacritics;
 mod feed;
 mod fleet;
+mod follow;
 mod graphics;
 mod input;
 mod launcher;
@@ -40,7 +41,6 @@ use input::{Input, Key};
 use link::{Dial, LinkHandle};
 use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
-const WHEEL_LINES: isize = 3;
 const THUMBNAIL_PIXELS: &str = "1200";
 const THUMBNAIL_WITHIN: Duration = Duration::from_secs(10);
 const LEARN_EXISTING_FOR: Duration = Duration::from_secs(30);
@@ -65,6 +65,7 @@ pub enum Event {
 
 pub use feed::run as alerts;
 pub use fleet::print as fleet;
+pub use follow::run as follow;
 pub use launcher::run as launch;
 pub use page::{Page, run as page};
 
@@ -281,18 +282,11 @@ fn event_loop(
             write_status(&alerts::report(&changes))?;
             let mut out = io::stdout();
             execute!(out, BeginSynchronizedUpdate)?;
-            let mut links = String::new();
             let drawn = terminal
-                .draw(|frame| {
-                    view::render(frame, &model, now, graphics);
-                    links = view::hyperlinks(frame.buffer_mut(), model.talk.links());
-                })
+                .draw(|frame| view::render(frame, &model, now, graphics))
                 .map(drop)
                 .and_then(|()| graphics.flush(&mut out))
-                .and_then(|()| {
-                    out.write_all(links.as_bytes())?;
-                    out.flush()
-                });
+                .and_then(|()| out.flush());
             execute!(out, EndSynchronizedUpdate)?;
             drawn?;
             last_draw = now;
@@ -379,9 +373,8 @@ enum Action {
     First,
     Last,
     Alerts,
-    Open,
     Move,
-    Message,
+    Enter,
     Allow,
     Deny,
     Choose(u8),
@@ -390,10 +383,7 @@ enum Action {
     Adopt,
     Project,
     RenameProject,
-    Tools,
     Zen,
-    PageUp,
-    PageDown,
     Diff,
     Outputs,
 }
@@ -406,8 +396,7 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('g') | Key::First => Action::First,
         Key::Char('G') | Key::Last => Action::Last,
         Key::Char('a') => Action::Alerts,
-        Key::Enter => Action::Message,
-        Key::Char('o') => Action::Open,
+        Key::Enter => Action::Enter,
         Key::Char('m') => Action::Move,
         Key::Char('y') => Action::Allow,
         Key::Char('n') => Action::Deny,
@@ -417,10 +406,7 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('r') => Action::Adopt,
         Key::Char('p') => Action::Project,
         Key::Char('P') => Action::RenameProject,
-        Key::Char('t') => Action::Tools,
         Key::Char('z') => Action::Zen,
-        Key::PageUp => Action::PageUp,
-        Key::PageDown => Action::PageDown,
         Key::Char('d') => Action::Diff,
         Key::Char('v') => Action::Outputs,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
@@ -444,75 +430,10 @@ fn on_detail(model: &Model, column: u16, row: u16, now: Instant) -> bool {
         .contains(ratatui::layout::Position::new(column, row))
 }
 
-fn click(model: &mut Model, column: u16, row: u16, now: Instant) {
-    if on_detail(model, column, row, now) && model.draft.is_none() {
-        start_draft(model, now);
-    }
-}
-
 fn wheel(model: &mut Model, up: bool, column: u16, row: u16, now: Instant) {
-    if on_detail(model, column, row, now) {
-        model
-            .talk
-            .scroll(if up { WHEEL_LINES } else { -WHEEL_LINES });
-    } else {
+    if !on_detail(model, column, row, now) {
         model.move_selection(if up { -1 } else { 1 }, now);
     }
-}
-
-fn start_draft(model: &mut Model, now: Instant) {
-    let Some(agent) = model.selected_agent(now) else {
-        return;
-    };
-    if agent.session.pane.is_none() {
-        let reason = format!(
-            "{} isn't in a Rex pane, so magi can't type into it",
-            agent.session.title
-        );
-        return model.flash(reason, false, now);
-    }
-    if !agent.live {
-        return model.flash(format!("{} isn't answering", agent.machine), false, now);
-    }
-    model.draft = Some(model::Draft {
-        endpoint: agent.endpoint,
-        session: agent.session.id.clone(),
-        title: agent.session.title.clone(),
-        text: agent.session.queued.clone().unwrap_or_default(),
-        had_queued: agent.session.queued.is_some(),
-    });
-}
-
-fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Key, now: Instant) {
-    match key {
-        Key::Char(c) => draft.type_in(c.encode_utf8(&mut [0; 4])),
-        Key::Paste(text) => draft.type_in(&text),
-        Key::Newline => draft.type_in("\n"),
-        Key::Backspace => draft.erase(),
-        Key::Escape | Key::Interrupt => return,
-        Key::Enter if !draft.text.trim().is_empty() || draft.had_queued => {
-            let request = proto::Request::Prompt {
-                session: draft.session,
-                text: draft.text,
-            };
-            if let Err(error) = links.request(draft.endpoint, &request) {
-                model.flash(format!("couldn't send it: {error}"), false, now);
-            }
-            return;
-        }
-        Key::Enter
-        | Key::Up
-        | Key::Down
-        | Key::Left
-        | Key::Right
-        | Key::First
-        | Key::Last
-        | Key::Tab
-        | Key::BackTab
-        | Key::PageUp
-        | Key::PageDown => {}
-    }
-    model.draft = Some(draft);
 }
 
 fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
@@ -596,6 +517,7 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
         } else {
             proto::OpenIn::Folder(choice.dir.clone())
         },
+        project: choice.project.clone(),
         codex: choice.codex,
         model: choice.model.clone(),
     };
@@ -1002,59 +924,17 @@ fn handle_batch(
     model: &mut Model,
     links: &mut Links,
 ) -> io::Result<Flow> {
-    let mut drafted = false;
     for event in events {
-        let is_key = matches!(event, Event::Input(Input::Key(_)));
-        if drafted && is_key {
-            continue;
-        }
-        let drafting = model.draft.is_some();
         if handle(event, model, links)? == Flow::Quit {
             return Ok(Flow::Quit);
         }
-        drafted |= drafting && model.draft.is_none();
     }
     model.reselect(Instant::now());
     model.note_shown(Instant::now());
-    sync_watch(model, links);
     ask_namer(model, links);
     refresh_launcher(model, links, Instant::now());
     share_projects(model, links);
     Ok(Flow::Continue)
-}
-
-fn edit_search(model: &mut Model, key: Key) {
-    let Some(search) = model.search.as_mut() else {
-        return;
-    };
-    match key {
-        Key::Char(c) if !c.is_control() => {
-            search.query.push(c);
-            search.index = 0;
-        }
-        Key::Paste(text) => {
-            search
-                .query
-                .extend(text.chars().filter(|c| !c.is_control()));
-            search.index = 0;
-        }
-        Key::Backspace => {
-            search.query.pop();
-            search.index = 0;
-        }
-        Key::Enter => search.typing = false,
-        Key::Escape | Key::Interrupt => model.search = None,
-        _ => {}
-    }
-}
-
-fn step_search(model: &mut Model, step: isize) {
-    let found = model.talk.matches();
-    if let Some(search) = model.search.as_mut()
-        && found > 0
-    {
-        search.index = (search.index as isize + step).rem_euclid(found as isize) as usize;
-    }
 }
 
 fn share_projects(model: &mut Model, links: &Links) {
@@ -1135,60 +1015,11 @@ fn named(model: &mut Model, asked: Vec<String>, named: Result<BTreeMap<String, S
     }
 }
 
-fn sync_watch(model: &mut Model, links: &Links) {
-    let wanted = model.wanted_watch(Instant::now());
-    if wanted == model.watching {
-        return;
-    }
-    if let Some((endpoint, _, _)) = &model.watching {
-        let request = proto::Request::Watch {
-            session: None,
-            child: None,
-        };
-        let _ = links.request(*endpoint, &request);
-    }
-    let started = wanted.filter(|(endpoint, session, child)| {
-        let request = proto::Request::Watch {
-            session: Some(session.clone()),
-            child: child.clone(),
-        };
-        links.request(*endpoint, &request).is_ok()
-    });
-    model.watch(started);
-}
-
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
     let now = Instant::now();
     match event {
-        Event::Input(Input::Key(key))
-            if model.search.as_ref().is_some_and(|search| search.typing) =>
-        {
-            edit_search(model, key);
-        }
-        Event::Input(Input::Key(key @ (Key::Char('n' | 'N') | Key::Escape)))
-            if model.search.is_some() =>
-        {
-            match key {
-                Key::Escape => model.search = None,
-                Key::Char('n') => step_search(model, 1),
-                _ => step_search(model, -1),
-            }
-        }
-        Event::Input(Input::Key(Key::Char('/')))
-            if !model.projects.zen()
-                && model.draft.is_none()
-                && model.selected_agent(now).is_some() =>
-        {
-            model.search = Some(model::Search {
-                typing: true,
-                ..model::Search::default()
-            });
-        }
         Event::Input(Input::Key(key)) if let Some(naming) = model.naming.take() => {
             edit_naming(model, naming, key, now);
-        }
-        Event::Input(Input::Key(key)) if let Some(draft) = model.draft.take() => {
-            edit_draft(model, links, draft, key, now);
         }
         Event::Input(Input::Key(key)) if let Some(mut pending) = model.pending_move.take() => {
             match key {
@@ -1230,14 +1061,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             !model.projects.zen()
                 || !matches!(
                     action,
-                    Action::Allow
-                        | Action::Deny
-                        | Action::Choose(_)
-                        | Action::Stop
-                        | Action::Adopt
-                        | Action::Tools
-                        | Action::PageUp
-                        | Action::PageDown
+                    Action::Allow | Action::Deny | Action::Choose(_) | Action::Stop | Action::Adopt
                 )
         }) {
             Some(Action::Quit) => return Ok(Flow::Quit),
@@ -1246,17 +1070,15 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::First) => model.move_selection(isize::MIN, now),
             Some(Action::Last) => model.move_selection(isize::MAX, now),
             Some(Action::Alerts) => open_alerts(links),
-            Some(Action::Open) => open_selected(model, links, now)?,
             Some(Action::Move) => propose_move(model, now),
-            Some(Action::Message) => match (model.selected_project(now), model.selection(now)) {
+            Some(Action::Enter) => match (model.selected_project(now), model.selection(now)) {
                 (Some(key), _) => {
                     if let Err(error) = model.projects.toggle_fold(&key) {
                         model.flash(format!("couldn't save projects: {error}"), false, now);
                     }
                 }
                 (None, Some(model::Focus::NewSession)) => open_launcher(model, links, now),
-                (None, _) if model.projects.zen() => open_selected(model, links, now)?,
-                (None, _) => start_draft(model, now),
+                (None, _) => open_selected(model, links, now)?,
             },
             Some(Action::Allow) => answer(model, links, true, now),
             Some(Action::Deny) => answer(model, links, false, now),
@@ -1267,15 +1089,12 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Adopt) => adopt(model, links, now),
             Some(Action::Project) => start_naming(model, false, now),
             Some(Action::RenameProject) => start_naming(model, true, now),
-            Some(Action::Tools) => model.tools_expanded = !model.tools_expanded,
             Some(Action::Zen) => {
                 let zen = !model.projects.zen();
                 if let Err(error) = model.projects.set_zen(zen) {
                     model.flash(format!("couldn't save the view: {error}"), false, now);
                 }
             }
-            Some(Action::PageUp) => model.talk.page(true),
-            Some(Action::PageDown) => model.talk.page(false),
             Some(Action::Diff) => ask_to_show(model, links, proto::Showing::Diff, now),
             Some(Action::Outputs) => ask_to_show(model, links, proto::Showing::Outputs, now),
             None => {}
@@ -1303,7 +1122,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
         Event::Input(Input::Resize) => write_terminal(terminal::CELL_SIZE)?,
         Event::Input(Input::Cells { width, height }) => model.cell_size = Some((width, height)),
         Event::Input(Input::Closed) => return Ok(Flow::Quit),
-        Event::Input(Input::Click { column, row }) => click(model, column, row, now),
+        Event::Input(Input::Click { .. }) => {}
         Event::Input(Input::Wheel { up, column, row }) => wheel(model, up, column, row, now),
         Event::Topology(topology) => {
             let mut wanted: Vec<Endpoint> = std::iter::once(Endpoint::Local)
@@ -1527,11 +1346,11 @@ mod tests {
     }
 
     #[test]
-    fn o_explains_when_a_session_is_not_in_rex() {
+    fn enter_explains_when_a_session_is_not_in_rex() {
         let (mut model, mut links) = fleet();
         with_session(&mut model, None);
         assert!(!footer(&model).contains("open"));
-        handle_batch([key(Key::Char('o'))].into_iter(), &mut model, &mut links).unwrap();
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(
             model.flashed(Instant::now()),
             Some(("fix login isn't running in a Rex pane", false))
@@ -1540,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn a_busy_session_takes_a_queued_message_and_shift_tab_asks_to_switch_its_mode() {
+    fn a_session_shows_what_is_queued_for_it_and_shift_tab_asks_to_switch_its_mode() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         let mut session = in_rex(claude("s1", 0));
@@ -1550,17 +1369,9 @@ mod tests {
         model.apply(Endpoint::Local, live_sample(1_000, Some(session)), now);
         select_first_session(&mut model);
         let shown = screen(&model);
-        assert!(shown.contains("Queued: then commit"), "{shown}");
+        assert!(shown.contains("queued: then commit"), "{shown}");
         assert!(shown.contains("plan mode"), "{shown}");
         assert!(footer(&model).contains("⇧tab mode"), "{}", footer(&model));
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        let draft = model.draft.clone().unwrap();
-        assert_eq!(
-            (draft.text.as_str(), draft.had_queued),
-            ("then commit", true)
-        );
-        assert!(screen(&model).contains("↵ queue"), "{}", screen(&model));
-        handle_batch([key(Key::Escape)].into_iter(), &mut model, &mut links).unwrap();
         handle_batch([key(Key::BackTab)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(
             model.flashed(Instant::now()),
@@ -1583,7 +1394,7 @@ mod tests {
             }),
         );
         assert!(
-            footer(&model).contains("o open in Rex"),
+            footer(&model).contains("↵ open in Rex"),
             "{}",
             footer(&model)
         );
@@ -1768,147 +1579,6 @@ mod tests {
             Some(("moving run the tests to nas…", true))
         );
         assert!(footer(&model).contains("moving run the tests to nas…"));
-    }
-
-    #[test]
-    fn a_rex_session_asking_you_shows_its_screen_until_the_selection_moves() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let mut session = claude("s1", 0);
-        session.state = SessionState::Waiting(crate::proto::Waiting::Permission(None));
-        session.pane = Some(RexPane {
-            session: "session:1".into(),
-            window: "window:2".into(),
-            block: "block:3".into(),
-        });
-        model.apply(Endpoint::Local, live_sample(1_000, Some(session)), now);
-        select_first_session(&mut model);
-        assert_eq!(
-            model.wanted_watch(now),
-            Some((Endpoint::Local, "s1".to_string(), None))
-        );
-        model.watch(model.wanted_watch(now));
-        let screen = |text: &str| {
-            LinkUpdate::Screen(crate::proto::Screen {
-                session: "s1".into(),
-                child: None,
-                view: Ok(crate::proto::Content::Screen(vec![vec![
-                    crate::proto::Run {
-                        text: text.into(),
-                        fg: crate::proto::Shade::Rgb(217, 119, 87),
-                        bg: crate::proto::Shade::Default,
-                        flags: crate::proto::BOLD,
-                    },
-                ]])),
-            })
-        };
-        let draw = |model: &Model| {
-            let mut terminal =
-                ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
-            terminal
-                .draw(|frame| {
-                    view::render(frame, model, Instant::now(), &mut Graphics::cells_only())
-                })
-                .unwrap();
-            format!("{:?}", terminal.backend().buffer())
-        };
-        assert!(draw(&model).contains("connecting to the pane"));
-        model.apply(Endpoint::Local, screen("> run the tests"), now);
-        let shown = draw(&model);
-        assert!(shown.contains("> run the tests"), "{shown}");
-        handle_batch([key(Key::First)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.wanted_watch(now), None);
-        assert_eq!(model.watching, None);
-        assert!(!draw(&model).contains("> run the tests"));
-    }
-
-    #[test]
-    fn a_reconnect_forgets_the_watch_so_it_is_asked_for_again_and_stale_screens_are_ignored() {
-        let (mut model, _) = fleet();
-        let now = Instant::now();
-        model.watch(Some((Endpoint::Local, "s1".into(), None)));
-        model.apply(
-            Endpoint::Local,
-            LinkUpdate::Screen(crate::proto::Screen {
-                session: "other".into(),
-                child: None,
-                view: Err("old".into()),
-            }),
-            now,
-        );
-        assert_eq!(model.screen("other", None), None);
-        let identity = Identity {
-            hostname: "mac".into(),
-            tailscale_node: Some("mac".into()),
-            os: String::new(),
-            kernel: String::new(),
-            arch: String::new(),
-            cpu_model: String::new(),
-            core_kinds: Vec::new(),
-            agent_version: String::new(),
-        };
-        model.apply(
-            Endpoint::Local,
-            LinkUpdate::Welcome(Box::new(Welcome {
-                interval_ms: 1000,
-                identity,
-            })),
-            now,
-        );
-        assert_eq!(model.watching, None);
-    }
-
-    #[test]
-    fn a_session_outside_rex_shows_its_conversation_wrapped_to_the_panel() {
-        let (mut model, _) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(claude("s1", 0))),
-            now,
-        );
-        select_first_session(&mut model);
-        assert_eq!(
-            model.wanted_watch(now),
-            Some((Endpoint::Local, "s1".to_string(), None))
-        );
-        model.watch(model.wanted_watch(now));
-        let long = "word ".repeat(60);
-        model.apply(
-            Endpoint::Local,
-            LinkUpdate::Screen(crate::proto::Screen {
-                session: "s1".into(),
-                child: None,
-                view: Ok(crate::proto::Content::Conversation(vec![
-                    crate::proto::Said::You("run the tests".into()),
-                    crate::proto::Said::Reply(format!("**Done.** {}", long.trim())),
-                ])),
-            }),
-            now,
-        );
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 30)).unwrap();
-        terminal
-            .draw(|frame| view::render(frame, &model, Instant::now(), &mut Graphics::cells_only()))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let screen: Vec<String> = (0..30)
-            .map(|y| (0..140).map(|x| buffer[(x, y)].symbol()).collect())
-            .collect();
-        let joined = screen.join("\n");
-        let prompt = screen
-            .iter()
-            .find(|line| line.contains("run the tests") && !line.contains('✻'))
-            .unwrap_or_else(|| panic!("{joined}"));
-        assert!(
-            prompt.find("run the tests").unwrap() > 100,
-            "your message sits on the right\n{joined}"
-        );
-        let wrapped = screen
-            .iter()
-            .filter(|line| line.contains("word word"))
-            .count();
-        assert!(wrapped >= 3, "long replies wrap\n{joined}");
     }
 
     #[test]
@@ -2114,7 +1784,7 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_subagent_watches_it_and_shows_what_it_was_asked_and_answered() {
+    fn a_session_lists_its_subagents_and_one_points_to_its_own_tab() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         let mut parent = claude("s1", 0);
@@ -2129,31 +1799,15 @@ mod tests {
         }];
         model.apply(Endpoint::Local, live_sample(1_000, Some(parent)), now);
         select_first_session(&mut model);
+        let shown = screen(&model);
+        assert!(shown.contains("Subagents and tasks"), "{shown}");
         handle_batch([key(Key::Down)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(
-            model.wanted_watch(now),
-            Some((Endpoint::Local, "s1".into(), Some("toolu_a".into())))
-        );
-        model.watch(model.wanted_watch(now));
-        model.apply(
-            Endpoint::Local,
-            LinkUpdate::Screen(crate::proto::Screen {
-                session: "s1".into(),
-                child: Some("toolu_a".into()),
-                view: Ok(crate::proto::Content::Conversation(vec![
-                    crate::proto::Said::You("Where is the config parser?".into()),
-                    crate::proto::Said::Reply("In src/config.rs".into()),
-                ])),
-            }),
-            now,
-        );
         let shown = screen(&model);
         for text in [
             "◇ Find the parser",
             "subagent ·",
             "from run the tests · Explore",
-            "Where is the config parser?",
-            "In src/config.rs",
+            "Its work shows live in its own tab, ↳ Find the parser",
         ] {
             assert!(shown.contains(text), "missing {text:?}\n{shown}");
         }
@@ -2185,7 +1839,6 @@ mod tests {
             })
             .collect();
         assert_eq!(entries, ["api 1 false", "new"]);
-        assert_eq!(model.draft, None);
         handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(groups(&model), [("api".into(), vec!["s1".into()])]);
     }
@@ -2257,51 +1910,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_opens_a_message_box_that_types_letters_instead_of_running_keys() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
-            now,
-        );
-        select_first_session(&mut model);
-        assert!(screen(&model).contains("Message this session"));
-        let typed =
-            std::iter::once(key(Key::Enter)).chain("qjmy\x01".chars().map(|c| key(Key::Char(c))));
-        handle_batch(typed, &mut model, &mut links).unwrap();
-        handle_batch(
-            [key(Key::Paste("one\ntwo".into())), key(Key::Backspace)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert_eq!(model.draft.as_ref().unwrap().text, "qjmy one\ntw");
-        let shown = screen(&model);
-        assert!(shown.contains("› qjmy one "), "{shown}");
-        assert!(shown.contains("  tw▏"), "{shown}");
-        let lines = (0..8).flat_map(|n| [key(Key::Newline), key(Key::Char(char::from(b'a' + n)))]);
-        handle_batch(lines, &mut model, &mut links).unwrap();
-        let shown = screen(&model);
-        assert!(shown.contains("4 more above"), "{shown}");
-        assert!(shown.contains("  h▏") && !shown.contains("qjmy"), "{shown}");
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.draft, None);
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some(("couldn't send it: that machine isn't connected", false))
-        );
-        handle_batch(
-            [key(Key::Enter), key(Key::Escape)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert_eq!(model.draft, None);
-    }
-
-    #[test]
-    fn a_session_outside_rex_cannot_be_messaged() {
+    fn a_session_outside_rex_offers_to_continue_in_rex() {
         let (mut model, mut links) = fleet();
         let now = Instant::now();
         model.apply(
@@ -2310,21 +1919,16 @@ mod tests {
             now,
         );
         select_first_session(&mut model);
-        assert!(!screen(&model).contains("Message this session"));
-        assert!(screen(&model).contains("continue it in Rex to message it here"));
+        assert!(screen(&model).contains("not in Rex: continue it there"));
         assert!(
             footer(&model).contains("r continue in Rex"),
             "{}",
             footer(&model)
         );
         handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.draft, None);
         assert_eq!(
             model.flashed(Instant::now()),
-            Some((
-                "run the tests isn't in a Rex pane, so magi can't type into it",
-                false
-            ))
+            Some(("run the tests isn't running in a Rex pane", false))
         );
     }
 
@@ -2359,25 +1963,8 @@ mod tests {
     }
 
     #[test]
-    fn keys_in_the_same_burst_as_a_sent_message_are_dropped_and_escape_never_quits() {
+    fn escape_never_quits() {
         let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
-            now,
-        );
-        select_first_session(&mut model);
-        let pasted = [
-            key(Key::Enter),
-            key(Key::Char('h')),
-            key(Key::Enter),
-            key(Key::Char('q')),
-            key(Key::Char('m')),
-        ];
-        let flow = handle_batch(pasted.into_iter(), &mut model, &mut links).unwrap();
-        assert!(flow == Flow::Continue);
-        assert_eq!(model.pending_move, None);
         let flow = handle_batch(
             [key(Key::Escape), key(Key::Escape)].into_iter(),
             &mut model,
@@ -2663,10 +2250,8 @@ mod tests {
             now,
         );
         select_first_session(&mut model);
-        assert!(model.wanted_watch(now).is_some());
         handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
         assert!(model.projects.zen());
-        assert_eq!(model.wanted_watch(now), None);
         let shown = screen(&model);
         for text in [
             "all quiet",
@@ -2678,13 +2263,6 @@ mod tests {
             assert!(shown.contains(text), "missing {text:?}\n{shown}");
         }
         assert!(!shown.contains("show tools"), "{shown}");
-        handle_batch(
-            [key(Key::Enter), key(Key::Char('y'))].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert!(model.draft.is_none());
         handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
         assert!(!model.projects.zen());
     }

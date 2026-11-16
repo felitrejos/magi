@@ -16,14 +16,15 @@
 </p>
 
 <p align="center">
-  <img src="assets/fleet.gif" alt="magi in the Rex app: machines and agents on the left; on the right a home server's CPU, memory and network as pixel charts, then the conversations of Claude Code and Codex sessions drawn as Markdown, and the alerts view." width="820">
+  <img src="assets/fleet.gif" alt="magi in the Rex app: machines and agents on the left; on the right a home server's CPU, memory and network as pixel charts, then Claude Code and Codex sessions, and the alerts view." width="820">
 </p>
 
 This repo holds two apps that work together or alone:
 
-- **magi** watches every Claude Code and Codex session on your machines, and
-  each machine's load, from one [Rex](https://www.superlogical.com/rex) pane.
-  Read, answer and start sessions there.
+- **magi** is the overview of every Claude Code and Codex session on your
+  machines, and each machine's load, in one [Rex](https://www.superlogical.com/rex)
+  pane. You work in the agents themselves; magi puts each session in the
+  right place and tells you when one needs you.
 - **cielago** moves a Claude Code session, with its conversation and
   uncommitted work, to another machine, and lets Claude send work there. It
   works on its own, from any Claude Code session, over SSH.
@@ -33,11 +34,13 @@ This repo holds two apps that work together or alone:
 - **Every session, every machine.** Sessions are grouped by project, the ones
   waiting on you on top, with each machine's CPU, memory and network beside
   them. No server or config file.
-- **Read, answer, start.** A session's conversation as Markdown, with its
-  plan, diff and outputs a key away. Answer prompts, write to it, or start a
-  new one on whichever machine has room.
-- **Zen.** A second layout for watching rather than talking: a column per
-  machine, its load and its sessions.
+- **Sessions in their place.** A new session opens on whichever machine has
+  room, in its project's Rex session and its repo's tab. Each subagent gets a
+  tab of its own beside it, showing its work live, that closes when it's done.
+- **Answer from the overview.** Allow or deny a prompt, switch a session's
+  permission mode, see its diff and outputs, or jump to its pane.
+- **Zen.** A second layout to glance at: a column per machine, its load and
+  its sessions.
 - **Limits and alerts.** Your Claude and Codex 5-hour and weekly windows, and
   an alert when a session needs you, a machine goes quiet or a plan nearly
   runs out.

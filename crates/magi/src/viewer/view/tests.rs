@@ -439,7 +439,7 @@ fn selecting_an_agent_shows_its_detail_and_keeps_the_machines_visible() {
         "$51.38",
         "opus 5.5",
         "831K context",
-        "reading the conversation",
+        "not in Rex: continue it there",
     ] {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");
     }
@@ -645,7 +645,7 @@ fn a_mac_shows_its_performance_cores_apart_from_its_efficiency_cores() {
 }
 
 #[test]
-fn links_are_kept_with_their_text_and_marked_where_they_land_on_screen() {
+fn links_in_printed_markdown_are_terminal_hyperlinks_and_unsafe_ones_are_dropped() {
     let text =
         "See [the release notes](https://example.com/notes) and [this](javascript:alert(1)).";
     let (_, links) = super::markdown::markdown_links(text, 80);
@@ -662,25 +662,4 @@ fn links_are_kept_with_their_text_and_marked_where_they_land_on_screen() {
         "{printed:?}"
     );
     assert!(!printed.contains("javascript:"), "{printed:?}");
-    let lines = super::markdown::markdown(
-        "Read [the release notes](https://example.com/notes) now",
-        16,
-    );
-    let mut terminal = Terminal::new(TestBackend::new(16, 4)).unwrap();
-    terminal
-        .draw(|frame| {
-            frame.render_widget(
-                ratatui::widgets::Paragraph::new(lines.clone()),
-                frame.area(),
-            );
-        })
-        .unwrap();
-    let overlay = super::hyperlinks(terminal.backend().buffer(), links);
-    assert_eq!(
-        overlay
-            .matches("\x1b]8;;https://example.com/notes\x1b\\")
-            .count(),
-        2,
-        "the wrapped link is marked on both of its lines: {overlay:?}"
-    );
 }

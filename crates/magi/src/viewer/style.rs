@@ -8,7 +8,6 @@ use crate::proto::Agent;
 const CLAUDE: Rgb = Rgb(217, 119, 87);
 const DARK_LIFT: f32 = 0.035;
 const LIGHT_LIFT: f32 = 0.03;
-const RAISE: f32 = 0.045;
 const PROSE: f32 = 0.13;
 const FALLBACK: Palette = Palette {
     foreground: Rgb(228, 228, 232),
@@ -28,13 +27,11 @@ pub struct Theme {
     pub text: Color,
     pub dim: Color,
     pub faint: Color,
-    pub border: Color,
     pub rule: Color,
     pub track: Color,
     pub guide: Color,
     pub selected: Color,
     pub panel: Color,
-    pub raised: Color,
     pub prose: Color,
     pub accent: Color,
     pub second: Color,
@@ -121,13 +118,11 @@ impl From<Palette> for Theme {
             text: palette.foreground.into(),
             dim: toward_background(0.42),
             faint: toward_background(0.62),
-            border: toward_background(0.66),
             rule: toward_background(0.64),
             track: toward_background(0.84),
             guide: toward_background(0.78),
             selected: toward_background(0.88),
             panel: palette.panel(0.0),
-            raised: palette.panel(RAISE),
             prose: toward_background(PROSE),
             accent: palette.green.into(),
             second: palette.magenta.into(),

@@ -6,6 +6,7 @@ mod collect;
 mod conversation;
 mod handoff;
 mod log;
+mod mirrors;
 mod net;
 mod opener;
 mod proto;
@@ -37,6 +38,7 @@ Usage:
   magi launch SOCKET                                   the new-session launcher the viewer opens in a Rex float
   magi md [--width N] FILE                             print a Markdown file in magi's colours
   magi alerts                                          the alert history as a feed, by day
+  magi follow TRANSCRIPT                               a subagent's work, live, for its mirror tab
   magi --version
   magi --help
 
@@ -57,6 +59,7 @@ enum Command {
     Launch(std::path::PathBuf),
     Document(std::path::PathBuf, usize),
     Alerts,
+    Follow(std::path::PathBuf),
     Version,
     Help,
 }
@@ -82,6 +85,7 @@ fn main() -> ExitCode {
         Command::Launch(socket) => viewer::launch(&socket),
         Command::Document(path, width) => viewer::print_document(&path, width),
         Command::Alerts => viewer::alerts(),
+        Command::Follow(transcript) => viewer::follow(&transcript),
         Command::Version => {
             println!("magi {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -114,6 +118,7 @@ enum Mode {
     Launch,
     Document,
     Alerts,
+    Follow,
 }
 
 fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
@@ -137,12 +142,16 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
             Value(value) if value == "launch" && mode == Mode::Viewer => mode = Mode::Launch,
             Value(value) if value == "md" && mode == Mode::Viewer => mode = Mode::Document,
             Value(value) if value == "alerts" && mode == Mode::Viewer => mode = Mode::Alerts,
+            Value(value) if value == "follow" && mode == Mode::Viewer => mode = Mode::Follow,
             Long("width") if mode == Mode::Document => width = parser.value()?.parse()?,
             Long("diff") if mode == Mode::Page => page.diff = true,
             Long("remove") if mode == Mode::Page => remove = true,
             Long("title") if mode == Mode::Page => page.title = parser.value()?.string()?,
             Value(value)
-                if matches!(mode, Mode::Page | Mode::Launch | Mode::Document) && file.is_none() =>
+                if matches!(
+                    mode,
+                    Mode::Page | Mode::Launch | Mode::Document | Mode::Follow
+                ) && file.is_none() =>
             {
                 file = Some(std::path::PathBuf::from(value))
             }
@@ -191,6 +200,7 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         Mode::StatusLineUninstall => Command::StatusLineUninstall,
         Mode::Launch => Command::Launch(file.ok_or("magi launch needs the viewer's socket")?),
         Mode::Alerts => Command::Alerts,
+        Mode::Follow => Command::Follow(file.ok_or("magi follow needs a subagent's transcript")?),
         Mode::Document => Command::Document(file.ok_or("magi md needs a file")?, width),
         Mode::Page => {
             let file = file.ok_or("magi page needs a file")?;
