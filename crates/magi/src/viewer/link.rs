@@ -158,6 +158,7 @@ impl Link {
                 | AgentMessage::Reply(_)
                 | AgentMessage::Screen(_)
                 | AgentMessage::Folders(_)
+                | AgentMessage::Models(_)
                 | AgentMessage::Shown(_),
             ) => {
                 return lost(
@@ -187,6 +188,7 @@ impl Link {
                 Ok(AgentMessage::Reply(reply)) => LinkUpdate::Reply(reply),
                 Ok(AgentMessage::Screen(screen)) => LinkUpdate::Screen(screen),
                 Ok(AgentMessage::Folders(folders)) => LinkUpdate::Folders(folders),
+                Ok(AgentMessage::Models(models)) => LinkUpdate::Models(models),
                 Ok(AgentMessage::Shown(shown)) => LinkUpdate::Shown(shown),
                 Ok(AgentMessage::Rejected(reason)) => return Ended::Rejected(reason),
                 Ok(AgentMessage::Welcome(_)) => {

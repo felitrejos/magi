@@ -69,6 +69,8 @@ func TestOpenRefusesAnythingButAProjectFolderOrARealSession(t *testing.T) {
 		"--json " + outside: "isn't in one of this machine's project folders",
 		"--json " + filepath.Join(home, "code", "-evil"): "can't name a session",
 		"--json --list " + outside:                       "--list takes no folder",
+		"--json --model --dangerously-skip-permissions " + filepath.Join(home, "code", "api"): "not a model",
+		"--json --model opus --resume 0f0f0f0f-1111-2222-3333-444444444444 " + outside:        "not a model",
 	} {
 		var out strings.Builder
 		if err := openCommand(strings.Fields(args), &out); err != errReported || !strings.Contains(out.String(), want) {

@@ -7,8 +7,8 @@ use super::launcher::{self, Launcher, Listing, Menu, Place};
 use super::namer;
 use super::projects::{Projects, Resolved};
 use crate::proto::{
-    self, Agent, AgentSession, Child, FULL, ForwardState, Identity, MAX_PROMPT_CHARS, Plan, Reply,
-    Sample, Screen, SessionState, Welcome,
+    self, Agent, AgentSession, Child, CodexModel, FULL, ForwardState, Identity, MAX_PROMPT_CHARS,
+    Plan, Reply, Sample, Screen, SessionState, Welcome,
 };
 use crate::tailscale::Peer;
 use unicode_segmentation::UnicodeSegmentation;
@@ -42,6 +42,7 @@ pub enum LinkUpdate {
     Reply(Reply),
     Screen(Screen),
     Folders(Vec<String>),
+    Models(Vec<CodexModel>),
     Shown(crate::proto::Shown),
 }
 
@@ -435,6 +436,7 @@ pub struct Model {
     pub draft: Option<Draft>,
     following: Option<Following>,
     pub folders: BTreeMap<Endpoint, Folders>,
+    pub codex_models: BTreeMap<Endpoint, Vec<CodexModel>>,
     pub launcher: Option<Launcher>,
     awaiting: Option<Awaiting>,
     pub watching: Option<Watched>,
@@ -567,6 +569,7 @@ impl Model {
             draft: None,
             following: None,
             folders: BTreeMap::new(),
+            codex_models: BTreeMap::new(),
             launcher: None,
             awaiting: None,
             watching: None,
@@ -595,6 +598,12 @@ impl Model {
                 LinkUpdate::Folders(folders) => {
                     if let Some(asked) = self.folders.get_mut(&endpoint) {
                         *asked = Folders::Listed(folders);
+                    }
+                    return;
+                }
+                LinkUpdate::Models(models) => {
+                    if self.folders.contains_key(&endpoint) {
+                        self.codex_models.insert(endpoint, models);
                     }
                     return;
                 }
@@ -664,6 +673,7 @@ impl Model {
             LinkUpdate::Reply(_)
             | LinkUpdate::Screen(_)
             | LinkUpdate::Folders(_)
+            | LinkUpdate::Models(_)
             | LinkUpdate::Shown(_) => {
                 unreachable!("replies, screens and folders are handled before a link is looked up")
             }
@@ -1155,6 +1165,11 @@ impl Model {
         self.reselect(now);
     }
 
+    pub fn end_launch(&mut self) {
+        self.folders.clear();
+        self.codex_models.clear();
+    }
+
     pub fn menu(&self, now: Instant) -> Menu {
         let rows = self.rows(now);
         let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
@@ -1181,6 +1196,7 @@ impl Model {
                 free: sample.map_or(0, |sample| {
                     sample.memory.total.saturating_sub(sample.memory.used)
                 }),
+                codex_models: self.codex_models.get(&row.endpoint).cloned(),
                 listing: match folders {
                     Folders::Asking => Listing::Asking,
                     Folders::Listed(_) => Listing::Listed,

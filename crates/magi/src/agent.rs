@@ -581,6 +581,17 @@ fn spawn_requests(
                         });
                     }
                     Request::Folders => {
+                        in_background(&replies, |replies| {
+                            let models =
+                                crate::handoff::find("codex", &crate::handoff::search_dirs())
+                                    .and_then(|program| {
+                                        crate::sessions::codex_app::models(&program)
+                                    })
+                                    .unwrap_or_default();
+                            if let Ok(frame) = proto::encode_frame(&AgentMessage::Models(models)) {
+                                let _ = replies.send(frame.into());
+                            }
+                        });
                         in_background(&replies, |replies| match opener::folders() {
                             Ok(folders) => {
                                 if let Ok(frame) =
@@ -599,10 +610,12 @@ fn spawn_requests(
                             Err(text) => reply(replies, false, text),
                         });
                     }
-                    Request::Open { dir, codex } => {
-                        in_background(&replies, move |replies| match opener::open(&dir, codex) {
-                            Ok(text) => reply(replies, true, text),
-                            Err(text) => reply(replies, false, text),
+                    Request::Open { dir, codex, model } => {
+                        in_background(&replies, move |replies| {
+                            match opener::open(&dir, codex, model.as_deref()) {
+                                Ok(text) => reply(replies, true, text),
+                                Err(text) => reply(replies, false, text),
+                            }
                         });
                     }
                     Request::Watch { session, child } => {

@@ -383,7 +383,8 @@ fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Ke
         | Key::Right
         | Key::First
         | Key::Last
-        | Key::Tab => {}
+        | Key::Tab
+        | Key::BackTab => {}
     }
     model.draft = Some(draft);
 }
@@ -405,7 +406,7 @@ fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
             now,
         );
     }
-    model.folders.clear();
+    model.end_launch();
     for endpoint in live {
         let asked = match links.request(endpoint, &proto::Request::Folders) {
             Ok(()) => model::Folders::Asking,
@@ -423,7 +424,7 @@ fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
     }) {
         Ok(host) => host,
         Err(error) => {
-            model.folders.clear();
+            model.end_launch();
             return model.flash(format!("couldn't open the launcher: {error}"), false, now);
         }
     };
@@ -457,14 +458,14 @@ fn edit_launcher(
 ) {
     match launcher.key(key) {
         launcher::Outcome::Stay => model.launcher = Some(launcher),
-        launcher::Outcome::Cancel => model.folders.clear(),
+        launcher::Outcome::Cancel => model.end_launch(),
         launcher::Outcome::Start(choice) => start_chosen(model, links, choice, now),
     }
 }
 
 fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now: Instant) {
     let offered = model.menu(now).offers(&choice);
-    model.folders.clear();
+    model.end_launch();
     if !offered {
         return;
     }
@@ -479,6 +480,7 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
     let request = proto::Request::Open {
         dir: choice.dir.clone(),
         codex: choice.codex,
+        model: choice.model.clone(),
     };
     match links.request(endpoint, &request) {
         Ok(()) => {
@@ -961,7 +963,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
                 links.launch = None;
                 match choice {
                     Some(choice) => start_chosen(model, links, choice, now),
-                    None => model.folders.clear(),
+                    None => model.end_launch(),
                 }
             }
         }

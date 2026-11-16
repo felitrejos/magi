@@ -52,7 +52,8 @@ Done:
   temperature on Linux and on the Mac (through its HID sensors).
 - **The launcher:** `c` opens a Rex floating pane like a modal: pick a
   project (active and recent ones first), the machine (magi suggests the
-  least busy one with room, with its reason) and Claude or Codex; it starts
+  least busy one with room, with its reason), Claude or Codex and the
+  model (Claude's aliases, or the models that machine's Codex lists); it starts
   the session, closes itself and magi selects the new session.
 - **Session family tree:** subagents, background shells, worktrees and
   sessions started inside another, nested under their session with their

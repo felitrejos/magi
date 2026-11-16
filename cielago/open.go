@@ -28,7 +28,7 @@ type openReport struct {
 
 func openCommand(args []string, out io.Writer) error {
 	asJSON, codex, list := false, false, false
-	resume := ""
+	resume, model := "", ""
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; a {
@@ -44,6 +44,12 @@ func openCommand(args []string, out io.Writer) error {
 			}
 			i++
 			resume = args[i]
+		case "--model":
+			if i+1 >= len(args) {
+				return errors.New("--model needs a model name")
+			}
+			i++
+			model = args[i]
 		default:
 			rest = append(rest, a)
 		}
@@ -72,7 +78,7 @@ func openCommand(args []string, out io.Writer) error {
 		return fail(err)
 	}
 	if list {
-		if len(rest) != 0 || resume != "" || codex {
+		if len(rest) != 0 || resume != "" || codex || model != "" {
 			return fail(errors.New("--list takes no folder"))
 		}
 		folders, err := knownProjects(roots)
@@ -86,10 +92,13 @@ func openCommand(args []string, out io.Writer) error {
 		return err
 	}
 	if len(rest) != 1 {
-		return fail(errors.New("usage: cielago open <folder> [--codex | --resume <session-id>] [--json], or cielago open --list [--json]"))
+		return fail(errors.New("usage: cielago open <folder> [--codex] [--model <model> | --resume <session-id>] [--json], or cielago open --list [--json]"))
 	}
 	if resume != "" && (codex || !sessionIDPattern.MatchString(resume)) {
 		return fail(fmt.Errorf("%q is not a Claude session id to continue", resume))
+	}
+	if model != "" && (resume != "" || !modelPattern.MatchString(model)) {
+		return fail(fmt.Errorf("%q is not a model to start a new session with", model))
 	}
 	dir, err := filepath.Abs(rest[0])
 	if err != nil {
@@ -116,6 +125,9 @@ func openCommand(args []string, out io.Writer) error {
 	}
 	if codex {
 		agent, label, command = "codex", name+" · codex", nil
+	}
+	if model != "" {
+		command = append(command, "--model", model)
 	}
 	program, err := exec.LookPath(agent)
 	if err != nil {

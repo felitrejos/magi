@@ -51,7 +51,7 @@ to the machine that has room.
   No server or config file.
 - **Start, read and answer.** `c` opens a launcher over magi, as a Rex
   floating pane: pick a project, the machine (magi suggests the one with the
-  most room) and Claude Code or Codex, and it starts in that project's Rex tab
+  most room), Claude Code or Codex and its model, and it starts in that project's Rex tab
   and magi selects it. Select a session to read
   its conversation, typeset like a page on a Mac (real type, highlighted code,
   tables) and drawn as Markdown elsewhere; `↵` writes to it,

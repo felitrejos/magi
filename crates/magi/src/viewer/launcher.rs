@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::input::{self, Input, Key};
 use super::{style, terminal, units, view};
 use crate::net;
+use crate::proto::CodexModel;
 
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
@@ -30,6 +31,7 @@ pub struct Place {
     pub tag: String,
     pub cpu: f32,
     pub free: u64,
+    pub codex_models: Option<Vec<CodexModel>>,
     pub listing: Listing,
 }
 
@@ -61,6 +63,56 @@ pub struct Choice {
     pub machine: String,
     pub dir: String,
     pub codex: bool,
+    pub model: Option<String>,
+}
+
+pub const CLAUDE_MODELS: [(&str, &str); 4] = [
+    ("fable", "Fable"),
+    ("opus", "Opus"),
+    ("sonnet", "Sonnet"),
+    ("haiku", "Haiku"),
+];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pick {
+    pub codex: bool,
+    pub model: Option<String>,
+    pub label: String,
+}
+
+impl Pick {
+    fn new(codex: bool, model: Option<&str>, label: &str) -> Self {
+        Self {
+            codex,
+            model: model.map(str::to_string),
+            label: label.to_string(),
+        }
+    }
+}
+
+pub fn picks(place: Option<&Place>) -> Vec<Pick> {
+    let mut picks = vec![Pick::new(false, None, "default")];
+    picks.extend(
+        CLAUDE_MODELS
+            .iter()
+            .map(|(alias, name)| Pick::new(false, Some(alias), name)),
+    );
+    let models = place
+        .and_then(|place| place.codex_models.as_deref())
+        .unwrap_or_default();
+    let default = models.iter().find(|model| model.default);
+    picks.push(Pick::new(
+        true,
+        None,
+        default.map_or("default", |model| model.name.as_str()),
+    ));
+    picks.extend(
+        models
+            .iter()
+            .filter(|model| !model.default)
+            .map(|model| Pick::new(true, Some(&model.id), &model.name)),
+    );
+    picks
 }
 
 impl Menu {
@@ -68,8 +120,13 @@ impl Menu {
         self.projects
             .iter()
             .flat_map(|project| &project.folders)
-            .any(|folder| {
-                folder.dir == choice.dir && self.machines[folder.machine].name == choice.machine
+            .filter(|folder| folder.dir == choice.dir)
+            .map(|folder| &self.machines[folder.machine])
+            .filter(|place| place.name == choice.machine)
+            .any(|place| {
+                picks(Some(place))
+                    .iter()
+                    .any(|pick| pick.codex == choice.codex && pick.model == choice.model)
             })
     }
 
@@ -116,6 +173,7 @@ pub struct Launcher {
     pub selected: usize,
     pub machine: Option<usize>,
     pub codex: bool,
+    pub model: Option<String>,
 }
 
 impl Launcher {
@@ -126,6 +184,7 @@ impl Launcher {
             selected: 0,
             machine: None,
             codex: false,
+            model: None,
         }
     }
 
@@ -200,14 +259,43 @@ impl Launcher {
         self.menu.machines.get(folder.machine)
     }
 
+    pub fn pick(&self) -> Pick {
+        let picks = picks(self.place());
+        let same = |pick: &&Pick| pick.codex == self.codex;
+        picks
+            .iter()
+            .filter(same)
+            .find(|pick| pick.model == self.model)
+            .or_else(|| picks.iter().find(same))
+            .cloned()
+            .unwrap_or_else(|| Pick::new(self.codex, None, "default"))
+    }
+
     pub fn choice(&self) -> Option<Choice> {
         let project = self.current()?;
         let folder = project.folders.get(self.folder()?)?;
+        let pick = self.pick();
         Some(Choice {
             machine: self.menu.machines[folder.machine].name.clone(),
             dir: folder.dir.clone(),
-            codex: self.codex,
+            codex: pick.codex,
+            model: pick.model,
         })
+    }
+
+    fn step_pick(&mut self, forward: bool) {
+        let picks = picks(self.place());
+        let at = picks
+            .iter()
+            .position(|pick| *pick == self.pick())
+            .unwrap_or(0);
+        let next = if forward {
+            (at + 1) % picks.len()
+        } else {
+            (at + picks.len() - 1) % picks.len()
+        };
+        self.codex = picks[next].codex;
+        self.model = picks[next].model.clone();
     }
 
     pub fn key(&mut self, key: Key) -> Outcome {
@@ -226,7 +314,8 @@ impl Launcher {
             Key::Last => self.reselect(count.saturating_sub(1)),
             Key::Left => self.step_machine(false),
             Key::Right => self.step_machine(true),
-            Key::Tab => self.codex = !self.codex,
+            Key::Tab => self.step_pick(true),
+            Key::BackTab => self.step_pick(false),
             Key::Escape | Key::Interrupt => return Outcome::Cancel,
             Key::Enter => {
                 if let Some(choice) = self.choice() {
@@ -443,6 +532,18 @@ mod tests {
             tag: name.into(),
             cpu,
             free: free_gb << 30,
+            codex_models: Some(vec![
+                CodexModel {
+                    id: "gpt-6-luna".into(),
+                    name: "GPT-6-Luna".into(),
+                    default: true,
+                },
+                CodexModel {
+                    id: "gpt-5.6-terra".into(),
+                    name: "GPT-5.6-Terra".into(),
+                    default: false,
+                },
+            ]),
             listing: Listing::Listed,
         }
     }
@@ -488,6 +589,27 @@ mod tests {
     }
 
     #[test]
+    fn claude_offers_its_aliases_and_codex_the_machines_own_models_default_first() {
+        let menu = menu();
+        let labels = |place: Option<&Place>| -> Vec<(bool, String)> {
+            picks(place)
+                .into_iter()
+                .map(|pick| (pick.codex, pick.label))
+                .collect()
+        };
+        let mut expected: Vec<(bool, String)> = ["default", "Fable", "Opus", "Sonnet", "Haiku"]
+            .iter()
+            .map(|label| (false, label.to_string()))
+            .collect();
+        expected.push((true, "default".into()));
+        assert_eq!(labels(None), expected);
+        expected.pop();
+        expected.push((true, "GPT-6-Luna".into()));
+        expected.push((true, "GPT-5.6-Terra".into()));
+        assert_eq!(labels(Some(&menu.machines[0])), expected);
+    }
+
+    #[test]
     fn keys_filter_pick_a_machine_and_an_agent_then_start_the_choice() {
         let mut launcher = Launcher::new(menu());
         assert_eq!(launcher.place().unwrap().name, "homelab");
@@ -497,14 +619,20 @@ mod tests {
         assert_eq!(launcher.place().unwrap().name, "homelab");
         launcher.key(Key::Left);
         launcher.key(Key::Tab);
+        assert_eq!(launcher.pick().label, "Fable");
+        launcher.key(Key::BackTab);
+        launcher.key(Key::BackTab);
         assert_eq!(
             launcher.key(Key::Enter),
             Outcome::Start(Choice {
                 machine: "mac".into(),
                 dir: "/home/me/0/magi".into(),
                 codex: true,
+                model: Some("gpt-5.6-terra".into()),
             })
         );
+        launcher.key(Key::Tab);
+        assert_eq!(launcher.pick(), Pick::new(false, None, "default"));
         launcher.key(Key::Down);
         assert_eq!(launcher.place().unwrap().name, "homelab");
         for c in "note".chars() {
@@ -549,14 +677,20 @@ mod tests {
     #[test]
     fn only_a_folder_the_menu_offered_is_a_valid_choice() {
         let menu = menu();
-        let choice = |machine: &str, dir: &str| Choice {
+        let choice = |machine: &str, dir: &str, codex: bool, model: Option<&str>| Choice {
             machine: machine.into(),
             dir: dir.into(),
-            codex: false,
+            codex,
+            model: model.map(str::to_string),
         };
-        assert!(menu.offers(&choice("homelab", "/home/me/1/stampr")));
-        assert!(!menu.offers(&choice("mac", "/home/me/1/stampr")));
-        assert!(!menu.offers(&choice("homelab", "/etc")));
+        let stampr = "/home/me/1/stampr";
+        assert!(menu.offers(&choice("homelab", stampr, false, None)));
+        assert!(menu.offers(&choice("homelab", stampr, false, Some("opus"))));
+        assert!(menu.offers(&choice("homelab", stampr, true, Some("gpt-5.6-terra"))));
+        assert!(!menu.offers(&choice("homelab", stampr, false, Some("gpt-5.6-terra"))));
+        assert!(!menu.offers(&choice("homelab", stampr, true, Some("--yolo"))));
+        assert!(!menu.offers(&choice("mac", stampr, false, None)));
+        assert!(!menu.offers(&choice("homelab", "/etc", false, None)));
     }
 
     #[test]
@@ -580,6 +714,7 @@ mod tests {
             machine: "homelab".into(),
             dir: "/home/me/1/stampr".into(),
             codex: false,
+            model: None,
         };
         writeln!(&stream, "{}", serde_json::to_string(&choice).unwrap()).unwrap();
         assert_eq!(

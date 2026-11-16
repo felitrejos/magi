@@ -3,10 +3,18 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 16;
+pub const PROTOCOL_VERSION: u16 = 17;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
+const MAX_MODEL_NAME: usize = 64;
+
+pub fn is_model_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    name.len() <= MAX_MODEL_NAME
+        && chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || "._:[]-".contains(c))
+}
 
 pub fn prompt_chars(text: &str) -> impl Iterator<Item = char> + '_ {
     let mut chars = text.chars().peekable();
@@ -189,7 +197,15 @@ pub enum AgentMessage {
     Reply(Reply),
     Screen(Screen),
     Folders(Vec<String>),
+    Models(Vec<CodexModel>),
     Shown(Shown),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct CodexModel {
+    pub id: String,
+    pub name: String,
+    pub default: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +258,7 @@ pub enum Request {
     Open {
         dir: String,
         codex: bool,
+        model: Option<String>,
     },
     Adopt {
         session: String,
@@ -451,6 +468,23 @@ fn invalid_data(error: impl ToString) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_name_can_never_read_as_a_flag() {
+        for good in ["opus", "gpt-5.6-terra", "claude-opus-5-5[1m]"] {
+            assert!(is_model_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "-m",
+            "--dangerously-skip-permissions",
+            "a b",
+            "x;rm",
+            &"a".repeat(65),
+        ] {
+            assert!(!is_model_name(bad), "{bad}");
+        }
+    }
 
     fn sample() -> Sample {
         Sample {

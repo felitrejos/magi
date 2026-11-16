@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use super::Found;
-use super::codex_limits;
+use super::codex_app;
 use super::ledger::{Counted, Ledger};
 use super::limits::{self, Limits};
 use super::pricing::{self, OpenAiUsage};
@@ -169,7 +169,7 @@ impl Codex {
             .or_else(|| Some(Path::new(&std::env::var_os("HOME")?).join(".codex")))?;
         let mut codex = Self::new(home);
         codex.asked = handoff::find("codex", &handoff::search_dirs())
-            .map(|program| Limits::new(move |_| codex_limits::ask(&program)));
+            .map(|program| Limits::new(move |_| codex_app::limits(&program)));
         Some(codex)
     }
 

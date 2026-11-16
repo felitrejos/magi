@@ -49,12 +49,18 @@ impl Drop for Opening {
     }
 }
 
-pub fn open(dir: &str, codex: bool) -> Result<String, String> {
+pub fn open(dir: &str, codex: bool, model: Option<&str>) -> Result<String, String> {
     check(dir)?;
+    if let Some(model) = model.filter(|model| !crate::proto::is_model_name(model)) {
+        return Err(format!("{model:?} isn't a model name"));
+    }
     let _opening = Opening::start()?;
     let mut args = vec!["open", "--json"];
     if codex {
         args.push("--codex");
+    }
+    if let Some(model) = model {
+        args.extend(["--model", model]);
     }
     args.push(dir);
     let output = cielago(&args, OPEN_LIMIT)?;

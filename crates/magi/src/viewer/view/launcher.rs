@@ -8,7 +8,7 @@ use crate::proto::Agent;
 use crate::viewer::launcher::{self, Launcher, Listing};
 use crate::viewer::style::{self, theme};
 
-const FOOT: u16 = 6;
+const FOOT: u16 = 7;
 const LABEL: usize = 9;
 
 pub fn float(frame: &mut Frame, launcher: Option<&Launcher>) {
@@ -66,7 +66,8 @@ pub fn render(frame: &mut Frame, area: Rect, launcher: Option<&Launcher>) {
     );
     cursor.line(frame, machine_line(launcher, width));
     cursor.line(frame, folder_line(launcher, width));
-    cursor.line(frame, agent_line(launcher.codex, width));
+    cursor.line(frame, agent_line(launcher, width));
+    cursor.line(frame, model_line(launcher, width));
     cursor.skip();
     cursor.line(frame, keys_line(width));
 }
@@ -213,7 +214,8 @@ fn folder_line(launcher: &Launcher, width: usize) -> Line<'static> {
     ))
 }
 
-fn agent_line(codex: bool, width: usize) -> Line<'static> {
+fn agent_line(launcher: &Launcher, width: usize) -> Line<'static> {
+    let codex = launcher.pick().codex;
     let (_, claude) = style::agent(Agent::ClaudeCode);
     let (_, codex_color) = style::agent(Agent::Codex);
     Line::from(clip(
@@ -226,12 +228,34 @@ fn agent_line(codex: bool, width: usize) -> Line<'static> {
     ))
 }
 
+fn model_line(launcher: &Launcher, width: usize) -> Line<'static> {
+    let chosen = launcher.pick();
+    let mut spans = vec![label("Model")];
+    spans.extend(
+        launcher::picks(launcher.place())
+            .iter()
+            .filter(|pick| pick.codex == chosen.codex)
+            .map(|pick| pill(&pick.label, *pick == chosen, theme().text)),
+    );
+    let asking = chosen.codex
+        && launcher
+            .place()
+            .is_some_and(|place| place.codex_models.is_none());
+    if asking {
+        spans.push(Span::styled(
+            "  asking for models…",
+            style::fg(theme().faint),
+        ));
+    }
+    Line::from(clip(spans, width))
+}
+
 fn keys_line(width: usize) -> Line<'static> {
     let keys: Vec<Span<'static>> = [
         ("↵", "start"),
         ("↑↓", "project"),
         ("←→", "machine"),
-        ("⇥", "Claude or Codex"),
+        ("⇥", "model"),
         ("esc", "cancel"),
     ]
     .iter()
