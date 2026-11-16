@@ -21,7 +21,14 @@ main() {
   esac
 
   archive="$app-$target.tar.gz"
-  url="https://github.com/$repo/releases/latest/download/$archive"
+  if [ "$app" = magi ]; then
+    url="https://github.com/$repo/releases/latest/download/$archive"
+  else
+    tag="$(curl -fsSL --proto '=https' --tlsv1.2 "https://api.github.com/repos/$repo/releases?per_page=50" \
+      | grep -o '"tag_name": *"cielago-v[^"]*"' | head -n 1 | sed 's/.*"\(cielago-v[^"]*\)"/\1/')"
+    [ -n "$tag" ] || { echo "found no cielago release" >&2; exit 1; }
+    url="https://github.com/$repo/releases/download/$tag/$archive"
+  fi
   work="$(mktemp -d)"
   trap 'rm -rf "$work"' EXIT
 

@@ -24,8 +24,9 @@ This repo holds two apps that work together or alone:
 - **magi** watches every Claude Code and Codex session on your machines, and
   each machine's load, from one [Rex](https://www.superlogical.com/rex) pane.
   Read, answer and start sessions there.
-- **cielago** moves a session, with its conversation and uncommitted work, to
-  another machine, and lets Claude send work there. It needs nothing but SSH.
+- **cielago** moves a Claude Code session, with its conversation and
+  uncommitted work, to another machine, and lets Claude send work there. It
+  works on its own, from any Claude Code session, over SSH.
 
 ## magi
 
@@ -56,28 +57,32 @@ install` where you use Claude Code to see its context use and plan windows.
 
 ## cielago
 
+cielago moves a Claude Code session to another machine, with or without
+magi. In any Claude Code session, say "hand this off to my homelab": when the
+turn ends, the conversation, branch, uncommitted changes and listed secrets
+land there, and the session carries on in a tab of its own, remembering
+everything.
+
 <p align="center">
-  <img src="assets/handoff.gif" alt="A Claude Code session on a MacBook moves to the home server and continues there, its conversation intact, in about four seconds." width="820">
+  <img src="assets/cielago.gif" alt="A Claude Code session in Rex on a Mac is asked what its project does, then told to hand itself off to the homelab. cielago moves it, and the session continues on the homelab, where it still remembers the answer it gave." width="820">
 </p>
 
-- **Move a session.** Press `m` in magi, or tell Claude "hand this off to my
-  homelab". When the turn ends, the conversation, branch, uncommitted changes
-  and listed secrets land on the other machine, and the session continues
-  there. `cielago pull <host>` brings it back.
+- **From the CLI.** `cielago move <session> <host>` sends a session,
+  `cielago pull <host>` brings one back, and `cielago doctor` checks both
+  ends. In magi, `m` does the same.
 - **Send work.** Claude gets tools to run a command elsewhere, hand a task to
   a background Claude, or open a second session, each in a copy of your
   working tree on the lightest machine. Claude asks you first.
 - **Ports follow.** A project's `.cielago.toml` names what to start when it
   arrives and which ports to forward back, so `localhost:3000` keeps working.
+- **Rex or tmux.** Sessions open in Rex when it's there and in tmux
+  otherwise, over plain SSH.
 
 ```bash
-curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh -s cielago
+curl -fsSL https://raw.githubusercontent.com/felitrejos/magi/main/install.sh | sh -s cielago
 cielago init          # on each machine
 claude plugin marketplace add felitrejos/magi && claude plugin install cielago@magi
 ```
-
-cielago runs sessions in Rex when it's there and in tmux otherwise.
-`cielago doctor` checks both ends.
 
 ## How it works
 
