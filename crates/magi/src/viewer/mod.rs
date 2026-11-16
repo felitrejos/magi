@@ -761,7 +761,14 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Alerts) => model.showing_alerts = !model.showing_alerts,
             Some(Action::Open) => open_selected(model, links, now)?,
             Some(Action::Move) => propose_move(model, now),
-            Some(Action::Message) => start_draft(model, now),
+            Some(Action::Message) => match model.selected_project(now) {
+                Some(key) => {
+                    if let Err(error) = model.projects.toggle_fold(&key) {
+                        model.flash(format!("couldn't save projects: {error}"), false, now);
+                    }
+                }
+                None => start_draft(model, now),
+            },
             Some(Action::Allow) => answer(model, links, true, now),
             Some(Action::Deny) => answer(model, links, false, now),
             Some(Action::Choose(option)) => choose(model, links, option, now),
@@ -950,7 +957,7 @@ mod tests {
             LinkUpdate::Sample(Box::new(sample)),
             Instant::now(),
         );
-        model.selected = 3;
+        select_first_session(model);
     }
 
     fn screen(model: &Model) -> String {
@@ -1060,7 +1067,7 @@ mod tests {
         let nas = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 3));
         model.apply(homelab, live_sample(4_000, None), now);
         model.apply(nas, live_sample(300, None), now);
-        model.selected = 3;
+        select_first_session(&mut model);
         let agent = model.selected_agent(now).unwrap();
         assert_eq!(
             model
@@ -1106,7 +1113,7 @@ mod tests {
                 live_sample(other_cpu, None),
                 now,
             );
-            model.selected = 3;
+            select_first_session(&mut model);
             let agent = model.selected_agent(now).unwrap();
             model.move_suggestion(&agent, now).is_some()
         };
@@ -1146,7 +1153,7 @@ mod tests {
             window: "window:2".into(),
         });
         model.apply(Endpoint::Local, live_sample(1_000, Some(session)), now);
-        model.selected = 3;
+        select_first_session(&mut model);
         assert_eq!(
             model.wanted_watch(now),
             Some((Endpoint::Local, "s1".to_string()))
@@ -1228,7 +1235,7 @@ mod tests {
             live_sample(1_000, Some(claude("s1", 0))),
             now,
         );
-        model.selected = 3;
+        select_first_session(&mut model);
         assert_eq!(
             model.wanted_watch(now),
             Some((Endpoint::Local, "s1".to_string()))
@@ -1344,6 +1351,16 @@ mod tests {
         groups
     }
 
+    fn select_first_session(model: &mut Model) {
+        let now = Instant::now();
+        let index = model
+            .listed(now)
+            .iter()
+            .position(|item| matches!(item.entry, model::Entry::Session(_)))
+            .unwrap();
+        model.selected = model.rows(now).len() + index;
+    }
+
     fn select(model: &mut Model, id: &str) {
         let now = Instant::now();
         let index = model
@@ -1392,6 +1409,35 @@ mod tests {
             model.flashed(Instant::now()),
             Some(("Grouped ping in Network Pong · P renames", true))
         );
+    }
+
+    #[test]
+    fn enter_on_a_project_folds_it_to_a_count_and_opens_it_again() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(claude("s1", 0))),
+            now,
+        );
+        model.selected = model.rows(now).len();
+        assert_eq!(model.selected_project(now).as_deref(), Some("api"));
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
+        let entries: Vec<String> = model
+            .listed(now)
+            .iter()
+            .map(|item| match &item.entry {
+                model::Entry::Project {
+                    name, count, open, ..
+                } => format!("{name} {count} {open}"),
+                model::Entry::Session(agent) => agent.session.id.clone(),
+                model::Entry::Fold { .. } => "earlier".into(),
+            })
+            .collect();
+        assert_eq!(entries, ["api 1 false"]);
+        assert_eq!(model.draft, None);
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(groups(&model), [("api".into(), vec!["s1".into()])]);
     }
 
     #[test]
@@ -1469,7 +1515,7 @@ mod tests {
             live_sample(1_000, Some(in_rex(claude("s1", 0)))),
             now,
         );
-        model.selected = 3;
+        select_first_session(&mut model);
         assert!(screen(&model).contains("Message this session"));
         let typed =
             std::iter::once(key(Key::Enter)).chain("qjmy\x01".chars().map(|c| key(Key::Char(c))));
@@ -1513,7 +1559,7 @@ mod tests {
             live_sample(1_000, Some(claude("s1", 0))),
             now,
         );
-        model.selected = 3;
+        select_first_session(&mut model);
         assert!(!screen(&model).contains("Message this session"));
         assert!(screen(&model).contains("continue it in Rex to message it here"));
         assert!(
@@ -1541,7 +1587,7 @@ mod tests {
             live_sample(1_000, Some(in_rex(claude("s1", 0)))),
             now,
         );
-        model.selected = 3;
+        select_first_session(&mut model);
         assert!(!screen(&model).contains("Allow Bash?"));
         handle_batch([key(Key::Char('y'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.flashed(Instant::now()), None);
@@ -1549,6 +1595,7 @@ mod tests {
         asking.state =
             SessionState::Waiting(crate::proto::Waiting::Permission(Some("Bash".into())));
         model.apply(Endpoint::Local, live_sample(1_000, Some(asking)), now);
+        model.reselect(now);
         assert!(
             screen(&model).contains("Allow Bash?") && screen(&model).contains("y allow   n deny"),
             "{}",
@@ -1570,7 +1617,7 @@ mod tests {
             live_sample(1_000, Some(in_rex(claude("s1", 0)))),
             now,
         );
-        model.selected = 3;
+        select_first_session(&mut model);
         let pasted = [
             key(Key::Enter),
             key(Key::Char('h')),
@@ -1645,7 +1692,7 @@ mod tests {
         model.apply(Endpoint::Local, LinkUpdate::Sample(here), now);
         model.apply(homelab, live_sample(1_000, Some(claude("s1", 0))), now);
         handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        model.selected = 3;
+        select_first_session(&mut model);
         assert_eq!(model.selected_agent(now).unwrap().session.id, "s1");
         let shown = screen(&model);
         assert!(shown.contains("localhost:3000 waiting"), "{shown}");
@@ -1708,7 +1755,7 @@ mod tests {
             live_sample(1_000, Some(claude("s1", 0))),
             now,
         );
-        model.selected = 3;
+        select_first_session(&mut model);
         handle_batch([key(Key::Char('r'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(
             model.flashed(Instant::now()),
@@ -1723,7 +1770,7 @@ mod tests {
             live_sample(1_000, Some(in_rex(claude("s1", 0)))),
             now,
         );
-        model.selected = 3;
+        select_first_session(&mut model);
         handle_batch([key(Key::Char('r'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.flashed(Instant::now()), None);
     }

@@ -28,7 +28,6 @@ const SIDEBAR_MIN: u16 = 30;
 const SIDEBAR_MAX: u16 = 38;
 
 pub struct Areas {
-    pub sidebar: Rect,
     pub machines: Rect,
     pub plans: Rect,
     pub agents: Rect,
@@ -71,7 +70,6 @@ pub fn areas(full: Rect, machines: usize, plans: usize, agents: usize) -> Areas 
     ])
     .areas(inner);
     Areas {
-        sidebar,
         machines,
         plans: plans.inner(Margin {
             horizontal: 1,
@@ -100,7 +98,6 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     let agents = model.agents(now);
     let plans = model.plans(now);
     let Areas {
-        sidebar,
         machines: machine_area,
         plans: plan_area,
         agents: agent_area,
@@ -108,9 +105,13 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
         detail: detail_area,
         footer,
     } = areas(full, rows.len(), plans.len(), agents.len());
+    let detail_area = detail_area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
     frame
         .buffer_mut()
-        .set_style(sidebar, Style::new().bg(theme().panel));
+        .set_style(detail_area, Style::new().bg(theme().panel));
     render_footer(frame, footer, model, now);
     for rule in rules.into_iter().filter(|rule| !rule.is_empty()) {
         let line = "─".repeat(rule.width as usize);
@@ -180,7 +181,18 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                     &model.forwards_to(&agent.session.id, &agent.machine, now),
                 );
             }
-            Entry::Fold { count, .. } => agents::render_fold(frame, detail_area, *count),
+            Entry::Project { name, count, .. } => {
+                agents::render_folder(frame, detail_area, name, &project_note(*count));
+            }
+            Entry::Fold { count, .. } => agents::render_folder(
+                frame,
+                detail_area,
+                "Earlier",
+                &[
+                    format!("{count} sessions have been idle for a day or more."),
+                    "They stay folded so the busy ones stand out. ↵ opens them.".into(),
+                ],
+            ),
         }
     }
 }
@@ -196,9 +208,6 @@ fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Header<'a> {
 
 fn draw_panel(frame: &mut Frame, area: Rect, header: Header<'static>) {
     let band = Rect::new(area.x, area.y, area.width, area.height.min(1));
-    frame
-        .buffer_mut()
-        .set_style(band, Style::new().bg(theme().panel));
     let row = band.inner(Margin {
         horizontal: 2,
         vertical: 0,
@@ -256,6 +265,14 @@ fn machine_tag<'a>(name: &'a str, names: &[&str]) -> &'a str {
 
 fn first_word(name: &str) -> &str {
     name.split(['-', '.', '_', ' ']).next().unwrap_or(name)
+}
+
+fn project_note(count: usize) -> [String; 2] {
+    let sessions = if count == 1 { "session" } else { "sessions" };
+    [
+        format!("{count} {sessions} in this project."),
+        "↵ folds or opens it · P renames it · p on a session moves it elsewhere".into(),
+    ]
 }
 
 fn body(area: Rect) -> Rect {

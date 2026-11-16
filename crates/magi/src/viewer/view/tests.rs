@@ -180,6 +180,17 @@ fn fleet(machines: usize, now: Instant) -> Model {
     model
 }
 
+fn select_title(model: &mut Model, title: &str, now: Instant) {
+    let index = model
+        .listed(now)
+        .iter()
+        .position(|item| {
+            matches!(&item.entry, Entry::Session(agent) if agent.session.title.starts_with(title))
+        })
+        .unwrap();
+    model.selected = model.rows(now).len() + index;
+}
+
 fn draw(model: &Model, width: u16, height: u16, now: Instant) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal
@@ -332,7 +343,7 @@ fn a_machine_is_tagged_by_its_first_word_unless_another_shares_it() {
 fn print_wide() {
     let now = Instant::now();
     let mut model = fleet(2, now);
-    model.selected = 3;
+    select_title(&mut model, "deploy fix", now);
     println!("{}", draw(&model, 130, 34, now));
 }
 
@@ -363,8 +374,8 @@ fn sessions_that_need_you_come_first_then_projects_with_plans_at_the_bottom() {
     let claude = at("Claude 5h").expect("Claude's plan");
     let codex = at("Codex 5h").expect("Codex's plan");
     let needs_you = at(" Needs you").expect("a Needs you group");
-    let magi = at("  magi ").expect("the magi project");
-    let stampr = at("  stampr ").expect("stampr, with stampr-ops merged in");
+    let magi = at("▾ magi").expect("the magi project");
+    let stampr = at("▾ stampr").expect("stampr, with stampr-ops merged in");
     assert!(needs_you < magi && magi < stampr, "{screen}");
     assert!(stampr < claude && claude < codex, "{screen}");
     assert!(lines[needs_you + 1].contains("✻ deploy fix"), "{screen}");
@@ -553,25 +564,11 @@ fn only_a_session_using_much_of_its_machine_is_flagged_for_cpu() {
         memory: 1 << 20,
     });
     model.apply(Endpoint::Local, LinkUpdate::Sample(Box::new(busy)), now);
-    let first_agent = model.rows(now).len();
-    let titles: Vec<String> = model
-        .agents(now)
-        .iter()
-        .map(|agent| agent.session.title.clone())
-        .collect();
-    let with_usage = titles
-        .iter()
-        .position(|title| title.starts_with("refactor"))
-        .unwrap();
-    model.selected = first_agent + with_usage;
+    select_title(&mut model, "refactor", now);
     let screen = draw(&model, 160, 50, now);
     assert_eq!(screen.matches("high CPU").count(), 1, "{screen}");
     assert!(!screen.contains("cores"), "{screen}");
-    let waiting = titles
-        .iter()
-        .position(|title| title == "deploy fix")
-        .unwrap();
-    model.selected = first_agent + waiting;
+    select_title(&mut model, "deploy fix", now);
     let screen = draw(&model, 160, 50, now);
     assert!(!screen.contains("high CPU"), "{screen}");
 }

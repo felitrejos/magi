@@ -72,7 +72,9 @@ pub fn render_list(
             Entry::Session(agent) => {
                 let mark = marks.get(&agent.machine);
                 let remote = agent.endpoint != Endpoint::Local;
-                let (line, icon_at) = session_line(agent, mark, icons, remote, is_selected, width);
+                let indent = matches!(item.group, Group::Project(_));
+                let (line, icon_at) =
+                    session_line(agent, mark, icons, remote, indent, is_selected, width);
                 if let (Some(column), Some(mark)) = (icon_at, mark) {
                     placed.push((lines.len(), column, mark));
                 }
@@ -85,14 +87,24 @@ pub fn render_list(
                         .map(|child| child_line(child, width)),
                 );
             }
+            Entry::Project {
+                name, count, open, ..
+            } => {
+                lines.push(folder_line(name, *count, *open, is_selected, width));
+            }
             Entry::Fold { count, open } => {
-                lines.push(fold_line(*count, *open, is_selected, width));
+                lines.push(folder_line("Earlier", *count, *open, is_selected, width));
             }
         }
         if is_selected {
             selected_end = lines.len();
         }
     }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        " + New session",
+        style::fg(theme().faint),
+    )));
     let visible = area.height as usize;
     let first = selected_end.saturating_sub(visible);
     let shown: Vec<Line<'static>> = lines.into_iter().skip(first).take(visible).collect();
@@ -114,8 +126,7 @@ pub fn render_list(
 fn heading(group: &Group) -> Option<Line<'static>> {
     let (text, color) = match group {
         Group::NeedsYou => ("Needs you".to_string(), theme().warn),
-        Group::Project(name) => (name.clone(), theme().dim),
-        Group::Earlier => return None,
+        Group::Project(_) | Group::Earlier => return None,
     };
     Some(Line::from(Span::styled(
         format!(" {text}"),
@@ -128,6 +139,7 @@ fn session_line(
     mark: Option<&Mark>,
     icons: bool,
     remote: bool,
+    indent: bool,
     is_selected: bool,
     width: usize,
 ) -> (Line<'static>, Option<usize>) {
@@ -146,10 +158,7 @@ fn session_line(
     let icon_at = (mark.is_some() && icons).then(|| width.saturating_sub(spans_width(&right)));
     let line = spread(
         vec![
-            Span::styled(
-                if is_selected { "▎" } else { " " },
-                style::fg(theme().accent),
-            ),
+            Span::raw(if indent { "   " } else { " " }),
             Span::styled(format!("{agent_mark} "), style::fg(color)),
             Span::styled(
                 session.title.clone(),
@@ -195,22 +204,27 @@ fn child_line(child: &Child, width: usize) -> Line<'static> {
     Line::from(clip(spans, width))
 }
 
-fn fold_line(count: usize, open: bool, is_selected: bool, width: usize) -> Line<'static> {
-    let text = if open {
-        "▾ Earlier".to_string()
+fn folder_line(
+    name: &str,
+    count: usize,
+    open: bool,
+    is_selected: bool,
+    width: usize,
+) -> Line<'static> {
+    let chevron = if open { "▾" } else { "▸" };
+    let right = if open {
+        Vec::new()
     } else {
-        format!("▸ Earlier · {count}")
+        vec![Span::styled(count.to_string(), style::fg(theme().faint))]
     };
-    Line::from(clip(
+    spread(
         vec![
-            Span::styled(
-                if is_selected { "▎" } else { " " },
-                style::fg(theme().accent),
-            ),
-            Span::styled(format!(" {text}"), style::fg(theme().dim)),
+            Span::styled(format!(" {chevron} "), style::fg(theme().faint)),
+            Span::styled(name.to_string(), style::bold(theme().text)),
         ],
+        right,
         width,
-    ))
+    )
     .style(selected_style(is_selected))
 }
 
@@ -674,27 +688,26 @@ fn run_span(run: &Run) -> Span<'static> {
     )
 }
 
-pub fn render_fold(frame: &mut Frame, area: Rect, count: usize) {
+pub fn render_folder(frame: &mut Frame, area: Rect, title: &str, note: &[String]) {
     draw_panel(
         frame,
         area,
         panel(
-            vec![Span::styled("Earlier", style::bold(theme().text))],
+            vec![Span::styled(title.to_string(), style::bold(theme().text))],
             None,
         ),
     );
-    let inner = body(area);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                format!("{count} sessions have been idle for a day or more."),
-                style::fg(theme().text),
-            )),
-            Line::from(Span::styled(
-                "They stay folded so the busy ones stand out. Move down to look at one.",
-                style::fg(theme().faint),
-            )),
-        ]),
-        inner,
-    );
+    let lines: Vec<Line<'static>> = note
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let color = if index == 0 {
+                theme().text
+            } else {
+                theme().faint
+            };
+            Line::from(Span::styled(text.clone(), style::fg(color)))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), body(area));
 }

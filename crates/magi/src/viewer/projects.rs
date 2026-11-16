@@ -18,6 +18,8 @@ pub struct Projects {
     suggested: BTreeMap<String, String>,
     #[serde(default)]
     known: Option<BTreeSet<String>>,
+    #[serde(default)]
+    folded: BTreeSet<String>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -70,6 +72,17 @@ impl Projects {
             },
             None => Resolved { key, name: None },
         }
+    }
+
+    pub fn is_folded(&self, key: &str) -> bool {
+        self.folded.contains(key)
+    }
+
+    pub fn toggle_fold(&mut self, key: &str) -> io::Result<()> {
+        if !self.folded.remove(key) {
+            self.folded.insert(key.to_string());
+        }
+        self.save()
     }
 
     pub fn has_seen_any(&self) -> bool {

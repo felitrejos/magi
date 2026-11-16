@@ -244,6 +244,7 @@ pub fn grade(subsystem: Subsystem, value: f32) -> Level {
 pub enum Focus {
     Machine(String),
     Agent(String),
+    Project(String),
     Earlier,
 }
 
@@ -256,7 +257,16 @@ pub enum Group {
 
 pub enum Entry<'a> {
     Session(AgentRow<'a>),
-    Fold { count: usize, open: bool },
+    Project {
+        key: String,
+        name: String,
+        count: usize,
+        open: bool,
+    },
+    Fold {
+        count: usize,
+        open: bool,
+    },
 }
 
 pub struct Listed<'a> {
@@ -280,6 +290,7 @@ pub struct Capacity {
 fn focus_of(entry: &Entry<'_>) -> Focus {
     match entry {
         Entry::Session(agent) => Focus::Agent(agent.session.id.clone()),
+        Entry::Project { key, .. } => Focus::Project(key.clone()),
         Entry::Fold { .. } => Focus::Earlier,
     }
 }
@@ -833,7 +844,16 @@ impl Model {
         let index = self.selected.checked_sub(machines)?;
         match self.listed(now).into_iter().nth(index)?.entry {
             Entry::Session(agent) => Some(agent),
-            Entry::Fold { .. } => None,
+            Entry::Project { .. } | Entry::Fold { .. } => None,
+        }
+    }
+
+    pub fn selected_project(&self, now: Instant) -> Option<String> {
+        let machines = self.rows(now).len();
+        let index = self.selected.checked_sub(machines)?;
+        match self.listed(now).into_iter().nth(index)?.entry {
+            Entry::Project { key, .. } => Some(key),
+            Entry::Session(_) | Entry::Fold { .. } => None,
         }
     }
 
@@ -958,12 +978,27 @@ impl Model {
                 entry: Entry::Session(agent),
             })
             .collect();
-        for (_, name, agents) in projects {
-            let group = Group::Project(project_name(name, &agents));
-            listed.extend(agents.into_iter().map(|agent| Listed {
+        for (key, name, agents) in projects {
+            let name = project_name(name, &agents);
+            let group = Group::Project(name.clone());
+            let focused = matches!(&self.focus, Some(Focus::Agent(id))
+                if agents.iter().any(|agent| agent.session.id == *id));
+            let open = focused || !self.projects.is_folded(&key);
+            listed.push(Listed {
                 group: group.clone(),
-                entry: Entry::Session(agent),
-            }));
+                entry: Entry::Project {
+                    key,
+                    name,
+                    count: agents.len(),
+                    open,
+                },
+            });
+            if open {
+                listed.extend(agents.into_iter().map(|agent| Listed {
+                    group: group.clone(),
+                    entry: Entry::Session(agent),
+                }));
+            }
         }
         if asleep.is_empty() {
             return listed;

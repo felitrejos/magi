@@ -67,7 +67,7 @@ pub fn render_list(
             .filter(|_| row.state() == Some(&LinkState::Live))
             .and_then(|machine| machine.latest.as_ref().map(|_| machine));
         let line = Composed::of(vec![
-            Span::styled(if selected { "▎" } else { " " }, style::fg(theme().accent)),
+            Span::raw(" "),
             Span::raw(if icons { ICON_GAP } else { "" }),
             Span::styled(truncate(&row.name, name_width), name_style),
         ]);
