@@ -229,6 +229,49 @@ impl Graphics {
         out.flush()
     }
 
+    pub fn cell(&self) -> Option<(u32, u32)> {
+        self.cell
+    }
+
+    pub fn strip(
+        &mut self,
+        buf: &mut Buffer,
+        area: Rect,
+        slot: String,
+        key: u64,
+        pixels: impl FnOnce(u32, u32) -> Option<Vec<u8>>,
+    ) -> bool {
+        let area = area.intersection(buf.area);
+        let Some((cell_width, cell_height)) = self.cell else {
+            return false;
+        };
+        if area.is_empty() {
+            return false;
+        }
+        let id = match self.slots.get(&slot) {
+            Some(existing) if existing.key == key => existing.id,
+            _ => {
+                let (width, height) = (
+                    u32::from(area.width) * cell_width,
+                    u32::from(area.height) * cell_height,
+                );
+                let Some(rgba) = pixels(width, height) else {
+                    return false;
+                };
+                let id = self.allocate();
+                self.uploads
+                    .push(upload(id, area.width, area.height, width, height, &rgba));
+                if let Some(old) = self.slots.insert(slot.clone(), Slot { id, key }) {
+                    self.stale.push(old.id);
+                }
+                id
+            }
+        };
+        self.used.insert(slot);
+        place(buf, area, id);
+        true
+    }
+
     pub fn has_pixels(&self) -> bool {
         self.cell.is_some()
     }

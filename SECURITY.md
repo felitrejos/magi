@@ -71,7 +71,10 @@
   (the last plan it proposed, or the last Markdown file it wrote, at most
   1 MB). The viewer writes the answer to a file only you can read in
   `~/.local/state/magi/popups/`, shows it in a Rex floating pane on its own
-  machine, and the pane deletes the file when it closes.
+  machine, and the pane deletes the file when it closes. On a Mac, Markdown
+  is typeset with [mddog](https://github.com/qu8n/mddog)'s engine, which
+  fetches remote images the file links to (it refuses private and local
+  addresses); everything else is drawn from the file itself.
 - `magi statusline install` edits only `statusLine` in
   `~/.claude/settings.json`, writes atomically, keeps the file's permissions
   and leaves a backup with the same permissions.

@@ -58,11 +58,10 @@ Next:
      a question back to the session (the idea from leaf's `@`).
    - `v`: the session's plan, and any Markdown file it wrote.
    - Files the agent changed, images, and the machine graphs.
-2. **Pages, not cells.** Markdown drawn as a typeset page with kitty graphics,
-   built on [mddog](https://github.com/qu8n/mddog)'s engine (MIT, macOS): it
-   lays out Markdown with CoreText and returns any slice of the page as
-   pixels, with search, selection and links. The conversation and every
-   Markdown popup use it on the Mac; the cell renderer stays for Linux.
+2. **Pages, not cells.** Markdown typeset with kitty graphics on the Mac,
+   built on [mddog](https://github.com/qu8n/mddog)'s engine (MIT): done for
+   Markdown popups (`magi page`). Next, the conversation itself, then search,
+   selection and links. The cell renderer stays for Linux.
 
 ## Phase 5: placement, as recommendations
 

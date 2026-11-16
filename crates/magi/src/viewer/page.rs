@@ -10,6 +10,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use super::graphics::Graphics;
 use super::input::{self, Input, Key};
 use super::style::{self, theme};
 use super::terminal;
@@ -25,9 +26,14 @@ pub fn run(path: &Path, page: Page, remove: bool) -> io::Result<()> {
     if remove {
         let _ = fs::remove_file(path);
     }
+    let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut terminal = ratatui::try_init()?;
     let reply = terminal::probe(&mut io::stdout())?;
     style::update(&reply);
+    let mut graphics = Graphics::from_reply(&reply);
+    let mut typeset = (!page.diff && graphics.cell().is_some())
+        .then(|| typeset::Typeset::new(&text, &base))
+        .flatten();
     let (sender, inputs) = mpsc::channel();
     let early = terminal::unanswered(&reply).to_vec();
     thread::Builder::new().name("input".into()).spawn(move || {
@@ -38,8 +44,16 @@ pub fn run(path: &Path, page: Page, remove: bool) -> io::Result<()> {
         loop {
             let mut height = 0;
             terminal.draw(|frame| {
-                height = draw(frame, &page, &text, &mut top);
+                height = draw(
+                    frame,
+                    &page,
+                    &text,
+                    &mut top,
+                    &mut graphics,
+                    typeset.as_mut(),
+                );
             })?;
+            graphics.flush(&mut io::stdout())?;
             let step = height.max(1);
             match inputs.recv() {
                 Ok(Input::Key(Key::Char('q') | Key::Escape | Key::Interrupt)) | Err(_) => {
@@ -56,12 +70,20 @@ pub fn run(path: &Path, page: Page, remove: bool) -> io::Result<()> {
             }
         }
     })();
+    let _ = graphics.clear(&mut io::stdout());
     ratatui::try_restore()?;
     io::stdout().flush()?;
     result
 }
 
-fn draw(frame: &mut Frame, page: &Page, text: &str, top: &mut usize) -> usize {
+fn draw(
+    frame: &mut Frame,
+    page: &Page,
+    text: &str,
+    top: &mut usize,
+    graphics: &mut Graphics,
+    typeset: Option<&mut typeset::Typeset>,
+) -> usize {
     let area = frame.area();
     frame
         .buffer_mut()
@@ -74,22 +96,41 @@ fn draw(frame: &mut Frame, page: &Page, text: &str, top: &mut usize) -> usize {
         return 0;
     }
     let width = inner.width as usize;
-    let lines = if page.diff {
-        diff_lines(text)
-    } else {
-        markdown::markdown(text, width)
-    };
     let body = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 3);
     let room = body.height as usize;
-    *top = (*top).min(lines.len().saturating_sub(room));
-    let shown: Vec<Line<'static>> = lines.iter().skip(*top).take(room).cloned().collect();
-    let position = if lines.len() > room {
-        format!(
-            "{}–{} of {}",
-            *top + 1,
-            (*top + room).min(lines.len()),
+    let total = match (typeset, graphics.cell()) {
+        (Some(typeset), Some((cell_width, cell_height))) => {
+            typeset.fit(u32::from(body.width) * cell_width, cell_height);
+            let total = typeset.rows();
+            *top = (*top).min(total.saturating_sub(room));
+            for offset in 0..room.min(total.saturating_sub(*top)) {
+                let row = *top + offset;
+                let strip = Rect::new(body.x, body.y + offset as u16, body.width, 1);
+                graphics.strip(
+                    frame.buffer_mut(),
+                    strip,
+                    format!("page:{row}"),
+                    typeset.key(row),
+                    |width, height| typeset.pixels(row, width, height),
+                );
+            }
+            total
+        }
+        _ => {
+            let lines = if page.diff {
+                diff_lines(text)
+            } else {
+                markdown::markdown(text, width)
+            };
+            *top = (*top).min(lines.len().saturating_sub(room));
+            let shown: Vec<Line<'static>> = lines.iter().skip(*top).take(room).cloned().collect();
+            frame.render_widget(Paragraph::new(shown), body);
             lines.len()
-        )
+        }
+    };
+    let position = if total > room {
+        let percent = ((*top + room).min(total) * 100) / total.max(1);
+        format!("{percent}%")
     } else {
         String::new()
     };
@@ -101,7 +142,6 @@ fn draw(frame: &mut Frame, page: &Page, text: &str, top: &mut usize) -> usize {
         Paragraph::new(header),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
-    frame.render_widget(Paragraph::new(shown), body);
     let keys = Line::from(vec![
         Span::styled("q", style::bold(theme().text)),
         Span::styled(" close   ", style::fg(theme().faint)),
@@ -115,6 +155,108 @@ fn draw(frame: &mut Frame, page: &Page, text: &str, top: &mut usize) -> usize {
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
     room
+}
+
+#[cfg(target_os = "macos")]
+mod typeset {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::path::Path;
+
+    use mddog::render::engine::Engine;
+
+    use crate::viewer::style;
+
+    pub struct Typeset {
+        engine: Engine,
+        scale: f64,
+        width: u32,
+        row_height: u32,
+        page_height: f64,
+        layout: u64,
+    }
+
+    impl Typeset {
+        pub fn new(text: &str, base: &Path) -> Option<Self> {
+            let name = if style::is_dark() {
+                "github-dark"
+            } else {
+                "github-light"
+            };
+            let theme = mddog::theme::builtin(name)?;
+            let scale = mddog::term::screen::display_scale();
+            let engine = Engine::new(1.0, scale, true);
+            engine.load(text, base, true, theme);
+            Some(Self {
+                engine,
+                scale,
+                width: 0,
+                row_height: 1,
+                page_height: 0.0,
+                layout: 0,
+            })
+        }
+
+        pub fn fit(&mut self, width: u32, row_height: u32) {
+            if width == self.width && row_height == self.row_height {
+                return;
+            }
+            self.engine.resize(f64::from(width) / self.scale);
+            self.width = width;
+            self.row_height = row_height.max(1);
+            self.page_height = self.engine.layout().height;
+            self.layout += 1;
+        }
+
+        pub fn rows(&self) -> usize {
+            (self.page_height * self.scale / f64::from(self.row_height)).ceil() as usize
+        }
+
+        pub fn key(&self, row: usize) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            (self.layout, row, self.width, self.row_height).hash(&mut hasher);
+            hasher.finish()
+        }
+
+        pub fn pixels(&self, row: usize, width: u32, height: u32) -> Option<Vec<u8>> {
+            let top = row as f64 * f64::from(self.row_height) / self.scale;
+            let snapshot =
+                self.engine
+                    .snapshot(top, f64::from(height) / self.scale, self.scale, |len| {
+                        Some(vec![0u8; len])
+                    })?;
+            (snapshot.width == width as usize && snapshot.height == height as usize)
+                .then_some(snapshot.rgba)
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod typeset {
+    use std::path::Path;
+
+    pub enum Typeset {}
+
+    impl Typeset {
+        pub fn new(_text: &str, _base: &Path) -> Option<Self> {
+            None
+        }
+
+        pub fn fit(&mut self, _width: u32, _row_height: u32) {
+            match *self {}
+        }
+
+        pub fn rows(&self) -> usize {
+            match *self {}
+        }
+
+        pub fn key(&self, _row: usize) -> u64 {
+            match *self {}
+        }
+
+        pub fn pixels(&self, _row: usize, _width: u32, _height: u32) -> Option<Vec<u8>> {
+            match *self {}
+        }
+    }
 }
 
 fn diff_lines(text: &str) -> Vec<Line<'static>> {
