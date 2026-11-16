@@ -261,7 +261,7 @@ mod tests {
     use crate::proto::{FIVE_HOURS, ONE_WEEK};
 
     #[test]
-    fn plan_windows_merge_and_expire_and_context_is_per_session() {
+    fn plan_windows_merge_and_start_over_at_their_reset_and_context_is_per_session() {
         let board = Board::default();
         let window = |minutes, used, resets_at| Window {
             minutes,
@@ -288,9 +288,19 @@ mod tests {
         );
         assert_eq!(
             claude_plan(&board, 2_000).map(|plan| plan.windows),
-            plan(vec![window(ONE_WEEK, 6_000, 9_000)])
+            plan(vec![
+                window(FIVE_HOURS, 0, 19_000),
+                window(ONE_WEEK, 6_000, 9_000)
+            ])
         );
-        assert_eq!(claude_plan(&board, 10_000), None);
+        assert_eq!(
+            claude_plan(&board, 10_000).map(|plan| plan
+                .windows
+                .iter()
+                .map(|w| w.used)
+                .sum::<u16>()),
+            Some(0)
+        );
         assert_eq!(
             (board.context("a"), board.context("b")),
             (Some(1_200), None)
@@ -326,7 +336,10 @@ mod tests {
             }])
         );
         assert_eq!(restarted.context("a"), None);
-        assert_eq!(claude_plan(&restarted, 10_000), None);
+        assert_eq!(
+            claude_plan(&restarted, 10_000).map(|plan| plan.windows[0].used),
+            Some(0)
+        );
         std::fs::remove_file(path).unwrap();
     }
 

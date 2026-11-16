@@ -70,10 +70,9 @@ pub fn render_list(
         let is_selected = selected == Some(index);
         match &item.entry {
             Entry::Session(agent) => {
-                let mark = marks
-                    .get(&agent.machine)
-                    .filter(|_| agent.endpoint != Endpoint::Local);
-                let (line, icon_at) = session_line(agent, mark, icons, is_selected, width);
+                let mark = marks.get(&agent.machine);
+                let remote = agent.endpoint != Endpoint::Local;
+                let (line, icon_at) = session_line(agent, mark, icons, remote, is_selected, width);
                 if let (Some(column), Some(mark)) = (icon_at, mark) {
                     placed.push((lines.len(), column, mark));
                 }
@@ -128,6 +127,7 @@ fn session_line(
     agent: &AgentRow<'_>,
     mark: Option<&Mark>,
     icons: bool,
+    remote: bool,
     is_selected: bool,
     width: usize,
 ) -> (Line<'static>, Option<usize>) {
@@ -136,11 +136,11 @@ fn session_line(
     let mut right = Vec::new();
     match mark {
         Some(_) if icons => right.push(Span::raw(" ".repeat(ICON_WIDTH as usize + 1))),
-        Some(mark) => right.push(Span::styled(
+        Some(mark) if remote => right.push(Span::styled(
             format!("{} ", truncate(&mark.tag, MAX_BADGE)),
             style::fg(theme().faint),
         )),
-        None => {}
+        _ => {}
     }
     right.push(row_state(session, agent.live));
     let icon_at = (mark.is_some() && icons).then(|| width.saturating_sub(spans_width(&right)));

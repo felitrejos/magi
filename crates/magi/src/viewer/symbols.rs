@@ -157,17 +157,23 @@ mod appkit {
     use objc2::AllocAnyThread;
     use objc2_app_kit::{
         NSBitmapImageRep, NSColor, NSCompositingOperation, NSDeviceRGBColorSpace,
-        NSGraphicsContext, NSImage, NSRectFillUsingOperation,
+        NSGraphicsContext, NSImage, NSImageSymbolConfiguration, NSRectFillUsingOperation,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
-    const FILL: f64 = 0.8;
+    const FILL: f64 = 1.0;
+    const SEMIBOLD: f64 = 0.3;
 
     pub fn render(name: &str, width: u32, height: u32, (r, g, b): (u8, u8, u8)) -> Option<Vec<u8>> {
+        let configuration = NSImageSymbolConfiguration::configurationWithPointSize_weight(
+            f64::from(height),
+            SEMIBOLD,
+        );
         let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
             &NSString::from_str(name),
             None,
-        )?;
+        )?
+        .imageWithSymbolConfiguration(&configuration)?;
         let size = image.size();
         if size.width <= 0.0 || size.height <= 0.0 {
             return None;
