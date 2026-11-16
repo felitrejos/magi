@@ -163,6 +163,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn this_mac_names_as_many_performance_and_efficiency_cores_as_it_reports() {
+        if crate::collect::on_virtual_mac() {
+            return;
+        }
         let count = |key: &str| -> usize {
             let output = std::process::Command::new("sysctl")
                 .args(["-n", key])

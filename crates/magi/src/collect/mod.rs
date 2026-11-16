@@ -102,6 +102,15 @@ pub fn hostname() -> String {
         .unwrap_or_default()
 }
 
+#[cfg(all(test, target_os = "macos"))]
+fn on_virtual_mac() -> bool {
+    let output = std::process::Command::new("sysctl")
+        .args(["-n", "kern.hv_vmm_present"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim() == "1"
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

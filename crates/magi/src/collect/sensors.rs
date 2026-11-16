@@ -104,6 +104,9 @@ mod tests {
 
     #[test]
     fn this_mac_reports_a_plausible_cpu_die_temperature() {
+        if crate::collect::on_virtual_mac() {
+            return;
+        }
         let sensors = Sensors::new().expect("the HID event system is there");
         let celsius = sensors.hottest_die().expect("a CPU die sensor answers");
         assert!((10.0..110.0).contains(&celsius), "{celsius}");
