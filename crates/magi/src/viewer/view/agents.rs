@@ -8,8 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::{
-    Cursor, Mark, body, clip, draw_panel, panel, selected_style, spans_width, spread, tail,
-    truncate,
+    Cursor, Mark, body, clip, draw_panel, panel, selected_style, spans_width, spread, truncate,
 };
 use crate::proto::{
     Agent, AgentSession, BOLD, Child, ChildKind, ChildState, Content, DIM, FULL, ForwardState,
@@ -21,8 +20,9 @@ use crate::viewer::model::{
 };
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+const DRAFT_INSET: usize = 7;
 const HIGH_CPU_SHARE: f32 = 0.4;
 const MIN_TITLE: usize = 28;
 const MAX_BADGE: usize = 7;
@@ -469,11 +469,12 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
     let context = Rect::new(inner.x, inner.y - 1, inner.width, 1);
     frame.render_widget(Paragraph::new(context_line(agent, width)), context);
     let draft = draft.filter(|draft| draft.session == session.id);
+    let text_width = width.saturating_sub(DRAFT_INSET).max(8);
     let shown = draft.map(|draft| {
         let lines: Vec<String> = draft
             .text
             .split('\n')
-            .map(|line| line.replace('\t', TAB))
+            .flat_map(|line| wrap_draft(&line.replace('\t', TAB), text_width))
             .collect();
         let hidden = lines.len().saturating_sub(DRAFT_ROWS);
         (lines, hidden)
@@ -529,6 +530,11 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
             .alignment(Alignment::Right),
         );
     }
+    if shown.is_some() {
+        let mut hints = keys(&[("↵", "send"), ("esc", "cancel")]);
+        hints.push(Span::raw(" "));
+        frame_box = frame_box.title_bottom(Line::from(hints).alignment(Alignment::Right));
+    }
     let field = frame_box.inner(input).inner(Margin {
         horizontal: 1,
         vertical: 0,
@@ -539,14 +545,32 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
     let Some((lines, hidden)) = shown else {
         return cursor.line(frame, input_line(agent, width));
     };
-    let multi_line = lines.len() > 1;
     let last = lines.len() - 1;
     for (index, line) in lines.into_iter().enumerate().skip(hidden) {
-        cursor.line(
-            frame,
-            draft_line(index, line, index == last, multi_line, width),
-        );
+        cursor.line(frame, draft_line(index, line, index == last));
     }
+}
+
+fn wrap_draft(line: &str, width: usize) -> Vec<String> {
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for word in line.split_inclusive(' ') {
+        let size = word.width();
+        if used + size > width && used > 0 {
+            rows.push(String::new());
+            used = 0;
+        }
+        for c in word.chars() {
+            let size = c.width().unwrap_or(0);
+            if used + size > width {
+                rows.push(String::new());
+                used = 0;
+            }
+            rows.last_mut().expect("rows starts with one row").push(c);
+            used += size;
+        }
+    }
+    rows
 }
 
 fn context_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
@@ -575,35 +599,16 @@ fn context_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
     Line::from(clip(spans, width))
 }
 
-fn draft_line(
-    index: usize,
-    text: String,
-    last: bool,
-    multi_line: bool,
-    width: usize,
-) -> Line<'static> {
+fn draft_line(index: usize, text: String, last: bool) -> Line<'static> {
     let prompt = if index == 0 { "› " } else { "  " };
-    let prompt = Span::styled(prompt, style::fg(theme().accent));
-    let text_style = style::fg(theme().text);
-    if !last {
-        return Line::from(clip(vec![prompt, Span::styled(text, text_style)], width));
+    let mut spans = vec![
+        Span::styled(prompt, style::fg(theme().accent)),
+        Span::styled(text, style::fg(theme().text)),
+    ];
+    if last {
+        spans.push(Span::styled("▏", style::fg(theme().accent)));
     }
-    let mut pairs = vec![("↵", "send")];
-    if !multi_line {
-        pairs.push(("⇧↵", "new line"));
-    }
-    pairs.push(("esc", "cancel"));
-    let right = keys(&pairs);
-    let room = width.saturating_sub(spans_width(&right) + 4);
-    spread(
-        vec![
-            prompt,
-            Span::styled(tail(&text, room), text_style),
-            Span::styled("▏", style::fg(theme().accent)),
-        ],
-        right,
-        width,
-    )
+    Line::from(spans)
 }
 
 fn keys(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
@@ -855,4 +860,19 @@ fn run_span(run: &Run) -> Span<'static> {
         }
         .add_modifier(modifiers),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_message_wraps_between_words_and_splits_only_words_wider_than_the_box() {
+        assert_eq!(
+            wrap_draft("fix the build please", 10),
+            ["fix the ", "build ", "please"]
+        );
+        assert_eq!(wrap_draft("abcdefghijkl", 5), ["abcde", "fghij", "kl"]);
+        assert_eq!(wrap_draft("", 5), [""]);
+    }
 }
