@@ -79,6 +79,55 @@ pub fn conversation(said: &[Said], width: usize, room: usize) -> Vec<Line<'stati
     entries.into_iter().rev().flatten().collect()
 }
 
+pub fn conversation_markdown(said: &[Said]) -> String {
+    let mut out = String::new();
+    let mut tools = false;
+    for entry in said {
+        match entry {
+            Said::You(text) => {
+                tools = false;
+                out.push_str("\n\n");
+                for line in text.trim().lines() {
+                    out.push_str("> ");
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            Said::Reply(text) => {
+                tools = false;
+                out.push_str("\n\n");
+                out.push_str(text.trim());
+                out.push('\n');
+            }
+            Said::Tool {
+                name,
+                detail,
+                change,
+            } => {
+                if !tools {
+                    out.push_str("\n\n");
+                    tools = true;
+                }
+                out.push_str(&format!("- **{}**", tool_name(name)));
+                if !detail.is_empty() {
+                    let fence = if detail.contains('`') { "``" } else { "`" };
+                    out.push_str(&format!(" {fence} {detail} {fence}"));
+                }
+                if let Some(Change { added, removed }) = change {
+                    if *added > 0 {
+                        out.push_str(&format!(" +{added}"));
+                    }
+                    if *removed > 0 {
+                        out.push_str(&format!(" −{removed}"));
+                    }
+                }
+                out.push('\n');
+            }
+        }
+    }
+    out.trim_start().to_string()
+}
+
 fn prompt(text: &str, width: usize) -> Vec<Line<'static>> {
     let t = theme();
     let style = style::fg(t.text).add_modifier(Modifier::BOLD);
@@ -636,6 +685,32 @@ fn split_at_width(text: &str, width: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_conversation_becomes_markdown_with_quoted_prompts_and_listed_tools() {
+        let said = [
+            Said::You("fix the build\nplease".into()),
+            Said::Reply("Looking at it.".into()),
+            Said::Tool {
+                name: "Bash".into(),
+                detail: "cargo build".into(),
+                change: None,
+            },
+            Said::Tool {
+                name: "mcp__linear__save_issue".into(),
+                detail: "uses `x`".into(),
+                change: Some(Change {
+                    added: 3,
+                    removed: 1,
+                }),
+            },
+            Said::Reply("Fixed.".into()),
+        ];
+        assert_eq!(
+            super::conversation_markdown(&said),
+            "> fix the build\n> please\n\n\nLooking at it.\n\n\n- **Bash** ` cargo build `\n- **save issue** `` uses `x` `` +3 −1\n\n\nFixed.\n"
+        );
+    }
+
     use super::*;
 
     fn texts(lines: &[Line<'_>]) -> Vec<String> {

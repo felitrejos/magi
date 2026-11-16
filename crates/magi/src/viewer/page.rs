@@ -14,6 +14,7 @@ use super::graphics::Graphics;
 use super::input::{self, Input, Key};
 use super::style::{self, theme};
 use super::terminal;
+use super::typeset::{Typesetter, draw_rows};
 use super::view::markdown;
 
 pub struct Page {
@@ -32,8 +33,11 @@ pub fn run(path: &Path, page: Page, remove: bool) -> io::Result<()> {
     style::update(&reply);
     let mut graphics = Graphics::from_reply(&reply);
     let mut typeset = (!page.diff && graphics.cell().is_some())
-        .then(|| typeset::Typeset::new(&text, &base))
+        .then(Typesetter::new)
         .flatten();
+    if let Some(typeset) = &mut typeset {
+        typeset.show(&text, &base);
+    }
     let (sender, inputs) = mpsc::channel();
     let early = terminal::unanswered(&reply).to_vec();
     thread::Builder::new().name("input".into()).spawn(move || {
@@ -82,7 +86,7 @@ fn draw(
     text: &str,
     top: &mut usize,
     graphics: &mut Graphics,
-    typeset: Option<&mut typeset::Typeset>,
+    typeset: Option<&mut Typesetter>,
 ) -> usize {
     let area = frame.area();
     frame
@@ -103,17 +107,7 @@ fn draw(
             typeset.fit(u32::from(body.width) * cell_width, cell_height);
             let total = typeset.rows();
             *top = (*top).min(total.saturating_sub(room));
-            for offset in 0..room.min(total.saturating_sub(*top)) {
-                let row = *top + offset;
-                let strip = Rect::new(body.x, body.y + offset as u16, body.width, 1);
-                graphics.strip(
-                    frame.buffer_mut(),
-                    strip,
-                    format!("page:{row}"),
-                    typeset.key(row),
-                    |width, height| typeset.pixels(row, width, height),
-                );
-            }
+            draw_rows(frame.buffer_mut(), graphics, typeset, body, *top, "page");
             total
         }
         _ => {
@@ -155,108 +149,6 @@ fn draw(
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
     room
-}
-
-#[cfg(target_os = "macos")]
-mod typeset {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    use std::path::Path;
-
-    use mddog::render::engine::Engine;
-
-    use crate::viewer::style;
-
-    pub struct Typeset {
-        engine: Engine,
-        scale: f64,
-        width: u32,
-        row_height: u32,
-        page_height: f64,
-        layout: u64,
-    }
-
-    impl Typeset {
-        pub fn new(text: &str, base: &Path) -> Option<Self> {
-            let name = if style::is_dark() {
-                "github-dark"
-            } else {
-                "github-light"
-            };
-            let theme = mddog::theme::builtin(name)?;
-            let scale = mddog::term::screen::display_scale();
-            let engine = Engine::new(1.0, scale, true);
-            engine.load(text, base, true, theme);
-            Some(Self {
-                engine,
-                scale,
-                width: 0,
-                row_height: 1,
-                page_height: 0.0,
-                layout: 0,
-            })
-        }
-
-        pub fn fit(&mut self, width: u32, row_height: u32) {
-            if width == self.width && row_height == self.row_height {
-                return;
-            }
-            self.engine.resize(f64::from(width) / self.scale);
-            self.width = width;
-            self.row_height = row_height.max(1);
-            self.page_height = self.engine.layout().height;
-            self.layout += 1;
-        }
-
-        pub fn rows(&self) -> usize {
-            (self.page_height * self.scale / f64::from(self.row_height)).ceil() as usize
-        }
-
-        pub fn key(&self, row: usize) -> u64 {
-            let mut hasher = DefaultHasher::new();
-            (self.layout, row, self.width, self.row_height).hash(&mut hasher);
-            hasher.finish()
-        }
-
-        pub fn pixels(&self, row: usize, width: u32, height: u32) -> Option<Vec<u8>> {
-            let top = row as f64 * f64::from(self.row_height) / self.scale;
-            let snapshot =
-                self.engine
-                    .snapshot(top, f64::from(height) / self.scale, self.scale, |len| {
-                        Some(vec![0u8; len])
-                    })?;
-            (snapshot.width == width as usize && snapshot.height == height as usize)
-                .then_some(snapshot.rgba)
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod typeset {
-    use std::path::Path;
-
-    pub enum Typeset {}
-
-    impl Typeset {
-        pub fn new(_text: &str, _base: &Path) -> Option<Self> {
-            None
-        }
-
-        pub fn fit(&mut self, _width: u32, _row_height: u32) {
-            match *self {}
-        }
-
-        pub fn rows(&self) -> usize {
-            match *self {}
-        }
-
-        pub fn key(&self, _row: usize) -> u64 {
-            match *self {}
-        }
-
-        pub fn pixels(&self, _row: usize, _width: u32, _height: u32) -> Option<Vec<u8>> {
-            match *self {}
-        }
-    }
 }
 
 fn diff_lines(text: &str) -> Vec<Line<'static>> {

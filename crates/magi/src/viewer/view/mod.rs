@@ -16,6 +16,7 @@ use ratatui::widgets::Paragraph;
 use super::graphics::Graphics;
 use super::model::{AgentRow, Focus, Model, Naming, Renaming, Row};
 use super::style::{self, theme};
+use super::typeset::Typesetter;
 use super::units;
 use crate::proto::{Agent, FULL, Plan, SessionState};
 use unicode_segmentation::UnicodeSegmentation;
@@ -85,7 +86,13 @@ pub fn areas(full: Rect, machines: usize, plans: usize, agents: usize) -> Areas 
     }
 }
 
-pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Graphics) {
+pub fn render(
+    frame: &mut Frame,
+    model: &Model,
+    now: Instant,
+    graphics: &mut Graphics,
+    paper: &mut Option<Typesetter>,
+) {
     let full = frame.area();
     if full.width < 28 || full.height < 8 {
         frame.render_widget(
@@ -161,7 +168,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
             }
             Some(Focus::Agent(id)) => {
                 if let Some(agent) = agents.iter().find(|agent| agent.session.id == id) {
-                    render_session(frame, detail_area, model, agent, now);
+                    render_session(frame, detail_area, model, agent, now, graphics, paper);
                 }
             }
             Some(Focus::Child(id, child_id)) => {
@@ -187,7 +194,14 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                             Err(reason) => agents::Preview::Failed(reason),
                         },
                     };
-                    agents::render_child(frame, detail_area, agent, child, preview);
+                    agents::render_child(
+                        frame,
+                        detail_area,
+                        agent,
+                        child,
+                        preview,
+                        &mut Pixels { graphics, paper },
+                    );
                 }
             }
             _ => {}
@@ -201,6 +215,8 @@ fn render_session(
     model: &Model,
     agent: &AgentRow<'_>,
     now: Instant,
+    graphics: &mut Graphics,
+    paper: &mut Option<Typesetter>,
 ) {
     let suggestion = model.move_suggestion(agent, now);
     let source = if agent.session.pane.is_some() && agent.session.state.is_waiting() {
@@ -216,15 +232,24 @@ fn render_session(
             Err(reason) => agents::Preview::Failed(reason),
         },
     };
+    let forwards = model.forwards_to(&agent.session.id, &agent.machine, now);
     agents::render_detail(
         frame,
         area,
-        agent,
-        suggestion.as_ref(),
-        preview,
-        model.draft.as_ref(),
-        &model.forwards_to(&agent.session.id, &agent.machine, now),
+        agents::Detail {
+            agent,
+            suggestion: suggestion.as_ref(),
+            preview,
+            draft: model.draft.as_ref(),
+            forwards: &forwards,
+        },
+        &mut Pixels { graphics, paper },
     );
+}
+
+pub struct Pixels<'a> {
+    pub graphics: &'a mut Graphics,
+    pub paper: &'a mut Option<Typesetter>,
 }
 
 struct Header<'a> {
@@ -433,6 +458,10 @@ impl Cursor {
 
     fn row(&self) -> Rect {
         Rect::new(self.area.x, self.y, self.area.width, 1)
+    }
+
+    fn rest(&self) -> Rect {
+        Rect::new(self.area.x, self.y, self.area.width, self.left())
     }
 
     fn line(&mut self, frame: &mut Frame, line: Line<'static>) {

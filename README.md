@@ -51,7 +51,8 @@ to the machine that has room.
   No server or config file.
 - **Start, read and answer.** `c` starts a Claude Code or Codex session in any
   project on any machine, in that project's Rex tab. Select a session to read
-  its conversation, drawn as Markdown with highlighted code; `↵` writes to it,
+  its conversation, typeset like a page on a Mac (real type, highlighted code,
+  tables) and drawn as Markdown elsewhere; `↵` writes to it,
   `y` or `n` answers its permission prompt, `1`–`9` picks an option when it
   asks a question, and `x` stops a turn. A session in the Claude desktop app
   or another terminal continues in Rex with `r`, as a copy.
