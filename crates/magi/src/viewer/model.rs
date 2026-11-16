@@ -3,6 +3,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
+use super::projects::{Projects, Resolved};
 use crate::proto::{
     self, Agent, AgentSession, FULL, ForwardState, Identity, MAX_PROMPT_CHARS, Plan, Reply, Sample,
     Screen, SessionState, Welcome,
@@ -281,25 +282,34 @@ fn focus_of(entry: &Entry<'_>) -> Focus {
     }
 }
 
-pub fn project_key(project: &str) -> String {
-    project.split('-').next().unwrap_or(project).to_lowercase()
-}
+type ProjectGroup<'a> = (String, Option<String>, Vec<AgentRow<'a>>);
 
-fn add_to_project<'a>(projects: &mut Vec<(String, Vec<AgentRow<'a>>)>, agent: AgentRow<'a>) {
-    let key = project_key(&agent.session.project);
-    match projects.iter_mut().find(|(known, _)| *known == key) {
-        Some((_, agents)) => agents.push(agent),
-        None => projects.push((key, vec![agent])),
+fn add_to_project<'a>(
+    groups: &mut Vec<ProjectGroup<'a>>,
+    projects: &Projects,
+    agent: AgentRow<'a>,
+) {
+    let Resolved { key, name } = projects.resolve(&agent.session.project);
+    match groups.iter_mut().find(|(known, ..)| *known == key) {
+        Some((_, named, agents)) => {
+            if named.is_none() {
+                *named = name;
+            }
+            agents.push(agent);
+        }
+        None => groups.push((key, name, vec![agent])),
     }
 }
 
-fn project_name(agents: &[AgentRow<'_>]) -> String {
-    agents
-        .iter()
-        .map(|agent| agent.session.project.as_str())
-        .min_by_key(|name| (name.len(), *name))
-        .unwrap_or_default()
-        .to_string()
+fn project_name(name: Option<String>, agents: &[AgentRow<'_>]) -> String {
+    name.unwrap_or_else(|| {
+        agents
+            .iter()
+            .map(|agent| agent.session.project.as_str())
+            .min_by_key(|name| (name.len(), *name))
+            .unwrap_or_default()
+            .to_string()
+    })
 }
 
 fn urgency(agent: &AgentRow<'_>) -> (u8, i64) {
@@ -321,6 +331,8 @@ pub struct Model {
     pub selected: usize,
     pub port: u16,
     pub host_icons: HashMap<String, String>,
+    pub projects: Projects,
+    pub naming: Option<Naming>,
     pub alerts: Alerts,
     pub showing_alerts: bool,
     focus: Option<Focus>,
@@ -334,6 +346,31 @@ pub struct Model {
     awaiting: Option<Awaiting>,
     pub watching: Option<(Endpoint, String)>,
     screens: HashMap<String, Screen>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Renaming {
+    Repo(String),
+    Project { key: String, name: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Naming {
+    pub what: Renaming,
+    pub text: String,
+}
+
+impl Naming {
+    pub fn completion<'a>(&self, names: &'a [String]) -> Option<&'a str> {
+        if self.text.is_empty() {
+            return None;
+        }
+        let typed = self.text.to_lowercase();
+        names
+            .iter()
+            .find(|name| name.to_lowercase().starts_with(&typed) && name.len() > self.text.len())
+            .map(|name| name.as_str())
+    }
 }
 
 struct Flash {
@@ -450,6 +487,8 @@ impl Model {
             selected: 0,
             port,
             host_icons: HashMap::new(),
+            projects: Projects::default(),
+            naming: None,
             alerts,
             showing_alerts: false,
             focus: None,
@@ -792,10 +831,38 @@ impl Model {
         }
     }
 
+    pub fn project_names(&self, now: Instant) -> Vec<String> {
+        let mut groups: Vec<ProjectGroup<'_>> = Vec::new();
+        for agent in self.agents(now) {
+            add_to_project(&mut groups, &self.projects, agent);
+        }
+        let mut names: Vec<String> = groups
+            .into_iter()
+            .map(|(_, name, agents)| project_name(name, &agents))
+            .collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup();
+        names
+    }
+
+    pub fn project_of(&self, repo: &str, now: Instant) -> (String, String) {
+        let Resolved { key, name } = self.projects.resolve(repo);
+        let name = name.unwrap_or_else(|| {
+            self.agents(now)
+                .iter()
+                .map(|agent| agent.session.project.as_str())
+                .filter(|other| self.projects.resolve(other).key == key)
+                .min_by_key(|name| (name.len(), *name))
+                .unwrap_or(repo)
+                .to_string()
+        });
+        (key, name)
+    }
+
     pub fn listed(&self, now: Instant) -> Vec<Listed<'_>> {
         let mut needs_you = Vec::new();
         let mut asleep = Vec::new();
-        let mut projects: Vec<(String, Vec<AgentRow<'_>>)> = Vec::new();
+        let mut projects: Vec<ProjectGroup<'_>> = Vec::new();
         for agent in self.agents(now) {
             if agent.live && matches!(agent.session.state, SessionState::Waiting(_)) {
                 needs_you.push(agent);
@@ -805,15 +872,15 @@ impl Model {
             {
                 asleep.push(agent);
             } else {
-                add_to_project(&mut projects, agent);
+                add_to_project(&mut projects, &self.projects, agent);
             }
         }
         if asleep.len() < FOLD_AT_LEAST {
             for agent in asleep.drain(..) {
-                add_to_project(&mut projects, agent);
+                add_to_project(&mut projects, &self.projects, agent);
             }
         }
-        projects.sort_by_cached_key(|(key, _)| key.clone());
+        projects.sort_by(|a, b| a.0.cmp(&b.0));
         let mut listed: Vec<Listed<'_>> = needs_you
             .into_iter()
             .map(|agent| Listed {
@@ -821,8 +888,8 @@ impl Model {
                 entry: Entry::Session(agent),
             })
             .collect();
-        for (_, agents) in projects {
-            let group = Group::Project(project_name(&agents));
+        for (_, name, agents) in projects {
+            let group = Group::Project(project_name(name, &agents));
             listed.extend(agents.into_iter().map(|agent| Listed {
                 group: group.clone(),
                 entry: Entry::Session(agent),

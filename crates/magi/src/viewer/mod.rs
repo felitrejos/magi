@@ -7,6 +7,7 @@ mod graphics;
 mod input;
 mod link;
 mod model;
+mod projects;
 mod rex;
 mod style;
 mod symbols;
@@ -22,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
+use unicode_segmentation::UnicodeSegmentation;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::execute;
@@ -152,6 +154,7 @@ fn event_loop(
 ) -> io::Result<()> {
     let mut model = Model::new(port, Instant::now(), alerts);
     model.host_icons = rex::host_icons();
+    model.projects = projects::Projects::open(net::state_dir()?.join("projects.json"));
     links.reconcile(&mut model, &[Endpoint::Local])?;
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME;
@@ -264,6 +267,8 @@ enum Action {
     New,
     Stop,
     Adopt,
+    Project,
+    RenameProject,
 }
 
 fn action(key: &Key) -> Option<Action> {
@@ -283,6 +288,8 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('c') => Action::New,
         Key::Char('x') => Action::Stop,
         Key::Char('r') => Action::Adopt,
+        Key::Char('p') => Action::Project,
+        Key::Char('P') => Action::RenameProject,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
         _ => return None,
     })
@@ -439,6 +446,75 @@ fn edit_picker(
         Key::Char(_) | Key::Newline => {}
     }
     model.picker = Some(picker);
+}
+
+fn start_naming(model: &mut Model, whole_project: bool, now: Instant) {
+    let Some(agent) = model.selected_agent(now) else {
+        return model.flash("select a session to change its project".into(), false, now);
+    };
+    let repo = agent.session.project.clone();
+    let (key, name) = model.project_of(&repo, now);
+    model.naming = Some(if whole_project {
+        model::Naming {
+            what: model::Renaming::Project {
+                key,
+                name: name.clone(),
+            },
+            text: name,
+        }
+    } else {
+        model::Naming {
+            what: model::Renaming::Repo(repo),
+            text: String::new(),
+        }
+    });
+}
+
+fn edit_naming(model: &mut Model, mut naming: model::Naming, key: Key, now: Instant) {
+    match key {
+        Key::Char(c) if !c.is_control() => naming.text.push(c),
+        Key::Paste(text) => naming.text.extend(text.chars().filter(|c| !c.is_control())),
+        Key::Backspace => {
+            let last = naming.text.grapheme_indices(true).next_back();
+            naming.text.truncate(last.map_or(0, |(start, _)| start));
+        }
+        Key::Tab => {
+            let names = model.project_names(now);
+            if let Some(name) = naming.completion(&names) {
+                naming.text = name.to_string();
+            }
+        }
+        Key::Escape | Key::Interrupt => return,
+        Key::Enter => return apply_naming(model, naming, now),
+        _ => {}
+    }
+    model.naming = Some(naming);
+}
+
+fn apply_naming(model: &mut Model, naming: model::Naming, now: Instant) {
+    let name = projects::clean(&naming.text);
+    let (saved, said) = match naming.what {
+        model::Renaming::Repo(repo) => (
+            model.projects.move_repo(&repo, &name),
+            if name.is_empty() {
+                format!("{repo} is grouped automatically again")
+            } else {
+                format!("Moved {repo} to {name}")
+            },
+        ),
+        model::Renaming::Project { key, name: old } => (
+            model.projects.rename(&key, &name),
+            if name.is_empty() {
+                format!("{old} is grouped automatically again")
+            } else {
+                format!("Renamed {old} to {name}")
+            },
+        ),
+    };
+    match saved {
+        Ok(()) => model.flash(said, true, now),
+        Err(error) => model.flash(format!("couldn't save projects: {error}"), false, now),
+    }
 }
 
 fn adopt(model: &mut Model, links: &Links, now: Instant) {
@@ -603,6 +679,9 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
         Event::Input(Input::Key(key)) if let Some(picker) = model.picker.take() => {
             edit_picker(model, links, picker, key, now);
         }
+        Event::Input(Input::Key(key)) if let Some(naming) = model.naming.take() => {
+            edit_naming(model, naming, key, now);
+        }
         Event::Input(Input::Key(key)) if let Some(draft) = model.draft.take() => {
             edit_draft(model, links, draft, key, now);
         }
@@ -628,6 +707,8 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::New) => open_picker(model, links, now),
             Some(Action::Stop) => stop(model, links, now),
             Some(Action::Adopt) => adopt(model, links, now),
+            Some(Action::Project) => start_naming(model, false, now),
+            Some(Action::RenameProject) => start_naming(model, true, now),
             None => {}
         },
         Event::Opened(result) => {
@@ -1180,6 +1261,101 @@ mod tests {
             window: "window:2".into(),
         });
         session
+    }
+
+    fn groups(model: &Model) -> Vec<(String, Vec<String>)> {
+        let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+        for item in model.listed(Instant::now()) {
+            let (model::Group::Project(name), model::Entry::Session(agent)) =
+                (&item.group, &item.entry)
+            else {
+                continue;
+            };
+            match groups.last_mut() {
+                Some((last, ids)) if last == name => ids.push(agent.session.id.clone()),
+                _ => groups.push((name.clone(), vec![agent.session.id.clone()])),
+            }
+        }
+        for (_, ids) in &mut groups {
+            ids.sort();
+        }
+        groups
+    }
+
+    fn select(model: &mut Model, id: &str) {
+        let now = Instant::now();
+        let index = model
+            .listed(now)
+            .iter()
+            .position(|item| matches!(&item.entry, model::Entry::Session(agent) if agent.session.id == id))
+            .unwrap();
+        model.selected = model.rows(now).len() + index;
+    }
+
+    #[test]
+    fn p_moves_a_repo_to_a_project_and_capital_p_renames_one_onto_another() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let mut docs = claude("s2", 0);
+        docs.project = "api-docs".into();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(claude("s1", 0))),
+            now,
+        );
+        model.apply(
+            Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2)),
+            live_sample(1_000, Some(docs)),
+            now,
+        );
+        let typed = |text: &str| text.chars().map(|c| key(Key::Char(c))).collect::<Vec<_>>();
+        assert_eq!(
+            groups(&model),
+            [("api".into(), vec!["s1".into(), "s2".into()])]
+        );
+
+        select(&mut model, "s2");
+        let mut keys = vec![key(Key::Char('p'))];
+        keys.extend(typed("Docs"));
+        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
+        assert!(screen(&model).contains("Move api-docs to project › Docs▏"));
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(
+            groups(&model),
+            [
+                ("api".into(), vec!["s1".into()]),
+                ("Docs".into(), vec!["s2".into()])
+            ]
+        );
+        assert_eq!(
+            model.flashed(Instant::now()),
+            Some(("Moved api-docs to Docs", true))
+        );
+
+        select(&mut model, "s1");
+        let mut keys = vec![key(Key::Char('P'))];
+        keys.extend([Key::Backspace, Key::Backspace, Key::Backspace].map(key));
+        keys.extend(typed("d"));
+        keys.push(key(Key::Tab));
+        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(model.naming.as_ref().unwrap().text, "Docs");
+        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
+        assert_eq!(
+            groups(&model),
+            [("Docs".into(), vec!["s1".into(), "s2".into()])]
+        );
+
+        handle_batch(
+            [key(Key::Char('p')), key(Key::Char('x')), key(Key::Escape)].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        assert_eq!(model.naming, None);
+        assert_eq!(
+            groups(&model),
+            [("Docs".into(), vec!["s1".into(), "s2".into()])]
+        );
     }
 
     #[test]

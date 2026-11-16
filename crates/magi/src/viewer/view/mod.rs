@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
-use super::model::{Entry, Model, Row};
+use super::model::{Entry, Model, Naming, Renaming, Row};
 use super::style::{self, theme};
 use super::units;
 use crate::proto::{Agent, FULL, Plan, SessionState};
@@ -464,7 +464,9 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         }
         spans
     };
-    let line = if let Some(pending) = &model.pending_move {
+    let line = if let Some(naming) = &model.naming {
+        naming_line(naming, &model.project_names(now), width)
+    } else if let Some(pending) = &model.pending_move {
         let question = format!(
             "Move {} from {} to {}?",
             pending.title, pending.from, pending.to
@@ -515,6 +517,48 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
+fn naming_line(naming: &Naming, names: &[String], width: usize) -> Line<'static> {
+    let question = match &naming.what {
+        Renaming::Repo(repo) => format!("Move {repo} to project "),
+        Renaming::Project { name, .. } => format!("Rename {name} to "),
+    };
+    let completion = naming.completion(names);
+    let ghost: String = completion
+        .map(|name| name.chars().skip(naming.text.chars().count()).collect())
+        .unwrap_or_default();
+    let mut pairs = Vec::new();
+    if completion.is_some() {
+        pairs.push(("⇥", "complete"));
+    }
+    pairs.push(("↵", "save"));
+    pairs.push(("esc", "cancel"));
+    let mut right = Vec::new();
+    for (index, (key, label)) in pairs.into_iter().enumerate() {
+        if index > 0 {
+            right.push(Span::raw("   "));
+        }
+        right.push(Span::styled(key, style::bold(theme().text)));
+        right.push(Span::styled(format!(" {label}"), style::fg(theme().faint)));
+    }
+    let hint = if naming.text.is_empty() && ghost.is_empty() {
+        "empty puts it back where magi would"
+    } else {
+        ""
+    };
+    spread(
+        vec![
+            Span::styled(question, style::fg(theme().text)),
+            Span::styled("› ", style::fg(theme().accent)),
+            Span::styled(naming.text.clone(), style::bold(theme().text)),
+            Span::styled(ghost, style::fg(theme().faint)),
+            Span::styled("▏", style::fg(theme().accent)),
+            Span::styled(hint, style::fg(theme().faint)),
+        ],
+        right,
+        width,
+    )
+}
+
 fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     let Some(agent) = model.selected_agent(now) else {
         return vec![("c", "new session")];
@@ -533,6 +577,7 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         }
         actions.push(("m", "move"));
     }
+    actions.push(("p", "project"));
     actions.push(("c", "new session"));
     actions
 }
