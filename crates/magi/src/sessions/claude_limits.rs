@@ -137,7 +137,7 @@ fn windows(body: &[u8], now_secs: u64) -> Option<Vec<Window>> {
     (!windows.is_empty()).then_some(windows)
 }
 
-pub(super) fn unix_secs(text: &str) -> Option<u64> {
+pub(crate) fn unix_secs(text: &str) -> Option<u64> {
     let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
     let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
     let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);

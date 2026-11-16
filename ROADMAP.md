@@ -55,6 +55,10 @@ Done:
   least busy one with room, with its reason), Claude or Codex and the
   model (Claude's aliases, or the models that machine's Codex lists); it starts
   the session, closes itself and magi selects the new session.
+- **Conversation, after the desktop app:** replies typeset in Charter with
+  magi's own quieter colours, your messages in a raised block, each run of
+  tool calls folded into one line (`t` shows them), the call still running
+  with its time, and the session's plan as a card at the end.
 - **Session family tree:** subagents, background shells, worktrees and
   sessions started inside another, nested under their session with their
   state. Selecting one shows a subagent's own conversation, live, or a

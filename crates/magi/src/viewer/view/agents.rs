@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -9,17 +8,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::{
-    Cursor, Mark, Pixels, body, clip, draw_panel, markdown, panel, selected_style, spans_width,
-    spread, tail, truncate,
+    Cursor, Mark, Pixels, body, clip, draw_panel, panel, selected_style, spans_width, spread, tail,
+    truncate,
 };
 use crate::proto::{
     Agent, AgentSession, BOLD, Child, ChildKind, ChildState, Content, DIM, FULL, ForwardState,
-    INVERSE, ITALIC, Run, Said, SessionState, Shade, UNDERLINE, Waiting,
+    INVERSE, ITALIC, Run, SessionState, Shade, UNDERLINE, Waiting,
 };
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Draft, Endpoint, Entry, Group, Listed, Model, MoveTarget};
 use crate::viewer::style::{self, theme};
-use crate::viewer::typeset::{Typesetter, draw_rows};
 use crate::viewer::units;
 use unicode_width::UnicodeWidthStr;
 
@@ -268,6 +266,7 @@ pub fn render_child(
     agent: &AgentRow<'_>,
     child: &Child,
     preview: Preview<'_>,
+    expanded: bool,
     pixels: &mut Pixels<'_>,
 ) {
     if area.height < 5 || area.width < 16 {
@@ -310,7 +309,11 @@ pub fn render_child(
     }
     frame.render_widget(Paragraph::new(Line::from(clip(from, width))), context);
     let mut cursor = Cursor::new(inner);
-    live_view(&mut cursor, frame, preview, width, pixels);
+    let speech = Speech {
+        working: child.state == ChildState::Running,
+        expanded,
+    };
+    live_view(&mut cursor, frame, preview, speech, pixels);
 }
 
 fn worktree_line(
@@ -414,6 +417,7 @@ pub struct Detail<'a> {
     pub preview: Preview<'a>,
     pub draft: Option<&'a Draft>,
     pub forwards: &'a [(u16, ForwardState)],
+    pub expanded: bool,
 }
 
 pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>, pixels: &mut Pixels<'_>) {
@@ -423,6 +427,7 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>, pixels: 
         preview,
         draft,
         forwards,
+        expanded,
     } = detail;
     let session = agent.session;
     let (mark, color) = style::agent(session.agent);
@@ -491,7 +496,11 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>, pixels: 
         );
         cursor.skip();
     }
-    live_view(&mut cursor, frame, preview, width, pixels);
+    let speech = Speech {
+        working: agent.live && matches!(session.state, SessionState::Working { .. }),
+        expanded,
+    };
+    live_view(&mut cursor, frame, preview, speech, pixels);
     let mut frame_box = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(style::fg(if shown.is_some() {
@@ -750,17 +759,26 @@ pub enum Preview<'a> {
     Gone,
 }
 
+pub struct Speech {
+    pub working: bool,
+    pub expanded: bool,
+}
+
 fn live_view(
     cursor: &mut Cursor,
     frame: &mut Frame,
     preview: Preview<'_>,
-    width: usize,
+    speech: Speech,
     pixels: &mut Pixels<'_>,
 ) {
-    if let Preview::Ready(Content::Conversation(said)) = preview
-        && typeset_conversation(cursor, frame, said, pixels)
-    {
-        return;
+    let width = usize::from(cursor.area.width);
+    if let Preview::Ready(Content::Conversation(said)) = preview {
+        let talk = super::talk::Talk {
+            said,
+            working: speech.working,
+            expanded: speech.expanded,
+        };
+        return super::talk::render(frame, cursor.rest(), talk, pixels);
     }
     let note = |cursor: &mut Cursor, frame: &mut Frame, text: &str, color| {
         cursor.line(
@@ -776,9 +794,7 @@ fn live_view(
             .iter()
             .map(|row| Line::from(clip(row.iter().map(run_span).collect(), width)))
             .collect(),
-        Preview::Ready(Content::Conversation(said)) => {
-            markdown::conversation(said, width, cursor.left() as usize)
-        }
+        Preview::Ready(Content::Conversation(_)) => return,
         Preview::Waiting(Source::Pane) => {
             return note(cursor, frame, "connecting to the pane…", theme().faint);
         }
@@ -791,11 +807,6 @@ fn live_view(
         }
     };
     let room = cursor.left() as usize;
-    if matches!(preview, Preview::Ready(Content::Conversation(_))) {
-        for _ in lines.len()..room {
-            cursor.skip();
-        }
-    }
     for line in lines
         .into_iter()
         .rev()
@@ -806,49 +817,6 @@ fn live_view(
     {
         cursor.line(frame, line);
     }
-}
-
-fn typeset_conversation(
-    cursor: &mut Cursor,
-    frame: &mut Frame,
-    said: &[Said],
-    pixels: &mut Pixels<'_>,
-) -> bool {
-    let Some((cell_width, cell_height)) = pixels.graphics.cell() else {
-        return false;
-    };
-    if pixels
-        .paper
-        .as_ref()
-        .is_none_or(|paper| !paper.matches_terminal())
-    {
-        *pixels.paper = Typesetter::new();
-    }
-    let Some(paper) = pixels.paper.as_mut() else {
-        return false;
-    };
-    let room = cursor.left();
-    let area = cursor.rest();
-    paper.show(&markdown::conversation_markdown(said), Path::new("."));
-    paper.fit(u32::from(area.width) * cell_width, cell_height);
-    let total = paper.rows();
-    let shown = total.min(usize::from(room));
-    let first = total - shown;
-    let area = Rect::new(
-        area.x,
-        area.y + room - shown as u16,
-        area.width,
-        shown as u16,
-    );
-    draw_rows(
-        frame.buffer_mut(),
-        pixels.graphics,
-        paper,
-        area,
-        first,
-        "talk",
-    );
-    true
 }
 
 fn run_span(run: &Run) -> Span<'static> {

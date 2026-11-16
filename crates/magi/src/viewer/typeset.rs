@@ -8,11 +8,16 @@ mod mac {
 
     use crate::viewer::style::{self, theme};
 
+    const BODY_FONTS: &str = "Charter, \"Iowan Old Style\", system-ui";
+    const HEADING_SCALE: &str = "1.3 1.18 1.08 1 1 1";
+    const HEADING_WEIGHT: &str = "560 540 520 500 500 500";
+    const LINE_HEIGHT: &str = "1.55";
+
     pub struct Typesetter {
         engine: Engine,
         theme: mddog::theme::Theme,
         scale: f64,
-        look: (bool, Color),
+        look: Look,
         text: String,
         blocks: Vec<Block>,
         texts: Vec<String>,
@@ -29,24 +34,54 @@ mod mac {
         }
     }
 
-    fn theme_file(look: (bool, Color)) -> Option<PathBuf> {
-        let (dark, background) = look;
-        let base = if dark { "github-dark" } else { "github-light" };
+    type Look = (bool, Color, Color);
+
+    fn look() -> Look {
+        (style::is_dark(), theme().panel, theme().text)
+    }
+
+    fn theme_file(dark: bool) -> Option<PathBuf> {
+        let t = theme();
         let path = crate::net::state_dir().ok()?.join("page-theme.css");
         std::fs::create_dir_all(path.parent()?).ok()?;
-        let css = format!(
-            ":root {{\n  --mddog-base: {base};\n  color-scheme: {scheme};\n  --mddog-bg: {bg};\n}}\n",
-            scheme = if dark { "dark" } else { "light" },
-            bg = colour(background),
+        let tokens = [
+            (
+                "base",
+                if dark { "github-dark" } else { "github-light" }.to_string(),
+            ),
+            ("layout", "obsidian".into()),
+            ("bg", colour(t.panel)),
+            ("text", colour(t.prose)),
+            ("text-muted", colour(t.dim)),
+            ("heading", colour(t.text)),
+            ("link", colour(t.codex)),
+            ("accent", colour(t.faint)),
+            ("rule", colour(t.rule)),
+            ("border", colour(t.border)),
+            ("code-bg", colour(t.raised)),
+            ("pre-bg", colour(t.raised)),
+            ("alt-bg", colour(t.raised)),
+            ("font-body", BODY_FONTS.into()),
+            ("heading-scale", HEADING_SCALE.into()),
+            ("heading-weight", HEADING_WEIGHT.into()),
+            ("line-height", LINE_HEIGHT.into()),
+        ];
+        let mut css = format!(
+            ":root {{\n  color-scheme: {};\n",
+            if dark { "dark" } else { "light" }
         );
+        for (name, value) in tokens {
+            css.push_str(&format!("  --mddog-{name}: {value};\n"));
+        }
+        css.push_str("}\n");
         std::fs::write(&path, css).ok()?;
         Some(path)
     }
 
     impl Typesetter {
         pub fn new() -> Option<Self> {
-            let look = (style::is_dark(), theme().panel);
-            let theme = mddog::theme::file(&theme_file(look)?).ok()?;
+            let look = look();
+            let theme = mddog::theme::file(&theme_file(look.0)?).ok()?;
             let scale = mddog::term::screen::display_scale();
             let engine = Engine::new(1.0, scale, true);
             engine.load("", Path::new("."), true, &theme);
@@ -66,7 +101,7 @@ mod mac {
         }
 
         pub fn matches_terminal(&self) -> bool {
-            self.look == (style::is_dark(), theme().panel)
+            self.look == look()
         }
 
         pub fn show(&mut self, text: &str, base: &Path) {
@@ -110,7 +145,7 @@ mod mac {
         pub fn key(&self, row: usize) -> u64 {
             let (top, bottom) = self.span(row);
             let mut hasher = DefaultHasher::new();
-            (row, self.width, self.row_height, self.look.0).hash(&mut hasher);
+            (row, self.width, self.row_height, self.look).hash(&mut hasher);
             for (index, block) in self
                 .blocks
                 .iter()
@@ -131,6 +166,19 @@ mod mac {
             let index = self.texts.iter().position(|text| text.contains(needle))?;
             let block = self.blocks.get(index)?;
             Some((block.top * self.scale / f64::from(self.row_height)) as usize)
+        }
+
+        pub fn rows_of(&self, first_line: u32, last_line: u32) -> Option<(usize, usize)> {
+            let (top, bottom) = self
+                .blocks
+                .iter()
+                .filter(|block| block.start >= first_line && block.end <= last_line)
+                .fold(None, |span: Option<(f64, f64)>, block| {
+                    let (top, bottom) = (block.top, block.top + block.height);
+                    Some(span.map_or((top, bottom), |(a, b)| (a.min(top), b.max(bottom))))
+                })?;
+            let row = |at: f64| at * self.scale / f64::from(self.row_height);
+            Some((row(top).floor() as usize, row(bottom).ceil() as usize))
         }
 
         fn span(&self, row: usize) -> (f64, f64) {
@@ -186,6 +234,10 @@ impl Typesetter {
     pub fn pixels(&self, _row: usize, _width: u32, _height: u32) -> Option<Vec<u8>> {
         match *self {}
     }
+
+    pub fn rows_of(&self, _first_line: u32, _last_line: u32) -> Option<(usize, usize)> {
+        match *self {}
+    }
 }
 
 pub fn draw_rows(
@@ -213,6 +265,37 @@ pub fn draw_rows(
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "writes a picture: MAGI_PNG=/path.png cargo test -- --ignored print_typeset"]
+    fn print_typeset() {
+        let path = std::env::var("MAGI_PNG").unwrap();
+        let mut paper = Typesetter::new().unwrap();
+        paper.fit(1400, 34);
+        paper.show(
+            "## Grouping the cores\n\nThe agent reads each core's **cluster type** once, from the device tree, and sends it with the machine's identity. The view then shows `Performance` and `Efficiency` apart.\n\n- Each group is numbered on its own\n- Its average sits beside its title\n\n> A quote stays quiet.\n\n```rust\nfn kinds() -> Vec<CoreKind> {\n    mac::kinds().unwrap_or_default()\n}\n```\n\nCommitted and pushed, see [the commit](https://example.com).",
+            std::path::Path::new("."),
+        );
+        let rows = paper.rows();
+        let mut pixmap = tiny_skia::Pixmap::new(1400, 34 * rows as u32).unwrap();
+        for row in 0..rows {
+            let Some(rgba) = paper.pixels(row, 1400, 34) else {
+                continue;
+            };
+            let strip =
+                tiny_skia::Pixmap::from_vec(rgba, tiny_skia::IntSize::from_wh(1400, 34).unwrap())
+                    .unwrap();
+            pixmap.draw_pixmap(
+                0,
+                34 * row as i32,
+                strip.as_ref(),
+                &tiny_skia::PixmapPaint::default(),
+                tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+        pixmap.save_png(path).unwrap();
+    }
 
     #[test]
     fn a_changed_short_paragraph_gets_new_pixels_and_unchanged_rows_keep_theirs() {

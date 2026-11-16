@@ -284,6 +284,7 @@ enum Action {
     Adopt,
     Project,
     RenameProject,
+    Tools,
     Diff,
     Plan,
 }
@@ -307,6 +308,7 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('r') => Action::Adopt,
         Key::Char('p') => Action::Project,
         Key::Char('P') => Action::RenameProject,
+        Key::Char('t') => Action::Tools,
         Key::Char('d') => Action::Diff,
         Key::Char('v') => Action::Plan,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
@@ -976,6 +978,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Adopt) => adopt(model, links, now),
             Some(Action::Project) => start_naming(model, false, now),
             Some(Action::RenameProject) => start_naming(model, true, now),
+            Some(Action::Tools) => model.tools_expanded = !model.tools_expanded,
             Some(Action::Diff) => ask_to_show(model, links, proto::Showing::Diff, now),
             Some(Action::Plan) => ask_to_show(model, links, proto::Showing::Plan, now),
             None => {}
@@ -1525,7 +1528,14 @@ mod tests {
             .map(|y| (0..140).map(|x| buffer[(x, y)].symbol()).collect())
             .collect();
         let joined = screen.join("\n");
-        assert!(joined.contains("› run the tests"), "{joined}");
+        let prompt = screen
+            .iter()
+            .find(|line| line.contains("run the tests") && !line.contains('✻'))
+            .unwrap_or_else(|| panic!("{joined}"));
+        assert!(
+            prompt.find("run the tests").unwrap() > 100,
+            "your message sits on the right\n{joined}"
+        );
         let wrapped = screen
             .iter()
             .filter(|line| line.contains("word word"))

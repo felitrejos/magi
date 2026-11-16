@@ -6,6 +6,10 @@ use super::model::Level;
 use crate::proto::Agent;
 
 const CLAUDE: Rgb = Rgb(217, 119, 87);
+const DARK_LIFT: f32 = 0.035;
+const LIGHT_LIFT: f32 = 0.03;
+const RAISE: f32 = 0.045;
+const PROSE: f32 = 0.13;
 const FALLBACK: Palette = Palette {
     foreground: Rgb(228, 228, 232),
     background: Rgb(12, 12, 14),
@@ -30,6 +34,8 @@ pub struct Theme {
     pub guide: Color,
     pub selected: Color,
     pub panel: Color,
+    pub raised: Color,
+    pub prose: Color,
     pub accent: Color,
     pub second: Color,
     pub warn: Color,
@@ -89,7 +95,9 @@ impl From<Palette> for Theme {
             track: toward_background(0.84),
             guide: toward_background(0.78),
             selected: toward_background(0.88),
-            panel: palette.panel(),
+            panel: palette.panel(0.0),
+            raised: palette.panel(RAISE),
+            prose: toward_background(PROSE),
             accent: palette.green.into(),
             second: palette.magenta.into(),
             warn: palette.yellow.into(),
@@ -102,11 +110,15 @@ impl From<Palette> for Theme {
 }
 
 impl Palette {
-    fn panel(self) -> Color {
+    fn panel(self, raise: f32) -> Color {
         let Rgb(r, g, b) = self.background;
         let lightness = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
-        let lift = if lightness < 128 { 0.018 } else { 0.03 };
-        self.background.mix(self.foreground, lift)
+        let lift = if lightness < 128 {
+            DARK_LIFT
+        } else {
+            LIGHT_LIFT
+        };
+        self.background.mix(self.foreground, lift + raise)
     }
 
     fn parse(reply: &[u8], base: Self) -> Self {
@@ -239,13 +251,13 @@ mod tests {
             background: Rgb(13, 17, 23),
             ..FALLBACK
         };
-        assert_eq!(dark.panel(), Color::Rgb(17, 21, 27));
+        assert_eq!(dark.panel(0.0), Color::Rgb(21, 25, 31));
         let light = Palette {
             foreground: Rgb(30, 30, 30),
             background: Rgb(250, 250, 250),
             ..FALLBACK
         };
-        assert_eq!(light.panel(), Color::Rgb(243, 243, 243));
+        assert_eq!(light.panel(0.0), Color::Rgb(243, 243, 243));
     }
 
     #[test]

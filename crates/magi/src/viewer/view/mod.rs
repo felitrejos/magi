@@ -3,6 +3,7 @@ mod history;
 pub(super) mod launcher;
 mod machines;
 pub(super) mod markdown;
+mod talk;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -202,6 +203,7 @@ pub fn render(
                         agent,
                         child,
                         preview,
+                        model.tools_expanded,
                         &mut Pixels { graphics, paper },
                     );
                 }
@@ -244,6 +246,7 @@ fn render_session(
             preview,
             draft: model.draft.as_ref(),
             forwards: &forwards,
+            expanded: model.tools_expanded,
         },
         &mut Pixels { graphics, paper },
     );
@@ -640,6 +643,14 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         }
         actions.push(("m", "move"));
     }
+    actions.push((
+        "t",
+        if model.tools_expanded {
+            "fold tools"
+        } else {
+            "show tools"
+        },
+    ));
     actions.push(("p", "project"));
     actions.push(("c", "new session"));
     actions

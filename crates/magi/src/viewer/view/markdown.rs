@@ -7,7 +7,6 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::clip;
-use crate::proto::{Change, Said};
 use crate::viewer::style::{self, Theme, theme};
 
 const CELL_GAP: usize = 2;
@@ -49,130 +48,7 @@ static PAINTS: LazyLock<Vec<(Scope, Paint)>> = LazyLock::new(|| {
         .collect()
 });
 
-pub fn conversation(said: &[Said], width: usize, room: usize) -> Vec<Line<'static>> {
-    let mut entries = Vec::new();
-    let mut shown = 0;
-    for (index, entry) in said.iter().enumerate().rev() {
-        if shown >= room {
-            break;
-        }
-        let mut lines = match entry {
-            Said::You(text) => prompt(text, width),
-            Said::Reply(text) => markdown(text, width),
-            Said::Tool {
-                name,
-                detail,
-                change,
-            } => vec![tool(name, detail, *change, width)],
-        };
-        let previous = index.checked_sub(1).map(|previous| &said[previous]);
-        let tool_after_tool = matches!(
-            (previous, entry),
-            (Some(Said::Tool { .. }), Said::Tool { .. })
-        );
-        if previous.is_some() && !tool_after_tool {
-            lines.insert(0, Line::default());
-        }
-        shown += lines.len();
-        entries.push(lines);
-    }
-    entries.into_iter().rev().flatten().collect()
-}
-
-pub fn conversation_markdown(said: &[Said]) -> String {
-    let mut out = String::new();
-    let mut tools = false;
-    for entry in said {
-        match entry {
-            Said::You(text) => {
-                tools = false;
-                out.push_str("\n\n");
-                for line in text.trim().lines() {
-                    out.push_str("> ");
-                    out.push_str(line);
-                    out.push('\n');
-                }
-            }
-            Said::Reply(text) => {
-                tools = false;
-                out.push_str("\n\n");
-                out.push_str(text.trim());
-                out.push('\n');
-            }
-            Said::Tool {
-                name,
-                detail,
-                change,
-            } => {
-                if !tools {
-                    out.push_str("\n\n");
-                    tools = true;
-                }
-                out.push_str(&format!("- **{}**", tool_name(name)));
-                if !detail.is_empty() {
-                    let fence = if detail.contains('`') { "``" } else { "`" };
-                    out.push_str(&format!(" {fence} {detail} {fence}"));
-                }
-                if let Some(Change { added, removed }) = change {
-                    if *added > 0 {
-                        out.push_str(&format!(" +{added}"));
-                    }
-                    if *removed > 0 {
-                        out.push_str(&format!(" −{removed}"));
-                    }
-                }
-                out.push('\n');
-            }
-        }
-    }
-    out.trim_start().to_string()
-}
-
-fn prompt(text: &str, width: usize) -> Vec<Line<'static>> {
-    let t = theme();
-    let style = style::fg(t.text).add_modifier(Modifier::BOLD);
-    let mut lines = Vec::new();
-    for line in text.trim().lines() {
-        let first = if lines.is_empty() {
-            Span::styled("› ", style::fg(t.accent))
-        } else {
-            Span::raw("  ")
-        };
-        lines.extend(wrap(
-            vec![Span::styled(line.to_string(), style)],
-            width,
-            &[first],
-            &[Span::raw("  ")],
-        ));
-    }
-    lines
-}
-
-fn tool(name: &str, detail: &str, change: Option<Change>, width: usize) -> Line<'static> {
-    let t = theme();
-    let mut counts = Vec::new();
-    if let Some(Change { added, removed }) = change {
-        if added > 0 {
-            counts.push(Span::styled(format!(" +{added}"), style::fg(t.accent)));
-        }
-        if removed > 0 {
-            counts.push(Span::styled(format!(" −{removed}"), style::fg(t.crit)));
-        }
-    }
-    let mut spans = vec![
-        Span::styled("▸ ", style::fg(t.faint)),
-        Span::styled(tool_name(name), style::fg(t.dim)),
-    ];
-    if !detail.is_empty() {
-        spans.push(Span::styled(format!("  {detail}"), style::fg(t.faint)));
-    }
-    let room = width.saturating_sub(counts.iter().map(Span::width).sum());
-    let mut line = clip(spans, room);
-    line.extend(counts);
-    Line::from(line)
-}
-
-fn tool_name(name: &str) -> String {
+pub(super) fn tool_name(name: &str) -> String {
     match name
         .strip_prefix("mcp__")
         .and_then(|rest| rest.split_once("__"))
@@ -428,7 +304,10 @@ impl Writer {
     }
 
     fn style(&self) -> Style {
-        self.styles.last().copied().unwrap_or_default()
+        self.styles
+            .last()
+            .copied()
+            .unwrap_or_else(|| style::fg(theme().prose))
     }
 
     fn text(&mut self, text: &str, style: Style) {
@@ -685,32 +564,6 @@ fn split_at_width(text: &str, width: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_conversation_becomes_markdown_with_quoted_prompts_and_listed_tools() {
-        let said = [
-            Said::You("fix the build\nplease".into()),
-            Said::Reply("Looking at it.".into()),
-            Said::Tool {
-                name: "Bash".into(),
-                detail: "cargo build".into(),
-                change: None,
-            },
-            Said::Tool {
-                name: "mcp__linear__save_issue".into(),
-                detail: "uses `x`".into(),
-                change: Some(Change {
-                    added: 3,
-                    removed: 1,
-                }),
-            },
-            Said::Reply("Fixed.".into()),
-        ];
-        assert_eq!(
-            super::conversation_markdown(&said),
-            "> fix the build\n> please\n\n\nLooking at it.\n\n\n- **Bash** ` cargo build `\n- **save issue** `` uses `x` `` +3 −1\n\n\nFixed.\n"
-        );
-    }
-
     use super::*;
 
     fn texts(lines: &[Line<'_>]) -> Vec<String> {
@@ -870,53 +723,6 @@ mod tests {
     }
 
     #[test]
-    fn a_conversation_puts_prompts_replies_and_tool_calls_in_order() {
-        let said = [
-            Said::You("fix the build".into()),
-            Said::Reply("On it.".into()),
-            Said::Tool {
-                name: "Edit".into(),
-                detail: "src/main.rs".into(),
-                change: Some(Change {
-                    added: 3,
-                    removed: 1,
-                }),
-            },
-            Said::Tool {
-                name: "Bash".into(),
-                detail: "cargo test".into(),
-                change: None,
-            },
-            Said::Reply("Fixed.".into()),
-        ];
-        let lines = conversation(&said, 40, usize::MAX);
-        assert_eq!(
-            texts(&lines),
-            [
-                "› fix the build",
-                "",
-                "On it.",
-                "",
-                "▸ Edit  src/main.rs +3 −1",
-                "▸ Bash  cargo test",
-                "",
-                "Fixed.",
-            ]
-        );
-        assert_eq!(styled(&lines, "+3").style.fg, Some(theme().accent));
-        assert_eq!(styled(&lines, "−1").style.fg, Some(theme().crit));
-    }
-
-    #[test]
-    fn only_the_newest_entries_that_fill_the_panel_are_rendered() {
-        let said: Vec<Said> = (0..10).map(|n| Said::Reply(format!("reply {n}"))).collect();
-        assert_eq!(
-            texts(&conversation(&said, 40, 3)),
-            ["", "reply 8", "", "reply 9"]
-        );
-    }
-
-    #[test]
     fn mcp_tools_show_by_their_own_name() {
         assert_eq!(tool_name("mcp__ccd_turn__update_plan"), "update plan");
         assert_eq!(
@@ -925,60 +731,5 @@ mod tests {
         );
         assert_eq!(tool_name("mcp__broken"), "mcp__broken");
         assert_eq!(tool_name("Edit"), "Edit");
-    }
-
-    #[test]
-    fn a_long_tool_line_is_cut_but_keeps_its_change_counts() {
-        let line = tool(
-            "Edit",
-            "src/a/very/deep/path/to/some/file.rs",
-            Some(Change {
-                added: 12,
-                removed: 0,
-            }),
-            24,
-        );
-        let text: String = line
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert!(text.ends_with(" +12"), "{text}");
-        assert!(text.width() <= 24, "{text}");
-    }
-
-    #[test]
-    #[ignore = "benchmark: cargo test --release -- --ignored --nocapture bench_conversation"]
-    fn bench_conversation() {
-        let reply = "## Result\n\nThe **build** passes. Here is the change:\n\n```rust\nfn main() {\n    let total: u64 = (0..10).sum();\n    println!(\"{total}\");\n}\n```\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
-        let said: Vec<Said> = (0..40)
-            .map(|n| {
-                if n % 2 == 0 {
-                    Said::Reply(reply.repeat(4))
-                } else {
-                    Said::Tool {
-                        name: "Edit".into(),
-                        detail: "src/main.rs".into(),
-                        change: Some(Change {
-                            added: 1,
-                            removed: 1,
-                        }),
-                    }
-                }
-            })
-            .collect();
-        for (round, room) in [
-            ("first, all", usize::MAX),
-            ("again, all", usize::MAX),
-            ("a panel of 40", 40),
-        ] {
-            let started = std::time::Instant::now();
-            let lines = conversation(&said, 100, room);
-            println!(
-                "{round}: rendered {} lines in {:?}",
-                lines.len(),
-                started.elapsed()
-            );
-        }
     }
 }
