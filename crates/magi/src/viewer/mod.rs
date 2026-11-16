@@ -40,6 +40,8 @@ use link::{Dial, LinkHandle};
 use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
 const WHEEL_LINES: isize = 3;
+const THUMBNAIL_PIXELS: &str = "1200";
+const THUMBNAIL_WITHIN: Duration = Duration::from_secs(10);
 const LEARN_EXISTING_FOR: Duration = Duration::from_secs(30);
 const ASK_NAMER_EVERY: Duration = Duration::from_secs(60);
 const FRAME: Duration = Duration::from_millis(33);
@@ -68,21 +70,85 @@ pub fn print_document(path: &std::path::Path, width: usize) -> io::Result<()> {
     if let Ok(palette) = std::env::var("MAGI_PALETTE") {
         style::adopt_palette(&palette);
     }
-    let text = std::fs::read_to_string(path)?;
-    let markdown = path
+    let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| matches!(extension, "md" | "markdown" | "mdx"));
-    let shown = if markdown {
-        view::markdown_ansi(&text, width.max(20))
-    } else {
-        text.chars()
-            .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
-            .collect()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let shown = match extension.as_str() {
+        "md" | "markdown" | "mdx" => {
+            view::markdown_ansi(&std::fs::read_to_string(path)?, width.max(20))
+        }
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "pdf" | "html" => {
+            match picture(path, &extension) {
+                Some(png) => picture_lines(&png, path, width),
+                None if extension == "svg" || extension == "html" => {
+                    plain(&std::fs::read_to_string(path)?)
+                }
+                None => format!("{name}\n\n↵ opens it\n"),
+            }
+        }
+        _ => plain(&std::fs::read_to_string(path)?),
     };
     let mut out = io::stdout().lock();
     out.write_all(shown.as_bytes())?;
     out.flush()
+}
+
+fn plain(text: &str) -> String {
+    text.chars()
+        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+        .collect()
+}
+
+fn picture(path: &std::path::Path, extension: &str) -> Option<Vec<u8>> {
+    if extension == "png" {
+        return std::fs::read(path).ok();
+    }
+    let path = path.canonicalize().ok()?;
+    let dir = path.parent()?;
+    let thumbnail = dir.join(format!("{}.png", path.file_name()?.to_string_lossy()));
+    if !thumbnail.exists() {
+        let quick_look = crate::handoff::find("qlmanage", &[PathBuf::from("/usr/bin")])?;
+        let _ = crate::bounded::output(
+            std::process::Command::new(quick_look)
+                .args(["-t", "-s", THUMBNAIL_PIXELS, "-o"])
+                .arg(dir)
+                .arg(&path)
+                .stdin(std::process::Stdio::null()),
+            THUMBNAIL_WITHIN,
+        );
+    }
+    std::fs::read(thumbnail).ok()
+}
+
+fn picture_lines(png: &[u8], path: &std::path::Path, width: usize) -> String {
+    let Some((pixels_wide, pixels_tall)) = graphics::png_size(png) else {
+        return String::new();
+    };
+    let lines = std::env::var("FZF_PREVIEW_LINES")
+        .ok()
+        .and_then(|lines| lines.parse::<usize>().ok())
+        .unwrap_or(30)
+        .saturating_sub(2)
+        .max(4);
+    let aspect = f64::from(pixels_tall) / f64::from(pixels_wide);
+    let mut cols = width.max(8);
+    let mut rows = ((cols as f64 * aspect) / 2.0).round().max(1.0) as usize;
+    if rows > lines {
+        rows = lines;
+        cols = ((rows as f64 * 2.0) / aspect).round().max(1.0) as usize;
+    }
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&path, &mut hasher);
+    let id = (std::hash::Hasher::finish(&hasher) % 0xff_fffe) as u32 + 1;
+    format!(
+        "\x1b[2m{pixels_wide}×{pixels_tall}\x1b[0m\n\n{}",
+        graphics::inline_png(png, id, cols as u16, rows as u16)
+    )
 }
 
 pub fn run(config: Config) -> io::Result<()> {
@@ -717,7 +783,14 @@ fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instan
             proto::Showed::Outputs(files) => {
                 let joined: String = files
                     .iter()
-                    .map(|file| format!("# {}\n\n{}\n\n", file.path, file.text))
+                    .filter(|file| std::str::from_utf8(&file.bytes).is_ok())
+                    .map(|file| {
+                        format!(
+                            "# {}\n\n{}\n\n",
+                            file.path,
+                            String::from_utf8_lossy(&file.bytes)
+                        )
+                    })
                     .collect();
                 page_command(&joined, &shown.title, false)
             }

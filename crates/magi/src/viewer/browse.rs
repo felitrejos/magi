@@ -4,6 +4,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use super::units;
 use crate::handoff;
 use crate::proto::OutputFile;
 
@@ -11,14 +12,18 @@ const BROWSE: &str = r#"cd "$0" || exit 1
 export MAGI_TOOL="$2" MAGI_PALETTE="$5"
 "$3" --ansi --delimiter='	' --with-nth=1,2 --header="$1" --header-first \
   --layout=reverse --info=inline-right --prompt='filter files > ' --no-sort --exact \
-  --keep-right --footer='↑↓ pick a file · esc close' \
+  --keep-right --footer="$6" \
   --preview="$4" \
   --preview-window='right,62%,border-left,<60(down,65%,border-top)' \
-  --bind=enter:ignore < files
+  --bind="$7" < files
 cd / && rm -rf "$0""#;
 const DELTA_PREVIEW: &str = r#""$MAGI_TOOL" --paging=never --width=$FZF_PREVIEW_COLUMNS < {3}"#;
 const MAGI_PREVIEW: &str = r#""$MAGI_TOOL" md --width $FZF_PREVIEW_COLUMNS {3}"#;
 const NEW_FILE: &str = "new file, not yet added: ";
+const PICK: &str = "↑↓ pick a file · esc close";
+const PICK_AND_OPEN: &str = "↑↓ pick a file · ↵ open it · esc close";
+const OPENERS: [&str; 2] = ["open", "xdg-open"];
+const TEXT: [&str; 8] = ["md", "markdown", "mdx", "txt", "rst", "html", "csv", "svg"];
 
 #[derive(Debug, PartialEq)]
 struct Section {
@@ -69,7 +74,7 @@ struct Entry {
     left: String,
     label: String,
     file: String,
-    text: String,
+    text: Vec<u8>,
 }
 
 pub fn diff(diff: &str, title: &str, popups: &Path) -> io::Result<Option<Vec<String>>> {
@@ -98,7 +103,7 @@ pub fn diff(diff: &str, title: &str, popups: &Path) -> io::Result<Option<Vec<Str
             ),
             label: section.path,
             file: format!("{index}.diff"),
-            text: section.text,
+            text: section.text.into_bytes(),
         })
         .collect();
     let browser = Browser {
@@ -106,6 +111,8 @@ pub fn diff(diff: &str, title: &str, popups: &Path) -> io::Result<Option<Vec<Str
         tool: &delta,
         preview: DELTA_PREVIEW,
         palette: "",
+        footer: PICK,
+        enter: "enter:ignore".into(),
     };
     browser.open(entries, &header, popups).map(Some)
 }
@@ -120,6 +127,8 @@ pub fn outputs(
         return Ok(None);
     };
     let magi = std::env::current_exe()?;
+    let dirs = handoff::search_dirs();
+    let opener = OPENERS.iter().find_map(|name| handoff::find(name, &dirs));
     let entries = outputs
         .iter()
         .enumerate()
@@ -128,12 +137,27 @@ pub fn outputs(
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .filter(|extension| extension.chars().all(|c| c.is_ascii_alphanumeric()))
-                .unwrap_or("md");
+                .unwrap_or("md")
+                .to_ascii_lowercase();
+            let missing = output.bytes.is_empty() && output.size > 0;
             Entry {
-                left: format!("\x1b[2m{:>5}\x1b[0m", lines(&output.text)),
+                left: format!("\x1b[2m{:>9}\x1b[0m", measure(output, &extension)),
                 label: output.path.clone(),
-                file: format!("{index}.{extension}"),
-                text: output.text.clone(),
+                file: if missing {
+                    format!("{index}.txt")
+                } else {
+                    format!("{index}.{extension}")
+                },
+                text: if missing {
+                    format!(
+                        "{} is {}, too large to bring over to show here.\n",
+                        output.path,
+                        units::bytes(output.size)
+                    )
+                    .into_bytes()
+                } else {
+                    output.bytes.clone()
+                },
             }
         })
         .collect();
@@ -142,6 +166,15 @@ pub fn outputs(
         tool: &magi,
         preview: MAGI_PREVIEW,
         palette,
+        footer: if opener.is_some() {
+            PICK_AND_OPEN
+        } else {
+            PICK
+        },
+        enter: opener.map_or_else(
+            || "enter:ignore".into(),
+            |opener| format!("enter:execute-silent('{}' {{3}})", opener.display()),
+        ),
     };
     let header = format!("{title} · {}", files(outputs.len()));
     browser.open(entries, &header, popups).map(Some)
@@ -149,6 +182,14 @@ pub fn outputs(
 
 fn files(count: usize) -> String {
     format!("{count} {}", if count == 1 { "file" } else { "files" })
+}
+
+fn measure(output: &OutputFile, extension: &str) -> String {
+    if TEXT.contains(&extension) {
+        lines(&String::from_utf8_lossy(&output.bytes))
+    } else {
+        units::bytes(output.size)
+    }
 }
 
 fn lines(text: &str) -> String {
@@ -165,6 +206,8 @@ struct Browser<'a> {
     tool: &'a Path,
     preview: &'a str,
     palette: &'a str,
+    footer: &'a str,
+    enter: String,
 }
 
 impl Browser<'_> {
@@ -176,7 +219,7 @@ impl Browser<'_> {
             let label: String = entry.label.chars().filter(|c| !c.is_control()).collect();
             list.push_str(&format!("{}\t{label}\t{}\n", entry.left, entry.file));
         }
-        write_private(&dir.join("files"), &list)?;
+        write_private(&dir.join("files"), list.as_bytes())?;
         Ok(vec![
             "sh".into(),
             "-c".into(),
@@ -187,6 +230,8 @@ impl Browser<'_> {
             self.fzf.to_string_lossy().into_owned(),
             self.preview.to_string(),
             self.palette.to_string(),
+            self.footer.to_string(),
+            self.enter.clone(),
         ])
     }
 }
@@ -206,13 +251,13 @@ fn fresh_dir(popups: &Path) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn write_private(path: &Path, text: &str) -> io::Result<()> {
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(path)?;
-    file.write_all(text.as_bytes())
+    file.write_all(bytes)
 }
 
 #[cfg(test)]
@@ -245,24 +290,37 @@ mod tests {
         let files = [
             OutputFile {
                 path: "Plan".into(),
-                text: "1. Ship it".into(),
+                bytes: b"1. Ship it".to_vec(),
+                size: 10,
             },
             OutputFile {
                 path: "docs/notes.txt".into(),
-                text: "a\nb".into(),
+                bytes: b"a\nb".to_vec(),
+                size: 3,
+            },
+            OutputFile {
+                path: "shots/big.png".into(),
+                bytes: Vec::new(),
+                size: 3 << 20,
             },
         ];
         let Some(command) = outputs(&files, "Outputs", "palette", &popups).unwrap() else {
             return;
         };
         let dir = PathBuf::from(&command[3]);
-        assert_eq!(command[4], "Outputs · 2 files");
+        assert_eq!(command[4], "Outputs · 3 files");
         assert_eq!(command[7], MAGI_PREVIEW);
         assert_eq!(command[8], "palette");
         let list = fs::read_to_string(dir.join("files")).unwrap();
         assert!(list.contains("1 line\x1b[0m\tPlan\t0.md\n"), "{list:?}");
         assert!(list.contains("\tdocs/notes.txt\t1.txt\n"), "{list:?}");
         assert_eq!(fs::read_to_string(dir.join("1.txt")).unwrap(), "a\nb");
+        assert!(list.contains("\tshots/big.png\t2.txt\n"), "{list:?}");
+        assert!(
+            fs::read_to_string(dir.join("2.txt"))
+                .unwrap()
+                .contains("too large")
+        );
         fs::remove_dir_all(popups).unwrap();
     }
 

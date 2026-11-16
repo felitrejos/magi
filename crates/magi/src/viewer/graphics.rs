@@ -460,6 +460,51 @@ fn pill(top: f32, right: f32, thickness: f32) -> Option<tiny_skia::Path> {
     path.finish()
 }
 
+pub fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    if png.get(..8)? != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    let word = |at: usize| Some(u32::from_be_bytes(png.get(at..at + 4)?.try_into().ok()?));
+    Some((word(16)?, word(20)?)).filter(|(width, height)| *width > 0 && *height > 0)
+}
+
+pub fn inline_png(png: &[u8], id: u32, cols: u16, rows: u16) -> String {
+    let (cols, rows) = (
+        cols.min(DIACRITICS.len() as u16),
+        rows.min(DIACRITICS.len() as u16),
+    );
+    let payload = base64::encode(png);
+    let chunks: Vec<&[u8]> = payload.as_bytes().chunks(CHUNK).collect();
+    let mut out = String::with_capacity(payload.len() + usize::from(rows * cols) * 12);
+    for (index, chunk) in chunks.iter().enumerate() {
+        let more = u8::from(index + 1 < chunks.len());
+        if index == 0 {
+            out.push_str(&format!(
+                "\x1b_Ga=T,f=100,i={id},U=1,c={cols},r={rows},q=2,m={more};"
+            ));
+        } else {
+            out.push_str(&format!("\x1b_Gm={more},q=2;"));
+        }
+        out.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+        out.push_str("\x1b\\");
+    }
+    for row in 0..rows {
+        out.push_str(&format!(
+            "\x1b[38;2;{};{};{}m",
+            (id >> 16) as u8,
+            (id >> 8) as u8,
+            id as u8
+        ));
+        for col in 0..cols {
+            out.push(PLACEHOLDER);
+            out.push(DIACRITICS[usize::from(row)]);
+            out.push(DIACRITICS[usize::from(col)]);
+        }
+        out.push_str("\x1b[39m\n");
+    }
+    out
+}
+
 fn upload(id: u32, cols: u16, rows: u16, width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(3));
     let compressed = encoder

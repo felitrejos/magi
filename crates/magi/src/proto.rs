@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 21;
+pub const PROTOCOL_VERSION: u16 = 22;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -237,7 +237,8 @@ pub enum Showed {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct OutputFile {
     pub path: String,
-    pub text: String,
+    pub bytes: Vec<u8>,
+    pub size: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
