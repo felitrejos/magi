@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 14;
+pub const PROTOCOL_VERSION: u16 = 15;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -189,6 +189,21 @@ pub enum AgentMessage {
     Reply(Reply),
     Screen(Screen),
     Folders(Vec<String>),
+    Shown(Shown),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Showing {
+    Diff,
+    Plan,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Shown {
+    pub session: String,
+    pub what: Showing,
+    pub title: String,
+    pub text: Result<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -200,6 +215,10 @@ pub enum Request {
     Watch {
         session: Option<String>,
         child: Option<String>,
+    },
+    Show {
+        session: String,
+        what: Showing,
     },
     Prompt {
         session: String,

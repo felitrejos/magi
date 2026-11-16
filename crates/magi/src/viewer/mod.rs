@@ -8,6 +8,7 @@ mod input;
 mod link;
 mod model;
 mod namer;
+mod page;
 mod projects;
 mod rex;
 mod style;
@@ -56,6 +57,7 @@ pub enum Event {
 }
 
 pub use fleet::print as fleet;
+pub use page::{Page, run as page};
 
 pub fn run(config: Config) -> io::Result<()> {
     let (sender, events) = mpsc::sync_channel(EVENT_BACKLOG);
@@ -273,6 +275,8 @@ enum Action {
     Adopt,
     Project,
     RenameProject,
+    Diff,
+    Plan,
 }
 
 fn action(key: &Key) -> Option<Action> {
@@ -294,6 +298,8 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('r') => Action::Adopt,
         Key::Char('p') => Action::Project,
         Key::Char('P') => Action::RenameProject,
+        Key::Char('d') => Action::Diff,
+        Key::Char('v') => Action::Plan,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
         _ => return None,
     })
@@ -546,6 +552,106 @@ fn apply_naming(model: &mut Model, naming: model::Naming, now: Instant) {
         Ok(()) => model.flash(said, true, now),
         Err(error) => model.flash(format!("couldn't save projects: {error}"), false, now),
     }
+}
+
+fn ask_to_show(model: &mut Model, links: &Links, what: proto::Showing, now: Instant) {
+    let found = match model.detail_focus(now) {
+        Some(model::Focus::Agent(id) | model::Focus::Child(id, _)) => model
+            .agents(now)
+            .into_iter()
+            .find(|agent| agent.session.id == id)
+            .map(|agent| {
+                (
+                    agent.endpoint,
+                    agent.session.id.clone(),
+                    agent.session.title.clone(),
+                )
+            }),
+        _ => None,
+    };
+    let Some((endpoint, session, title)) = found else {
+        return model.flash("select a session first".into(), false, now);
+    };
+    let what_text = match what {
+        proto::Showing::Diff => "changes",
+        proto::Showing::Plan => "plan",
+    };
+    let request = proto::Request::Show { session, what };
+    match links.request(endpoint, &request) {
+        Ok(()) => model.flash(format!("Getting {title}'s {what_text}…"), true, now),
+        Err(error) => model.flash(format!("couldn't ask for it: {error}"), false, now),
+    }
+}
+
+fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instant) {
+    let text = match shown.text {
+        Ok(text) => text,
+        Err(reason) => return model.flash(reason, false, now),
+    };
+    let diff = shown.what == proto::Showing::Diff;
+    let path = match popup_file(&text, if diff { "diff" } else { "md" }) {
+        Ok(path) => path,
+        Err(error) => return model.flash(format!("couldn't save it to show: {error}"), false, now),
+    };
+    let file = path.to_string_lossy().into_owned();
+    let delta = diff
+        .then(|| crate::handoff::find("delta", &crate::handoff::search_dirs()))
+        .flatten();
+    let command: Vec<String> = match delta {
+        Some(delta) => vec![
+            "sh".into(),
+            "-c".into(),
+            r#""$0" --paging=always < "$1"; rm -f "$1""#.into(),
+            delta.to_string_lossy().into_owned(),
+            file,
+        ],
+        None => {
+            let magi = std::env::current_exe().map_or_else(
+                |_| "magi".to_string(),
+                |path| path.to_string_lossy().into_owned(),
+            );
+            let mut command = vec![
+                magi,
+                "page".into(),
+                "--remove".into(),
+                "--title".into(),
+                shown.title.clone(),
+            ];
+            if diff {
+                command.push("--diff".into());
+            }
+            command.push(file);
+            command
+        }
+    };
+    let label = format!("magi: {}", shown.title);
+    let sender = links.sender.clone();
+    let _ = thread::Builder::new().name("popup".into()).spawn(move || {
+        let _ = sender.send(Event::Opened(rex::float(&label, &command)));
+    });
+}
+
+fn popup_file(text: &str, extension: &str) -> io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let dir = net::state_dir()?.join("popups");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)?;
+    let path = dir.join(format!(
+        "{}-{}.{extension}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    std::io::Write::write_all(&mut file, text.as_bytes())?;
+    Ok(path)
 }
 
 fn adopt(model: &mut Model, links: &Links, now: Instant) {
@@ -811,6 +917,8 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Adopt) => adopt(model, links, now),
             Some(Action::Project) => start_naming(model, false, now),
             Some(Action::RenameProject) => start_naming(model, true, now),
+            Some(Action::Diff) => ask_to_show(model, links, proto::Showing::Diff, now),
+            Some(Action::Plan) => ask_to_show(model, links, proto::Showing::Plan, now),
             None => {}
         },
         Event::Named(asked, result) => named(model, asked, result),
@@ -841,6 +949,11 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             wanted.dedup();
             model.topology = topology;
             links.reconcile(model, &wanted)?;
+        }
+        Event::Link(endpoint, generation, LinkUpdate::Shown(shown)) => {
+            if links.is_current(endpoint, generation) {
+                open_popup(model, links, shown, now);
+            }
         }
         Event::Link(endpoint, generation, mut update) => {
             if !links.is_current(endpoint, generation) {

@@ -157,7 +157,8 @@ impl Link {
                 AgentMessage::Sample(_)
                 | AgentMessage::Reply(_)
                 | AgentMessage::Screen(_)
-                | AgentMessage::Folders(_),
+                | AgentMessage::Folders(_)
+                | AgentMessage::Shown(_),
             ) => {
                 return lost(
                     io::Error::other("agent sent something before its welcome"),
@@ -186,6 +187,7 @@ impl Link {
                 Ok(AgentMessage::Reply(reply)) => LinkUpdate::Reply(reply),
                 Ok(AgentMessage::Screen(screen)) => LinkUpdate::Screen(screen),
                 Ok(AgentMessage::Folders(folders)) => LinkUpdate::Folders(folders),
+                Ok(AgentMessage::Shown(shown)) => LinkUpdate::Shown(shown),
                 Ok(AgentMessage::Rejected(reason)) => return Ended::Rejected(reason),
                 Ok(AgentMessage::Welcome(_)) => {
                     return lost(io::Error::other("agent sent a second welcome"), true);

@@ -1,7 +1,7 @@
 mod agents;
 mod history;
 mod machines;
-mod markdown;
+pub(super) mod markdown;
 mod picker;
 
 use std::collections::HashMap;
@@ -633,6 +633,9 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     }
     if in_rex {
         actions.push(("o", "open in Rex"));
+    }
+    if agent.live {
+        actions.extend([("d", "diff"), ("v", "plan")]);
     }
     if agent.live && agent.session.agent == Agent::ClaudeCode {
         if !in_rex {

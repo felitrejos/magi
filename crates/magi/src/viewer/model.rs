@@ -41,6 +41,7 @@ pub enum LinkUpdate {
     Reply(Reply),
     Screen(Screen),
     Folders(Vec<String>),
+    Shown(crate::proto::Shown),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -678,7 +679,10 @@ impl Model {
                 link.state = LinkState::Lost { since, reason };
             }
             LinkUpdate::Rejected(reason) => link.state = LinkState::Rejected(reason),
-            LinkUpdate::Reply(_) | LinkUpdate::Screen(_) | LinkUpdate::Folders(_) => {
+            LinkUpdate::Reply(_)
+            | LinkUpdate::Screen(_)
+            | LinkUpdate::Folders(_)
+            | LinkUpdate::Shown(_) => {
                 unreachable!("replies, screens and folders are handled before a link is looked up")
             }
         }

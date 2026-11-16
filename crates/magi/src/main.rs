@@ -12,6 +12,7 @@ mod proto;
 mod screen;
 mod service;
 mod sessions;
+mod show;
 mod statusline;
 mod tailscale;
 mod typing;
@@ -32,6 +33,7 @@ Usage:
   magi agent [--port PORT] [--interval MS]             run the agent in this terminal
   magi statusline install                              add a Claude Code status line that reports context % and plan limits
   magi statusline uninstall                            remove it from ~/.claude/settings.json
+  magi page [--diff] [--title TITLE] FILE              show a Markdown file or a diff in a pager
   magi --version
   magi --help
 
@@ -48,6 +50,7 @@ enum Command {
     StatusLineInstall,
     StatusLineUninstall,
     StatusLine,
+    Page(std::path::PathBuf, viewer::Page, bool),
     Version,
     Help,
 }
@@ -69,6 +72,7 @@ fn main() -> ExitCode {
         Command::StatusLineInstall => statusline::install(),
         Command::StatusLineUninstall => statusline::uninstall(),
         Command::StatusLine => statusline::run(),
+        Command::Page(path, page, remove) => viewer::page(&path, page, remove),
         Command::Version => {
             println!("magi {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -97,6 +101,7 @@ enum Mode {
     StatusLineInstall,
     StatusLineUninstall,
     StatusLine,
+    Page,
 }
 
 fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
@@ -104,11 +109,24 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
     let mut port = proto::DEFAULT_PORT;
     let mut interval_ms: u32 = 1000;
     let mut json = false;
+    let mut page = viewer::Page {
+        title: String::new(),
+        diff: false,
+    };
+    let mut remove = false;
+    let mut file = None;
     while let Some(arg) = parser.next()? {
         match arg {
             Value(value) if value == "agent" && mode == Mode::Viewer => mode = Mode::Agent,
             Value(value) if value == "fleet" && mode == Mode::Viewer => mode = Mode::Fleet,
             Long("json") if mode == Mode::Fleet => json = true,
+            Value(value) if value == "page" && mode == Mode::Viewer => mode = Mode::Page,
+            Long("diff") if mode == Mode::Page => page.diff = true,
+            Long("remove") if mode == Mode::Page => remove = true,
+            Long("title") if mode == Mode::Page => page.title = parser.value()?.string()?,
+            Value(value) if mode == Mode::Page && file.is_none() => {
+                file = Some(std::path::PathBuf::from(value))
+            }
             Value(value) if value == "statusline" && mode == Mode::Viewer => {
                 mode = Mode::StatusLine
             }
@@ -152,5 +170,14 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         Mode::StatusLine => Command::StatusLine,
         Mode::StatusLineInstall => Command::StatusLineInstall,
         Mode::StatusLineUninstall => Command::StatusLineUninstall,
+        Mode::Page => {
+            let file = file.ok_or("magi page needs a file")?;
+            if page.title.is_empty() {
+                page.title = file
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+            }
+            Command::Page(file, page, remove)
+        }
     })
 }

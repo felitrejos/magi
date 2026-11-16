@@ -15,12 +15,12 @@ use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
     self, AgentMessage, AgentSession, ChildKind, Content, Hello, Identity, PROTOCOL_VERSION, Reply,
-    Request, Said, Screen, StatusReport, Welcome,
+    Request, Said, Screen, Showing, Shown, StatusReport, Welcome,
 };
 use crate::screen::Capturer;
 use crate::sessions::rex::Location;
 use crate::sessions::{Board, Sessions, Snapshot};
-use crate::{children, log, opener, tailscale, typing};
+use crate::{children, log, opener, show, tailscale, typing};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -124,6 +124,37 @@ struct Agent {
 }
 
 impl Agent {
+    fn show(&self, session: String, what: Showing) -> Shown {
+        let (cwd, transcript) = {
+            let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+            (
+                snapshot.cwds.get(&session).cloned().unwrap_or_default(),
+                snapshot
+                    .transcripts
+                    .get(&session)
+                    .map(|(_, path)| path.clone()),
+            )
+        };
+        let (title, text) = match what {
+            Showing::Diff => ("Changes".to_string(), show::diff(&cwd)),
+            Showing::Plan => {
+                match transcript.ok_or("that session's transcript isn't on this machine") {
+                    Ok(path) => match show::plan(&path) {
+                        Ok((title, text)) => (title, Ok(text)),
+                        Err(reason) => ("Plan".into(), Err(reason)),
+                    },
+                    Err(reason) => ("Plan".into(), Err(reason.to_string())),
+                }
+            }
+        };
+        Shown {
+            session,
+            what,
+            title,
+            text,
+        }
+    }
+
     fn capture_child(
         &self,
         session: &str,
@@ -538,6 +569,15 @@ fn spawn_requests(
                     }
                     Request::Stop { session } => {
                         type_into(&session, &agent, &replies, typing::stop);
+                    }
+                    Request::Show { session, what } => {
+                        let agent = Arc::clone(&agent);
+                        in_background(&replies, move |replies| {
+                            let shown = agent.show(session, what);
+                            if let Ok(frame) = proto::encode_frame(&AgentMessage::Shown(shown)) {
+                                let _ = replies.send(frame.into());
+                            }
+                        });
                     }
                     Request::Folders => {
                         in_background(&replies, |replies| match opener::folders() {

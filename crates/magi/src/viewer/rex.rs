@@ -10,6 +10,7 @@ use crate::bounded;
 use crate::proto::RexPane;
 
 const REX_LIMIT: Duration = Duration::from_secs(5);
+const FLOAT_BOUNDS: [f32; 4] = [0.06, 0.05, 0.88, 0.9];
 
 struct Here {
     session: String,
@@ -27,6 +28,43 @@ struct Listing {
 struct Block {
     block_id: String,
     owner: Option<String>,
+    window_id: Option<String>,
+}
+
+pub fn float(label: &str, command: &[String]) -> Result<(), String> {
+    let here = here().ok_or("open magi in a Rex pane to see this")?;
+    let listing = rex(&here, &["block", "ls", "--json", "-s", &here.session])?;
+    let listing: Listing = serde_json::from_slice(&listing)
+        .map_err(|error| format!("Rex listed its panes in a form magi can't read: {error}"))?;
+    let window = listing
+        .blocks
+        .into_iter()
+        .find(|block| block.block_id == here.block)
+        .and_then(|block| block.window_id)
+        .ok_or("Rex didn't say which window magi is in")?;
+    let request = serde_json::json!({
+        "session_id": here.session,
+        "window_id": window,
+        "bounds": FLOAT_BOUNDS,
+        "focus": true,
+        "layout": {"block": {
+            "flavor": "com.superlogical.terminal.shell",
+            "label": label,
+            "options": {"command": command},
+        }},
+    });
+    rex(
+        &here,
+        &[
+            "api",
+            "call",
+            "-s",
+            &here.session,
+            "session.new_layer",
+            &request.to_string(),
+        ],
+    )
+    .map(|_| ())
 }
 
 pub fn open(pane: &RexPane) -> Result<(), String> {

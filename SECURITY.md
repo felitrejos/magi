@@ -63,9 +63,15 @@
   and is sent only while the session is idle, so it can't land in a prompt
   that opened meanwhile. An answer is a single key (`1` to allow, `Esc` to
   deny), sent only while that session still waits on the same prompt the
-  viewer saw: same tool, waiting as long. Messages and answers to one machine are typed one at a time. Since
-  a message can ask the agent to do anything, only viewers signed in as you
-  can send one, like everything else.
+  viewer saw: same tool, waiting as long. Messages and answers to one
+  machine are typed one at a time. Since a message can ask the agent to do
+  anything, only viewers signed in as you can send one, like everything else.
+- `d` and `v` ask the agent for a session's changes (`git diff HEAD` and the
+  names of new files, in the session's own folder, at most 4 MB) or its plan
+  (the last plan it proposed, or the last Markdown file it wrote, at most
+  1 MB). The viewer writes the answer to a file only you can read in
+  `~/.local/state/magi/popups/`, shows it in a Rex floating pane on its own
+  machine, and the pane deletes the file when it closes.
 - `magi statusline install` edits only `statusLine` in
   `~/.claude/settings.json`, writes atomically, keeps the file's permissions
   and leaves a backup with the same permissions.
