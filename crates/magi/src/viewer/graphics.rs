@@ -276,10 +276,6 @@ impl Graphics {
         self.cell.is_some()
     }
 
-    pub fn stretches_history(&self) -> bool {
-        self.cell.is_some()
-    }
-
     pub fn samples_per_cell(&self) -> usize {
         if self.cell.is_some() { 2 } else { 1 }
     }

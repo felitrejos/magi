@@ -331,34 +331,6 @@ fn body(area: Rect) -> Rect {
     )
 }
 
-fn rule(
-    icon: Span<'static>,
-    title: &str,
-    right: Vec<Span<'static>>,
-    width: usize,
-) -> Line<'static> {
-    let head = vec![
-        icon,
-        Span::raw(" "),
-        Span::styled(title.to_string(), style::bold(theme().second)),
-        Span::raw("  "),
-    ];
-    let right_width = spans_width(&right);
-    let gap = if right_width > 0 { 2 } else { 0 };
-    let fill = width.saturating_sub(spans_width(&head) + right_width + gap);
-    let mut spans = head;
-    spans.push(Span::styled("╌".repeat(fill), style::fg(theme().rule)));
-    if right_width > 0 {
-        spans.push(Span::raw(" ".repeat(gap)));
-        spans.extend(right);
-    }
-    Line::from(clip(spans, width))
-}
-
-fn icon(symbol: &str) -> Span<'static> {
-    Span::styled(symbol.to_string(), style::fg(theme().second))
-}
-
 struct Bar {
     offset: usize,
     width: usize,

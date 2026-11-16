@@ -4,9 +4,12 @@ use std::time::Instant;
 use crate::proto::Usage;
 
 const MAX_DEPTH: usize = 64;
+const TOP_BY_CPU: usize = 5;
+const TOP_BY_MEMORY: usize = 3;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Process {
+    pub name: String,
     pub parent: i32,
     pub cpu_ns: u64,
     pub memory: u64,
@@ -16,6 +19,16 @@ pub struct Process {
 pub struct Measured {
     pub usage: HashMap<i32, Usage>,
     pub parents: HashMap<i32, i32>,
+    pub top: Vec<Busy>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Busy {
+    pub pid: i32,
+    pub name: String,
+    pub cpu: Option<u32>,
+    pub memory: u64,
+    pub root: Option<i32>,
 }
 
 #[derive(Default)]
@@ -25,13 +38,10 @@ pub struct Meter {
 
 impl Meter {
     pub fn measure(&mut self, roots: &[i32], now: Instant) -> Measured {
-        if roots.is_empty() {
-            self.previous = None;
-            return Measured::default();
-        }
         let processes = snapshot();
         let usage = usage(&processes, roots, self.previous.as_ref(), now);
         let parents = parents(&processes, roots);
+        let top = busiest(&processes, roots, self.previous.as_ref(), now);
         self.previous = Some((
             now,
             processes
@@ -39,8 +49,54 @@ impl Meter {
                 .map(|(pid, process)| (*pid, process.cpu_ns))
                 .collect(),
         ));
-        Measured { usage, parents }
+        Measured {
+            usage,
+            parents,
+            top,
+        }
     }
+}
+
+fn busiest(
+    processes: &HashMap<i32, Process>,
+    roots: &[i32],
+    previous: Option<&(Instant, HashMap<i32, u64>)>,
+    now: Instant,
+) -> Vec<Busy> {
+    let elapsed_ns = previous
+        .map(|(at, _)| now.duration_since(*at).as_nanos())
+        .filter(|elapsed| *elapsed > 0);
+    let tracked: HashMap<i32, (u64, u64)> = roots.iter().map(|root| (*root, (0, 0))).collect();
+    let mut all: Vec<Busy> = processes
+        .iter()
+        .map(|(pid, process)| {
+            let cpu = previous.zip(elapsed_ns).map(|((_, before), elapsed)| {
+                let spent = process
+                    .cpu_ns
+                    .saturating_sub(before.get(pid).copied().unwrap_or(process.cpu_ns));
+                u32::try_from(u128::from(spent) * 1000 / elapsed).unwrap_or(u32::MAX)
+            });
+            Busy {
+                pid: *pid,
+                name: process.name.clone(),
+                cpu,
+                memory: process.memory,
+                root: owner(*pid, processes, &tracked),
+            }
+        })
+        .collect();
+    all.sort_by_key(|busy| std::cmp::Reverse((busy.cpu.unwrap_or(0), busy.memory)));
+    let mut top: Vec<Busy> = all.iter().take(TOP_BY_CPU).cloned().collect();
+    all.sort_by_key(|busy| std::cmp::Reverse(busy.memory));
+    for busy in all {
+        if top.len() >= TOP_BY_CPU + TOP_BY_MEMORY {
+            break;
+        }
+        if !top.iter().any(|known| known.pid == busy.pid) {
+            top.push(busy);
+        }
+    }
+    top
 }
 
 fn parents(processes: &HashMap<i32, Process>, roots: &[i32]) -> HashMap<i32, i32> {
@@ -136,11 +192,23 @@ fn snapshot() -> HashMap<i32, Process> {
 fn parse_stat(stat: &str, tick_ns: u64, page: u64) -> Option<Process> {
     let fields: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
     let number = |index: usize| fields.get(index)?.parse::<u64>().ok();
+    let name = stat.get(stat.find('(')? + 1..stat.rfind(')')?)?.to_string();
     Some(Process {
+        name,
         parent: fields.get(1)?.parse().ok()?,
         cpu_ns: (number(11)? + number(12)?) * tick_ns,
         memory: number(21)? * page,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn c_name(chars: &[libc::c_char]) -> Option<String> {
+    let bytes: Vec<u8> = chars
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(target_os = "macos")]
@@ -186,6 +254,10 @@ fn snapshot() -> HashMap<i32, Process> {
             Some((
                 pid,
                 Process {
+                    name: c_name(&info.pbsd.pbi_name)
+                        .filter(|name| !name.is_empty())
+                        .or_else(|| c_name(&info.pbsd.pbi_comm))
+                        .unwrap_or_default(),
                     parent: i32::try_from(info.pbsd.pbi_ppid).ok()?,
                     cpu_ns: u64::try_from(
                         u128::from(ticks) * u128::from(numer) / u128::from(denom),
@@ -206,6 +278,7 @@ mod tests {
 
     fn process(parent: i32, cpu_ns: u64, memory: u64) -> Process {
         Process {
+            name: format!("p{parent}"),
             parent,
             cpu_ns,
             memory,
@@ -276,7 +349,10 @@ mod tests {
         let stat = "4242 (node (worker) 1) S 4100 4242 4100 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 11 0 9000 123456789 3000 18446744073709551615";
         assert_eq!(
             parse_stat(stat, 10_000_000, 4096),
-            Some(process(4100, 3_000_000_000, 3000 * 4096))
+            Some(Process {
+                name: "node (worker) 1".into(),
+                ..process(4100, 3_000_000_000, 3000 * 4096)
+            })
         );
         assert_eq!(parse_stat("1 (x) S", 10_000_000, 4096), None);
     }

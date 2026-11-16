@@ -322,6 +322,7 @@ fn stream_samples(collector: &mut Collector, agent: &Agent) {
                 sample.plans = snapshot.plans.clone();
                 sample.notices = snapshot.notices.clone();
                 sample.forwards = snapshot.forwards.clone();
+                sample.processes = snapshot.processes.clone();
             }
             proto::encode_frame(&AgentMessage::Sample(sample))
         });

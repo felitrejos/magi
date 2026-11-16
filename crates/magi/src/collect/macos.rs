@@ -86,6 +86,8 @@ impl Collector {
             plans: Vec::new(),
             notices: Vec::new(),
             forwards: Vec::new(),
+            processes: Vec::new(),
+            temperature: None,
         })
     }
 

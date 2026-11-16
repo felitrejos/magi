@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 15;
+pub const PROTOCOL_VERSION: u16 = 16;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -337,6 +337,17 @@ pub struct Sample {
     pub plans: Vec<Plan>,
     pub notices: Vec<String>,
     pub forwards: Vec<Forward>,
+    pub processes: Vec<TopProcess>,
+    pub temperature: Option<f32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct TopProcess {
+    pub pid: i32,
+    pub name: String,
+    pub cpu: Option<u32>,
+    pub memory: u64,
+    pub session: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -476,6 +487,14 @@ mod tests {
                 ports: vec![3000, 5173],
                 state: ForwardState::Connected,
             }],
+            processes: vec![TopProcess {
+                pid: 41,
+                name: "claude".into(),
+                cpu: Some(1_250),
+                memory: 1 << 28,
+                session: Some("s1".into()),
+            }],
+            temperature: Some(58.5),
         }
     }
 
@@ -502,9 +521,9 @@ mod tests {
     }
 
     #[test]
-    fn sample_frame_stays_small() {
+    fn a_sample_with_its_busiest_process_stays_small() {
         let frame = encode_frame(&AgentMessage::Sample(sample())).unwrap();
-        assert!(frame.len() < 128, "sample frame is {} bytes", frame.len());
+        assert!(frame.len() < 160, "sample frame is {} bytes", frame.len());
     }
 
     #[test]

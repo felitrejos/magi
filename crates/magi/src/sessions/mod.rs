@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::proto::{Agent, AgentSession, BasisPoints, Forward, Plan, StatusReport, Window};
+use crate::proto::{
+    Agent, AgentSession, BasisPoints, Forward, Plan, StatusReport, TopProcess, Window,
+};
 use claude::ClaudeSessions;
 use codex::Codex;
 use limits::{Limits, Reading};
@@ -143,6 +145,7 @@ pub struct Snapshot {
     pub transcripts: HashMap<String, (Agent, PathBuf)>,
     pub forwards: Vec<Forward>,
     pub cwds: HashMap<String, String>,
+    pub processes: Vec<TopProcess>,
 }
 
 pub struct Found {
@@ -213,6 +216,17 @@ impl Sessions {
         let ids: HashMap<i32, String> = found
             .iter()
             .filter_map(|found| Some((found.pid?, found.session.id.clone())))
+            .collect();
+        snapshot.processes = measured
+            .top
+            .iter()
+            .map(|busy| TopProcess {
+                pid: busy.pid,
+                name: busy.name.clone(),
+                cpu: busy.cpu,
+                memory: busy.memory,
+                session: busy.root.and_then(|root| ids.get(&root)).cloned(),
+            })
             .collect();
         for Found {
             session,

@@ -42,6 +42,7 @@ pub struct Collector {
     disk_write: CounterRate,
     net_rx: CounterRate,
     net_tx: CounterRate,
+    sensors: Vec<std::path::PathBuf>,
 }
 
 impl Collector {
@@ -55,6 +56,7 @@ impl Collector {
             diskstats: ProcFile::open("/proc/diskstats")?,
             mounts: ProcFile::open("/proc/self/mounts")?,
             cpu: CpuUsage::default(),
+            sensors: cpu_sensors(Path::new("/sys/class/hwmon")),
             disk_read: CounterRate::default(),
             disk_write: CounterRate::default(),
             net_rx: CounterRate::default(),
@@ -104,8 +106,51 @@ impl Collector {
             plans: Vec::new(),
             notices: Vec::new(),
             forwards: Vec::new(),
+            processes: Vec::new(),
+            temperature: hottest(&self.sensors),
         })
     }
+}
+
+const CPU_SENSORS: [&str; 5] = [
+    "k10temp",
+    "coretemp",
+    "zenpower",
+    "cpu_thermal",
+    "soc_thermal",
+];
+
+fn cpu_sensors(hwmon: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(chips) = std::fs::read_dir(hwmon) else {
+        return Vec::new();
+    };
+    chips
+        .flatten()
+        .map(|chip| chip.path())
+        .filter(|chip| {
+            std::fs::read_to_string(chip.join("name"))
+                .is_ok_and(|name| CPU_SENSORS.contains(&name.trim()))
+        })
+        .flat_map(|chip| std::fs::read_dir(chip).into_iter().flatten().flatten())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("temp") && name.ends_with("_input"))
+        })
+        .collect()
+}
+
+fn hottest(sensors: &[std::path::PathBuf]) -> Option<f32> {
+    sensors
+        .iter()
+        .filter_map(|path| millidegrees(&std::fs::read_to_string(path).ok()?))
+        .reduce(f32::max)
+}
+
+fn millidegrees(text: &str) -> Option<f32> {
+    let value: f32 = text.trim().parse().ok()?;
+    (0.0..150_000.0).contains(&value).then_some(value / 1000.0)
 }
 
 fn is_physical_interface(name: &str) -> bool {
@@ -151,4 +196,31 @@ fn kernel_release() -> String {
     unsafe { CStr::from_ptr(name.release.as_ptr()) }
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_hottest_cpu_sensor_is_read_and_nonsense_is_skipped() {
+        let dir = std::env::temp_dir().join(format!("magi-hwmon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (chip, name, readings) in [
+            ("hwmon0", "nvme", vec!["61000"]),
+            ("hwmon1", "k10temp", vec!["48250", "52500", "garbage"]),
+        ] {
+            let chip = dir.join(chip);
+            std::fs::create_dir_all(&chip).unwrap();
+            std::fs::write(chip.join("name"), format!("{name}\n")).unwrap();
+            for (index, reading) in readings.iter().enumerate() {
+                std::fs::write(chip.join(format!("temp{}_input", index + 1)), reading).unwrap();
+            }
+        }
+        let sensors = cpu_sensors(&dir);
+        assert_eq!(sensors.len(), 3);
+        assert_eq!(hottest(&sensors), Some(52.5));
+        assert_eq!(millidegrees("999999"), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

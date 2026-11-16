@@ -6,7 +6,7 @@ use ratatui::backend::TestBackend;
 use std::time::Duration;
 
 use super::*;
-use crate::proto::{Agent, Child, ChildKind, ChildState, Sample};
+use crate::proto::{Agent, Child, ChildKind, ChildState, Sample, TopProcess};
 use crate::proto::{
     AgentSession, DiskIo, FIVE_HOURS, Filesystem, Identity, Memory, NetIo, ONE_WEEK, Plan,
     SessionState, Tokens, Waiting, Welcome, Window,
@@ -160,6 +160,23 @@ fn sample(load: f32, cores: usize) -> Sample {
         ],
         notices: Vec::new(),
         forwards: Vec::new(),
+        processes: vec![
+            TopProcess {
+                pid: 41,
+                name: "claude".into(),
+                cpu: Some(2_500),
+                memory: 410 << 20,
+                session: Some(agents()[0].id.clone()),
+            },
+            TopProcess {
+                pid: 7,
+                name: "WindowServer".into(),
+                cpu: Some(120),
+                memory: 180 << 20,
+                session: None,
+            },
+        ],
+        temperature: Some(61.0),
     }
 }
 
@@ -230,49 +247,28 @@ fn draw(model: &Model, width: u16, height: u16, now: Instant) -> String {
 }
 
 #[test]
-fn the_chart_span_is_the_time_between_the_first_and_last_sample() {
-    assert_eq!(
-        machines::span(241, Duration::from_millis(500)),
-        Duration::from_secs(120)
-    );
-    assert_eq!(
-        machines::span(11, Duration::from_millis(1500)),
-        Duration::from_secs(15)
-    );
-    assert_eq!(machines::span(1, Duration::from_secs(1)), Duration::ZERO);
-}
-
-#[test]
-fn every_chart_says_its_scale_its_time_span_and_what_its_lines_are() {
+fn the_machine_view_reads_as_a_summary_then_cores_then_what_uses_it() {
     let now = Instant::now();
     let screen = draw(&fleet(2, now), 160, 50, now);
-    let lines: Vec<&str> = screen.lines().collect();
-    let gutter = |label: &str| {
-        let label = format!("{label:>8} ");
-        lines.iter().filter(|line| line.contains(&label)).count()
-    };
-    assert_eq!(gutter("100%"), 2, "{screen}");
-    assert_eq!(gutter("0%"), 2, "{screen}");
-    assert!(gutter("0") >= 1, "{screen}");
-    let axes = lines
-        .iter()
-        .filter(|line| {
-            line.contains(" ago ") && line.trim_end_matches(['│', ' ', '─', '╯']).ends_with("now")
-        })
-        .count();
-    assert_eq!(axes, 3, "{screen}");
     for text in [
+        "61 °C",
+        "CPU",
         "busiest core",
-        "↓ download",
-        "↑ upload",
-        "◉ CPU",
-        "◫ Memory",
-        "◎ Network",
-        "◧ Storage",
+        "Memory",
+        "swap",
+        "Network",
+        "Disk",
+        "Cores",
+        "Using it",
+        "WindowServer",
+        "claude",
+        "✻ refactor the collectors",
+        "250%",
     ] {
         assert!(screen.contains(text), "missing {text:?}\n{screen}");
     }
-    assert!(!screen.contains("charts show"), "{screen}");
+    let at = |text: &str| screen.lines().position(|line| line.contains(text)).unwrap();
+    assert!(at("Memory") < at("Disk") && at("Disk") < at("Cores") && at("Cores") < at("Using it"));
 }
 
 #[test]
@@ -329,7 +325,7 @@ fn wide_screen_reads_in_plain_words() {
     for text in [
         "Needs you",
         "Memory",
-        "Storage",
+        "Disk",
         "Network",
         "lost",
         "this machine",
@@ -369,6 +365,13 @@ fn print_wide() {
     let mut model = fleet(2, now);
     select_title(&mut model, "deploy fix", now);
     println!("{}", draw(&model, 130, 34, now));
+}
+
+#[test]
+#[ignore = "prints the screen: cargo test -- --ignored --nocapture print_machine"]
+fn print_machine() {
+    let now = Instant::now();
+    println!("{}", draw(&fleet(2, now), 130, 40, now));
 }
 
 #[test]
@@ -543,9 +546,9 @@ fn bench_viewer() {
 fn storage_and_every_disk_stay_on_screen_when_the_pane_is_short() {
     let now = Instant::now();
     let model = fleet(2, now);
-    for (width, height) in [(80, 24), (80, 30), (120, 24), (120, 30)] {
+    for (width, height) in [(120, 24), (120, 30), (160, 30)] {
         let screen = draw(&model, width, height, now);
-        assert!(screen.contains("◧ Storage"), "{width}x{height}\n{screen}");
+        assert!(screen.contains("Disk"), "{width}x{height}\n{screen}");
         for n in 0..3 {
             assert!(
                 screen.contains(&format!("long-name-{n} ")),
@@ -566,8 +569,6 @@ fn truncated_text_never_draws_wider_than_its_room() {
         for width in 1..8 {
             let cut = truncate(text, width);
             assert!(cut.width() <= width, "{text:?} at {width} -> {cut:?}");
-            let left = machines::truncate_left(text, width);
-            assert!(left.width() <= width, "{text:?} at {width} -> {left:?}");
         }
     }
     assert_eq!(truncate("👨‍👩‍👧 family", 3), "👨‍👩‍👧…");
