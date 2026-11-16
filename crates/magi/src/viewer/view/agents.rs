@@ -16,7 +16,9 @@ use crate::proto::{
     INVERSE, ITALIC, Run, SessionState, Shade, UNDERLINE, Waiting,
 };
 use crate::viewer::graphics::Graphics;
-use crate::viewer::model::{AgentRow, Draft, Endpoint, Entry, Group, Listed, Model, MoveTarget};
+use crate::viewer::model::{
+    AgentRow, Draft, Endpoint, Entry, Group, Listed, Model, MoveTarget, TalkScroll,
+};
 use crate::viewer::style::{self, theme};
 use crate::viewer::units;
 use unicode_width::UnicodeWidthStr;
@@ -266,7 +268,7 @@ pub fn render_child(
     agent: &AgentRow<'_>,
     child: &Child,
     preview: Preview<'_>,
-    expanded: bool,
+    reading: Reading<'_>,
 ) {
     if area.height < 5 || area.width < 16 {
         return;
@@ -308,9 +310,11 @@ pub fn render_child(
     }
     frame.render_widget(Paragraph::new(Line::from(clip(from, width))), context);
     let mut cursor = Cursor::new(inner);
+    let shown = format!("{}/{}", agent.session.id, child.id);
     let speech = Speech {
         working: child.state == ChildState::Running,
-        expanded,
+        reading,
+        shown: &shown,
     };
     live_view(&mut cursor, frame, preview, speech);
 }
@@ -416,7 +420,13 @@ pub struct Detail<'a> {
     pub preview: Preview<'a>,
     pub draft: Option<&'a Draft>,
     pub forwards: &'a [(u16, ForwardState)],
+    pub reading: Reading<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct Reading<'a> {
     pub expanded: bool,
+    pub scroll: &'a TalkScroll,
 }
 
 pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
@@ -426,7 +436,7 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
         preview,
         draft,
         forwards,
-        expanded,
+        reading,
     } = detail;
     let session = agent.session;
     let (mark, color) = style::agent(session.agent);
@@ -497,7 +507,8 @@ pub fn render_detail(frame: &mut Frame, area: Rect, detail: Detail<'_>) {
     }
     let speech = Speech {
         working: agent.live && matches!(session.state, SessionState::Working { .. }),
-        expanded,
+        reading,
+        shown: &session.id,
     };
     live_view(&mut cursor, frame, preview, speech);
     let mut frame_box = Block::bordered()
@@ -758,18 +769,21 @@ pub enum Preview<'a> {
     Gone,
 }
 
-pub struct Speech {
-    pub working: bool,
-    pub expanded: bool,
+struct Speech<'a> {
+    working: bool,
+    reading: Reading<'a>,
+    shown: &'a str,
 }
 
-fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, speech: Speech) {
+fn live_view(cursor: &mut Cursor, frame: &mut Frame, preview: Preview<'_>, speech: Speech<'_>) {
     let width = usize::from(cursor.area.width);
     if let Preview::Ready(Content::Conversation(said)) = preview {
         let talk = super::talk::Talk {
             said,
+            shown: speech.shown,
+            scroll: speech.reading.scroll,
             working: speech.working,
-            expanded: speech.expanded,
+            expanded: speech.reading.expanded,
         };
         return super::talk::render(frame, cursor.rest(), talk);
     }

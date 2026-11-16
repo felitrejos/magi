@@ -10,9 +10,11 @@ use unicode_width::UnicodeWidthStr;
 use super::markdown::{self, tool_name};
 use super::{clip, spread, truncate};
 use crate::proto::{Change, Said, Step, StepState};
+use crate::viewer::model::TalkScroll;
 use crate::viewer::style::{self, theme};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const BAR_ROOM: u16 = 2;
 const BUBBLE_SHARE: usize = 4;
 const BUBBLE_OF: usize = 5;
 const MAX_RUNNING_SHOWN: usize = 3;
@@ -26,6 +28,8 @@ const AGENTS: [&str; 2] = ["Agent", "Task"];
 #[derive(Clone, Copy)]
 pub struct Talk<'a> {
     pub said: &'a [Said],
+    pub shown: &'a str,
+    pub scroll: &'a TalkScroll,
     pub working: bool,
     pub expanded: bool,
 }
@@ -78,31 +82,45 @@ pub fn render(frame: &mut Frame, area: Rect, talk: Talk<'_>) {
     if area.height == 0 || area.width < 8 {
         return;
     }
-    let width = usize::from(area.width);
+    let width = usize::from(area.width - BAR_ROOM);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
-    let mut bottom = area.y + area.height;
-    for piece in pieces(talk.said).iter().rev() {
-        let lines = match piece {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for piece in pieces(talk.said) {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.extend(match piece {
             Piece::Prompt(text) => prompt(text, width),
             Piece::Reply(text) => markdown::markdown(text, width),
-            Piece::Tools(tools) => tool_lines(tools, talk, now, width),
+            Piece::Tools(tools) => tool_lines(&tools, talk, now, width),
             Piece::Plan(steps) => plan_lines(steps, width),
-        };
-        let shown = lines.len().min(usize::from(bottom - area.y));
-        let top = bottom - shown as u16;
-        let skipped = lines.len() - shown;
-        for (offset, line) in lines.into_iter().skip(skipped).enumerate() {
+        });
+    }
+    let room = usize::from(area.height);
+    let back = talk.scroll.place(talk.shown, lines.len(), room);
+    let end = lines.len() - back;
+    let start = end.saturating_sub(room);
+    let top = area.y + (room - (end - start)) as u16;
+    for (offset, line) in lines.drain(start..end).enumerate() {
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect::new(area.x, top + offset as u16, area.width - BAR_ROOM, 1),
+        );
+    }
+    let total = end + back;
+    if total > room {
+        let thumb = (room * room / total).max(1);
+        let most = total - room;
+        let at = (room - thumb) * (most - back.min(most)) / most.max(1);
+        let x = area.x + area.width - 1;
+        for row in at..at + thumb {
             frame.render_widget(
-                Paragraph::new(line),
-                Rect::new(area.x, top + offset as u16, area.width, 1),
+                Paragraph::new(Span::styled("┃", style::fg(theme().rule))),
+                Rect::new(x, area.y + row as u16, 1, 1),
             );
         }
-        if top <= area.y + 1 {
-            break;
-        }
-        bottom = top - 1;
     }
 }
 
@@ -421,8 +439,11 @@ mod tests {
             tool("Read", "src/main.rs", None),
             tool("Bash", "sh install.sh", Some(1_000)),
         ];
+        let scroll = TalkScroll::default();
         let talk = Talk {
             said: &said,
+            shown: "s",
+            scroll: &scroll,
             working: true,
             expanded: false,
         };
@@ -448,6 +469,47 @@ mod tests {
         let lines = texts(&tool_lines(&tools_of(&said), open, 1_205, 80));
         assert_eq!(lines.len(), 5);
         assert!(lines[0].starts_with("· Bash  cargo test"), "{lines:?}");
+    }
+
+    fn screen(said: &[Said], shown: &str, scroll: &TalkScroll) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 6)).unwrap();
+        terminal
+            .draw(|frame| {
+                let talk = Talk {
+                    said,
+                    shown,
+                    scroll,
+                    working: false,
+                    expanded: false,
+                };
+                render(frame, frame.area(), talk);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..6)
+            .map(|y| (0..30).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn scrolling_back_holds_its_place_as_output_arrives_and_another_session_starts_at_the_end() {
+        let mut said: Vec<Said> = (0..10).map(|n| Said::Reply(format!("reply {n}"))).collect();
+        let scroll = TalkScroll::default();
+        let rows = screen(&said, "a", &scroll);
+        assert!(rows[5].starts_with("reply 9"), "{rows:?}");
+        assert!(rows.iter().any(|row| row.ends_with('┃')), "{rows:?}");
+        scroll.scroll(4);
+        let rows = screen(&said, "a", &scroll);
+        assert!(rows[5].starts_with("reply 7"), "{rows:?}");
+        said.push(Said::Reply("reply 10".into()));
+        let rows = screen(&said, "a", &scroll);
+        assert!(rows[5].starts_with("reply 7"), "{rows:?}");
+        scroll.scroll(1_000);
+        let rows = screen(&said, "a", &scroll);
+        assert!(rows[0].starts_with("reply 0"), "{rows:?}");
+        let rows = screen(&said, "b", &scroll);
+        assert!(rows[5].starts_with("reply 10"), "{rows:?}");
     }
 
     #[test]

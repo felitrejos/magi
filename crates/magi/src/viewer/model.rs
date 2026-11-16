@@ -440,6 +440,7 @@ pub struct Model {
     pub launcher: Option<Launcher>,
     pub tools_expanded: bool,
     pub cell_size: Option<(u32, u32)>,
+    pub talk: TalkScroll,
     awaiting: Option<Awaiting>,
     pub watching: Option<Watched>,
     screens: HashMap<(String, Option<String>), Screen>,
@@ -498,6 +499,43 @@ pub fn machine_tag<'a>(name: &'a str, names: &[&str]) -> &'a str {
 
 fn first_word(name: &str) -> &str {
     name.split(['-', '.', '_', ' ']).next().unwrap_or(name)
+}
+
+#[derive(Default)]
+pub struct TalkScroll {
+    shown: std::cell::RefCell<String>,
+    from_bottom: std::cell::Cell<usize>,
+    total: std::cell::Cell<usize>,
+    room: std::cell::Cell<usize>,
+}
+
+impl TalkScroll {
+    pub fn scroll(&self, lines: isize) {
+        let at = self.from_bottom.get().saturating_add_signed(lines);
+        let most = self.total.get().saturating_sub(self.room.get());
+        self.from_bottom.set(at.min(most));
+    }
+
+    pub fn page(&self, back: bool) {
+        let page = self.room.get().saturating_sub(2).max(1) as isize;
+        self.scroll(if back { page } else { -page });
+    }
+
+    pub fn place(&self, shown: &str, total: usize, room: usize) -> usize {
+        let mut known = self.shown.borrow_mut();
+        if *known != shown {
+            shown.clone_into(&mut known);
+            self.from_bottom.set(0);
+        } else if self.from_bottom.get() > 0 && total > self.total.get() {
+            self.from_bottom
+                .set(self.from_bottom.get() + total - self.total.get());
+        }
+        self.total.set(total);
+        self.room.set(room);
+        let at = self.from_bottom.get().min(total.saturating_sub(room));
+        self.from_bottom.set(at);
+        at
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -576,6 +614,7 @@ impl Model {
             launcher: None,
             tools_expanded: false,
             cell_size: None,
+            talk: TalkScroll::default(),
             awaiting: None,
             watching: None,
             screens: HashMap::new(),

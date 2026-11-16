@@ -233,7 +233,10 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                         agent,
                         child,
                         preview,
-                        model.tools_expanded,
+                        agents::Reading {
+                            expanded: model.tools_expanded,
+                            scroll: &model.talk,
+                        },
                     );
                 }
             }
@@ -273,7 +276,10 @@ fn render_session(
             preview,
             draft: model.draft.as_ref(),
             forwards: &forwards,
-            expanded: model.tools_expanded,
+            reading: agents::Reading {
+                expanded: model.tools_expanded,
+                scroll: &model.talk,
+            },
         },
     );
 }

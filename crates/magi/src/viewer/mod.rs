@@ -39,6 +39,7 @@ use input::{Input, Key};
 use link::{Dial, LinkHandle};
 use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
+const WHEEL_LINES: isize = 3;
 const LEARN_EXISTING_FOR: Duration = Duration::from_secs(30);
 const ASK_NAMER_EVERY: Duration = Duration::from_secs(60);
 const FRAME: Duration = Duration::from_millis(33);
@@ -308,6 +309,8 @@ enum Action {
     Project,
     RenameProject,
     Tools,
+    PageUp,
+    PageDown,
     Diff,
     Outputs,
 }
@@ -332,6 +335,8 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('p') => Action::Project,
         Key::Char('P') => Action::RenameProject,
         Key::Char('t') => Action::Tools,
+        Key::PageUp => Action::PageUp,
+        Key::PageDown => Action::PageDown,
         Key::Char('d') => Action::Diff,
         Key::Char('v') => Action::Outputs,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
@@ -339,9 +344,9 @@ fn action(key: &Key) -> Option<Action> {
     })
 }
 
-fn click(model: &mut Model, column: u16, row: u16, now: Instant) {
+fn on_detail(model: &Model, column: u16, row: u16, now: Instant) -> bool {
     let Ok((width, height)) = ratatui::crossterm::terminal::size() else {
-        return;
+        return false;
     };
     let full = ratatui::layout::Rect::new(0, 0, width, height);
     let areas = view::areas(
@@ -350,11 +355,24 @@ fn click(model: &mut Model, column: u16, row: u16, now: Instant) {
         model.plans(now).len(),
         model.agents(now).len(),
     );
-    let on_detail = areas
+    areas
         .detail
-        .contains(ratatui::layout::Position::new(column, row));
-    if on_detail && !model.showing_alerts && model.draft.is_none() {
+        .contains(ratatui::layout::Position::new(column, row))
+}
+
+fn click(model: &mut Model, column: u16, row: u16, now: Instant) {
+    if on_detail(model, column, row, now) && !model.showing_alerts && model.draft.is_none() {
         start_draft(model, now);
+    }
+}
+
+fn wheel(model: &mut Model, up: bool, column: u16, row: u16, now: Instant) {
+    if on_detail(model, column, row, now) {
+        model
+            .talk
+            .scroll(if up { WHEEL_LINES } else { -WHEEL_LINES });
+    } else {
+        model.move_selection(if up { -1 } else { 1 }, now);
     }
 }
 
@@ -409,7 +427,9 @@ fn edit_draft(model: &mut Model, links: &Links, mut draft: model::Draft, key: Ke
         | Key::First
         | Key::Last
         | Key::Tab
-        | Key::BackTab => {}
+        | Key::BackTab
+        | Key::PageUp
+        | Key::PageDown => {}
     }
     model.draft = Some(draft);
 }
@@ -1023,6 +1043,8 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Project) => start_naming(model, false, now),
             Some(Action::RenameProject) => start_naming(model, true, now),
             Some(Action::Tools) => model.tools_expanded = !model.tools_expanded,
+            Some(Action::PageUp) => model.talk.page(true),
+            Some(Action::PageDown) => model.talk.page(false),
             Some(Action::Diff) => ask_to_show(model, links, proto::Showing::Diff, now),
             Some(Action::Outputs) => ask_to_show(model, links, proto::Showing::Outputs, now),
             None => {}
@@ -1051,6 +1073,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
         Event::Input(Input::Cells { width, height }) => model.cell_size = Some((width, height)),
         Event::Input(Input::Closed) => return Ok(Flow::Quit),
         Event::Input(Input::Click { column, row }) => click(model, column, row, now),
+        Event::Input(Input::Wheel { up, column, row }) => wheel(model, up, column, row, now),
         Event::Topology(topology) => {
             let mut wanted: Vec<Endpoint> = std::iter::once(Endpoint::Local)
                 .chain(

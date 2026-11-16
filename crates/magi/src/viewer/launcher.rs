@@ -326,7 +326,7 @@ impl Launcher {
                     return Outcome::Start(choice);
                 }
             }
-            Key::Char(_) | Key::Newline => {}
+            Key::Char(_) | Key::Newline | Key::PageUp | Key::PageDown => {}
         }
         Outcome::Stay
     }

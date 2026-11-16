@@ -20,6 +20,7 @@ pub enum Input {
     Cells { width: u32, height: u32 },
     Closed,
     Click { column: u16, row: u16 },
+    Wheel { up: bool, column: u16, row: u16 },
 }
 
 #[derive(Debug, PartialEq)]
@@ -30,6 +31,8 @@ pub enum Key {
     Down,
     Left,
     Right,
+    PageUp,
+    PageDown,
     First,
     Last,
     Enter,
@@ -173,6 +176,8 @@ fn csi(colours: &mut Vec<u8>, body: &[u8]) -> Option<Input> {
         ([b'?', b'9', b'9', b'7', b';', ..], b'n') | ([], b'I') => Some(Input::Recheck),
         ([b'1' | b'7'], b'~') => Some(Input::Key(Key::First)),
         ([b'4' | b'8'], b'~') => Some(Input::Key(Key::Last)),
+        ([b'5'], b'~') => Some(Input::Key(Key::PageUp)),
+        ([b'6'], b'~') => Some(Input::Key(Key::PageDown)),
         ([b'2', b'7', b';', .., b';', b'1', b'3'], b'~') => Some(Input::Key(Key::Newline)),
         ([b'6', b';', size @ ..], b't') => cell_size(size),
         ([b'?', ..], _) => None,
@@ -196,13 +201,14 @@ fn mouse_press(params: &[u8]) -> Option<Input> {
         numbers.next()?.ok()?,
         numbers.next()?.ok()?,
     );
+    let (column, row) = (column.checked_sub(1)?, row.checked_sub(1)?);
     match button {
-        0 => Some(Input::Click {
-            column: column.checked_sub(1)?,
-            row: row.checked_sub(1)?,
+        0 => Some(Input::Click { column, row }),
+        64 | 65 => Some(Input::Wheel {
+            up: button == 64,
+            column,
+            row,
         }),
-        64 => Some(Input::Key(Key::Up)),
-        65 => Some(Input::Key(Key::Down)),
         _ => None,
     }
 }
@@ -488,8 +494,16 @@ mod tests {
             parse(&[b"\x1b[<0;12;5M\x1b[<0;12;5m\x1b[<64;1;1M\x1b[<65;1;1M\x1b[<2;3;3M"]),
             [
                 Input::Click { column: 11, row: 4 },
-                Input::Key(Key::Up),
-                Input::Key(Key::Down),
+                Input::Wheel {
+                    up: true,
+                    column: 0,
+                    row: 0
+                },
+                Input::Wheel {
+                    up: false,
+                    column: 0,
+                    row: 0
+                },
             ]
         );
     }
