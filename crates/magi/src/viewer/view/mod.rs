@@ -4,6 +4,7 @@ pub(super) mod launcher;
 mod machines;
 pub(super) mod markdown;
 mod talk;
+mod zen;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -196,6 +197,22 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                         model.port,
                         now,
                         graphics,
+                    );
+                }
+            }
+            Some(Focus::Agent(id) | Focus::Child(id, _)) if model.projects.zen() => {
+                if let Some(agent) = agents.iter().find(|agent| agent.session.id == id) {
+                    let suggestion = model.move_suggestion(agent, now);
+                    let forwards = model.forwards_to(&agent.session.id, &agent.machine, now);
+                    zen::render(
+                        frame,
+                        detail_area,
+                        zen::Monitor {
+                            agents: &agents,
+                            agent,
+                            suggestion: suggestion.as_ref(),
+                            forwards: &forwards,
+                        },
                     );
                 }
             }
@@ -562,7 +579,17 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
             width,
         )
     } else {
-        let mut global = keys(&[("a", "alerts")]);
+        let mut global = keys(&[
+            (
+                "z",
+                if model.projects.zen() {
+                    "full view"
+                } else {
+                    "zen"
+                },
+            ),
+            ("a", "alerts"),
+        ]);
         let active = model.alerts.active().count();
         if active > 0 {
             global.push(Span::styled(
@@ -655,6 +682,19 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     };
     let mut actions = Vec::new();
     let in_rex = agent.session.pane.is_some();
+    if model.projects.zen() {
+        if in_rex {
+            actions.push(("↵", "open in Rex"));
+        }
+        if agent.live {
+            actions.extend([("d", "diff"), ("v", "outputs")]);
+        }
+        if agent.live && agent.session.agent == Agent::ClaudeCode {
+            actions.push(("m", "move"));
+        }
+        actions.extend([("p", "project"), ("c", "new session")]);
+        return actions;
+    }
     if in_rex && agent.live && matches!(agent.session.state, SessionState::Working { .. }) {
         actions.push(("x", "stop"));
     }

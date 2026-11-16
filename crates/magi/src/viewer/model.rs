@@ -900,7 +900,7 @@ impl Model {
     }
 
     pub fn wanted_watch(&self, now: Instant) -> Option<Watched> {
-        if self.showing_alerts {
+        if self.showing_alerts || self.projects.zen() {
             return None;
         }
         let (id, child) = match self.detail_focus(now)? {

@@ -375,6 +375,7 @@ enum Action {
     Project,
     RenameProject,
     Tools,
+    Zen,
     PageUp,
     PageDown,
     Diff,
@@ -401,6 +402,7 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('p') => Action::Project,
         Key::Char('P') => Action::RenameProject,
         Key::Char('t') => Action::Tools,
+        Key::Char('z') => Action::Zen,
         Key::PageUp => Action::PageUp,
         Key::PageDown => Action::PageDown,
         Key::Char('d') => Action::Diff,
@@ -1088,7 +1090,20 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
                 confirm_move(model, links, pending, now);
             }
         }
-        Event::Input(Input::Key(key)) => match action(&key) {
+        Event::Input(Input::Key(key)) => match action(&key).filter(|action| {
+            !model.projects.zen()
+                || !matches!(
+                    action,
+                    Action::Allow
+                        | Action::Deny
+                        | Action::Choose(_)
+                        | Action::Stop
+                        | Action::Adopt
+                        | Action::Tools
+                        | Action::PageUp
+                        | Action::PageDown
+                )
+        }) {
             Some(Action::Quit) => return Ok(Flow::Quit),
             Some(Action::Back) => model.showing_alerts = false,
             Some(Action::Up) => model.move_selection(-1, now),
@@ -1105,6 +1120,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
                     }
                 }
                 (None, Some(model::Focus::NewSession)) => open_launcher(model, links, now),
+                (None, _) if model.projects.zen() => open_selected(model, links, now)?,
                 (None, _) => start_draft(model, now),
             },
             Some(Action::Allow) => answer(model, links, true, now),
@@ -1116,6 +1132,12 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::Project) => start_naming(model, false, now),
             Some(Action::RenameProject) => start_naming(model, true, now),
             Some(Action::Tools) => model.tools_expanded = !model.tools_expanded,
+            Some(Action::Zen) => {
+                let zen = !model.projects.zen();
+                if let Err(error) = model.projects.set_zen(zen) {
+                    model.flash(format!("couldn't save the view: {error}"), false, now);
+                }
+            }
             Some(Action::PageUp) => model.talk.page(true),
             Some(Action::PageDown) => model.talk.page(false),
             Some(Action::Diff) => ask_to_show(model, links, proto::Showing::Diff, now),
@@ -2381,6 +2403,66 @@ mod tests {
         handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.projects.machine_label(&name), None);
         assert!(!screen(&model).contains("Studio"));
+    }
+
+    #[test]
+    fn zen_shows_a_session_as_a_monitor_reads_no_conversation_and_never_types() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        model.apply(
+            Endpoint::Local,
+            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
+            now,
+        );
+        select_first_session(&mut model);
+        assert!(model.wanted_watch(now).is_some());
+        handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
+        assert!(model.projects.zen());
+        assert_eq!(model.wanted_watch(now), None);
+        let shown = screen(&model);
+        for text in [
+            "Sessions",
+            "Quiet",
+            "quiet for",
+            "↵ open in Rex",
+            "z full view",
+        ] {
+            assert!(shown.contains(text), "missing {text:?}\n{shown}");
+        }
+        assert!(!shown.contains("show tools"), "{shown}");
+        handle_batch(
+            [key(Key::Enter), key(Key::Char('y'))].into_iter(),
+            &mut model,
+            &mut links,
+        )
+        .unwrap();
+        assert!(model.draft.is_none());
+        handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
+        assert!(!model.projects.zen());
+    }
+
+    #[test]
+    #[ignore = "prints the screen: cargo test -- --ignored --nocapture print_zen"]
+    fn print_zen() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let mut session = in_rex(claude("s1", 0));
+        session.state = crate::proto::SessionState::Working { tool: None };
+        session.activity = Some("running the test suite before the commit".into());
+        let LinkUpdate::Sample(mut sample) = live_sample(1_000, Some(session)) else {
+            unreachable!()
+        };
+        let mut asking = in_project("s2", "stampr");
+        asking.title = "fix the checkout".into();
+        asking.state = crate::proto::SessionState::Waiting(crate::proto::Waiting::Permission(
+            Some("Bash(pnpm test)".into()),
+        ));
+        sample.sessions.push(asking);
+        sample.sessions.push(in_project("s3", "notes"));
+        model.apply(Endpoint::Local, LinkUpdate::Sample(sample), now);
+        select_first_session(&mut model);
+        handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
+        println!("{}", screen(&model));
     }
 
     #[test]

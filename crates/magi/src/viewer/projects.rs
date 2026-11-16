@@ -22,6 +22,8 @@ pub struct Projects {
     folded: BTreeSet<String>,
     #[serde(default)]
     machines: BTreeMap<String, String>,
+    #[serde(default)]
+    zen: bool,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -137,6 +139,15 @@ impl Projects {
             }
         }
         self.groups.insert(key.to_string(), name);
+        self.save()
+    }
+
+    pub fn zen(&self) -> bool {
+        self.zen
+    }
+
+    pub fn set_zen(&mut self, zen: bool) -> io::Result<()> {
+        self.zen = zen;
         self.save()
     }
 

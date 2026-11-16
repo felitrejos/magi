@@ -239,7 +239,12 @@ fn child_state(child: &Child) -> Span<'static> {
     }
 }
 
-fn child_line(child: &Child, depth: usize, is_selected: bool, width: usize) -> Line<'static> {
+pub(super) fn child_line(
+    child: &Child,
+    depth: usize,
+    is_selected: bool,
+    width: usize,
+) -> Line<'static> {
     let glyph = child_glyph(child.kind);
     let mut left = vec![
         Span::raw(" ".repeat(3 + depth * 2)),
@@ -364,7 +369,7 @@ fn folder_line(
     .style(selected_style(is_selected))
 }
 
-fn state_span(session: &AgentSession, live: bool) -> Span<'static> {
+pub(super) fn state_span(session: &AgentSession, live: bool) -> Span<'static> {
     let (text, color) = state_text(session, live);
     match session.state {
         SessionState::Waiting(_) if live => Span::styled(
@@ -375,7 +380,7 @@ fn state_span(session: &AgentSession, live: bool) -> Span<'static> {
     }
 }
 
-fn state_text(session: &AgentSession, live: bool) -> (String, Color) {
+pub(super) fn state_text(session: &AgentSession, live: bool) -> (String, Color) {
     if !live {
         return ("machine lost".into(), theme().faint);
     }
@@ -406,7 +411,7 @@ fn high_cpu(agent: &AgentRow<'_>) -> bool {
         })
 }
 
-fn cost(session: &AgentSession) -> String {
+pub(super) fn cost(session: &AgentSession) -> String {
     let dollars = units::dollars(session.cost_micros);
     if session.cost_complete {
         dollars
@@ -573,7 +578,7 @@ fn wrap_draft(line: &str, width: usize) -> Vec<String> {
     rows
 }
 
-fn context_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
+pub(super) fn context_line(agent: &AgentRow<'_>, width: usize) -> Line<'static> {
     let session = agent.session;
     let dot = || Span::styled(" · ", style::fg(theme().faint));
     let mut spans = vec![Span::styled(
@@ -621,14 +626,14 @@ fn keys(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Facts {
+pub(super) enum Facts {
     All,
     NoModel,
     Essential,
     StateOnly,
 }
 
-fn facts(
+pub(super) fn facts(
     agent: &AgentRow<'_>,
     forwards: &[(u16, ForwardState)],
     shown: Facts,

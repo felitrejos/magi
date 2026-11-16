@@ -74,19 +74,39 @@ Next:
 
 ## Phase 5: the rest of the redesign
 
+Done:
+- **Zen view:** `z` switches magi into a monitoring room. Every session
+  across your machines on one board, grouped by needs you, working and
+  quiet, each with its machine, time and what it's doing or waiting for, and
+  the selected one's details below. No conversation and no typing: `↵` takes
+  you to the session's Rex tab (or use Remote Control in the Claude app),
+  and `m` moves it. magi remembers the view you left it in.
+
+Next:
+
 1. **Alerts.** The history as a quiet feed grouped by day, in a popup.
 2. **Shared project edits.** Keep `p` and `P` edits on the agents so every
    viewer shows the same projects.
 3. **Pages.** Search, text selection and clickable links in the conversation
    and the Outputs preview.
 
-## Phase 6: placement, as recommendations
+## Phase 6: Rex only
+
+magi is built for Rex and nothing else. Remove what exists for other
+terminals and for tmux:
+- cielago's tmux launcher, and the SSH tunnels it still uses for tmux hosts;
+- the viewer's paths for running outside a Rex pane (the in-pane launcher,
+  the `magi page` fallback, terminal detection for Ghostty and kitty);
+- "Other terminals" in the README.
+magi then refuses to start outside a Rex pane, and says why.
+
+## Phase 7: placement, as recommendations
 
 - Move suggestions weigh CPU, memory and sustained load, and cover Codex.
 - Warnings before a plan's usage runs out, suggesting Codex for the next one.
 - magi never moves or starts a session by itself.
 
-## Phase 7: Rex between machines
+## Phase 8: Rex between machines
 
 Each machine runs its own Rex server, and a Rex client reaches the others by
 host label (`rex -S homelab`) over Tailscale HTTPS or SSH, with the list of
@@ -123,7 +143,7 @@ Rex is in preview, so magi and cielago follow its latest release only
 (today 0.1.0-preview.19, API revision 14), with no fallbacks for older
 servers: bump `REX_API` and `rexAPI` with each Rex release.
 
-## Phase 8: sessions
+## Phase 9: sessions
 
 - **Messages while it works.** Queue them the way Claude Code does, safely,
   so they can't land in a prompt that opens meanwhile.
