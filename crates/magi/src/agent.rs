@@ -478,23 +478,31 @@ fn spawn_requests(
                     Request::Stop { session } => {
                         type_into(&session, &agent, &replies, typing::stop);
                     }
-                    Request::Folders => match opener::folders() {
-                        Ok(folders) => {
-                            if let Ok(frame) = proto::encode_frame(&AgentMessage::Folders(folders))
-                            {
-                                let _ = replies.send(frame.into());
+                    Request::Folders => {
+                        in_background(&replies, |replies| match opener::folders() {
+                            Ok(folders) => {
+                                if let Ok(frame) =
+                                    proto::encode_frame(&AgentMessage::Folders(folders))
+                                {
+                                    let _ = replies.send(frame.into());
+                                }
                             }
-                        }
-                        Err(text) => reply(&replies, false, text),
-                    },
-                    Request::Adopt { session } => match adopt(&session, &agent) {
-                        Ok(text) => reply(&replies, true, text),
-                        Err(text) => reply(&replies, false, text),
-                    },
-                    Request::Open { dir, codex } => match opener::open(&dir, codex) {
-                        Ok(text) => reply(&replies, true, text),
-                        Err(text) => reply(&replies, false, text),
-                    },
+                            Err(text) => reply(replies, false, text),
+                        });
+                    }
+                    Request::Adopt { session } => {
+                        let agent = Arc::clone(&agent);
+                        in_background(&replies, move |replies| match adopt(&session, &agent) {
+                            Ok(text) => reply(replies, true, text),
+                            Err(text) => reply(replies, false, text),
+                        });
+                    }
+                    Request::Open { dir, codex } => {
+                        in_background(&replies, move |replies| match opener::open(&dir, codex) {
+                            Ok(text) => reply(replies, true, text),
+                            Err(text) => reply(replies, false, text),
+                        });
+                    }
                     Request::Watch { session } => {
                         let delivered = watcher
                             .as_ref()
@@ -580,6 +588,19 @@ fn move_session(session: &str, to: &str, agent: &Agent, replies: &SyncSender<Fra
     match started {
         Ok(text) => reply(replies, true, text),
         Err(text) => reply(replies, false, text),
+    }
+}
+
+fn in_background(
+    replies: &SyncSender<Frame>,
+    work: impl FnOnce(&SyncSender<Frame>) + Send + 'static,
+) {
+    let replies = replies.clone();
+    let spawned = thread::Builder::new()
+        .name("open".into())
+        .spawn(move || work(&replies));
+    if let Err(error) = spawned {
+        log::info(format!("could not start a thread for the request: {error}"));
     }
 }
 

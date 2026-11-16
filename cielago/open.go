@@ -23,7 +23,6 @@ const (
 type openReport struct {
 	Event   string `json:"event"`
 	OK      bool   `json:"ok"`
-	Dir     string `json:"dir,omitempty"`
 	Message string `json:"message"`
 }
 
@@ -40,10 +39,11 @@ func openCommand(args []string, out io.Writer) error {
 		case "--list":
 			list = true
 		case "--resume":
-			if i+1 < len(args) {
-				i++
-				resume = args[i]
+			if i+1 >= len(args) {
+				return errors.New("--resume needs a session id")
 			}
+			i++
+			resume = args[i]
 		default:
 			rest = append(rest, a)
 		}
@@ -71,7 +71,10 @@ func openCommand(args []string, out io.Writer) error {
 	if err != nil {
 		return fail(err)
 	}
-	if list && len(rest) == 0 {
+	if list {
+		if len(rest) != 0 || resume != "" || codex {
+			return fail(errors.New("--list takes no folder"))
+		}
 		folders, err := knownProjects(roots)
 		if err != nil {
 			return fail(err)
@@ -96,14 +99,20 @@ func openCommand(args []string, out io.Writer) error {
 		return fail(fmt.Errorf("%s isn't a folder on this machine", dir))
 	}
 	root := projectRoot(ctx, dir)
+	if resume == "" && !inProjectFolders(root, roots) {
+		return fail(fmt.Errorf("%s isn't in one of this machine's project folders", root))
+	}
 	group, err := localGroup(root, roots)
 	if err != nil {
 		return fail(err)
 	}
 	name := baseName(root)
-	agent, label, command := "claude", claudeTabLabel(name), []string{"--remote-control", name}
+	if name == "" || name == "." || name == "/" || strings.HasPrefix(name, "-") {
+		return fail(fmt.Errorf("%q can't name a session", name))
+	}
+	agent, label, command := "claude", claudeTabLabel(name), []string{"--remote-control=" + name}
 	if resume != "" {
-		command = []string{"--resume", resume, "--fork-session", "--remote-control", name}
+		command = []string{"--resume", resume, "--fork-session", "--remote-control=" + name}
 	}
 	if codex {
 		agent, label, command = "codex", name+" · codex", nil
@@ -124,7 +133,7 @@ func openCommand(args []string, out io.Writer) error {
 	if tab.SessionCreated {
 		where += ", which is new"
 	}
-	return report(openReport{Event: "opened", OK: true, Dir: dir, Message: where})
+	return report(openReport{Event: "opened", OK: true, Message: where})
 }
 
 func openRoots(m Machine) ([]string, error) {
@@ -136,6 +145,15 @@ func openRoots(m Machine) ([]string, error) {
 		return nil, err
 	}
 	return cfg.LocalRoots, nil
+}
+
+func inProjectFolders(path string, roots []string) bool {
+	for _, root := range roots {
+		if _, ok := groupUnderLocal(root, path); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func projectRoot(ctx context.Context, dir string) string {

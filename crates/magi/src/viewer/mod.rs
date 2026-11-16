@@ -403,7 +403,7 @@ fn edit_picker(
         Key::Enter => {
             let Some(dir) = picker
                 .shown(&recent)
-                .get(picker.selected)
+                .get(picker.selected.min(count.saturating_sub(1)))
                 .map(|dir| dir.to_string())
             else {
                 model.picker = Some(picker);
@@ -1433,5 +1433,87 @@ mod tests {
         model.selected = 3;
         handle_batch([key(Key::Char('r'))].into_iter(), &mut model, &mut links).unwrap();
         assert_eq!(model.flashed(Instant::now()), None);
+    }
+
+    fn in_project(id: &str, project: &str) -> AgentSession {
+        let mut session = claude(id, 0);
+        session.project = project.into();
+        session.title = id.into();
+        session
+    }
+
+    #[test]
+    fn a_session_magi_opened_is_selected_when_it_appears_and_a_failed_open_selects_nothing() {
+        let (mut model, mut links) = fleet();
+        let now = Instant::now();
+        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
+        model.apply(
+            homelab,
+            live_sample(1_000, Some(in_project("old", "api"))),
+            now,
+        );
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        model.await_session(homelab, "api", now);
+        let LinkUpdate::Sample(mut sample) = live_sample(1_000, Some(in_project("old", "api")))
+        else {
+            unreachable!()
+        };
+        sample.sessions.push(in_project("new", "api"));
+        model.apply(homelab, LinkUpdate::Sample(sample.clone()), now);
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        assert_eq!(model.selected_agent(now).unwrap().session.id, "new");
+
+        let (mut model, mut links) = fleet();
+        model.apply(
+            homelab,
+            live_sample(1_000, Some(in_project("old", "api"))),
+            now,
+        );
+        model.await_session(homelab, "api", now);
+        model.apply(
+            homelab,
+            LinkUpdate::Reply(crate::proto::Reply {
+                ok: false,
+                text: "couldn't open a session: no".into(),
+            }),
+            now,
+        );
+        model.apply(homelab, LinkUpdate::Sample(sample), now);
+        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
+        assert_ne!(
+            model
+                .selected_agent(now)
+                .map(|agent| agent.session.id.clone()),
+            Some("new".into())
+        );
+    }
+
+    #[test]
+    fn the_picker_says_why_it_has_no_folders_and_filters_on_the_project_part_only() {
+        let (mut model, _) = fleet();
+        let now = Instant::now();
+        model.picker = Some(model::Picker::new(Endpoint::Local, "mac".into()));
+        model.apply(
+            Endpoint::Local,
+            LinkUpdate::Reply(crate::proto::Reply {
+                ok: false,
+                text: "couldn't open a session: cielago isn't installed".into(),
+            }),
+            now,
+        );
+        assert!(
+            screen(&model).contains("cielago isn't installed"),
+            "{}",
+            screen(&model)
+        );
+        let mut picker = model::Picker::new(Endpoint::Local, "mac".into());
+        picker.folders = Some(vec![
+            "/Users/me/code/shop/api".into(),
+            "/Users/me/notes".into(),
+        ]);
+        picker.filter = "users".into();
+        assert!(picker.shown(&[]).is_empty());
+        picker.filter = "shop".into();
+        assert_eq!(picker.shown(&[]), ["/Users/me/code/shop/api"]);
     }
 }

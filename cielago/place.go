@@ -21,23 +21,29 @@ func expandHome(path, home string) string {
 }
 
 func localGroup(projectRoot string, localRoots []string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
 	for _, root := range localRoots {
-		real, err := filepath.EvalSymlinks(expandHome(root, home))
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return "", fmt.Errorf("local_roots: %w", err)
-		}
-		if group, ok := groupUnder(real, projectRoot); ok {
+		if group, ok := groupUnderLocal(root, projectRoot); ok {
 			return group, nil
 		}
 	}
 	return baseName(projectRoot), nil
+}
+
+func groupUnderLocal(root, path string) (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	rootInfo, err := os.Stat(expandHome(root, home))
+	if err != nil {
+		return "", false
+	}
+	for child, parent := path, filepath.Dir(path); child != parent; child, parent = parent, filepath.Dir(parent) {
+		if info, err := os.Stat(parent); err == nil && os.SameFile(info, rootInfo) {
+			return filepath.Base(child), true
+		}
+	}
+	return "", false
 }
 
 func serverGroup(clone string, roots []string, home string) string {

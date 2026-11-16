@@ -15,6 +15,7 @@ const SEARCH_GRACE: Duration = Duration::from_secs(8);
 const FLASH_FOR: Duration = Duration::from_secs(5);
 const FOLD_AFTER_SECS: u32 = 24 * 60 * 60;
 const FOLLOW_FOR: Duration = Duration::from_secs(300);
+const AWAIT_FOR: Duration = Duration::from_secs(60);
 const FOLD_AT_LEAST: usize = 2;
 const HEAVY_SESSION_MILLICORES: u32 = 1_000;
 const BUSY_MACHINE: f32 = 0.8;
@@ -339,6 +340,7 @@ pub struct Picker {
     pub filter: String,
     pub selected: usize,
     pub codex: bool,
+    pub failed: Option<String>,
 }
 
 impl Picker {
@@ -350,6 +352,7 @@ impl Picker {
             filter: String::new(),
             selected: 0,
             codex: false,
+            failed: None,
         }
     }
 
@@ -360,12 +363,22 @@ impl Picker {
             .iter()
             .flatten()
             .map(String::as_str)
-            .filter(|folder| folder.to_lowercase().contains(&filter))
+            .filter(|folder| project_part(folder).to_lowercase().contains(&filter))
             .collect();
         let name = |folder: &str| folder.rsplit('/').next().unwrap_or(folder).to_string();
         shown.sort_by_key(|folder| (!recent.contains(&name(folder)), folder.to_lowercase()));
         shown
     }
+}
+
+fn project_part(folder: &str) -> &str {
+    ["/Users/", "/home/"]
+        .iter()
+        .find_map(|home| {
+            let rest = folder.strip_prefix(home)?;
+            Some(&rest[rest.find('/')? + 1..])
+        })
+        .unwrap_or(folder)
 }
 
 #[derive(Clone)]
@@ -438,39 +451,57 @@ impl Model {
     }
 
     pub fn apply(&mut self, endpoint: Endpoint, update: LinkUpdate, now: Instant) {
-        let update = match update {
-            LinkUpdate::Reply(reply) => return self.flash(reply.text, reply.ok, now),
-            LinkUpdate::Folders(folders) => {
-                if let Some(picker) = self
-                    .picker
-                    .as_mut()
-                    .filter(|picker| picker.endpoint == endpoint)
-                {
-                    picker.folders = Some(folders);
+        let update =
+            match update {
+                LinkUpdate::Reply(reply) => {
+                    if !reply.ok {
+                        if self
+                            .awaiting
+                            .as_ref()
+                            .is_some_and(|awaiting| awaiting.endpoint == endpoint)
+                        {
+                            self.awaiting = None;
+                        }
+                        if let Some(picker) = self.picker.as_mut().filter(|picker| {
+                            picker.endpoint == endpoint && picker.folders.is_none()
+                        }) {
+                            picker.failed = Some(reply.text.clone());
+                        }
+                    }
+                    return self.flash(reply.text, reply.ok, now);
                 }
-                return;
-            }
-            LinkUpdate::Screen(screen) => {
-                if self
-                    .watching
-                    .as_ref()
-                    .is_some_and(|(_, id)| *id == screen.session)
-                {
-                    self.screens.insert(screen.session.clone(), screen);
+                LinkUpdate::Folders(folders) => {
+                    if let Some(picker) = self
+                        .picker
+                        .as_mut()
+                        .filter(|picker| picker.endpoint == endpoint)
+                    {
+                        picker.folders = Some(folders);
+                        picker.selected = 0;
+                    }
+                    return;
                 }
-                return;
-            }
-            LinkUpdate::Welcome(_)
-                if self
-                    .watching
-                    .as_ref()
-                    .is_some_and(|(at, _)| *at == endpoint) =>
-            {
-                self.watching = None;
-                update
-            }
-            update => update,
-        };
+                LinkUpdate::Screen(screen) => {
+                    if self
+                        .watching
+                        .as_ref()
+                        .is_some_and(|(_, id)| *id == screen.session)
+                    {
+                        self.screens.insert(screen.session.clone(), screen);
+                    }
+                    return;
+                }
+                LinkUpdate::Welcome(_)
+                    if self
+                        .watching
+                        .as_ref()
+                        .is_some_and(|(at, _)| *at == endpoint) =>
+                {
+                    self.watching = None;
+                    update
+                }
+                update => update,
+            };
         let Some(link) = self.links.get_mut(&endpoint) else {
             return;
         };
@@ -872,7 +903,7 @@ impl Model {
         if let Some(session) = opened {
             self.focus = Some(Focus::Agent(session));
             self.awaiting = None;
-        } else if now.duration_since(awaiting.since) > FOLLOW_FOR {
+        } else if now.duration_since(awaiting.since) > AWAIT_FOR {
             self.awaiting = None;
         }
     }

@@ -36,24 +36,34 @@ pub fn render(frame: &mut Frame, area: Rect, picker: &Picker, recent: &[String],
     let mut cursor = Cursor::new(list);
     let note = |text: &str| Line::from(Span::styled(text.to_string(), style::fg(theme().faint)));
     match &picker.folders {
-        None => cursor.line(
-            frame,
-            note(&format!("asking {} for its projects…", picker.machine)),
-        ),
+        None => match &picker.failed {
+            Some(reason) => cursor.line(
+                frame,
+                Line::from(clip(
+                    vec![Span::styled(reason.clone(), style::fg(theme().warn))],
+                    width,
+                )),
+            ),
+            None => cursor.line(
+                frame,
+                note(&format!("asking {} for its projects…", picker.machine)),
+            ),
+        },
         Some(_) => {
             let shown = picker.shown(recent);
             if shown.is_empty() {
                 cursor.line(frame, note("No project folder matches."));
             }
             let room = list.height as usize;
-            let first = picker.selected.saturating_sub(room.saturating_sub(1));
+            let selected = picker.selected.min(shown.len().saturating_sub(1));
+            let first = selected.saturating_sub(room.saturating_sub(1));
             for (index, folder) in shown.iter().enumerate().skip(first).take(room) {
                 let name = folder.rsplit('/').next().unwrap_or(folder);
                 let place = folder
                     .strip_prefix(home)
                     .map(|rest| format!("~{rest}"))
                     .unwrap_or_else(|| folder.to_string());
-                let is_selected = index == picker.selected;
+                let is_selected = index == selected;
                 let mut spans = vec![
                     Span::styled(
                         if is_selected { "▎" } else { " " },

@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -29,8 +30,28 @@ pub fn folders() -> Result<Vec<String>, String> {
     Ok(folders)
 }
 
+static OPENING: AtomicBool = AtomicBool::new(false);
+
+struct Opening;
+
+impl Opening {
+    fn start() -> Result<Self, String> {
+        if OPENING.swap(true, Ordering::SeqCst) {
+            return Err("a session is already being opened on that machine".into());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for Opening {
+    fn drop(&mut self) {
+        OPENING.store(false, Ordering::SeqCst);
+    }
+}
+
 pub fn open(dir: &str, codex: bool) -> Result<String, String> {
     check(dir)?;
+    let _opening = Opening::start()?;
     let mut args = vec!["open", "--json"];
     if codex {
         args.push("--codex");
@@ -54,6 +75,7 @@ fn report(output: &Output) -> Result<String, String> {
 
 pub fn adopt(dir: &str, session: &str) -> Result<String, String> {
     check(dir)?;
+    let _opening = Opening::start()?;
     let output = cielago(&["open", "--json", "--resume", session, dir], OPEN_LIMIT)?;
     report(&output)
 }

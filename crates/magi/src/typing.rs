@@ -49,10 +49,10 @@ pub fn answer(
 }
 
 pub fn stop(session: &AgentSession, pane: Option<&Location>) -> Result<String, String> {
-    let pane = pane.ok_or_else(|| not_in_rex(session))?;
     if !matches!(session.state, SessionState::Working { .. }) {
         return Err(format!("{} isn't working on anything", session.title));
     }
+    let pane = pane.ok_or_else(|| not_in_rex(session))?;
     let _typing = TYPING.lock().unwrap_or_else(PoisonError::into_inner);
     send(pane, DENY)?;
     Ok(format!("Stopped {}", session.title))
@@ -256,7 +256,10 @@ mod tests {
 
     #[test]
     fn only_a_working_session_in_rex_can_be_stopped() {
-        assert!(stop(&session(Agent::ClaudeCode, SessionState::Idle), None).is_err());
+        assert_eq!(
+            stop(&session(Agent::ClaudeCode, SessionState::Idle), None),
+            Err("fix the build isn't working on anything".into())
+        );
         assert_eq!(
             stop(
                 &session(Agent::ClaudeCode, SessionState::Working { tool: None }),
