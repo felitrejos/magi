@@ -7,15 +7,16 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use super::Found;
-use super::codex_limits::Limits;
+use super::codex_limits;
 use super::ledger::{Counted, Ledger};
+use super::limits::{self, Limits};
 use super::pricing::{self, OpenAiUsage};
 use super::process;
 use super::repo;
 use super::tail::{self, Lines, Tail};
+use crate::handoff;
 use crate::proto::{Agent, AgentSession, BasisPoints, FULL, Plan, SessionState, Tokens, Window};
 
-const SEEN_IS_FRESH_SECS: u64 = 5 * 60;
 const PROCESS_NAME: &str = "codex";
 const FIND_PROCESSES_EVERY: Duration = Duration::from_secs(2);
 const MAX_SESSIONS: usize = 64;
@@ -167,7 +168,8 @@ impl Codex {
             .map(PathBuf::from)
             .or_else(|| Some(Path::new(&std::env::var_os("HOME")?).join(".codex")))?;
         let mut codex = Self::new(home);
-        codex.asked = Some(Limits::new());
+        codex.asked = handoff::find("codex", &handoff::search_dirs())
+            .map(|program| Limits::new(move |_| codex_limits::ask(&program)));
         Some(codex)
     }
 
@@ -270,25 +272,7 @@ impl Codex {
             .filter_map(|rollout| rollout.state.limits.as_ref())
             .max_by_key(|(at_ms, _)| *at_ms)
             .map(|(at_ms, windows)| (at_ms / 1000, windows.clone()));
-        let fresh = seen
-            .as_ref()
-            .is_some_and(|(at, _)| now_secs.saturating_sub(*at) < SEEN_IS_FRESH_SECS);
-        let asked = self
-            .asked
-            .as_mut()
-            .filter(|_| !fresh)
-            .and_then(|limits| limits.latest(now, now_secs));
-        let (as_of, windows) = seen.into_iter().chain(asked).max_by_key(|(at, _)| *at)?;
-        let windows: Vec<Window> = windows
-            .iter()
-            .filter(|window| window.resets_at > now_secs)
-            .copied()
-            .collect();
-        (!windows.is_empty()).then_some(Plan {
-            agent: Agent::Codex,
-            windows,
-            as_of,
-        })
+        limits::plan(Agent::Codex, seen, self.asked.as_mut(), now, now_secs)
     }
 }
 

@@ -1,8 +1,10 @@
 mod claude;
+mod claude_limits;
 mod codex;
 mod codex_limits;
 mod forwards;
 mod ledger;
+mod limits;
 mod pricing;
 mod process;
 mod registry;
@@ -23,6 +25,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::proto::{Agent, AgentSession, BasisPoints, Forward, Plan, StatusReport, Window};
 use claude::ClaudeSessions;
 use codex::Codex;
+use limits::{Limits, Reading};
 
 const READ_BUDGET_PER_POLL: u64 = 32 << 20;
 const CONTEXT_KEPT_FOR: Duration = Duration::from_secs(24 * 60 * 60);
@@ -118,20 +121,10 @@ impl Board {
             .map(|(used, _)| *used)
     }
 
-    fn plan(&self, now_secs: u64) -> Option<Plan> {
+    fn reading(&self) -> Option<Reading> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut windows: Vec<Window> = state
-            .windows
-            .values()
-            .filter(|window| window.resets_at > now_secs)
-            .copied()
-            .collect();
-        windows.sort_by_key(|window| window.minutes);
-        (!windows.is_empty()).then_some(Plan {
-            agent: Agent::ClaudeCode,
-            windows,
-            as_of: state.as_of,
-        })
+        (!state.windows.is_empty())
+            .then(|| (state.as_of, state.windows.values().copied().collect()))
     }
 }
 
@@ -166,6 +159,7 @@ pub struct Sessions {
     meter: usage::Meter,
     tasks: Option<tasks::Tasks>,
     forwards: Option<forwards::Forwards>,
+    claude_limits: Limits,
 }
 
 impl Sessions {
@@ -178,6 +172,7 @@ impl Sessions {
             meter: usage::Meter::default(),
             tasks: tasks::Tasks::for_this_user(),
             forwards: forwards::Forwards::for_this_user(),
+            claude_limits: Limits::new(claude_limits::ask),
         })
     }
 
@@ -198,7 +193,13 @@ impl Sessions {
                 .notices
                 .push(format!("can't read Claude Code's sessions: {error}")),
         }
-        snapshot.plans.extend(board.plan(now_ms / 1000));
+        snapshot.plans.extend(limits::plan(
+            Agent::ClaudeCode,
+            board.reading(),
+            Some(&mut self.claude_limits),
+            now,
+            now_ms / 1000,
+        ));
         if let Some(forwards) = &self.forwards {
             snapshot.forwards = forwards.read();
         }
@@ -247,6 +248,16 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn claude_plan(board: &Board, now_secs: u64) -> Option<Plan> {
+        limits::plan(
+            Agent::ClaudeCode,
+            board.reading(),
+            None,
+            Instant::now(),
+            now_secs,
+        )
+    }
     use crate::proto::{FIVE_HOURS, ONE_WEEK};
 
     #[test]
@@ -269,17 +280,17 @@ mod tests {
         });
         let plan = |windows| Some(windows);
         assert_eq!(
-            board.plan(500).map(|plan| plan.windows),
+            claude_plan(&board, 500).map(|plan| plan.windows),
             plan(vec![
                 window(FIVE_HOURS, 3_000, 1_000),
                 window(ONE_WEEK, 6_000, 9_000)
             ])
         );
         assert_eq!(
-            board.plan(2_000).map(|plan| plan.windows),
+            claude_plan(&board, 2_000).map(|plan| plan.windows),
             plan(vec![window(ONE_WEEK, 6_000, 9_000)])
         );
-        assert_eq!(board.plan(10_000), None);
+        assert_eq!(claude_plan(&board, 10_000), None);
         assert_eq!(
             (board.context("a"), board.context("b")),
             (Some(1_200), None)
@@ -307,7 +318,7 @@ mod tests {
         );
         let restarted = Board::saved_at(path.clone());
         assert_eq!(
-            restarted.plan(500).map(|plan| plan.windows),
+            claude_plan(&restarted, 500).map(|plan| plan.windows),
             Some(vec![Window {
                 minutes: FIVE_HOURS,
                 used: 3_700,
@@ -315,7 +326,7 @@ mod tests {
             }])
         );
         assert_eq!(restarted.context("a"), None);
-        assert_eq!(restarted.plan(10_000), None);
+        assert_eq!(claude_plan(&restarted, 10_000), None);
         std::fs::remove_file(path).unwrap();
     }
 

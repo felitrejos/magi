@@ -1,18 +1,15 @@
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::handoff;
-use crate::proto::{BasisPoints, FULL, Window};
+use super::limits::percent;
+use crate::proto::Window;
 
-const ASK_EVERY: Duration = Duration::from_secs(5 * 60);
 const ANSWER_WITHIN: Duration = Duration::from_secs(15);
 const REQUEST: &str = concat!(
     r#"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"magi","version":"1"}}}"#,
@@ -22,49 +19,6 @@ const REQUEST: &str = concat!(
     r#"{"id":2,"method":"account/rateLimits/read"}"#,
     "\n",
 );
-
-type Reading = (u64, Vec<Window>);
-
-pub struct Limits {
-    program: Option<PathBuf>,
-    asked_at: Option<Instant>,
-    asking: Arc<AtomicBool>,
-    answer: Arc<Mutex<Option<Reading>>>,
-}
-
-impl Limits {
-    pub fn new() -> Self {
-        Self {
-            program: handoff::find("codex", &handoff::search_dirs()),
-            asked_at: None,
-            asking: Arc::new(AtomicBool::new(false)),
-            answer: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub fn latest(&mut self, now: Instant, now_secs: u64) -> Option<Reading> {
-        let due = self
-            .asked_at
-            .is_none_or(|at| now.duration_since(at) >= ASK_EVERY);
-        if let Some(program) = self.program.clone().filter(|_| due)
-            && !self.asking.swap(true, Ordering::AcqRel)
-        {
-            self.asked_at = Some(now);
-            let (asking, answer) = (self.asking.clone(), self.answer.clone());
-            thread::spawn(move || {
-                if let Some(windows) = ask(&program) {
-                    *answer.lock().unwrap_or_else(PoisonError::into_inner) =
-                        Some((now_secs, windows));
-                }
-                asking.store(false, Ordering::Release);
-            });
-        }
-        self.answer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-}
 
 #[derive(Deserialize)]
 struct Reply {
@@ -92,7 +46,7 @@ struct LimitWindow {
     resets_at: u64,
 }
 
-fn ask(program: &PathBuf) -> Option<Vec<Window>> {
+pub fn ask(program: &Path) -> Option<Vec<Window>> {
     let mut child = Command::new(program)
         .arg("app-server")
         .stdin(Stdio::piped())
@@ -141,8 +95,7 @@ fn windows(line: &str) -> Option<Vec<Window>> {
             .flatten()
             .map(|window| Window {
                 minutes: window.window_duration_mins,
-                used: (window.used_percent.clamp(0.0, 100.0) * f64::from(FULL) / 100.0).round()
-                    as BasisPoints,
+                used: percent(window.used_percent),
                 resets_at: window.resets_at,
             })
             .collect(),

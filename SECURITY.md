@@ -21,6 +21,14 @@
   the short description of each running subagent and the first line of each
   [cielago](cielago) task's command or prompt,
   never message text.
+- When no Claude Code status line has reported your plan's usage in the
+  last five minutes, the agent reads Claude Code's sign-in (the Keychain item
+  `Claude Code-credentials` on macOS, `~/.claude/.credentials.json` on Linux)
+  and asks `api.anthropic.com/api/oauth/usage` for it, at most every five
+  minutes. It uses the access token only while it hasn't expired and never
+  renews it, so Claude Code's own sign-in is left as it was. The token goes
+  to `curl` on its standard input, never on a command line, and is not kept,
+  logged or sent anywhere else; only the percentages and reset times are.
 - When no Codex session has reported its usage limits in the last five
   minutes, the agent asks Codex itself, at most every five minutes: it runs
   `codex app-server` and sends only the `account/rateLimits/read` request,
