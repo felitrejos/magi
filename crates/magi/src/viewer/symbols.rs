@@ -207,8 +207,10 @@ mod tests {
         ] {
             let pixels = render(name, 32, 32, (200, 100, 50)).expect(name);
             assert_eq!(pixels.len(), 32 * 32 * 4);
-            let solid: Vec<&[u8]> = pixels
-                .chunks_exact(4)
+            let solid: Vec<&[u8; 4]> = pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|pixel| pixel[3] == 255)
                 .collect();
             assert!(!solid.is_empty(), "{name} drew nothing");
