@@ -271,6 +271,7 @@ mod tests {
         assert_eq!(session(&unmeasured)["cpu"], Value::Null);
         let claude = Plan {
             agent: Agent::ClaudeCode,
+            as_of: 0,
             windows: vec![Window {
                 minutes: crate::proto::FIVE_HOURS,
                 used: 9_000,

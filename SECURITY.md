@@ -21,6 +21,11 @@
   the short description of each running subagent and the first line of each
   [cielago](cielago) task's command or prompt,
   never message text.
+- When no Codex session has reported its usage limits in the last five
+  minutes, the agent asks Codex itself, at most every five minutes: it runs
+  `codex app-server` and sends only the `account/rateLimits/read` request,
+  so Codex uses its own sign-in and magi never sees a token. The process is
+  stopped after its answer or 15 seconds.
 - For each agent process it reads that process's CPU time and memory, and
   from its environment only `REX_SESSION`, `REX_BLOCK`, `REX_SERVER` and
   `REX_BIN_DIR`. Nothing else in the environment is kept or sent.

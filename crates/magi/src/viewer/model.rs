@@ -662,8 +662,10 @@ impl Model {
             .filter_map(|row| row.machine()?.latest.as_ref())
             .flat_map(|sample| &sample.plans)
         {
-            if !plans.iter().any(|known| known.agent == plan.agent) {
-                plans.push(plan);
+            match plans.iter_mut().find(|known| known.agent == plan.agent) {
+                Some(known) if known.as_of < plan.as_of => *known = plan,
+                Some(_) => {}
+                None => plans.push(plan),
             }
         }
         plans.sort_by_key(|plan| plan.agent);

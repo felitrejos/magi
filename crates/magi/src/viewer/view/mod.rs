@@ -5,7 +5,7 @@ mod markdown;
 mod picker;
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
@@ -22,6 +22,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const WIDE: u16 = 90;
+const STALE_PLAN_SECS: u64 = 15 * 60;
 const SIDEBAR_SHARE: u32 = 28;
 const SIDEBAR_MIN: u16 = 30;
 const SIDEBAR_MAX: u16 = 38;
@@ -103,13 +104,16 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     let marks = marks(model, &rows);
     machines::render_list(frame, machine_area, model, &rows, &marks, now, graphics);
     let mut cursor = Cursor::new(plan_area);
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
     for plan in &plans {
         let room = plan_area.width as usize;
         let line = [6, 3, 0]
             .into_iter()
-            .map(|meter| plans_line(&[*plan], meter))
+            .map(|meter| plans_line(&[*plan], meter, now_secs))
             .find(|line| line.width() <= room)
-            .unwrap_or_else(|| plans_line(&[*plan], 0));
+            .unwrap_or_else(|| plans_line(&[*plan], 0, now_secs));
         cursor.composed(frame, graphics, line);
     }
     let listed = model.listed(now);
@@ -391,7 +395,7 @@ impl Cursor {
     }
 }
 
-fn plans_line(plans: &[&Plan], meter: usize) -> Composed {
+fn plans_line(plans: &[&Plan], meter: usize, now_secs: u64) -> Composed {
     let mut line = Composed::default();
     for plan in plans {
         if line.width() > 0 {
@@ -427,6 +431,13 @@ fn plans_line(plans: &[&Plan], meter: usize) -> Composed {
                 } else {
                     theme().text
                 }),
+            ));
+        }
+        let age = now_secs.saturating_sub(plan.as_of);
+        if age >= STALE_PLAN_SECS {
+            line.push(Span::styled(
+                format!("  {} ago", units::duration(Duration::from_secs(age))),
+                style::fg(theme().faint),
             ));
         }
     }

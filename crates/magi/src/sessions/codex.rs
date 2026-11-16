@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use super::Found;
+use super::codex_limits::Limits;
 use super::ledger::{Counted, Ledger};
 use super::pricing::{self, OpenAiUsage};
 use super::process;
@@ -14,6 +15,7 @@ use super::repo;
 use super::tail::{self, Lines, Tail};
 use crate::proto::{Agent, AgentSession, BasisPoints, FULL, Plan, SessionState, Tokens, Window};
 
+const SEEN_IS_FRESH_SECS: u64 = 5 * 60;
 const PROCESS_NAME: &str = "codex";
 const FIND_PROCESSES_EVERY: Duration = Duration::from_secs(2);
 const MAX_SESSIONS: usize = 64;
@@ -37,6 +39,7 @@ pub struct Codex {
     rollouts: HashMap<PathBuf, Rollout>,
     titles: Option<(Tail, Titles)>,
     claims: HashSet<String>,
+    asked: Option<Limits>,
 }
 
 struct Rollout {
@@ -155,6 +158,7 @@ impl Codex {
             rollouts: HashMap::new(),
             titles: None,
             claims: HashSet::new(),
+            asked: None,
         }
     }
 
@@ -162,7 +166,9 @@ impl Codex {
         let home = std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .or_else(|| Some(Path::new(&std::env::var_os("HOME")?).join(".codex")))?;
-        Some(Self::new(home))
+        let mut codex = Self::new(home);
+        codex.asked = Some(Limits::new());
+        Some(codex)
     }
 
     pub fn poll(
@@ -228,7 +234,7 @@ impl Codex {
                 });
             }
         }
-        (sessions, self.plan(now_ms / 1000))
+        (sessions, self.plan(now, now_ms / 1000))
     }
 
     fn find_live(&self) -> Vec<(PathBuf, i32)> {
@@ -257,12 +263,22 @@ impl Codex {
         let _ = tail.advance(budget, titles);
     }
 
-    fn plan(&self, now_secs: u64) -> Option<Plan> {
-        let (_, windows) = self
+    fn plan(&mut self, now: Instant, now_secs: u64) -> Option<Plan> {
+        let seen = self
             .rollouts
             .values()
             .filter_map(|rollout| rollout.state.limits.as_ref())
-            .max_by_key(|(at, _)| *at)?;
+            .max_by_key(|(at_ms, _)| *at_ms)
+            .map(|(at_ms, windows)| (at_ms / 1000, windows.clone()));
+        let fresh = seen
+            .as_ref()
+            .is_some_and(|(at, _)| now_secs.saturating_sub(*at) < SEEN_IS_FRESH_SECS);
+        let asked = self
+            .asked
+            .as_mut()
+            .filter(|_| !fresh)
+            .and_then(|limits| limits.latest(now, now_secs));
+        let (as_of, windows) = seen.into_iter().chain(asked).max_by_key(|(at, _)| *at)?;
         let windows: Vec<Window> = windows
             .iter()
             .filter(|window| window.resets_at > now_secs)
@@ -271,6 +287,7 @@ impl Codex {
         (!windows.is_empty()).then_some(Plan {
             agent: Agent::Codex,
             windows,
+            as_of,
         })
     }
 }

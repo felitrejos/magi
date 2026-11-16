@@ -112,6 +112,7 @@ fn sample(load: f32, cores: usize) -> Sample {
         plans: vec![
             Plan {
                 agent: Agent::ClaudeCode,
+                as_of: 0,
                 windows: vec![
                     Window {
                         minutes: FIVE_HOURS,
@@ -127,6 +128,7 @@ fn sample(load: f32, cores: usize) -> Sample {
             },
             Plan {
                 agent: Agent::Codex,
+                as_of: 0,
                 windows: vec![Window {
                     minutes: FIVE_HOURS,
                     used: 300,

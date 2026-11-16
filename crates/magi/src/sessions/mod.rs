@@ -1,5 +1,6 @@
 mod claude;
 mod codex;
+mod codex_limits;
 mod forwards;
 mod ledger;
 mod pricing;
@@ -36,33 +37,46 @@ pub struct Board {
 struct BoardState {
     context: HashMap<String, (BasisPoints, Instant)>,
     windows: HashMap<u32, Window>,
+    as_of: u64,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct SavedPlan {
+    as_of: u64,
+    windows: Vec<Window>,
 }
 
 impl Board {
     pub fn saved_at(path: PathBuf) -> Self {
-        let windows: Vec<Window> = std::fs::read(&path)
+        let saved: SavedPlan = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         Self {
             state: Mutex::new(BoardState {
                 context: HashMap::new(),
-                windows: windows
+                windows: saved
+                    .windows
                     .into_iter()
                     .map(|window| (window.minutes, window))
                     .collect(),
+                as_of: saved.as_of,
             }),
             saved: Some(path),
         }
     }
 
-    fn save(&self, windows: &HashMap<u32, Window>) {
+    fn save(&self, state: &BoardState) {
         let Some(path) = &self.saved else {
             return;
         };
-        let mut windows: Vec<&Window> = windows.values().collect();
+        let mut windows: Vec<Window> = state.windows.values().copied().collect();
         windows.sort_by_key(|window| window.minutes);
-        let Ok(json) = serde_json::to_vec(&windows) else {
+        let saved = SavedPlan {
+            as_of: state.as_of,
+            windows,
+        };
+        let Ok(json) = serde_json::to_vec(&saved) else {
             return;
         };
         let temporary = path.with_extension("json.tmp");
@@ -91,7 +105,8 @@ impl Board {
         for window in report.windows {
             state.windows.insert(window.minutes, window);
         }
-        self.save(&state.windows);
+        state.as_of = unix_secs();
+        self.save(&state);
     }
 
     pub fn context(&self, session_id: &str) -> Option<BasisPoints> {
@@ -104,10 +119,8 @@ impl Board {
     }
 
     fn plan(&self, now_secs: u64) -> Option<Plan> {
-        let mut windows: Vec<Window> = self
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut windows: Vec<Window> = state
             .windows
             .values()
             .filter(|window| window.resets_at > now_secs)
@@ -117,8 +130,15 @@ impl Board {
         (!windows.is_empty()).then_some(Plan {
             agent: Agent::ClaudeCode,
             windows,
+            as_of: state.as_of,
         })
     }
+}
+
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 #[derive(Default)]
@@ -247,21 +267,16 @@ mod tests {
             context_used: None,
             windows: vec![window(ONE_WEEK, 6_000, 9_000)],
         });
-        let plan = |windows| {
-            Some(Plan {
-                agent: Agent::ClaudeCode,
-                windows,
-            })
-        };
+        let plan = |windows| Some(windows);
         assert_eq!(
-            board.plan(500),
+            board.plan(500).map(|plan| plan.windows),
             plan(vec![
                 window(FIVE_HOURS, 3_000, 1_000),
                 window(ONE_WEEK, 6_000, 9_000)
             ])
         );
         assert_eq!(
-            board.plan(2_000),
+            board.plan(2_000).map(|plan| plan.windows),
             plan(vec![window(ONE_WEEK, 6_000, 9_000)])
         );
         assert_eq!(board.plan(10_000), None);

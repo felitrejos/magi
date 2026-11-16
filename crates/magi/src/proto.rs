@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 12;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -56,6 +56,7 @@ impl Agent {
 pub struct Plan {
     pub agent: Agent,
     pub windows: Vec<Window>,
+    pub as_of: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
