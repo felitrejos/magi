@@ -38,7 +38,7 @@ func findCodexSession(m Machine, id string) (remoteSession, error) {
 		return s, fmt.Errorf("no session %s on %s", id, m.Name())
 	}
 	if !strings.HasSuffix(rollout, ".jsonl") {
-		return s, fmt.Errorf("Codex keeps session %s on %s compressed (%s), and cielago moves only uncompressed Codex sessions", shortID(id), m.Name(), rollout)
+		return s, fmt.Errorf("session %s on %s is a compressed Codex session (%s), and cielago moves only uncompressed ones", shortID(id), m.Name(), rollout)
 	}
 	var ok bool
 	if s.Rollout, ok = strings.CutPrefix(rollout, sessions+"/"); !ok {
@@ -137,16 +137,16 @@ func refuseOpenCodex(m Machine, id string) error {
 	}
 	pid, args, _ := strings.Cut(line, " ")
 	if strings.Contains(args, " app-server") {
-		return fmt.Errorf("Codex's background server on %s (pid %s) still has session %s open from before it left; it lets go once it has been idle for a while, or run codex app-server daemon restart there (which interrupts other Codex work on it), then try again", m.Name(), pid, shortID(id))
+		return fmt.Errorf("session %s is still open in the Codex background server on %s (pid %s) from before it left; it lets go once it has been idle for a while, or run codex app-server daemon restart there (which interrupts other Codex work on it), then try again", shortID(id), m.Name(), pid)
 	}
-	return fmt.Errorf("Codex on %s (pid %s) has session %s open; quit it there, then try again", m.Name(), pid, shortID(id))
+	return fmt.Errorf("session %s is open in Codex on %s (pid %s); quit it there, then try again", shortID(id), m.Name(), pid)
 }
 
 func (s remoteSession) refuseUnsure(m Machine) error {
 	if len(s.Unsure) == 0 {
 		return nil
 	}
-	return fmt.Errorf("Codex is open in %s on %s (pid %s), and cielago can't tell whether it's session %s; quit Codex there, then move it again", s.Cwd, m.Name(), strings.Join(s.Unsure, ", "), shortID(s.ID))
+	return fmt.Errorf("a Codex is open in %s on %s (pid %s), and cielago can't tell whether it's session %s; quit Codex there, then move it again", s.Cwd, m.Name(), strings.Join(s.Unsure, ", "), shortID(s.ID))
 }
 
 func stopCodex(m Machine, s remoteSession) error {
@@ -300,7 +300,7 @@ func carryCodexTrust(local, remote Machine, localDir, remoteDir, remoteRoot stri
 		return nil
 	}
 	if _, ok := there.Projects[remoteRoot]; ok {
-		return fmt.Errorf("Codex on %s has its own settings for %s that don't trust it, so it may ask you to trust it first", remote.Name(), remoteRoot)
+		return fmt.Errorf("the Codex settings on %s don't trust %s, so it may ask you to trust it first", remote.Name(), remoteRoot)
 	}
 	entry := fmt.Sprintf("\n[projects.%s]\ntrust_level = \"trusted\"\n", tomlKey(remoteRoot))
 	if _, err := shIn(remote, codexScript, []byte(entry), "trust", sum); err != nil {

@@ -24,8 +24,6 @@ var modelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$`)
 
 var delegateModes = []string{"acceptEdits", "dontAsk", "auto"}
 
-type noInput struct{}
-
 type machinesInput struct {
 	Needs needsInput `json:"needs,omitempty" jsonschema:"what the work has to run on, when it matters, for example a Linux x86_64 build"`
 }
