@@ -138,7 +138,7 @@ case $command in
         echo "setup failed" > "$dir/status"
       fi
     } 2>&1 | tee "$dir/log" | render | tee "$dir/view"
-    if [ "$(cat "$dir/status" 2>/dev/null)" = "exit 0" ]; then claude_status done; else claude_status error; fi
+    if [ "$(cat "$dir/status" 2>/dev/null)" = "exit 0" ]; then claude_status "done"; else claude_status "error"; fi
     finish
     ;;
   session)
