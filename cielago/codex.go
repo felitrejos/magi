@@ -115,11 +115,11 @@ func staleTurn(m Machine, s remoteSession) (string, error) {
 		if start == "" {
 			continue
 		}
-		started, err := time.Parse("Mon Jan 2 15:04:05 2006", start)
+		secs, err := strconv.ParseInt(start, 10, 64)
 		if err != nil {
 			return "", fmt.Errorf("unreadable start time %q of process %s on %s: %w", start, pid, m.Name(), err)
 		}
-		if !started.After(began.Truncate(time.Second)) {
+		if !time.Unix(secs, 0).After(began.Truncate(time.Second)) {
 			return "", nil
 		}
 	}

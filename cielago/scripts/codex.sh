@@ -22,8 +22,37 @@ cwd_of() {
   fi
 }
 
+args_of() {
+  if [ -r "/proc/$1/cmdline" ]; then
+    tr '\0' ' ' < "/proc/$1/cmdline"
+  else
+    ps -o args= -p "$1"
+  fi
+}
+
+processes() {
+  if [ -d /proc/self ]; then
+    for dir in /proc/[0-9]*; do
+      args=$(args_of "${dir#/proc/}" 2>/dev/null)
+      if [ -n "$args" ]; then printf '%s %s\n' "${dir#/proc/}" "$args"; fi
+    done
+  else
+    ps -axo pid=,args=
+  fi
+}
+
+started_at() {
+  if [ -r "/proc/$1/stat" ]; then
+    ticks=$(sed 's/.*) //' "/proc/$1/stat" | cut -d ' ' -f 20)
+    boot=$(awk '/^btime/ {print $2}' /proc/stat)
+    echo $((boot + ticks / 100))
+  else
+    TZ=UTC date -j -f '%a %b %d %T %Y' "$(TZ=UTC ps -o lstart= -p "$1" | tr -s ' ' | sed 's/^ //;s/ $//')" +%s
+  fi
+}
+
 codexes() {
-  ps -axo pid=,args= | awk '{
+  processes | awk '{
     program = $2
     if (program ~ /(^|\/)(sh|bash|dash|zsh|node)$/) program = $3
     sub(/.*\//, "", program)
@@ -79,11 +108,11 @@ case $command in
   open)
     lock=$codex_home/thread-writer-locks/$1.lock
     if [ -f "$lock" ]; then
-      for pid in $(holders "$lock"); do ps -o pid=,args= -p "$pid"; done
+      for pid in $(holders "$lock"); do printf '%s %s\n' "$pid" "$(args_of "$pid")"; done
     fi
     ;;
   started)
-    for pid; do printf '%s %s\n' "$pid" "$(TZ=UTC ps -o lstart= -p "$pid" | tr -s ' ' | sed 's/^ //')"; done
+    for pid; do printf '%s %s\n' "$pid" "$(started_at "$pid")"; done
     ;;
   stop)
     rollout=$1 stale=$2
