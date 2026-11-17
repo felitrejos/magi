@@ -226,8 +226,9 @@ uname -m
 for t in cargo go node python3 swift xcodebuild gcc clang make nvidia-smi; do
 	command -v "$t" >/dev/null 2>&1 && printf '%s ' "$t"
 done
+bounded() { if command -v timeout >/dev/null 2>&1; then timeout 3 "$@"; else "$@"; fi; }
 for t in docker podman; do
-	command -v "$t" >/dev/null 2>&1 && "$t" info >/dev/null 2>&1 && printf '%s ' "$t"
+	command -v "$t" >/dev/null 2>&1 && bounded "$t" info >/dev/null 2>&1 && printf '%s ' "$t"
 done
 echo`
 
