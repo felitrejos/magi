@@ -2,11 +2,10 @@
 
 ## Direction
 
-- **Not a workspace.** You work in Claude Code, Codex and the Claude app.
-  magi and cielago put that work on the right machine: they start
-  sessions where there's room, move them, and send work to the machine
-  that fits it. magi also shows every session on every machine and tells
-  you what needs you.
+- **An overview, not a workspace.** You work in Claude Code, Codex and the
+  Claude app. magi shows every session on every machine, tells you what
+  needs you, and suggests where work should run. cielago is what moves it,
+  and works without magi.
 - **Leave it to the tools.** What Claude Code, Codex or Rex already do stays
   there. magi keeps only what needs the whole fleet: answering prompts,
   diffs, moves, starts, limits and alerts.
