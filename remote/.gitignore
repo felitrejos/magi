@@ -1,4 +1,6 @@
 bin/
 dist/
 /magi-remote
+/remote
+/cielago
 .DS_Store
