@@ -17,12 +17,6 @@
 - **Follow Rex.** While Rex is in preview, magi and cielago support only its
   latest release. Bump `REX_API` and `rexAPI` with each one.
 
-## Before 0.6.0
-
-- A dry run of the release workflow, which builds magi and cielago into one
-  archive, and of `install.sh` installing both.
-- Release notes, with magi and cielago versioned together.
-
 ## Decided against
 
 - **Live screens through Rex's `data.connect`.** It would need a persistent

@@ -97,9 +97,11 @@
 
 ## Moving work with cielago
 
-- Everything travels over your own `ssh` connection: git objects with
-  `git push`/`git fetch`, files with `tar` over the same connection. cielago
-  runs no server and sends nothing anywhere else.
+- Your work travels over your own `ssh` connection: git objects with
+  `git push`/`git fetch`, files with `tar` over the same connection. When
+  Rex is there, cielago opens tabs and forwards ports through Rex's own
+  connection to that machine. cielago runs no server and sends nothing
+  anywhere else.
 - Only gitignored files matching your `secrets` patterns are copied, disk to
   disk; their contents never enter the conversation, output or logs. The
   transcript and Claude's memory move as files, so anything pasted into the
@@ -115,17 +117,20 @@
 - `run_elsewhere`, `delegate` and `start_session` work in a fresh copy under
   `~/.cielago/tasks` there and never write to your checkouts. Claude proposes
   the machine and the work, and you approve both. A delegated Claude runs in
-  `acceptEdits` mode with other prompts answered "no", never with permission
-  checks bypassed.
+  `acceptEdits` mode by default, with other prompts answered "no", never
+  with permission checks bypassed.
 - To choose a machine that magi doesn't report, cielago reads its system,
   architecture and installed tools over SSH (`uname`, `/etc/os-release`,
   `command -v`, and `docker info` or `podman info`). It only reads.
 - A project's `.cielago.toml` runs only after you approve that exact file with
   `cielago allow`; any edit needs a new approval.
-- Its `ports` are forwarded over your own SSH connection from the machine a
-  session left, listening on `127.0.0.1` only, so other devices on that
-  network can't use them. `cielago forwards` lists them, `cielago forwards
-  close` stops one, and bringing the session back stops it too.
+- Its `ports` are forwarded from the machine a session left. When the
+  session's tab is in Rex, cielago uses `rex forward` and the traffic goes
+  over Rex's connection to that machine. Otherwise it runs `ssh -N -L` over
+  your own SSH connection. Both listen on `127.0.0.1` only, so other
+  devices on that network can't use them. `cielago forwards` lists them,
+  `cielago forwards close` stops one, and bringing the session back stops
+  it too.
 
 ## Releases
 
