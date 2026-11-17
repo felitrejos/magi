@@ -163,13 +163,5 @@ have.
 **What if Claude Code changes its files?** They aren't a documented format.
 magi notices, says so, and falls back to what the transcripts show.
 
-## Coming from cielago
-
-The `cielago` command keeps working for this release and runs magi.
-`~/.cielago` moves to `~/.magi` on first run, on your other machines too,
-and an old `.cielago.toml` is still read. Reinstall the plugin once with
-`claude plugin uninstall cielago@magi`, then
-`claude plugin marketplace update magi && claude plugin install magi@magi`.
-
 What's next is in [ROADMAP.md](ROADMAP.md). What magi reads, sends and
 changes is in [SECURITY.md](SECURITY.md). Licensed [MIT](LICENSE).
