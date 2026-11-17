@@ -50,6 +50,11 @@ func (f *fixture) untouched(before string) {
 	if after := f.git(f.local, "status", "--porcelain"); after != before {
 		f.t.Errorf("the local checkout changed:\n%s\nwas:\n%s", after, before)
 	}
+	f.serverUntouched()
+}
+
+func (f *fixture) serverUntouched() {
+	f.t.Helper()
 	if ref := f.git(f.local, "for-each-ref", "refs/worktree", "refs/cielago"); ref != "" {
 		f.t.Errorf("the local checkout got refs: %s", ref)
 	}
@@ -127,12 +132,12 @@ rm -f committed.txt
 printf '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.12,"result":"Did: %s"}\n' "$prompt"
 `
 
-func TestADelegatedTaskReturnsItsMessageAndItsChangesAsABranch(t *testing.T) {
+func TestADelegatedTaskAppliesItsChangesHereAndKeepsThemOnABranch(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost("")
 	f.tool("claude", fakeDelegateClaude)
 	f.messUp(f.local)
-	before := f.git(f.local, "status", "--porcelain")
+	staged := f.git(f.local, "diff", "--cached", "--name-status")
 	args, err := delegateArgs(delegateInput{AllowedTools: []string{"Bash(go test:*)"}})
 	if err != nil {
 		t.Fatal(err)
@@ -161,10 +166,25 @@ func TestADelegatedTaskReturnsItsMessageAndItsChangesAsABranch(t *testing.T) {
 	if parent := f.git(f.local, "rev-parse", o.Branch+"^"); parent != s.Task.Base {
 		t.Errorf("the branch's parent is %s, want the working tree snapshot %s", parent, s.Task.Base)
 	}
-	if got := f.read(f.local, "kept.txt"); got != "v1" {
+	if !o.Applied || o.Unapplied != "" {
+		t.Fatalf("applied = %v, unapplied = %q", o.Applied, o.Unapplied)
+	}
+	if got := f.read(f.local, "kept.txt"); got != "changed by claude\n" {
 		t.Errorf("kept.txt here = %q", got)
 	}
-	f.untouched(before)
+	if got := f.read(f.local, "claude.txt"); got != "claude was here\n" {
+		t.Errorf("claude.txt here = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(f.local, "committed.txt")); !os.IsNotExist(err) {
+		t.Errorf("committed.txt is still here: %v", err)
+	}
+	if got := f.read(f.local, "edited.txt"); got != "staged then edited" {
+		t.Errorf("the user's own edit changed: %q", got)
+	}
+	if got := f.git(f.local, "diff", "--cached", "--name-status"); got != staged {
+		t.Errorf("what's staged changed:\n%s\nwas:\n%s", got, staged)
+	}
+	f.serverUntouched()
 	claudeArgs := f.read(f.home, "claude-args")
 	for _, want := range []string{"-p", "acceptEdits", "--permission-prompts\nnone", "--allowedTools\nBash(go test:*)"} {
 		if !strings.Contains(claudeArgs, want) {
@@ -174,7 +194,63 @@ func TestADelegatedTaskReturnsItsMessageAndItsChangesAsABranch(t *testing.T) {
 	if strings.Contains(claudeArgs, "bypass") || strings.Contains(claudeArgs, "dangerously") {
 		t.Errorf("claude ran with permissions bypassed:\n%s", claudeArgs)
 	}
-	if text := describeReport(r); !strings.Contains(text, "git diff "+shortCommit(s.Task.Base)+" "+o.Branch) {
+	if text := describeReport(r); !strings.Contains(text, "have been applied to your working tree") || !strings.Contains(text, "git diff "+shortCommit(s.Task.Base)+" "+o.Branch) {
+		t.Errorf("report:\n%s", text)
+	}
+	if again, err := collectTask(id, false); err != nil || f.read(f.local, "kept.txt") != "changed by claude\n" || !again.Task.Outcome.Applied {
+		t.Errorf("collecting again = %v", err)
+	}
+}
+
+func TestADelegatedTaskAskedToKeepItsBranchLeavesTheWorkingTreeAlone(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	f.tool("claude", fakeDelegateClaude)
+	f.messUp(f.local)
+	before := f.git(f.local, "status", "--porcelain")
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "tidy up", Keep: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.waitForTask(s.Task.ID)
+	r, err := collectTask(s.Task.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := r.Task.Outcome; o.Applied || o.Branch == "" {
+		t.Fatalf("outcome = %+v", o)
+	}
+	f.untouched(before)
+	if text := describeReport(r); !strings.Contains(text, "your working tree wasn't touched") || !strings.Contains(text, "| git apply") {
+		t.Errorf("report:\n%s", text)
+	}
+}
+
+func TestChangesThatClashWithEditsMadeHereSinceAreLeftOnTheBranch(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nsleep 1\nprintf 'theirs\\n' > kept.txt\nprintf new > added.txt\necho '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n")
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.local, "kept.txt", "mine\n")
+	f.waitForTask(s.Task.ID)
+	r, err := collectTask(s.Task.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := r.Task.Outcome
+	if o.Applied || !strings.Contains(o.Unapplied, "kept.txt") || o.Branch == "" {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if got := f.read(f.local, "kept.txt"); got != "mine\n" {
+		t.Errorf("kept.txt here = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(f.local, "added.txt")); !os.IsNotExist(err) {
+		t.Errorf("part of the changes was applied: %v", err)
+	}
+	if text := describeReport(r); !strings.Contains(text, "couldn't be applied") || !strings.Contains(text, "git apply --3way") {
 		t.Errorf("report:\n%s", text)
 	}
 }
@@ -671,6 +747,9 @@ func TestAFollowUpResumesTheSameClaudeAndMovesTheBranchForward(t *testing.T) {
 	}
 	if !strings.Contains(o.Diffstat, "two.txt") || strings.Contains(o.Diffstat, "one.txt") {
 		t.Errorf("the turn's diffstat = %q", o.Diffstat)
+	}
+	if !o.Applied || f.read(f.local, "one.txt") != "one" || f.read(f.local, "two.txt") != "two" {
+		t.Errorf("both turns' changes aren't here: applied %v, unapplied %q", o.Applied, o.Unapplied)
 	}
 	if !strings.HasSuffix(o.Log, id+"-2.log") {
 		t.Errorf("log = %s", o.Log)

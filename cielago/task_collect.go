@@ -271,9 +271,21 @@ func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error
 		t.Project, r.sshCommand(), r.host+":"+t.Checkout, t.branch()); err != nil {
 		return fmt.Errorf("fetching the task's changes failed: %w", err)
 	}
-	o.Branch, t.Tip = t.branch(), result
+	o.Branch, o.From, t.Tip = t.branch(), base, result
 	if stat, err := sh(local, `cd -- "$1" && git diff --stat "$2" "$3" --`, t.Project, base, "refs/heads/"+t.branch()); err == nil {
 		o.Diffstat = strings.TrimRight(string(stat), "\n")
 	}
+	if t.Kind == kindDelegate && !t.Keep && o.Diffstat != "" {
+		applyChanges(local, t, o)
+	}
 	return nil
+}
+
+func applyChanges(local *Local, t *Task, o *Outcome) {
+	_, err := sh(local, `cd -- "$1" && git diff --binary "$2" "$3" -- | git apply --binary`, t.Project, o.From, "refs/heads/"+o.Branch)
+	if err != nil {
+		o.Unapplied = strings.TrimPrefix(err.Error(), "on "+local.Name()+": ")
+		return
+	}
+	o.Applied = true
 }

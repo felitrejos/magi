@@ -56,6 +56,7 @@ type Task struct {
 	Turn     int       `json:"turn,omitempty"`
 	Reply    string    `json:"reply,omitempty"`
 	Tip      string    `json:"tip,omitempty"`
+	Keep     bool      `json:"keep_branch,omitempty"`
 	History  []Outcome `json:"history,omitempty"`
 	State    string    `json:"state"`
 	Caller   int       `json:"caller_pid,omitempty"`
@@ -63,18 +64,21 @@ type Task struct {
 }
 
 type Outcome struct {
-	State    string    `json:"state"`
-	Exit     string    `json:"exit"`
-	Ended    time.Time `json:"ended"`
-	Tail     string    `json:"tail"`
-	Log      string    `json:"log"`
-	Message  string    `json:"message,omitempty"`
-	Branch   string    `json:"branch,omitempty"`
-	Diffstat string    `json:"diffstat,omitempty"`
-	Files    string    `json:"files,omitempty"`
-	Note     string    `json:"note,omitempty"`
-	Kept     bool      `json:"kept,omitempty"`
-	Closed   bool      `json:"closed,omitempty"`
+	State     string    `json:"state"`
+	Exit      string    `json:"exit"`
+	Ended     time.Time `json:"ended"`
+	Tail      string    `json:"tail"`
+	Log       string    `json:"log"`
+	Message   string    `json:"message,omitempty"`
+	Branch    string    `json:"branch,omitempty"`
+	Diffstat  string    `json:"diffstat,omitempty"`
+	From      string    `json:"from,omitempty"`
+	Applied   bool      `json:"applied,omitempty"`
+	Unapplied string    `json:"unapplied,omitempty"`
+	Files     string    `json:"files,omitempty"`
+	Note      string    `json:"note,omitempty"`
+	Kept      bool      `json:"kept,omitempty"`
+	Closed    bool      `json:"closed,omitempty"`
 }
 
 type TaskSpec struct {
@@ -85,6 +89,7 @@ type TaskSpec struct {
 	Prompt  string
 	Setup   bool
 	Claude  []string
+	Keep    bool
 	Caller  caller
 }
 

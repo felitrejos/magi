@@ -73,6 +73,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		Label:    label,
 		Parent:   parentID,
 		Turn:     1,
+		Keep:     spec.Keep,
 		State:    "starting",
 		Caller:   spec.Caller.PID,
 		CallerAt: spec.Caller.Started,

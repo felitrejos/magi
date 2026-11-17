@@ -115,10 +115,17 @@
   refuses if that checkout has work or commits of its own, and only creates
   folders that don't exist yet.
 - `run_elsewhere`, `delegate` and `start_session` work in a fresh copy under
-  `~/.cielago/tasks` there and never write to your checkouts. Claude proposes
-  the machine and the work, and you approve both. A delegated Claude runs in
-  `acceptEdits` mode by default, with other prompts answered "no", never
-  with permission checks bypassed.
+  `~/.cielago/tasks` there and never write to your checkouts on that
+  machine. When this session collects a finished `delegate`, its changes are
+  written into your working tree here and kept as the branch
+  `cielago/task-<id>`. If they clash with edits made here since the task
+  started, nothing is applied and they stay on the branch. Claude then
+  merges them in itself and tells you. Ask to review first and they stay on
+  the branch only. `run_elsewhere` brings back output, and a `start_session`
+  still comes back as a branch. Claude proposes the machine and the work,
+  and you approve both. A delegated Claude runs in `acceptEdits` mode by
+  default, with other prompts answered "no", never with permission checks
+  bypassed.
 - To choose a machine that magi doesn't report, cielago reads its system,
   architecture and installed tools over SSH (`uname`, `/etc/os-release`,
   `command -v`, and `docker info` or `podman info`). It only reads.

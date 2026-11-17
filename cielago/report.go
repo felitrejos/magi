@@ -121,6 +121,13 @@ func describeReport(r *taskReport) string {
 	switch {
 	case o.Branch != "" && o.Diffstat == "" && t.Turn > 1:
 		fmt.Fprintf(&b, "This turn changed no files; the task's changes so far are on branch %s.\n", o.Branch)
+	case o.Applied:
+		fmt.Fprintf(&b, "%s have been applied to your working tree in %s:\n%s", turnChanges(t), t.Project, fence(o.Diffstat))
+		fmt.Fprintf(&b, "They're also kept on branch %s. See them: git diff %s %s\n", o.Branch, shortCommit(o.From), o.Branch)
+	case o.Unapplied != "":
+		fmt.Fprintf(&b, "%s couldn't be applied to your working tree in %s as it is now, so it wasn't touched:\n%s", turnChanges(t), t.Project, fence(o.Unapplied))
+		b.WriteString(fence(o.Diffstat))
+		fmt.Fprintf(&b, "They're on branch %s. Merge them in yourself, resolving what clashes, then tell the user: git diff --binary %s %s | git apply --3way\n", o.Branch, shortCommit(o.From), o.Branch)
 	case o.Branch != "":
 		if t.Turn > 1 {
 			fmt.Fprintf(&b, "This turn's changes:\n%s", fence(o.Diffstat))
@@ -150,6 +157,13 @@ func describeReport(r *taskReport) string {
 		fmt.Fprintf(&b, "Note: %s\n", o.Note)
 	}
 	return b.String()
+}
+
+func turnChanges(t *Task) string {
+	if t.Turn > 1 {
+		return "This turn's changes"
+	}
+	return "Its changes"
 }
 
 func shortCommit(id string) string {

@@ -14,13 +14,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const serverInstructions = `cielago sends work from this session to the user's other machines over SSH: a shell command (run_elsewhere), a self-contained task for a background Claude (delegate), or a new interactive session (start_session). Each runs in its own copy of this project's working tree, in a Rex or tmux tab the user can watch, and never touches this session, this checkout or the user's checkouts there.
+const serverInstructions = `cielago sends work from this session to the user's other machines over SSH: a shell command (run_elsewhere), a self-contained task for a background Claude (delegate), or a new interactive session (start_session). Each runs in its own copy of this project's working tree, in a Rex or tmux tab the user can watch, and never touches the user's checkouts there. When you collect a delegate with task_result, its changes are applied to this working tree, unless you passed keep_branch.
 
 Starting work on another machine is the user's call. Before run_elsewhere, delegate or start_session: call machines, propose one machine (the one machines suggests, the first in the user's list with room, unless the user named one), say exactly what will run there, and let the user choose: run it there, run it here instead, or don't run it. Wait for the user's clear answer. Ask even when the user tells you to pick the machine or to run it wherever fits best: choosing the machine is your part, agreeing to it is theirs. Then start it and carry on with other work.
 
-To be told when a run_elsewhere or delegate task is done, run cielago tasks wait <task id> as a background shell command: it exits when the task finishes, and then you collect it with task_result. When a delegated Claude should keep going until something passes, such as running CI and fixing what fails, say so in its task. If task_result shows it isn't fully done, send what's left with task_reply and wait again. Don't poll in a loop.`
+To be told when a run_elsewhere or delegate task is done, run cielago tasks wait <task id> as a background shell command: it exits when the task finishes, and then you collect it with task_result. When a delegated Claude should keep going until something passes, such as running CI and fixing what fails, say so in its task. If task_result shows it isn't fully done, send what's left with task_reply and wait again. If it says the changes couldn't be applied, merge them in yourself from its branch, then tell the user what changed. Don't poll in a loop.`
 
-const delegateSystemPrompt = `You are a delegated task started by cielago from another machine. You work in a throwaway copy of the project on this machine; nobody is watching to answer questions or approve permission prompts. Tools that would need approval are denied: work around them, and say what you couldn't do. Work only inside this folder. Don't commit, push, open pull requests or change git configuration: leave your changes in the working tree, and cielago brings them back to the caller as a branch. Finish with a short report: what you did, which files you changed, how you checked it, and anything left undone.`
+const delegateSystemPrompt = `You are a delegated task started by cielago from another machine. You work in a throwaway copy of the project on this machine; nobody is watching to answer questions or approve permission prompts. Tools that would need approval are denied: work around them, and say what you couldn't do. Work only inside this folder. Don't commit, push, open pull requests or change git configuration: leave your changes in the working tree, and cielago brings them back to the caller. Finish with a short report: what you did, which files you changed, how you checked it, and anything left undone.`
 
 var modelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$`)
 
@@ -46,6 +46,7 @@ type delegateInput struct {
 	Model          string   `json:"model,omitempty" jsonschema:"model for the remote Claude, such as sonnet or opus; leave out for that machine's default"`
 	Setup          *bool    `json:"setup,omitempty" jsonschema:"run the project's approved .cielago.toml setup first (default true)"`
 	DespitePlan    bool     `json:"despite_plan,omitempty" jsonschema:"start it even though the Claude plan is nearly used up; only when the user said to go ahead anyway"`
+	KeepBranch     bool     `json:"keep_branch,omitempty" jsonschema:"leave its changes only on the branch cielago/task-<id> instead of applying them to this working tree; when the user wants to review them first"`
 }
 
 type sessionInput struct {
@@ -218,7 +219,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "delegate",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Give a self-contained task to a background Claude on another machine: a subagent that runs elsewhere, in its own copy of this project's working tree. It copies the working tree first, usually in seconds, then returns a task id. When it's done, task_result returns its final message, and its file changes as the branch cielago/task-<id> fetched into this repository without touching this working tree. It runs headless (claude -p) in acceptEdits mode by default: it reads and edits files in its copy, and anything else that would ask for permission, such as shell commands or network access, is denied unless allowed_tools or that machine's own settings allow it. It never runs with permission checks bypassed. It isn't started when the user's Claude plan window is 90% used or more, since every machine shares that plan. It can't ask you questions, so put everything it needs in task. Before calling: call machines, then tell the user the machine you propose, what the task is, and any allowed_tools you want to grant, and wait for their OK.",
+		Description: "Give a self-contained task to a background Claude on another machine: a subagent that runs elsewhere, in its own copy of this project's working tree. It copies the working tree first, usually in seconds, then returns a task id. When it's done, task_result returns its final message, and applies its file changes to this working tree, keeping them on the branch cielago/task-<id> too; with keep_branch they're only put on that branch. It runs headless (claude -p) in acceptEdits mode by default: it reads and edits files in its copy, and anything else that would ask for permission, such as shell commands or network access, is denied unless allowed_tools or that machine's own settings allow it. It never runs with permission checks bypassed. It isn't started when the user's Claude plan window is 90% used or more, since every machine shares that plan. It can't ask you questions, so put everything it needs in task. Before calling: call machines, then tell the user the machine you propose, what the task is, and any allowed_tools you want to grant, and wait for their OK.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in delegateInput) (*mcp.CallToolResult, any, error) {
 		if strings.TrimSpace(in.Task) == "" {
 			return nil, nil, fmt.Errorf("task is empty")
@@ -231,7 +232,7 @@ func newMCPServer() *mcp.Server {
 		if err != nil {
 			return nil, nil, err
 		}
-		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindDelegate, Dir: dir, Prompt: in.Task, Claude: args, Setup: setupWanted(in.Setup)}, in.DespitePlan)
+		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindDelegate, Dir: dir, Prompt: in.Task, Claude: args, Setup: setupWanted(in.Setup), Keep: in.KeepBranch}, in.DespitePlan)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -276,7 +277,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "task_result",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
-		Description: "Collect a finished task. A run_elsewhere task gives its exit code, the end of its output and the path of the full log on this machine. A delegate task gives Claude's final message and its changes as a branch; a start_session task gives its changes as a branch. Collecting closes the task's tab and removes its copy on the other machine, except a finished delegate's copy: that stays for task_reply until cancel_task removes it or it has been idle for a day. If the task is still running, it says so and changes nothing. Calling it again returns the same result.",
+		Description: "Collect a finished task. A run_elsewhere task gives its exit code, the end of its output and the path of the full log on this machine. A delegate task gives Claude's final message and applies its changes to this working tree, keeping them on a branch too (only on the branch with keep_branch, or when they clash with changes made here since); a start_session task gives its changes as a branch. Collecting closes the task's tab and removes its copy on the other machine, except a finished delegate's copy: that stays for task_reply until cancel_task removes it or it has been idle for a day. If the task is still running, it says so and changes nothing. Calling it again returns the same result.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in taskInput) (*mcp.CallToolResult, any, error) {
 		r, err := collectTask(in.TaskID, false)
 		if err != nil {
@@ -288,7 +289,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "task_reply",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; run cielago tasks wait <task id> as a background shell command to be told when the turn is done, then collect it with task_result, which returns its new message and moves the branch cielago/task-<id> forward. It isn't sent when the user's Claude plan window is 90% used or more, or when that machine's budget has no room. Tell the user what you're asking it before you send it.",
+		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; run cielago tasks wait <task id> as a background shell command to be told when the turn is done, then collect it with task_result, which returns its new message and applies that turn's changes the same way. It isn't sent when the user's Claude plan window is 90% used or more, or when that machine's budget has no room. Tell the user what you're asking it before you send it.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in replyInput) (*mcp.CallToolResult, any, error) {
 		data, _ := readFleet(ctx)
 		heads, err := planGate(data.Plans, in.DespitePlan)

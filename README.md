@@ -16,11 +16,11 @@
 </p>
 
 <p align="center">
-  <img src="assets/subagent-ci.gif" alt="In a Claude Code session on a Mac, the user asks for an agent on the machine that matches CI to run it and fix what fails. Claude reads the CI workflow, asks cielago for a Linux x86_64 machine and proposes the homelab, and the user agrees. A Claude starts on the homelab in its own copy of the repo, in a Rex tab named Pre-push CI. magi shows the Mac session's work running on the homelab. When the homelab Claude finishes, the Mac session is woken and reports one failing test, fixed, with CI passing and the fix on a branch to review." width="820">
+  <img src="assets/subagent-ci.gif" alt="In a Claude Code session on a Mac, in a Rex tab named Pre-push CI, the user asks Claude to run CI here and, at the same time, have a subagent run it on a machine that matches the Linux runner and fix whatever fails there. Claude runs CI on the Mac, where it passes. It asks cielago for machines and proposes the homelab, which runs Ubuntu on x86_64 like the runner, and the user picks it. A background Claude starts on the homelab in its own copy of the repo, in a tab marked as coming from Pre-push CI, and runs ./ci.sh. magi shows the Mac session's work running on the homelab. When the homelab Claude finishes, the Mac session is woken. CI had failed there with KeyError 'x86_64' because targets.json spelled the key x86-64, and the homelab Claude fixed it and got CI passing. The fix lands in the Mac's working tree on its own, Claude reruns CI on the Mac with it and reports both machines green, and git status shows targets.json modified." width="820">
 </p>
 
 <p align="center">
-  <i>Claude on a Mac sends CI to the Linux homelab. A Claude there fixes the failing test, and the Mac session is told when it's done.</i>
+  <i>CI runs on the Mac and the Linux homelab at once, and the fix made on Linux lands back on the Mac by itself.</i>
 </p>
 
 Two tools for running Claude Code and Codex across your machines:
@@ -92,8 +92,8 @@ land there, and the session carries on in a tab of its own.
   them over SSH. Then it proposes the machine and waits for your yes.
 - **Told when it's done.** Claude runs `cielago tasks wait <id>` in the
   background, so the session is woken when the work finishes. A background
-  Claude's changes come back as the branch `cielago/task-<id>`. `cielago
-  tasks` lists what you've sent.
+  Claude's changes land in your working tree, or stay on a branch if you
+  ask to review them first. `cielago tasks` lists what you've sent.
 - **Built on Rex.** With Rex, sessions and tasks open as Rex tabs, the app
   switches to the new one, a background Claude shows as Claude Code, and
   ports are forwarded by Rex. Without Rex, it falls back to tmux and ssh.
