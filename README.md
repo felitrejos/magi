@@ -91,9 +91,10 @@ land there, and the session carries on in a tab of its own.
   busy one. It knows each machine's system and tools from magi, or reads
   them over SSH. Then it proposes the machine and waits for your yes.
 - **Told when it's done.** Claude runs `cielago tasks wait <id>` in the
-  background, so the session is woken when the work finishes. A background
-  Claude's changes land in your working tree, or stay on a branch if you
-  ask to review them first. `cielago tasks` lists what you've sent.
+  background, so it's woken when the work finishes. A background Claude's
+  changes land in your working tree, or stay on a branch if you ask to
+  review them first. If they clash with your edits, nothing is overwritten.
+  Claude merges both and tells you. `cielago tasks` lists what you've sent.
 - **Built on Rex.** With Rex, sessions and tasks open as Rex tabs, the app
   switches to the new one, a background Claude shows as Claude Code, and
   ports are forwarded by Rex. Without Rex, it falls back to tmux and ssh.
