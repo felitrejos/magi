@@ -21,7 +21,9 @@
 - A dry run of the release workflow, which builds magi and cielago into one
   archive, and of `install.sh` installing both.
 - Release notes, with magi and cielago versioned together.
-- Re-record the README's demos as videos, since they show the old interface.
+- Re-record the magi overview at the top of the README (`assets/fleet.gif`),
+  which still shows the old interface. The handoff and send-work demos are
+  already new.
 
 ## Decided against
 

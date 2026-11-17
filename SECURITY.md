@@ -117,6 +117,9 @@
   the machine and the work, and you approve both. A delegated Claude runs in
   `acceptEdits` mode with other prompts answered "no", never with permission
   checks bypassed.
+- To choose a machine that magi doesn't report, cielago reads its system,
+  architecture and installed tools over SSH (`uname`, `/etc/os-release`,
+  `command -v`, and `docker info` or `podman info`). It only reads.
 - A project's `.cielago.toml` runs only after you approve that exact file with
   `cielago allow`; any edit needs a new approval.
 - Its `ports` are forwarded over your own SSH connection from the machine a

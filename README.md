@@ -27,14 +27,17 @@ This repo holds two apps that work together or alone:
   right place and tells you when one needs you.
 - **cielago** moves a Claude Code or Codex session to another machine, along
   with its conversation and uncommitted work. It also lets Claude send work
-  there. It works on its own, from any Claude Code session, over SSH.
+  to the machine that fits it, such as running your CI on the Linux machine
+  that matches it before you push. It works on its own, from any Claude
+  Code session, over SSH.
 
 ## magi
 
 - **Every session, every machine.** magi is built to sit next to Rex's
-  sidebar. What needs you is at the top. Below that, each machine gets a
-  band with its load and one line per session saying what it's doing. It
-  handles any number of machines and needs no server or config file.
+  sidebar. What needs you is at the top. Below that, each machine has a row
+  with its load, and its sessions are listed under it, one line each,
+  saying what each is doing. It handles any number of machines and needs no
+  server or config file.
 - **Sessions in their place.** A new session opens on whichever machine has
   room. It goes in a Rex session named after its folder, in a tab for its
   repo. Each subagent gets its own tab beside it. That tab shows the
@@ -64,14 +67,17 @@ context use and plan windows, run `magi statusline install` where you use it.
 
 ## cielago
 
-cielago moves a Claude Code session to another machine, with or without
-magi. In any Claude Code session, say "hand this off to my homelab". When the
-turn ends, the conversation, branch, uncommitted changes and listed secrets
-land there. The session carries on in a tab of its own and remembers
-everything.
+cielago does two things, with or without magi: it moves a session to another
+machine, and it lets Claude send work to another machine while you keep
+working here.
+
+To move a session, say "hand this off to my homelab" in any Claude Code
+session. When the turn ends, the conversation, branch, uncommitted changes
+and listed secrets land there. The session carries on in a tab of its own
+and remembers everything.
 
 <p align="center">
-  <img src="assets/cielago.gif" alt="A Claude Code session in Rex on a Mac is asked what its project does, then told to hand itself off to the homelab. cielago moves it, and the session continues on the homelab, where it still remembers the answer it gave." width="820">
+  <img src="assets/cielago.gif" alt="A Claude Code session in Rex on a Mac is asked what its project does and explains a small Python library. Told to hand this off to the homelab, cielago moves it when the turn ends. The session opens in a tab on the homelab, and asked what it just said, it recaps its earlier answer." width="820">
 </p>
 
 - **From the CLI.** `cielago move <session> <host>` sends a session.
@@ -85,18 +91,53 @@ everything.
   which session it shows. You move a Codex session from the CLI or magi,
   since Codex has no "hand this off". The other machine needs Codex
   installed, and `cielago init` asks for its path.
-- **Send work.** Claude gets tools to run a command on another machine, hand
-  a task to a background Claude, or open a second session. Each one runs in
-  a copy of your working tree. Claude asks you first.
-- **The right machine for the job.** With magi, each machine reports its
-  system, architecture and tools, including whether Docker is running. A
-  Linux build started on a Mac goes to your Linux machine and runs natively.
-  The fallback is a container on the machine with the most room. This
-  machine is the last resort.
 - **Ports follow.** A project's `.cielago.toml` names what to start when it
   arrives and which ports to forward back, so `localhost:3000` keeps working.
 - **Rex or tmux.** Sessions open in Rex when it's there and in tmux when it
   isn't. Both work over plain SSH.
+
+To send work, ask for it in plain words: "Before I push, have an agent on
+the machine that matches our CI run it and fix anything that fails. Tell me
+when it's done."
+
+<p align="center">
+  <img src="assets/subagent-ci.gif" alt="In a Claude Code session on a Mac, the user asks for an agent on the machine that matches CI to run it and fix what fails. Claude reads the CI workflow, asks cielago for a Linux x86_64 machine and proposes the homelab, and the user agrees. A Claude starts on the homelab in its own copy of the repo, in a Rex tab named Pre-push CI. magi shows the Mac session's work running on the homelab. When the homelab Claude finishes, the Mac session is woken and reports one failing test, fixed, with CI passing and the fix on a branch to review." width="820">
+</p>
+
+Here Claude reads the CI workflow, sees it needs Linux on x86_64 with
+Python 3.12, and proposes the homelab. A Claude starts there, runs CI, fixes
+the test that fails, and the fix comes back as a branch to review before you
+push. Nothing runs on the Mac except Claude asking and reporting.
+
+- **Send work.** Claude gets tools to run a command on another machine, hand
+  a task to a background Claude, or open a second session. Each one runs in
+  its own copy of your working tree, in a tab you can watch, and never
+  touches your checkout. A background Claude shows in Rex as Claude Code,
+  and a plain command shows as a process.
+- **You agree to the machine.** Claude always proposes the machine and says
+  what will run there, then waits for your answer. It asks even when you
+  tell it to pick one.
+- **The right machine for the job.** cielago knows each machine's system,
+  architecture and tools, including whether Docker or Podman is running.
+  It gets them from magi, along with each machine's live load, or reads
+  them over SSH when magi isn't there. A machine that runs the work
+  natively comes first, so a Linux build started on a Mac goes to your
+  Linux machine. If several can, the least busy one wins. If none can, the
+  work runs in a Docker or Podman container on whichever machine is least
+  busy, this one included. Work that needs nothing in particular goes to
+  the first machine in your list with room.
+- **Told when it's done.** Claude runs `cielago tasks wait <id>` in the
+  background. It blocks until the task finishes, so the session is woken
+  then instead of checking again and again, and Claude collects the result.
+  A background Claude's changes come back as the branch `cielago/task-<id>`,
+  without touching your working tree.
+- **See it in magi.** In the demo, the Mac session's line shows `⇢ homelab`
+  while its work runs there, and the Claude on the homelab shows
+  `← Pre-push CI`, the session that sent it.
+- **Track it from the CLI.** `cielago tasks` lists the work you've sent and
+  its state. `cielago tasks show <id>` prints a task's output, `cielago
+  tasks wait <id>` waits for it to finish, and `cielago tasks cancel <id>`
+  stops it and removes its copy.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/felitrejos/magi/main/install.sh | sh -s cielago
