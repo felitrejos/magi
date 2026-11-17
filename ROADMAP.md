@@ -2,9 +2,11 @@
 
 ## Direction
 
-- **An overview, not a workspace.** You work in Claude Code, Codex and the
-  Claude app. magi shows every session on every machine, tells you what
-  needs you, and starts new sessions in the right place.
+- **Not a workspace.** You work in Claude Code, Codex and the Claude app.
+  magi and cielago put that work on the right machine: they start
+  sessions where there's room, move them, and send work to the machine
+  that fits it. magi also shows every session on every machine and tells
+  you what needs you.
 - **Leave it to the tools.** What Claude Code, Codex or Rex already do stays
   there. magi keeps only what needs the whole fleet: answering prompts,
   diffs, moves, starts, limits and alerts.
@@ -21,9 +23,6 @@
 - A dry run of the release workflow, which builds magi and cielago into one
   archive, and of `install.sh` installing both.
 - Release notes, with magi and cielago versioned together.
-- Re-record the magi overview at the top of the README (`assets/fleet.gif`),
-  which still shows the old interface. The handoff and send-work demos are
-  already new.
 
 ## Decided against
 
