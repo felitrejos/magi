@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-var testedClaude = [2]string{"2.1.319", "2.1.325"}
+var testedClaude = [2]string{"2.1.319", "2.1.326"}
 
 var minGit = [3]int{2, 31, 0}
 

@@ -62,13 +62,16 @@ func (m fleetMachine) busy() float64 {
 
 func (m fleetMachine) describe() string {
 	if !m.Live {
-		reason := "no answer"
-		if m.Error != nil && *m.Error != "" {
-			reason = *m.Error
+		probed := "so its load is unknown; its system and tools were read over SSH"
+		if m.Error == nil || *m.Error == "" {
+			if m.Probed {
+				return "magi doesn't report it, " + probed
+			}
+			return "magi: not answering (no answer)"
 		}
-		text := "magi: not answering (" + reason + ")"
+		text := "magi: not answering (" + *m.Error + ")"
 		if m.Probed {
-			text += ", so its load is unknown; its system and tools were read over SSH"
+			text += ", " + probed
 		}
 		return text
 	}

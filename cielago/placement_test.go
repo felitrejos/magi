@@ -91,3 +91,9 @@ func TestAMachineWithKnownLoadComesBeforeOneWithUnknownLoad(t *testing.T) {
 		t.Fatalf("%v", places)
 	}
 }
+
+func TestAMachineReadOverSSHWithoutMagiSaysMagiDoesntReportIt(t *testing.T) {
+	if got := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\n\n").describe(); !strings.HasPrefix(got, "magi doesn't report it, so its load is unknown") {
+		t.Fatal(got)
+	}
+}
