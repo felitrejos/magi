@@ -19,6 +19,10 @@
   <img src="assets/subagent-ci.gif" alt="In a Claude Code session on a Mac, the user asks for an agent on the machine that matches CI to run it and fix what fails. Claude reads the CI workflow, asks cielago for a Linux x86_64 machine and proposes the homelab, and the user agrees. A Claude starts on the homelab in its own copy of the repo, in a Rex tab named Pre-push CI. magi shows the Mac session's work running on the homelab. When the homelab Claude finishes, the Mac session is woken and reports one failing test, fixed, with CI passing and the fix on a branch to review." width="820">
 </p>
 
+<p align="center">
+  <i>Claude on a Mac sends CI to the Linux homelab. A Claude there fixes the failing test, and the Mac session is told when it's done.</i>
+</p>
+
 This repo holds two apps:
 
 - **cielago** does what you ask. It hands a Claude Code or Codex session
@@ -30,13 +34,6 @@ This repo holds two apps:
   machine's load, every session's state, and what needs you. When a machine
   is busy and another has room, it suggests moving a session there, and
   moves it through cielago when you say so.
-
-The demo shows both. A Claude Code session on a Mac is asked to run CI on
-the machine that matches it. Claude reads the CI workflow, sees it needs
-Linux on x86_64 with Python 3.12, proposes the homelab and waits for a yes.
-A Claude there runs CI in its own copy of the repo and fixes the test that
-fails. The Mac session only asks, waits and reports. magi shows where the
-work is running the whole time.
 
 ## magi
 
@@ -91,11 +88,14 @@ moves a session to another machine or lets Claude send work there.
 
 To move a session, say "hand this off to my homelab" in any Claude Code
 session. When the turn ends, the conversation, branch, uncommitted changes
-and listed secrets land there. The session carries on in a tab of its own
-and remembers everything.
+and listed secrets land there. The session carries on in a tab of its own.
 
 <p align="center">
   <img src="assets/cielago.gif" alt="A Claude Code session in Rex on a Mac is asked what its project does and explains a small Python library. Told to hand this off to the homelab, cielago moves it when the turn ends. The session opens in a tab on the homelab, and asked what it just said, it recaps its earlier answer." width="820">
+</p>
+
+<p align="center">
+  <i>A session handed off to the homelab still remembers what it said.</i>
 </p>
 
 - **Hand off.** `cielago move <session> <host>` sends a session, `cielago
