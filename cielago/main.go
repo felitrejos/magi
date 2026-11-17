@@ -45,7 +45,7 @@ Usage:
   cielago tasks wait <id>               wait until a task finishes, then print how it ended
   cielago tasks show <id>               a task's output; collects it if it's finished
   cielago tasks cancel <id>             stop a task and remove its copy
-  cielago tasks clean                   collect every finished task
+  cielago tasks clean                   collect finished tasks, drop day-idle copies and week-old tasks
   cielago version
 
 Used by the Claude Code plugin:

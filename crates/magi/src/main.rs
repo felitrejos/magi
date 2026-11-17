@@ -27,7 +27,7 @@ use lexopt::prelude::*;
 const RECENT_ITEMS: usize = 20;
 const WAIT_WITHIN: Duration = Duration::from_secs(30 * 60);
 
-const USAGE: &str = "magi: live monitoring for your machines and coding agents, in one Rex pane
+const USAGE: &str = "magi: an overview of your coding agents and machines, in one Rex pane
 
 Usage:
   magi [--port PORT]                                   open the viewer (press a for alerts)
@@ -52,7 +52,7 @@ Usage:
   magi subagents [--json]                              every running subagent and the step it's on
   magi recent SESSION [SUBAGENT] [--items N]           its latest messages and steps, one line each
   magi wait SESSION [SUBAGENT] [--for 10m]             until it stops working, or the subagent ends
-  magi mcp                                             all of the above as an MCP server, for Claude Desktop and others
+  magi mcp                                             the same actions as MCP tools, for Claude Desktop and others
 
   SESSION is the start of its id, its title, or at least four letters of its title.
   SUBAGENT is its id or its label, matched the same way.

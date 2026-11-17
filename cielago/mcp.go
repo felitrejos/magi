@@ -184,7 +184,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "machines",
 		Annotations: readOnly,
-		Description: "List the machines cielago can send work to, each with its operating system, architecture and the tools it has (build toolchains, and Docker or Podman when they're running), its live load from magi (CPU, load average, memory, and Claude or Codex agents working there), whether it answers over SSH, cielago tasks running on it, each host's budget and whether it has room, the Claude plan's usage, this machine's own load for comparison, and the machine cielago suggests. When the work needs a platform or a tool, such as a Linux build from a Mac, pass needs: machines then ranks the places that can do it, best first: one that runs it natively, then a container on whichever machine has room, this machine included. Prefer a machine that runs it natively over a container or emulation here. Read-only. Call it before proposing where to run something, and tell the user which machine you'd pick and why.",
+		Description: "List the machines cielago can send work to, each with its operating system, architecture and the tools it has (build toolchains, and Docker or Podman when they're running), from magi or read over SSH for a machine magi doesn't report, its live load from magi (CPU, load average, memory, and Claude or Codex agents working there; unknown for a machine magi doesn't report), whether it answers over SSH, cielago tasks running on it, each host's budget and whether it has room, the Claude plan's usage, this machine's own load for comparison, and the machine cielago suggests. When the work needs a platform or a tool, such as a Linux build from a Mac, pass needs: machines then ranks the places that can do it, best first: one that runs it natively, then a container on whichever machine has room, this machine included. Prefer a machine that runs it natively over a container or emulation here. Read-only. Call it before proposing where to run something, and tell the user which machine you'd pick and why.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in machinesInput) (*mcp.CallToolResult, any, error) {
 		cfg, path, err := loadConfig()
 		if err != nil {
@@ -276,7 +276,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "task_result",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
-		Description: "Collect a finished task. A run_elsewhere task gives its exit code, the end of its output and the path of the full log on this machine. A delegate task gives Claude's final message and its changes as a branch; a start_session task gives its changes as a branch. Collecting closes the task's tab and removes its copy on the other machine. If the task is still running, it says so and changes nothing. Calling it again returns the same result.",
+		Description: "Collect a finished task. A run_elsewhere task gives its exit code, the end of its output and the path of the full log on this machine. A delegate task gives Claude's final message and its changes as a branch; a start_session task gives its changes as a branch. Collecting closes the task's tab and removes its copy on the other machine, except a finished delegate's copy: that stays for task_reply until cancel_task removes it or it has been idle for a day. If the task is still running, it says so and changes nothing. Calling it again returns the same result.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in taskInput) (*mcp.CallToolResult, any, error) {
 		r, err := collectTask(in.TaskID, false)
 		if err != nil {
@@ -288,7 +288,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "task_reply",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; check it with task_status and collect it with task_result, which returns its new message and moves the branch cielago/task-<id> forward. It isn't sent when the user's Claude plan window is 90% used or more, or when that machine's budget has no room. Tell the user what you're asking it before you send it.",
+		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; run cielago tasks wait <task id> as a background shell command to be told when the turn is done, then collect it with task_result, which returns its new message and moves the branch cielago/task-<id> forward. It isn't sent when the user's Claude plan window is 90% used or more, or when that machine's budget has no room. Tell the user what you're asking it before you send it.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in replyInput) (*mcp.CallToolResult, any, error) {
 		data, _ := readFleet(ctx)
 		heads, err := planGate(data.Plans, in.DespitePlan)
@@ -304,7 +304,7 @@ func newMCPServer() *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cancel_task",
-		Description: "Stop a running task, close its tab and remove its copy on the other machine; its unfinished changes are discarded and the output so far is kept in a log on this machine. Also use it to remove a finished delegate's copy once you're done sending it follow-ups. Ask the user before stopping a running task.",
+		Description: "Stop a running task, close its tab and remove its copy on the other machine; its unfinished changes are discarded. A run_elsewhere or delegate task's output so far is kept in a log on this machine; a start_session task keeps no output. Also use it to remove a finished delegate's copy once you're done sending it follow-ups. Ask the user before stopping a running task.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in taskInput) (*mcp.CallToolResult, any, error) {
 		r, err := collectTask(in.TaskID, true)
 		if err != nil {

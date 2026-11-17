@@ -6,7 +6,7 @@ allowed-tools: Bash(cielago arm:*)
 
 # Hand this session off
 
-cielago moves this session to another machine once your turn ends: it syncs the project (for git repositories the branch, commits, staged and unstaged changes and secret files; for other folders their files), the transcript and project memory, starts a new session there in Rex with Remote Control, then closes this copy.
+cielago moves this session to another machine once your turn ends: it syncs the project (for git repositories the branch, commits, staged and unstaged changes and secret files; for other folders their files), the transcript and project memory, starts a new session there in a Rex or tmux tab with Remote Control, then closes this copy.
 
 Nothing that is running moves. So first:
 
@@ -27,6 +27,6 @@ Nothing that is running moves. So first:
 
 3. If it says there is no such host, it lists the configured ones: run it again with the one the user meant, or ask if none clearly matches.
 4. If it fails for any other reason, tell the user why and stop.
-5. If it succeeds, end your turn right away with one short line, for example "Handing off to homelab, it'll open in Rex in a few seconds." Make no other tool calls: the handoff starts when your turn ends.
+5. If it succeeds, end your turn right away with one short line, for example "Handing off to homelab, it'll open there in a few seconds." Make no other tool calls: the handoff starts when your turn ends.
 
 If the handoff fails after your turn, you get a message saying what went wrong and this session keeps running here. Explain it to the user in plain words, and restart anything you stopped in step 1.

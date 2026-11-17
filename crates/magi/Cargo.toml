@@ -1,6 +1,6 @@
 [package]
 name = "magi-monitor"
-description = "Live monitoring for your Rex hosts and the AI agents running on them"
+description = "An overview of your coding agents and machines, in one Rex pane"
 readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
