@@ -108,21 +108,21 @@ func TestInitWritesTheConfigAndKeepsAnswersWhenRunAgain(t *testing.T) {
 	f.tool("tailscale", "#!/bin/sh\nexit 1\n")
 	claude := f.tool("claude", fakeClaudeCLI)
 	codex := f.tool("codex", "#!/bin/sh\n")
-	answers := strings.Join([]string{"~/laptop", "", "server", "fakehost", claude, codex, "~/developer", "", "tmux", "claude rc --name {repo}"}, "\n") + "\n"
+	answers := strings.Join([]string{"~/laptop", "", "server", "fakehost", claude, codex, "~/developer", "", "tmux"}, "\n") + "\n"
 	initConfig(strings.NewReader(answers), io.Discard)
 	h, err := loadHost("server")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.SSH != "fakehost" || h.Claude != claude || h.Codex != codex || strings.Join(h.Roots, ",") != "~/developer" || h.Launcher != "tmux" || h.NewTabCommand != "claude rc --name {repo}" || strings.Join(h.Secrets, ",") != ".env,.env.*" || !slices.Contains(h.Exclude, "node_modules") {
+	if h.SSH != "fakehost" || h.Claude != claude || h.Codex != codex || strings.Join(h.Roots, ",") != "~/developer" || h.Launcher != "tmux" || strings.Join(h.Secrets, ",") != ".env,.env.*" || !slices.Contains(h.Exclude, "node_modules") {
 		t.Fatalf("host = %+v", h)
 	}
-	initConfig(strings.NewReader("server\n"+strings.Repeat("\n", 7)), io.Discard)
+	initConfig(strings.NewReader("server\n"+strings.Repeat("\n", 6)), io.Discard)
 	again, err := loadHost("server")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.NewTabCommand != h.NewTabCommand || again.Claude != h.Claude || again.Codex != h.Codex || strings.Join(again.Roots, ",") != "~/developer" {
+	if again.Claude != h.Claude || again.Codex != h.Codex || strings.Join(again.Roots, ",") != "~/developer" {
 		t.Errorf("running init again and pressing Enter changed the host: %+v", again)
 	}
 }

@@ -52,6 +52,30 @@ func taskStatus(id string) (*taskReport, error) {
 	return &taskReport{Task: t, State: st}, nil
 }
 
+const (
+	waitEvery    = 5 * time.Second
+	waitFailures = 5
+)
+
+func waitTask(id string, every time.Duration) (*taskReport, error) {
+	if _, err := loadTask(id); err != nil {
+		return nil, err
+	}
+	for failures := 0; ; time.Sleep(every) {
+		r, err := taskStatus(id)
+		switch {
+		case err != nil:
+			if failures++; failures >= waitFailures {
+				return nil, err
+			}
+		case r.State.State != "running" && r.State.State != "starting":
+			return r, nil
+		default:
+			failures = 0
+		}
+	}
+}
+
 func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	if _, err := loadTask(id); err != nil {
 		return nil, err

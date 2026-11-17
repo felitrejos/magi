@@ -19,14 +19,6 @@ case $command in
     if [ "$detached" = 1 ]; then set -- -d "$@"; fi
     tmux new-window -P -F "$format" -t "$session:" -n "$label" -c "$dir" "$@"
     ;;
-  open-tab)
-    session=$1 name=$2 dir=$3 run=$4
-    if ! tmux list-windows -t "$session" -F '#{window_name}' | grep -qxF -- "$name"; then
-      pane=$(tmux new-window -d -P -F '#{pane_id}' -t "$session:" -n "$name" -c "$dir")
-      tmux send-keys -t "$pane" -l "$run"
-      tmux send-keys -t "$pane" Enter
-    fi
-    ;;
   split)
     pane=$1 direction=$2 dir=$3
     shift 3

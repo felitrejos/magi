@@ -285,12 +285,4 @@ func (r *handoffRun) finish() {
 			}
 		}
 	}
-	if r.Host.NewTabCommand != "" {
-		name := baseName(r.where.Root)
-		if err := r.st.run("tab", func() error {
-			return r.launcher.OpenProjectTab(r.tab, name, r.where.Root, strings.ReplaceAll(r.Host.NewTabCommand, "{repo}", quote(name)))
-		}); err != nil {
-			r.res.note(fmt.Errorf("the new tab's command didn't start: %w", errors.Unwrap(err)))
-		}
-	}
 }

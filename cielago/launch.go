@@ -18,7 +18,6 @@ type Launcher interface {
 	Start(group, label, dir string, command []string, focus bool) (Tab, error)
 	Show(tab Tab) (shownOn []string, err error)
 	Discard(tab Tab) error
-	OpenProjectTab(tab Tab, name, dir, command string) error
 	Split(tab Tab, anchor string, below bool, label, dir string, command []string) (string, error)
 	Where(group string) string
 }
@@ -140,32 +139,6 @@ func (x Rex) Start(group, label, dir string, command []string, focus bool) (Tab,
 	return tab, nil
 }
 
-func (x Rex) OpenProjectTab(tab Tab, name, dir, command string) error {
-	var windows struct {
-		Windows []rexWindow `json:"windows"`
-	}
-	if err := x.rexJSON(&windows, "window", "ls", "-s", tab.Session, "--json"); err != nil {
-		return err
-	}
-	for _, w := range windows.Windows {
-		if w.Label == name {
-			return nil
-		}
-	}
-	var created rexWindow
-	if err := x.rexJSON(&created, append([]string{"window", "new", "-s", tab.Session, name, "--focus=false", "--json", "--"}, shellIn(dir)...)...); err != nil {
-		return err
-	}
-	if len(created.BlockIDs) == 0 {
-		return errors.New("rex window new returned no pane")
-	}
-	if _, err := x.rex("send", "-s", tab.Session, "-b", created.BlockIDs[0], command); err != nil {
-		return err
-	}
-	_, err := x.rex("send-key", "-s", tab.Session, "-b", created.BlockIDs[0], "enter")
-	return err
-}
-
 func (x Rex) Split(tab Tab, anchor string, below bool, label, dir string, command []string) (string, error) {
 	args := []string{"split", "-s", tab.Session, "-b", anchor, "--focus=false", "--label", label, "-c", dir, "--json"}
 	if below {
@@ -223,8 +196,24 @@ func (x Rex) Discard(tab Tab) error {
 	case tab.SessionCreated:
 		_, err = x.rex("kill", tab.Session)
 	case tab.Window != "":
-		_, err = x.rex("window", "close", "-s", tab.Session, tab.Window)
+		if _, err = x.rex("window", "close", "-s", tab.Session, tab.Window); err == nil {
+			err = x.dropIfEmpty(tab.Session)
+		}
 	}
+	return err
+}
+
+func (x Rex) dropIfEmpty(session string) error {
+	var listing struct {
+		Windows []rexWindow `json:"windows"`
+	}
+	if err := x.rexJSON(&listing, "window", "ls", "-s", session, "--json"); err != nil {
+		return err
+	}
+	if len(listing.Windows) > 0 {
+		return nil
+	}
+	_, err := x.rex("kill", session)
 	return err
 }
 
@@ -273,11 +262,6 @@ func (t Tmux) Start(group, label, dir string, command []string, focus bool) (Tab
 		return Tab{}, fmt.Errorf("unexpected tmux output %q", out)
 	}
 	return Tab{SessionCreated: session == "", Session: fields[0], Window: fields[1], Pane: fields[2]}, nil
-}
-
-func (t Tmux) OpenProjectTab(tab Tab, name, dir, command string) error {
-	_, err := sh(t.remote, tmuxScript, "open-tab", tab.Session, name, dir, command)
-	return err
 }
 
 func (t Tmux) Split(tab Tab, anchor string, below bool, label, dir string, command []string) (string, error) {

@@ -63,3 +63,31 @@ func TestAToolMagiDoesntCheckForRulesNoMachineOut(t *testing.T) {
 		t.Fatal(text)
 	}
 }
+
+func TestAMachineMagiDoesntReportIsRankedFromWhatSSHFound(t *testing.T) {
+	homelab := parsePlatform("homelab", "Ubuntu 26.04.1 LTS\nx86_64\npython3 make docker \n")
+	if homelab.OS != "Ubuntu 26.04.1 LTS" || homelab.Arch != "x86_64" || strings.Join(homelab.Tools, ",") != "python3,make,docker" {
+		t.Fatalf("%+v", homelab)
+	}
+	mac := machineFor("mac", "macOS 27.2", "arm64", 0.1, "docker", "python3")
+	view := fleetView{Machines: []machineInfo{{Name: "homelab", Fleet: homelab}}, Here: &mac}
+	needs := needsInput{OS: "linux", Tools: []string{"python3"}}
+	places := view.places(needs)
+	if len(places) != 2 || places[0].name != "homelab" || !places[0].native {
+		t.Fatalf("the Linux machine still comes first when only SSH could say what it is: %v", places)
+	}
+	text := describePlaces(view, needs)
+	if !strings.Contains(text, "homelab: natively (Ubuntu 26.04.1 LTS x86_64), load unknown") {
+		t.Fatal(text)
+	}
+}
+
+func TestAMachineWithKnownLoadComesBeforeOneWithUnknownLoad(t *testing.T) {
+	known := machineFor("studio", "Ubuntu 26.04", "x86_64", 0.4)
+	unknown := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\n\n")
+	view := fleetView{Machines: []machineInfo{{Name: "homelab", Fleet: unknown}, {Name: "studio", Fleet: &known}}}
+	places := view.places(needsInput{OS: "linux"})
+	if len(places) != 2 || places[0].name != "studio" {
+		t.Fatalf("%v", places)
+	}
+}

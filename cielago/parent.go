@@ -46,8 +46,8 @@ func machineEmoji() string {
 	if runtime.GOOS != "darwin" {
 		return "🗄️"
 	}
-	model, err := exec.Command("sysctl", "-n", "hw.model").Output()
-	if err == nil && strings.Contains(string(model), "MacBook") {
+	battery, err := exec.Command("pmset", "-g", "batt").Output()
+	if err == nil && strings.Contains(string(battery), "InternalBattery") {
 		return "💻"
 	}
 	return "🖥️"

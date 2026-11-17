@@ -95,11 +95,12 @@ func (n needsInput) container(m fleetMachine) (string, bool) {
 }
 
 type spot struct {
-	name   string
-	native bool
-	how    string
-	busy   float64
-	here   bool
+	name    string
+	native  bool
+	how     string
+	busy    float64
+	here    bool
+	unknown bool
 }
 
 func (p spot) String() string {
@@ -107,13 +108,16 @@ func (p spot) String() string {
 	if p.here {
 		where = "this machine (" + p.name + ")"
 	}
+	if p.unknown {
+		return fmt.Sprintf("%s: %s, load unknown", where, p.how)
+	}
 	return fmt.Sprintf("%s: %s, %.0f%% busy", where, p.how, p.busy*100)
 }
 
 func (view fleetView) places(needs needsInput) []spot {
 	var places []spot
 	consider := func(m fleetMachine, name string, here bool) {
-		if !m.Live {
+		if !m.Live && !m.Probed {
 			return
 		}
 		how := ""
@@ -128,7 +132,7 @@ func (view fleetView) places(needs needsInput) []spot {
 			}
 			how = fmt.Sprintf("in a %s container, since it's %s", tool, platform(m))
 		}
-		places = append(places, spot{name: name, native: native, how: how, busy: m.busy(), here: here})
+		places = append(places, spot{name: name, native: native, how: how, busy: m.busy(), here: here, unknown: m.Probed})
 	}
 	for _, m := range view.Machines {
 		if m.Fleet == nil || m.Reachable != nil || m.NoRoom != "" {
@@ -142,6 +146,9 @@ func (view fleetView) places(needs needsInput) []spot {
 	sort.SliceStable(places, func(i, j int) bool {
 		if places[i].native != places[j].native {
 			return places[i].native
+		}
+		if places[i].unknown != places[j].unknown {
+			return places[j].unknown
 		}
 		return places[i].busy < places[j].busy
 	})

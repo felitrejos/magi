@@ -49,11 +49,8 @@ func TestTmuxLauncherOpensItsOwnWindowAndCleansUp(t *testing.T) {
 	if second.SessionCreated || second.Session != first.Session {
 		t.Fatalf("second tab = %+v, want a window in the same session", second)
 	}
-	if err := tm.OpenProjectTab(second, "web", f.remote, "echo ready"); err != nil {
-		t.Fatal(err)
-	}
 	windows, _ := exec.Command("tmux", "list-windows", "-t", first.Session, "-F", "#{window_name}").Output()
-	if got := strings.Fields(strings.ReplaceAll(string(windows), " · ", "·")); strings.Join(got, ",") != "api·claude,web·claude,web" {
+	if got := strings.Fields(strings.ReplaceAll(string(windows), " · ", "·")); strings.Join(got, ",") != "api·claude,web·claude" {
 		t.Errorf("windows = %q", windows)
 	}
 	if err := tm.Discard(second); err != nil {
@@ -156,5 +153,37 @@ func TestRexSplitsBesideTheGivenPaneWithoutTakingFocus(t *testing.T) {
 	want := "-S server split -s session:s -b block:claude --focus=false --label pnpm dev -c /srv/api --json --split below --ratio 35 -- sh -c x"
 	if got := strings.Join(args, " "); got != want {
 		t.Errorf("rex %s\nwant rex %s", got, want)
+	}
+}
+
+const fakeRexWindows = `#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/rex-calls"
+case "$*" in
+*"window ls"*) cat "$HOME/rex-windows" ;;
+esac
+`
+
+func TestClosingTheLastTabOfARexSessionRemovesTheSession(t *testing.T) {
+	f := newFixture(t)
+	f.tool("rex", fakeRexWindows)
+	x := Rex{server: "server", remote: f.remoteHost()}
+
+	f.write(f.home, "rex-windows", `{"windows":[{"window_id":"window:other"}]}`)
+	if err := x.Discard(Tab{Session: "session:s", Window: "window:task"}); err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.home, "rex-windows", `{"windows":[]}`)
+	if err := x.Discard(Tab{Session: "session:s", Window: "window:last"}); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"-S server window close -s session:s window:task",
+		"-S server window ls -s session:s --json",
+		"-S server window close -s session:s window:last",
+		"-S server window ls -s session:s --json",
+		"-S server kill session:s",
+	}, "\n")
+	if got := strings.TrimSpace(f.read(f.home, "rex-calls")); got != want {
+		t.Errorf("rex calls:\n%s\nwant:\n%s", got, want)
 	}
 }

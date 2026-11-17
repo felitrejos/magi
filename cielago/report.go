@@ -68,7 +68,7 @@ func describeStarted(s *started, why string) string {
 	case kindSession:
 		b.WriteString("When the user quits that session, task_result brings its changes back as a branch.\n")
 	default:
-		b.WriteString("Check on it with task_status and collect it with task_result once it's done; it doesn't block this session.\n")
+		fmt.Fprintf(&b, "It doesn't block this session. To be told when it's done, run `cielago tasks wait %s` as a background shell command: it exits when the task finishes. Then collect it with task_result.\n", t.ID)
 	}
 	return b.String()
 }

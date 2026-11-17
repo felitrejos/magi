@@ -16,7 +16,9 @@ import (
 
 const serverInstructions = `cielago sends work from this session to the user's other machines over SSH: a shell command (run_elsewhere), a self-contained task for a background Claude (delegate), or a new interactive session (start_session). Each runs in its own copy of this project's working tree, in a Rex or tmux tab the user can watch, and never touches this session, this checkout or the user's checkouts there.
 
-Starting work on another machine is the user's call. Before run_elsewhere, delegate or start_session: call machines, propose one machine (the one machines suggests, the first in the user's list with room, unless the user named one), say exactly what will run there, and let the user choose: run it there, run it here instead, or don't run it. Wait for the user's clear answer. Then start it, carry on with other work, and check back with task_status; collect it with task_result once it's done. Don't poll in a tight loop.`
+Starting work on another machine is the user's call. Before run_elsewhere, delegate or start_session: call machines, propose one machine (the one machines suggests, the first in the user's list with room, unless the user named one), say exactly what will run there, and let the user choose: run it there, run it here instead, or don't run it. Wait for the user's clear answer. Ask even when the user tells you to pick the machine or to run it wherever fits best: choosing the machine is your part, agreeing to it is theirs. Then start it and carry on with other work.
+
+To be told when a run_elsewhere or delegate task is done, run cielago tasks wait <task id> as a background shell command: it exits when the task finishes, and then you collect it with task_result. When a delegated Claude should keep going until something passes, such as running CI and fixing what fails, say so in its task. If task_result shows it isn't fully done, send what's left with task_reply and wait again. Don't poll in a loop.`
 
 const delegateSystemPrompt = `You are a delegated task started by cielago from another machine. You work in a throwaway copy of the project on this machine; nobody is watching to answer questions or approve permission prompts. Tools that would need approval are denied: work around them, and say what you couldn't do. Work only inside this folder. Don't commit, push, open pull requests or change git configuration: leave your changes in the working tree, and cielago brings them back to the caller as a branch. Finish with a short report: what you did, which files you changed, how you checked it, and anything left undone.`
 
@@ -197,7 +199,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "run_elsewhere",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Run a shell command, such as a slow test suite or a build, on another machine, in a copy of this project's exact working tree (commits, staged and unstaged changes, untracked and secret files). It copies the working tree first, usually in seconds, then returns a task id; the command runs in the background in a tab the user can watch, so long runs never block or time out. The copy is separate from any checkout on that machine and is removed when the result is collected; this session and this checkout are untouched. Dependencies such as node_modules aren't copied, but the project's approved .cielago.toml setup runs first. Before calling: call machines, tell the user which machine you propose (the one machines suggests unless they named one) and the exact command, and wait for their OK. Afterwards use task_status, then task_result for the exit code and output.",
+		Description: "Run a shell command, such as a slow test suite or a build, on another machine, in a copy of this project's exact working tree (commits, staged and unstaged changes, untracked and secret files). It copies the working tree first, usually in seconds, then returns a task id; the command runs in the background in a tab the user can watch, so long runs never block or time out. The copy is separate from any checkout on that machine and is removed when the result is collected; this session and this checkout are untouched. Dependencies such as node_modules aren't copied, but the project's approved .cielago.toml setup runs first. Before calling: call machines, tell the user which machine you propose (the one machines suggests unless they named one) and the exact command, and wait for their OK. Afterwards run cielago tasks wait <task id> as a background shell command to be told when it finishes, then task_result for the exit code and output.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, any, error) {
 		if strings.TrimSpace(in.Command) == "" {
 			return nil, nil, fmt.Errorf("command is empty")
@@ -297,7 +299,7 @@ func newMCPServer() *mcp.Server {
 		if err != nil {
 			return nil, nil, err
 		}
-		return textResult(heads + fmt.Sprintf("Sent the follow-up to task %s on %s as turn %d; it runs %s, tab %q. Check on it with task_status and collect it with task_result.\n", s.Task.ID, s.Task.Host, s.Task.Turn, s.Task.Where, s.Task.tabLabel())), nil, nil
+		return textResult(heads + fmt.Sprintf("Sent the follow-up to task %s on %s as turn %d; it runs %s, tab %q. To be told when it's done, run `cielago tasks wait %s` as a background shell command; then collect it with task_result.\n", s.Task.ID, s.Task.Host, s.Task.Turn, s.Task.Where, s.Task.tabLabel(), s.Task.ID)), nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{

@@ -42,6 +42,7 @@ Usage:
   cielago forwards                      ports this machine forwards to sessions that moved
   cielago forwards close <session-id>   stop forwarding a moved session's ports
   cielago tasks                         work sent to other machines, and its state
+  cielago tasks wait <id>               wait until a task finishes, then print how it ended
   cielago tasks show <id>               a task's output; collects it if it's finished
   cielago tasks cancel <id>             stop a task and remove its copy
   cielago tasks clean                   collect every finished task
@@ -115,6 +116,11 @@ func main() {
 		err = printTasks(os.Stdout)
 	case len(args) == 2 && args[0] == "tasks" && args[1] == "clean":
 		err = cleanTasks(os.Stdout)
+	case len(args) == 3 && args[0] == "tasks" && args[1] == "wait":
+		var r *taskReport
+		if r, err = waitTask(args[2], waitEvery); err == nil {
+			fmt.Print(describeReport(r))
+		}
 	case len(args) == 3 && args[0] == "tasks" && (args[1] == "show" || args[1] == "cancel"):
 		var r *taskReport
 		if r, err = collectTask(args[2], args[1] == "cancel"); err == nil {

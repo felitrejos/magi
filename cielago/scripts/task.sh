@@ -95,6 +95,10 @@ setup() {
   fi
 }
 
+claude_status() {
+  printf '\033]7501;state=%s:app=claude-code\033\\\033]2;Claude Code\007' "$1"
+}
+
 begin() {
   printf '%s\n%s\n' "$$" "$(started "$$")" > "$dir/pid"
   trap 'echo cancelled > "$dir/exit"; exit 1' HUP TERM INT
@@ -125,6 +129,7 @@ case $command in
     setup=$1
     shift
     begin
+    claude_status working
     {
       if setup "$setup"; then
         "$@" < "$dir/prompt"
@@ -133,6 +138,7 @@ case $command in
         echo "setup failed" > "$dir/status"
       fi
     } 2>&1 | tee "$dir/log" | render | tee "$dir/view"
+    if [ "$(cat "$dir/status" 2>/dev/null)" = "exit 0" ]; then claude_status done; else claude_status error; fi
     finish
     ;;
   session)
@@ -225,11 +231,15 @@ case $command in
     ;;
   remove)
     slug=$1
-    rm -rf -- "$dir"
+    rm -rf -- "$dir" 2>/dev/null
     case $slug in
       */* | *..*) ;;
       *-cielago-tasks-"${dir##*/}"-*) rm -rf -- "$HOME/.claude/projects/$slug" ;;
     esac
+    if [ -e "$dir" ]; then
+      echo "some of $dir couldn't be removed; files a container wrote there as root need sudo or the container to delete" >&2
+      exit 1
+    fi
     ;;
   *)
     echo "task.sh: unknown command $command" >&2

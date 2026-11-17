@@ -323,7 +323,8 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	for _, want := range []string{
 		"This machine (laptop): cpu 90%",
 		"- homelab (ssh homelab): reachable; budget: at most 1 working agents; NO ROOM now: 1 agents are working there",
-		"- gpu (ssh gpu): reachable; budget: no budget; magi: not answering (connection refused)",
+		"- gpu (ssh gpu): reachable; budget: no budget; ",
+		"magi: not answering (connection refused), so its load is unknown; its system and tools were read over SSH",
 		"- small (ssh me@box): reachable; budget: no budget; Ubuntu cpu 5%",
 		"Suggested: small,",
 		"magi also sees stranger",
@@ -940,5 +941,55 @@ func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing
 	}
 	if old.tabLabel() != "api · delegate 0000000c" || strings.Join(withParent(old.Parent, []string{"sh"}), " ") != "sh" {
 		t.Errorf("an older task's tab is %q", old.tabLabel())
+	}
+}
+
+func TestWaitingOnATaskReturnsOnceItFinishes(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", "acme").CombinedOutput(); err != nil {
+		t.Fatalf("tmux: %v %s", err, out)
+	}
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "sleep 1; echo finished"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := waitTask(s.Task.ID, 100*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.State.State != "done" || r.State.Exit != "exit 0" || !strings.Contains(r.State.Tail, "finished") {
+		t.Fatalf("waited until %+v", r.State)
+	}
+	if r.Task.Outcome != nil {
+		t.Error("waiting collected the task; task_result should")
+	}
+	if _, err := waitTask("nosuchtask", time.Millisecond); err == nil {
+		t.Error("waiting on an unknown task succeeded")
+	}
+	if text := describeStarted(s, "the first machine with room"); !strings.Contains(text, "cielago tasks wait "+s.Task.ID) {
+		t.Errorf("the start message doesn't say how to wait:\n%s", text)
+	}
+}
+
+func TestRemovingACopyThatCantBeFullyDeletedSaysSo(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.home, ".cielago", "tasks", "abcdef12")
+	locked := filepath.Join(dir, "checkout", "__pycache__")
+	f.write(locked, "x.pyc", "written by root in a container")
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	_, err := sh(f.remoteHost(), taskScript, "remove", dir, "")
+	if err == nil || !strings.Contains(err.Error(), "couldn't be removed") {
+		t.Fatalf("removing reported %v", err)
+	}
+	os.Chmod(locked, 0o700)
+	if _, err := sh(f.remoteHost(), taskScript, "remove", dir, ""); err != nil {
+		t.Fatalf("removing a plain copy: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("the copy is still there: %v", err)
 	}
 }

@@ -176,16 +176,6 @@ func initConfig(in io.Reader, out io.Writer) error {
 			return err
 		}
 	}
-	tabQuestion := "Command to run in a new project's tab, {repo} is the repo name (blank for none)"
-	if h.NewTabCommand != "" {
-		tabQuestion = "Command to run in a new project's tab, {repo} is the repo name (Enter keeps it, none removes it)"
-	}
-	if h.NewTabCommand, err = p.ask(tabQuestion, h.NewTabCommand); err != nil {
-		return err
-	}
-	if h.NewTabCommand == "none" {
-		h.NewTabCommand = ""
-	}
 	if err := h.validate(name); err != nil {
 		return err
 	}

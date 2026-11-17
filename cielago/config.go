@@ -28,7 +28,6 @@ type Host struct {
 	Secrets       []string `toml:"secrets"`
 	Launcher      string   `toml:"launcher"`
 	RexServer     string   `toml:"rex_server"`
-	NewTabCommand string   `toml:"new_tab_command"`
 	MaxAgents     int      `toml:"max_agents,omitempty"`
 	MinFreeMemory string   `toml:"min_free_memory,omitempty"`
 	QuietHours    string   `toml:"quiet_hours,omitempty"`

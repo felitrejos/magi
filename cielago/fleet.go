@@ -37,6 +37,7 @@ type fleetMachine struct {
 	} `json:"agents"`
 	Error    *string        `json:"error"`
 	Sessions []agentSession `json:"sessions"`
+	Probed   bool           `json:"-"`
 }
 
 type agentSession struct {
@@ -65,7 +66,11 @@ func (m fleetMachine) describe() string {
 		if m.Error != nil && *m.Error != "" {
 			reason = *m.Error
 		}
-		return "magi: not answering (" + reason + ")"
+		text := "magi: not answering (" + reason + ")"
+		if m.Probed {
+			text += ", so its load is unknown; its system and tools were read over SSH"
+		}
+		return text
 	}
 	parts := []string{fmt.Sprintf("cpu %.0f%%", m.CPU*100)}
 	if len(m.Load) > 0 {
@@ -188,11 +193,71 @@ func surveyFleet(ctx context.Context, cfg Config, probe, agents bool) fleetView 
 	if probe {
 		var wg sync.WaitGroup
 		for i := range view.Machines {
-			wg.Go(func() { view.Machines[i].Reachable = reachable(ctx, view.Machines[i].Host) })
+			wg.Go(func() { view.Machines[i].probe(ctx) })
 		}
 		wg.Wait()
 	}
 	return view
+}
+
+func (m *machineInfo) probe(ctx context.Context) {
+	if m.Fleet != nil && m.Fleet.Live {
+		m.Reachable = reachable(ctx, m.Host)
+		return
+	}
+	probed, err := probePlatform(ctx, m.Name, m.Host)
+	m.Reachable = err
+	if err == nil {
+		if m.Fleet != nil {
+			probed.Error = m.Fleet.Error
+		}
+		m.Fleet = probed
+	}
+}
+
+const platformScript = `PATH="$PATH:$HOME/.local/bin:$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin"
+if [ "$(uname -s)" = Darwin ]; then
+	echo "macOS $(sw_vers -productVersion)"
+else
+	name=$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")
+	echo "${name:-$(uname -s)}"
+fi
+uname -m
+for t in cargo go node python3 swift xcodebuild gcc clang make nvidia-smi; do
+	command -v "$t" >/dev/null 2>&1 && printf '%s ' "$t"
+done
+for t in docker podman; do
+	command -v "$t" >/dev/null 2>&1 && "$t" info >/dev/null 2>&1 && printf '%s ' "$t"
+done
+echo`
+
+func probePlatform(ctx context.Context, name string, h Host) (*fleetMachine, error) {
+	ctx, cancel := context.WithTimeout(ctx, reachWait)
+	defer cancel()
+	r, err := newRemote(ctx, h.SSH)
+	if err != nil {
+		return nil, err
+	}
+	out, err := sh(r, platformScript)
+	if err != nil {
+		return nil, err
+	}
+	return parsePlatform(name, string(out)), nil
+}
+
+func parsePlatform(name, out string) *fleetMachine {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	m := &fleetMachine{Name: name, Probed: true}
+	if len(lines) > 0 {
+		m.OS = strings.TrimSpace(lines[0])
+	}
+	if len(lines) > 1 {
+		m.Arch = strings.TrimSpace(lines[1])
+	}
+	if len(lines) > 2 {
+		m.Tools = strings.Fields(lines[2])
+	}
+	return m
 }
 
 type choice struct {
