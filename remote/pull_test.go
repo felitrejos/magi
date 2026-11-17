@@ -35,7 +35,7 @@ func TestPullBringsWorkDoneOnTheServerBackToTheParkedLaptop(t *testing.T) {
 	if got := f.read(f.local, "edited.txt") + "|" + f.read(f.local, "server-new.txt"); got != "finished on the server|new on the server" {
 		t.Errorf("laptop files after pulling = %q", got)
 	}
-	if refs := f.git(f.remote, "for-each-ref", "refs/cielago"); refs != "" {
+	if refs := f.git(f.remote, "for-each-ref", "refs/magi"); refs != "" {
 		t.Errorf("the server kept refs after the pull: %s", refs)
 	}
 }

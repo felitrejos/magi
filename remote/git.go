@@ -36,11 +36,11 @@ type GitState struct {
 }
 
 const (
-	handoffRef  = "refs/cielago/handoff"
-	worktreeRef = "refs/cielago/worktree"
-	indexRef    = "refs/cielago/index"
-	parkedRef   = "refs/worktree/cielago/parked"
-	outPrefix   = "refs/cielago/out/"
+	handoffRef  = "refs/magi/handoff"
+	worktreeRef = "refs/magi/worktree"
+	indexRef    = "refs/magi/index"
+	parkedRef   = "refs/worktree/magi/parked"
+	outPrefix   = "refs/magi/out/"
 )
 
 const (

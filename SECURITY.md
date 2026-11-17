@@ -136,8 +136,7 @@ overview adds an agent on each machine that viewers reach over Tailscale.
   `/etc/os-release`, `command -v`, and `docker info` or `podman info`). It
   only reads.
 - A project's `.magi.toml` runs only after you approve that exact file with
-  `magi allow`. Any edit needs a new approval. An old `.cielago.toml` is
-  read the same way.
+  `magi allow`. Any edit needs a new approval.
 - Its `ports` are forwarded from the machine a session left. When the
   session's tab is in Rex, magi uses `rex forward` and the traffic goes
   over Rex's connection to that machine. Otherwise it runs `ssh -N -L` over
@@ -146,9 +145,7 @@ overview adds an agent on each machine that viewers reach over Tailscale.
   `magi forwards close` stops one, and bringing the session back stops
   it too.
 - magi keeps its state in `~/.magi` and its settings in
-  `~/.config/magi/config.toml`. If a machine still has `~/.cielago` or
-  `~/.config/cielago` and not the new folder, magi renames it on first
-  run, on the machines it connects to as well.
+  `~/.config/magi/config.toml`.
 
 ## Releases
 

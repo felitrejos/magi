@@ -55,13 +55,13 @@ func (f *fixture) untouched(before string) {
 
 func (f *fixture) serverUntouched() {
 	f.t.Helper()
-	if ref := f.git(f.local, "for-each-ref", "refs/worktree", "refs/cielago"); ref != "" {
+	if ref := f.git(f.local, "for-each-ref", "refs/worktree", "refs/magi"); ref != "" {
 		f.t.Errorf("the local checkout got refs: %s", ref)
 	}
 	if status := f.git(f.remote, "status", "--porcelain"); status != "" {
 		f.t.Errorf("the server's own checkout changed:\n%s", status)
 	}
-	if ref := f.git(f.remote, "for-each-ref", "refs/cielago", "refs/worktree", "refs/heads/magi"); ref != "" {
+	if ref := f.git(f.remote, "for-each-ref", "refs/magi", "refs/worktree", "refs/heads/magi"); ref != "" {
 		f.t.Errorf("the server's own checkout got refs: %s", ref)
 	}
 }

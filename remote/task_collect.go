@@ -267,7 +267,7 @@ func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error
 	if !commitPattern.MatchString(result) {
 		return fmt.Errorf("unexpected commit id %q from %s", result, t.Host)
 	}
-	if _, err := sh(local, `dir=$1 ssh=$2 from=$3 ref=$4; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git fetch --quiet --no-tags --no-write-fetch-head "$from" "+refs/cielago/result:refs/heads/$ref"`,
+	if _, err := sh(local, `dir=$1 ssh=$2 from=$3 ref=$4; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git fetch --quiet --no-tags --no-write-fetch-head "$from" "+refs/magi/result:refs/heads/$ref"`,
 		t.Project, r.sshCommand(), r.host+":"+t.Checkout, t.branch()); err != nil {
 		return fmt.Errorf("fetching the task's changes failed: %w", err)
 	}

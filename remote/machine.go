@@ -149,14 +149,10 @@ func (r *Remote) Name() string                   { return r.host }
 func (r *Remote) Context() context.Context       { return r.ctx }
 func (r *Remote) SetContext(ctx context.Context) { r.ctx = ctx }
 func (r *Remote) Command(script string, args ...string) *exec.Cmd {
-	payload := movedHome + "set -- " + quoteAll(args) + "\n" + script
+	payload := "set -- " + quoteAll(args) + "\n" + script
 	line := `env LC_ALL=C sh -c 'eval "$(printf "$1")"' magi '` + printfEscape(payload) + `'`
 	return command(r.ctx, "ssh", append(append([]string{}, r.opts...), r.host, "--", line)...)
 }
-
-const movedHome = `[ -e "$HOME/.magi" ] || [ ! -d "$HOME/.cielago" ] || mv "$HOME/.cielago" "$HOME/.magi" 2>/dev/null
-[ -e "$HOME/.config/magi" ] || [ ! -d "$HOME/.config/cielago" ] || mv "$HOME/.config/cielago" "$HOME/.config/magi" 2>/dev/null
-`
 
 func printfEscape(s string) string {
 	var b strings.Builder

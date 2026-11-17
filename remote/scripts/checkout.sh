@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 mode=$1 repo=$2 H=$3 W=$4 I=$5 B=$6
-parked=refs/worktree/cielago/parked
+parked=refs/worktree/magi/parked
 
 cd -- "$repo"
 export GIT_LFS_SKIP_SMUDGE=1
@@ -18,7 +18,7 @@ if [ "$mode" = copy ]; then
   fi
   git read-tree --reset -u "$W"
   git read-tree "$I"
-  for r in refs/cielago/handoff refs/cielago/worktree refs/cielago/index; do
+  for r in refs/magi/handoff refs/magi/worktree refs/magi/index; do
     git update-ref -d "$r"
   done
   exit 0
@@ -81,6 +81,6 @@ else
   git read-tree -m -u HEAD "$W"
 fi
 git read-tree "$I"
-for r in refs/cielago/handoff refs/cielago/worktree refs/cielago/index "$parked"; do
+for r in refs/magi/handoff refs/magi/worktree refs/magi/index "$parked"; do
   git update-ref -d "$r"
 done

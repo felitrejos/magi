@@ -36,12 +36,6 @@ main() {
     mv "$dir/$bin.new" "$dir/$bin"
   done
   echo "Installed $bins to $dir"
-  if [ -e "$dir/cielago" ]; then
-    printf '#!/bin/sh\n[ -t 2 ] && echo "cielago is now part of magi: magi $*" >&2\nexec magi "$@"\n' > "$dir/cielago.new"
-    chmod 755 "$dir/cielago.new"
-    mv "$dir/cielago.new" "$dir/cielago"
-    echo "cielago is now part of magi, so $dir/cielago runs magi"
-  fi
 
   case ":$PATH:" in
     *":$dir:"*) ;;

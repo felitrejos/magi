@@ -68,7 +68,6 @@ type armed struct {
 }
 
 func main() {
-	moveOldFolders()
 	args := os.Args[1:]
 	var err error
 	switch {
@@ -139,22 +138,6 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "magi:", err)
 		os.Exit(1)
-	}
-}
-
-func moveOldFolders() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	config := os.Getenv("XDG_CONFIG_HOME")
-	if config == "" {
-		config = filepath.Join(home, ".config")
-	}
-	for _, dirs := range [][2]string{{filepath.Join(home, ".cielago"), filepath.Join(home, ".magi")}, {filepath.Join(config, "cielago"), filepath.Join(config, "magi")}} {
-		if _, err := os.Lstat(dirs[1]); errors.Is(err, os.ErrNotExist) {
-			os.Rename(dirs[0], dirs[1])
-		}
 	}
 }
 

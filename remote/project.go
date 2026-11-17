@@ -16,10 +16,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-const (
-	projectFile    = ".magi.toml"
-	oldProjectFile = ".cielago.toml"
-)
+const projectFile = ".magi.toml"
 
 const projectPanesLimit = 30 * time.Second
 
@@ -78,10 +75,6 @@ func readProject(root string) (*Project, error) {
 	}
 	path := filepath.Join(real, projectFile)
 	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		path = filepath.Join(real, oldProjectFile)
-		data, err = os.ReadFile(path)
-	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

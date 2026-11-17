@@ -142,26 +142,7 @@ fn run_remote(args: Vec<std::ffi::OsString>) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn move_old_folders() {
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
-        return;
-    };
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|dir| !dir.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| home.join(".config"));
-    for (old, new) in [
-        (home.join(".cielago"), home.join(".magi")),
-        (config.join("cielago"), config.join("magi")),
-    ] {
-        if new.symlink_metadata().is_err() {
-            let _ = std::fs::rename(old, new);
-        }
-    }
-}
-
 fn main() -> ExitCode {
-    move_old_folders();
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let text: Vec<String> = args
         .iter()

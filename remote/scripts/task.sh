@@ -191,7 +191,7 @@ case $command in
     else
       result=$(git commit-tree "$tree" -p "$parent" -m "$message") || exit
     fi
-    git update-ref refs/cielago/result "$result"
+    git update-ref refs/magi/result "$result"
     printf '%s\n' "$result"
     ;;
   reserve | room)
