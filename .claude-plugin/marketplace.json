@@ -10,7 +10,7 @@
       "name": "cielago",
       "description": "Say \"hand this off to <host>\" and the session continues there with Remote Control, or send tests and tasks to your lightest machine",
       "source": "./cielago/plugin",
-      "version": "0.5.0",
+      "version": "0.7.0",
       "category": "productivity",
       "tags": ["remote", "handoff", "sessions", "tasks", "mcp"]
     }
