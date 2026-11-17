@@ -142,12 +142,12 @@ impl Writer {
                 self.text(&text, self.style());
             }
             Event::Code(text) | Event::InlineMath(text) => {
-                self.push(text.to_string(), self.style().fg(t.second));
+                self.push(&text, self.style().fg(t.second));
             }
             Event::DisplayMath(text) => self.text(&text, self.style().fg(t.second)),
             Event::Html(text) | Event::InlineHtml(text) => self.text(&text, style::fg(t.faint)),
-            Event::FootnoteReference(name) => self.push(format!("[^{name}]"), style::fg(t.faint)),
-            Event::SoftBreak => self.push(" ".to_string(), self.style()),
+            Event::FootnoteReference(name) => self.push(&format!("[^{name}]"), style::fg(t.faint)),
+            Event::SoftBreak => self.push(" ", self.style()),
             Event::HardBreak => self.flush(),
             Event::Rule => {
                 self.begin_block();
@@ -164,7 +164,7 @@ impl Writer {
                 } else {
                     ("○ ", t.faint)
                 };
-                self.push(mark.to_string(), style::fg(color));
+                self.push(mark, style::fg(color));
             }
         }
     }
@@ -337,12 +337,12 @@ impl Writer {
                 self.flush();
             }
             if !part.is_empty() {
-                self.push(part.to_string(), style);
+                self.push(part, style);
             }
         }
     }
 
-    fn push(&mut self, text: String, style: Style) {
+    fn push(&mut self, text: &str, style: Style) {
         let span = Span::styled(text.replace('\t', TAB), style);
         match &mut self.table {
             Some(table) => table.cell.push(span),

@@ -3,9 +3,8 @@ use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 
-use super::limits::percent;
 use crate::handoff;
-use crate::proto::{FIVE_HOURS, ONE_WEEK, Window};
+use crate::proto::{FIVE_HOURS, ONE_WEEK, Window, basis_points};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -123,7 +122,7 @@ fn windows(body: &[u8], now_secs: u64) -> Option<Vec<Window>> {
         };
         Some(Window {
             minutes,
-            used: percent(window.utilization),
+            used: basis_points(window.utilization),
             resets_at,
         })
     };

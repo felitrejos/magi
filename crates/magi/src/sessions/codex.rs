@@ -15,7 +15,9 @@ use super::process;
 use super::repo;
 use super::tail::{self, Lines, Tail};
 use crate::handoff;
-use crate::proto::{Agent, AgentSession, BasisPoints, FULL, Plan, SessionState, Tokens, Window};
+use crate::proto::{
+    Agent, AgentSession, BasisPoints, FULL, Plan, SessionState, Tokens, Window, basis_points,
+};
 
 const PROCESS_NAME: &str = "codex";
 const FIND_PROCESSES_EVERY: Duration = Duration::from_secs(2);
@@ -220,21 +222,14 @@ impl Codex {
         }
         let titles = self.titles.as_ref().map(|(_, titles)| titles);
         for (path, pid) in &self.live {
-            if let Some(session) = self
-                .rollouts
-                .get(path)
-                .and_then(|rollout| describe(&rollout.state, titles, now_ms))
+            if let Some(rollout) = self.rollouts.get(path)
+                && let Some(session) = describe(&rollout.state, titles, now_ms)
             {
-                let cwd = self
-                    .rollouts
-                    .get(path)
-                    .and_then(|rollout| rollout.state.cwd.clone())
-                    .unwrap_or_default();
                 sessions.push(Found {
                     session,
                     pid: Some(*pid),
                     transcript: Some(path.clone()),
-                    cwd,
+                    cwd: rollout.state.cwd.clone().unwrap_or_default(),
                 });
             }
         }
@@ -376,8 +371,7 @@ impl State {
                 .flatten()
                 .map(|window| Window {
                     minutes: window.window_minutes,
-                    used: (window.used_percent.clamp(0.0, 100.0) * f64::from(FULL) / 100.0).round()
-                        as BasisPoints,
+                    used: basis_points(window.used_percent),
                     resets_at: window.resets_at,
                 })
                 .collect();

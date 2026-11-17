@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::proto::{Agent, BasisPoints, FULL, Plan, Window};
+use crate::proto::{Agent, Plan, Window};
 
 const ASK_EVERY: Duration = Duration::from_secs(5 * 60);
 const ASK_AFTER_RESET: Duration = Duration::from_secs(30);
@@ -55,10 +55,6 @@ impl Limits {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
-}
-
-pub fn percent(value: f64) -> BasisPoints {
-    (value.clamp(0.0, 100.0) * f64::from(FULL) / 100.0).round() as BasisPoints
 }
 
 fn freshest(seen: Option<Reading>, asked: Option<Reading>) -> Option<Reading> {

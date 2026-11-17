@@ -20,13 +20,13 @@ pub struct Ledger {
 impl Ledger {
     pub fn count(&mut self, id: &str, seen: Counted, claims: &mut HashSet<String>) {
         if let Some(copy) = self.copied.get_mut(id) {
-            copy.keep_larger(seen);
+            copy.keep_larger(&seen);
             return;
         }
         match self.counted.get_mut(id) {
             Some(counted) => {
                 let before = (counted.tokens.output, counted.cost);
-                counted.keep_larger(seen);
+                counted.keep_larger(&seen);
                 self.tokens.output += counted.tokens.output - before.0;
                 self.cost_micros += counted.cost - before.1;
                 self.unpriced |= !counted.priced;
@@ -66,7 +66,7 @@ impl Ledger {
 }
 
 impl Counted {
-    fn keep_larger(&mut self, seen: Counted) {
+    fn keep_larger(&mut self, seen: &Counted) {
         if seen.tokens.output > self.tokens.output {
             self.tokens.output = seen.tokens.output;
             self.cost = self.cost.max(seen.cost);

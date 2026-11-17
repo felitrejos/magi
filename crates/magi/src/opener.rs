@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::bounded;
-use crate::handoff::{find, search_dirs};
+use crate::handoff::{REMOTE, remote_program, search_dirs};
 use crate::proto::OpenIn;
 
 const LIST_LIMIT: Duration = Duration::from_secs(10);
@@ -36,12 +36,12 @@ pub struct Opened {
 }
 
 pub fn folders() -> Result<Vec<String>, String> {
-    let output = cielago(&["open", "--list", "--json"], LIST_LIMIT)?;
+    let output = remote(&["open", "--list", "--json"], LIST_LIMIT)?;
     if !output.status.success() {
         return Err(failure(&output, "couldn't open a session"));
     }
     let mut folders: Vec<String> = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("cielago listed folders in a form magi can't read: {error}"))?;
+        .map_err(|error| format!("{REMOTE} listed folders in a form magi can't read: {error}"))?;
     folders.truncate(MAX_FOLDERS);
     Ok(folders)
 }
@@ -84,7 +84,7 @@ pub fn open(place: &OpenIn, codex: bool, model: Option<&str>) -> Result<Opened, 
         OpenIn::Folder(dir) => args.push(dir),
         OpenIn::Chats => args.push("--chat"),
     }
-    let output = cielago(&args, OPEN_LIMIT)?;
+    let output = remote(&args, OPEN_LIMIT)?;
     report(&output)
 }
 
@@ -106,7 +106,7 @@ fn report(output: &Output) -> Result<Opened, String> {
 pub fn adopt(dir: &str, session: &str) -> Result<String, String> {
     check(dir)?;
     let _opening = Opening::start()?;
-    let output = cielago(&["open", "--json", "--resume", session, dir], OPEN_LIMIT)?;
+    let output = remote(&["open", "--json", "--resume", session, dir], OPEN_LIMIT)?;
     report(&output).map(|opened| opened.message)
 }
 
@@ -118,7 +118,7 @@ fn check(dir: &str) -> Result<(), String> {
 }
 
 pub fn close_forward(session: &str) -> Result<String, String> {
-    let output = cielago(&["forwards", "close", session], CLOSE_WITHIN)?;
+    let output = remote(&["forwards", "close", session], CLOSE_WITHIN)?;
     if output.status.success() {
         return Ok(format!(
             "Closed the forward for session {session}, which moved on"
@@ -127,13 +127,11 @@ pub fn close_forward(session: &str) -> Result<String, String> {
     Err(failure(&output, "couldn't close a forward"))
 }
 
-fn cielago(args: &[&str], limit: Duration) -> Result<Output, String> {
-    let dirs = search_dirs();
-    let cielago = find("cielago", &dirs)
-        .ok_or("cielago isn't installed on that machine: see github.com/felitrejos/magi")?;
-    let path: OsString = std::env::join_paths(&dirs).unwrap_or_default();
-    bounded::output(Command::new(cielago).args(args).env("PATH", path), limit)
-        .map_err(|error| format!("couldn't run cielago: {error}"))
+fn remote(args: &[&str], limit: Duration) -> Result<Output, String> {
+    let program = remote_program()?;
+    let path: OsString = std::env::join_paths(search_dirs()).unwrap_or_default();
+    bounded::output(Command::new(program).args(args).env("PATH", path), limit)
+        .map_err(|error| format!("couldn't run {REMOTE}: {error}"))
 }
 
 fn failure(output: &Output, what: &str) -> String {
@@ -142,8 +140,8 @@ fn failure(output: &Output, what: &str) -> String {
         .lines()
         .map(str::trim)
         .rfind(|line| !line.is_empty())
-        .unwrap_or("cielago failed")
-        .trim_start_matches("cielago: ");
+        .unwrap_or("it failed")
+        .trim_start_matches("magi: ");
     format!("{what}: {reason}")
 }
 

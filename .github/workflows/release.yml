@@ -46,22 +46,22 @@ jobs:
         with:
           go-version: "1.27.x"
           check-latest: true
-          cache-dependency-path: cielago/go.sum
-      - name: Build cielago
-        working-directory: cielago
+          cache-dependency-path: remote/go.sum
+      - name: Build magi-remote
+        working-directory: remote
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           TAG: ${{ github.ref_name }}
           TARGET: ${{ matrix.target }}
-        run: go build -trimpath -ldflags "-s -w -X main.version=${TAG#v}" -o "../target/$TARGET/release/cielago" .
+        run: go build -trimpath -ldflags "-s -w -X main.version=${TAG#v}" -o "../target/$TARGET/release/magi-remote" .
       - name: Package
         env:
           TARGET: ${{ matrix.target }}
         run: |
           mkdir -p dist
-          tar -czf "dist/magi-$TARGET.tar.gz" -C "target/$TARGET/release" magi cielago -C "$GITHUB_WORKSPACE" LICENSE README.md
+          tar -czf "dist/magi-$TARGET.tar.gz" -C "target/$TARGET/release" magi magi-remote -C "$GITHUB_WORKSPACE" LICENSE README.md
           cd dist
           shasum -a 256 "magi-$TARGET.tar.gz" > "magi-$TARGET.tar.gz.sha256"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

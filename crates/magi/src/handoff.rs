@@ -11,12 +11,7 @@ use serde::Deserialize;
 use crate::bounded;
 use crate::proto::{AgentSession, Reply};
 
-const INSTALL_DIRS: [&str; 4] = [
-    ".local/bin",
-    "go/bin",
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-];
+const INSTALL_DIRS: [&str; 3] = [".local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
 
 const MOVE_LIMIT: Duration = Duration::from_secs(15 * 60);
 const WATCH_EVERY: Duration = Duration::from_millis(200);
@@ -38,8 +33,7 @@ pub fn start(
     reply: impl Fn(Reply) + Send + 'static,
 ) -> Result<String, String> {
     check(to)?;
-    let cielago = find("cielago", &search_dirs())
-        .ok_or("cielago isn't installed on that machine: see github.com/felitrejos/magi")?;
+    let remote = remote_program()?;
     if MOVING.swap(true, Ordering::SeqCst) {
         return Err("a move is already running on that machine".into());
     }
@@ -50,7 +44,7 @@ pub fn start(
         .name("move".into())
         .spawn(move || {
             let _guard = guard;
-            run(&cielago, &id, &title, &to, MOVE_LIMIT, &reply);
+            run(&remote, &id, &title, &to, MOVE_LIMIT, &reply);
         })
         .map_err(|error| format!("couldn't start the move: {error}"))?;
     Ok(started)
@@ -121,15 +115,15 @@ fn said(event: &Event, title: &str, to: &str) -> String {
     }
 }
 
-fn run(cielago: &Path, id: &str, title: &str, to: &str, limit: Duration, reply: &dyn Fn(Reply)) {
+fn run(remote: &Path, id: &str, title: &str, to: &str, limit: Duration, reply: &dyn Fn(Reply)) {
     let deadline = Instant::now() + limit;
     let mut child =
-        match bounded::spawn(Command::new(cielago).args(["move", "--json", "--stay", id, to])) {
+        match bounded::spawn(Command::new(remote).args(["move", "--json", "--stay", id, to])) {
             Ok(child) => child,
             Err(error) => {
                 return reply(Reply {
                     ok: false,
-                    text: format!("couldn't run cielago: {error}"),
+                    text: format!("couldn't run {REMOTE}: {error}"),
                 });
             }
         };
@@ -182,7 +176,7 @@ fn run(cielago: &Path, id: &str, title: &str, to: &str, limit: Duration, reply: 
     if stopped.load(Ordering::SeqCst) {
         return reply(Reply {
             ok: false,
-            text: format!("couldn't move {title}: cielago took too long and was stopped"),
+            text: format!("couldn't move {title}: it took too long and was stopped"),
         });
     }
     reply(match status {
@@ -194,12 +188,12 @@ fn run(cielago: &Path, id: &str, title: &str, to: &str, limit: Duration, reply: 
             ok: false,
             text: format!(
                 "couldn't move {title}: {}",
-                last_line(&stderr).unwrap_or_else(|| format!("cielago exited with {status}"))
+                last_line(&stderr).unwrap_or_else(|| format!("{REMOTE} exited with {status}"))
             ),
         },
         Err(error) => Reply {
             ok: false,
-            text: format!("couldn't move {title}: cielago {error}"),
+            text: format!("couldn't move {title}: {error}"),
         },
     });
 }
@@ -210,7 +204,7 @@ fn last_line(output: &[u8]) -> Option<String> {
         .rev()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(|line| line.trim_start_matches("cielago: ").to_string())
+        .map(|line| line.trim_start_matches("magi: ").to_string())
 }
 
 pub fn search_dirs() -> Vec<PathBuf> {
@@ -227,6 +221,18 @@ pub fn search_dirs() -> Vec<PathBuf> {
             }
         }))
         .collect()
+}
+
+pub const REMOTE: &str = "magi-remote";
+
+pub fn remote_program() -> Result<PathBuf, String> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let dirs: Vec<PathBuf> = beside.into_iter().chain(search_dirs()).collect();
+    find(REMOTE, &dirs).ok_or_else(|| {
+        format!("{REMOTE} is missing on this machine, so magi can't move work; reinstall magi from github.com/felitrejos/magi")
+    })
 }
 
 pub fn find(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
@@ -251,33 +257,33 @@ mod tests {
     }
 
     #[test]
-    fn cielago_is_found_in_the_first_folder_that_has_it_as_a_program() {
+    fn remote_is_found_in_the_first_folder_that_has_it_as_a_program() {
         let root = std::env::temp_dir().join(format!("magi-find-{}", std::process::id()));
         let (empty, plain, program) = (root.join("a"), root.join("b"), root.join("c"));
         for dir in [&empty, &plain, &program] {
             std::fs::create_dir_all(dir).unwrap();
         }
-        std::fs::write(plain.join("cielago"), "").unwrap();
-        std::fs::write(program.join("cielago"), "#!/bin/sh\n").unwrap();
+        std::fs::write(plain.join("remote"), "").unwrap();
+        std::fs::write(program.join("remote"), "#!/bin/sh\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(
-            program.join("cielago"),
+            program.join("remote"),
             std::fs::Permissions::from_mode(0o755),
         )
         .unwrap();
         assert_eq!(
-            find("cielago", &[empty.clone(), plain.clone(), program.clone()]),
-            Some(program.join("cielago"))
+            find("remote", &[empty.clone(), plain.clone(), program.clone()]),
+            Some(program.join("remote"))
         );
-        assert_eq!(find("cielago", &[empty, plain]), None);
+        assert_eq!(find("remote", &[empty, plain]), None);
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn fake_cielago(name: &str, script: &str) -> (PathBuf, PathBuf) {
+    fn fake_remote(name: &str, script: &str) -> (PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("magi-cielago-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("magi-remote-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let program = dir.join("cielago");
+        let program = dir.join("remote");
         std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         (dir, program)
@@ -299,10 +305,10 @@ mod tests {
     }
 
     #[test]
-    fn each_step_cielago_reports_reaches_the_viewer_as_it_happens() {
-        let (dir, program) = fake_cielago(
+    fn each_step_remote_reports_reaches_the_viewer_as_it_happens() {
+        let (dir, program) = fake_remote(
             "steps",
-            r#"[ "$1 $2 $3 $4 $5" = "move --json --stay 0b7a3c1e homelab" ] || { echo "cielago: wrong arguments: $*" >&2; exit 2; }
+            r#"[ "$1 $2 $3 $4 $5" = "move --json --stay 0b7a3c1e homelab" ] || { echo "magi: wrong arguments: $*" >&2; exit 2; }
 echo '{"event":"waiting","ok":true,"session":"0b7a3c1e","host":"homelab","message":"Session 0b7a3c1e is in the middle of a turn"}'
 echo 'not json'
 echo '{"event":"step","ok":true,"step":"sync","message":"Moving session 0b7a3c1e to homelab: sync"}'
@@ -343,10 +349,10 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
     }
 
     #[test]
-    fn a_cielago_that_fails_without_saying_why_on_stdout_is_explained_from_stderr() {
-        let (dir, program) = fake_cielago(
+    fn a_remote_that_fails_without_saying_why_on_stdout_is_explained_from_stderr() {
+        let (dir, program) = fake_remote(
             "fails",
-            "echo 'cielago: homelab has work of its own' >&2; exit 1",
+            "echo 'magi: homelab has work of its own' >&2; exit 1",
         );
         assert_eq!(
             replies(&program),
@@ -359,21 +365,21 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
     }
 
     #[test]
-    fn the_outcome_is_the_last_thing_cielago_said() {
+    fn the_outcome_is_the_last_thing_remote_said() {
         assert_eq!(
             last_line(b"syncing\nmoved fix login to homelab\n\n"),
             Some("moved fix login to homelab".into())
         );
         assert_eq!(
-            last_line(b"cielago: homelab has work of its own\n"),
+            last_line(b"magi: homelab has work of its own\n"),
             Some("homelab has work of its own".into())
         );
         assert_eq!(last_line(b"\n  \n"), None);
     }
 
     #[test]
-    fn a_cielago_that_never_finishes_is_stopped_at_the_deadline_and_says_so() {
-        let (dir, program) = fake_cielago(
+    fn a_remote_that_never_finishes_is_stopped_at_the_deadline_and_says_so() {
+        let (dir, program) = fake_remote(
             "hangs",
             r#"echo '{"event":"moving","ok":true,"message":"Moving"}'; sleep 30"#,
         );
@@ -400,7 +406,7 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
         assert!(
             seen[1]
                 .text
-                .starts_with("couldn't move fix login: cielago took too long"),
+                .starts_with("couldn't move fix login: it took too long"),
             "{}",
             seen[1].text
         );

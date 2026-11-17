@@ -44,9 +44,7 @@ pub fn run() -> io::Result<()> {
                 Ok(Input::Key(Key::Up | Key::Char('u'))) => top = top.saturating_sub(1),
                 Ok(Input::Key(Key::PageDown | Key::Char(' '))) => top += page,
                 Ok(Input::Key(Key::PageUp | Key::Char('b'))) => top = top.saturating_sub(page),
-                Ok(Input::Wheel { up, .. }) => {
-                    top = if up { top.saturating_sub(3) } else { top + 3 }
-                }
+                Ok(Input::Wheel { up }) => top = if up { top.saturating_sub(3) } else { top + 3 },
                 Ok(Input::Key(Key::First | Key::Char('g'))) => top = 0,
                 Ok(Input::Key(Key::Char('c'))) => dismiss_open(&path, log::now_secs())?,
                 _ => {}

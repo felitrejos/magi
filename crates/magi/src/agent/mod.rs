@@ -42,7 +42,7 @@ pub struct Config {
     pub interval: Duration,
 }
 
-pub fn run(config: Config) -> io::Result<()> {
+pub fn run(config: &Config) -> io::Result<()> {
     let collector = Collector::new()?;
     let info = collector.info();
     let board = Board::saved_at(net::state_dir()?.join("plans.json"));
@@ -383,7 +383,7 @@ fn spawn_sessions(mut sessions: Sessions, agent: Arc<Agent>) -> io::Result<()> {
             let mut was_watched = false;
             let mut polled = Instant::now() - MIN_POLL_GAP;
             loop {
-                let watched = !agent.hub.is_idle();
+                let watched = agent.hub.has_subscribers();
                 let joined = watched && !was_watched;
                 was_watched = watched;
                 if watched || woken {
@@ -720,12 +720,9 @@ fn spawn_requests(
                     }
                     Request::Folders => {
                         in_background(&replies, |replies| {
-                            let models =
-                                crate::handoff::find("codex", &crate::handoff::search_dirs())
-                                    .and_then(|program| {
-                                        crate::sessions::codex_app::models(&program)
-                                    })
-                                    .unwrap_or_default();
+                            let models = handoff::find("codex", &handoff::search_dirs())
+                                .and_then(|program| crate::sessions::codex_app::models(&program))
+                                .unwrap_or_default();
                             if let Ok(frame) = proto::encode_frame(&AgentMessage::Models(models)) {
                                 let _ = replies.send(frame.into());
                             }
@@ -1017,13 +1014,6 @@ impl Hub {
             .push(sender.clone());
         self.joined.notify_all();
         (sender, receiver)
-    }
-
-    fn is_idle(&self) -> bool {
-        self.subscribers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_empty()
     }
 
     fn wait_for_subscribers(&self) {

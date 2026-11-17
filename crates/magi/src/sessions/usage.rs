@@ -202,13 +202,13 @@ fn parse_stat(stat: &str, tick_ns: u64, page: u64) -> Option<Process> {
 }
 
 #[cfg(target_os = "macos")]
-fn c_name(chars: &[libc::c_char]) -> Option<String> {
+fn c_name(chars: &[libc::c_char]) -> String {
     let bytes: Vec<u8> = chars
         .iter()
         .take_while(|byte| **byte != 0)
         .map(|byte| *byte as u8)
         .collect();
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[cfg(target_os = "macos")]
@@ -251,13 +251,15 @@ fn snapshot() -> HashMap<i32, Process> {
             }
             let info = unsafe { info.assume_init() };
             let ticks = info.ptinfo.pti_total_user + info.ptinfo.pti_total_system;
+            let name = c_name(&info.pbsd.pbi_name);
             Some((
                 pid,
                 Process {
-                    name: c_name(&info.pbsd.pbi_name)
-                        .filter(|name| !name.is_empty())
-                        .or_else(|| c_name(&info.pbsd.pbi_comm))
-                        .unwrap_or_default(),
+                    name: if name.is_empty() {
+                        c_name(&info.pbsd.pbi_comm)
+                    } else {
+                        name
+                    },
                     parent: i32::try_from(info.pbsd.pbi_ppid).ok()?,
                     cpu_ns: u64::try_from(
                         u128::from(ticks) * u128::from(numer) / u128::from(denom),

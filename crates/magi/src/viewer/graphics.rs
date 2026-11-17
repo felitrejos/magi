@@ -175,14 +175,13 @@ impl Graphics {
         out.flush()
     }
 
-    pub fn set_cell(&mut self, cell: (u32, u32)) -> bool {
+    pub fn set_cell(&mut self, cell: (u32, u32)) {
         if self.cell.is_none_or(|known| known == cell) {
-            return false;
+            return;
         }
         self.cell = Some(cell);
         self.stale
             .extend(self.slots.drain().map(|(_, slot)| slot.id));
-        true
     }
 
     pub fn samples_per_cell(&self) -> usize {
@@ -444,18 +443,15 @@ fn draw_cells(buf: &mut Buffer, area: Rect, chart: &Chart) {
         draw_guide_cells(buf, area);
     }
     for series in chart.series.iter().rev() {
-        let scaled: Vec<f32> = series
+        if let Kind::Meter = chart.kind {
+            draw_meter_cells(buf, area, finite(series.values[0]), series.color);
+            continue;
+        }
+        let values: Vec<f32> = series
             .values
             .iter()
             .map(|value| value / chart.max)
             .collect();
-        let values = match chart.kind {
-            Kind::Meter => {
-                draw_meter_cells(buf, area, finite(series.values[0]), series.color);
-                continue;
-            }
-            Kind::Area => scaled,
-        };
         for (row, line) in chart::columns(&values, width, height).iter().enumerate() {
             for (col, cell) in line.iter().enumerate() {
                 if let Some(symbol) = cell {

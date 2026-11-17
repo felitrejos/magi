@@ -27,9 +27,7 @@ pub struct Forwards {
 impl Forwards {
     pub fn for_this_user() -> Option<Self> {
         let home = std::env::var_os("HOME")?;
-        Some(Self::new(
-            Path::new(&home).join(".cielago").join("forwards"),
-        ))
+        Some(Self::new(Path::new(&home).join(".magi").join("forwards")))
     }
 
     fn new(dir: PathBuf) -> Self {

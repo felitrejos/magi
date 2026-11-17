@@ -3,7 +3,7 @@ use ratatui::layout::{Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use super::{Cursor, body, clip, draw_panel, panel, spread, tail};
+use super::{Cursor, body, clip, draw_panel, spread, tail};
 use crate::proto::Agent;
 use crate::viewer::launcher::{self, Launcher, Listing};
 use crate::viewer::style::{self, theme};
@@ -33,10 +33,8 @@ pub fn render(frame: &mut Frame, area: Rect, launcher: Option<&Launcher>) {
     draw_panel(
         frame,
         area,
-        panel(
-            vec![Span::styled("New session", style::bold(theme().text))],
-            None,
-        ),
+        vec![Span::styled("New session", style::bold(theme().text))],
+        Vec::new(),
     );
     let inner = body(area);
     let width = inner.width as usize;

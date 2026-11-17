@@ -105,26 +105,13 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     bands::render(frame, model, now, graphics);
 }
 
-struct Header<'a> {
-    title: Vec<Span<'a>>,
-    right: Option<Vec<Span<'a>>>,
-}
-
-fn panel<'a>(title: Vec<Span<'a>>, right: Option<Vec<Span<'a>>>) -> Header<'a> {
-    Header { title, right }
-}
-
-fn draw_panel(frame: &mut Frame, area: Rect, header: Header<'static>) {
+fn draw_panel(frame: &mut Frame, area: Rect, title: Vec<Span<'static>>, right: Vec<Span<'static>>) {
     let band = Rect::new(area.x, area.y, area.width, area.height.min(1));
     let row = band.inner(Margin {
         horizontal: 2,
         vertical: 0,
     });
-    let line = spread(
-        header.title,
-        header.right.unwrap_or_default(),
-        row.width as usize,
-    );
+    let line = spread(title, right, row.width as usize);
     frame.render_widget(Paragraph::new(line), row);
 }
 
@@ -178,16 +165,12 @@ impl Composed {
         spans_width(&self.spans)
     }
 
-    fn spread(self, right: Composed, width: usize) -> Composed {
-        self.spread_by(right, width, " ", Style::new())
-    }
-
-    fn spread_by(mut self, right: Composed, width: usize, fill: &str, style: Style) -> Composed {
+    fn spread(mut self, right: Composed, width: usize) -> Composed {
         let room = width.saturating_sub(right.width() + 1);
         self.spans = clip(self.spans, room);
         self.bars.retain(|bar| bar.offset + bar.width <= room);
         let gap = width.saturating_sub(self.width() + right.width());
-        self.spans.push(Span::styled(fill.repeat(gap), style));
+        self.spans.push(Span::raw(" ".repeat(gap)));
         let shift = self.width();
         self.spans.extend(right.spans);
         self.bars.extend(right.bars.into_iter().map(|bar| Bar {
@@ -405,8 +388,6 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     }
     if agent.live {
         actions.push(("v", "diff"));
-    }
-    if agent.live {
         if !in_rex && agent.session.agent == Agent::ClaudeCode {
             actions.push(("r", "continue in Rex"));
         }

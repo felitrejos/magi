@@ -31,8 +31,7 @@ pub(super) fn describe(row: &Row<'_>) -> Value {
         .and_then(|machine| Some((machine, machine.latest.as_ref()?)))
     else {
         let error = match row.state() {
-            Some(LinkState::Lost { reason, .. }) => reason.clone(),
-            Some(LinkState::Rejected(reason)) => reason.clone(),
+            Some(LinkState::Lost { reason, .. } | LinkState::Rejected(reason)) => reason.clone(),
             Some(LinkState::Connecting | LinkState::Live) => "no answer yet".into(),
             None => "no magi agent".into(),
         };
@@ -275,7 +274,6 @@ mod tests {
         assert_eq!(session(&asking)["mode"], json!("plan"));
         let remote = AgentSession {
             remote: Some("session_01abc".into()),
-            pr: None,
             ..busy.clone()
         };
         assert_eq!(

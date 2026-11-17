@@ -481,10 +481,10 @@ pub fn run(socket: &Path) -> io::Result<()> {
     })?;
     thread::Builder::new().name("menu".into()).spawn(move || {
         for line in BufReader::new(stream).lines() {
-            let Ok(menu) = line.map(|line| serde_json::from_str::<Menu>(&line)) else {
-                break;
-            };
-            let Ok(menu) = menu else {
+            let Some(menu) = line
+                .ok()
+                .and_then(|line| serde_json::from_str::<Menu>(&line).ok())
+            else {
                 break;
             };
             if sender.send(Message::Menu(menu)).is_err() {

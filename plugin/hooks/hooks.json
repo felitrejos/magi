@@ -1,0 +1,16 @@
+{
+  "description": "Runs an armed magi handoff once the turn has ended",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "magi hook stop",
+            "timeout": 150
+          }
+        ]
+      }
+    ]
+  }
+}

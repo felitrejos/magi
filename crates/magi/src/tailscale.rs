@@ -65,7 +65,7 @@ struct WhoisJson {
 
 pub fn status() -> io::Result<Status> {
     let status: StatusJson = bounded::json(program(), &["status", "--json"], TIMEOUT)?;
-    Ok(parse_status(status))
+    Ok(parse_status(&status))
 }
 
 pub fn whois_login(peer: SocketAddr) -> io::Result<String> {
@@ -87,7 +87,7 @@ fn program() -> &'static str {
     })
 }
 
-fn parse_status(status: StatusJson) -> Status {
+fn parse_status(status: &StatusJson) -> Status {
     let owner = status.me.user_id;
     let mut peers: Vec<Peer> = status
         .peers
@@ -143,7 +143,7 @@ mod tests {
             },
             "User": {"7": {"LoginName": "me@github"}, "9": {"LoginName": "friend@github"}}
         }"#;
-        let status = parse_status(serde_json::from_str(json).unwrap());
+        let status = parse_status(&serde_json::from_str(json).unwrap());
         assert_eq!(status.node, "laptop");
         assert_eq!(status.login.as_deref(), Some("me@github"));
         assert!(!status.tagged);
@@ -161,7 +161,7 @@ mod tests {
     fn a_tagged_machine_is_reported_as_tagged() {
         let json = r#"{"Self": {"DNSName": "server.tail.ts.net.", "TailscaleIPs": ["100.9.9.9"], "UserID": 1, "Tags": ["tag:server"]},
                        "User": {"1": {"LoginName": "tagged-devices"}}}"#;
-        assert!(parse_status(serde_json::from_str(json).unwrap()).tagged);
+        assert!(parse_status(&serde_json::from_str(json).unwrap()).tagged);
     }
 
     #[test]

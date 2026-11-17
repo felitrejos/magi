@@ -114,7 +114,7 @@ impl Board {
         for window in report.windows {
             state.windows.insert(window.minutes, window);
         }
-        state.as_of = unix_secs();
+        state.as_of = crate::log::now_secs();
         self.save(&state);
     }
 
@@ -132,12 +132,6 @@ impl Board {
         (!state.windows.is_empty())
             .then(|| (state.as_of, state.windows.values().copied().collect()))
     }
-}
-
-fn unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
 }
 
 #[derive(Default)]
@@ -242,7 +236,7 @@ impl Sessions {
             })
             .collect();
         for Found {
-            session,
+            mut session,
             pid,
             transcript,
             cwd,
@@ -267,7 +261,6 @@ impl Sessions {
                 snapshot.panes.insert(session.id.clone(), location);
                 pane
             });
-            let mut session = session;
             if let Some(reported) = &reported {
                 session.state = reported.apply(session.state);
                 session.activity = reported.activity();
@@ -306,9 +299,8 @@ fn follow_reports(children: &mut [Child], running: &HashMap<String, String>) {
         };
         match running.get(agent) {
             Some(doing) if !doing.is_empty() => child.doing = Some(doing.clone()),
-            Some(_) => {}
             None if child.secs >= REPORTED_WITHIN_SECS => child.state = ChildState::Stopped,
-            None => {}
+            _ => {}
         }
     }
 }

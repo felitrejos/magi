@@ -293,16 +293,14 @@ impl Alerts {
     fn save(&mut self, entries: Vec<Entry>) {
         if !entries.is_empty() {
             self.problem = self
-                .record(entries)
+                .record(&entries)
                 .err()
                 .map(|error| format!("alert history not saved: {error}"));
         }
     }
 
-    fn record(&mut self, entries: Vec<Entry>) -> io::Result<()> {
-        for entry in &entries {
-            self.history.push_back(entry.clone());
-        }
+    fn record(&mut self, entries: &[Entry]) -> io::Result<()> {
+        self.history.extend(entries.iter().cloned());
         while self.history.len() > KEPT {
             self.history.pop_front();
         }
@@ -324,7 +322,7 @@ impl Alerts {
             log.bytes = size(&log.path);
             return Ok(());
         }
-        let text = lines(&entries)?;
+        let text = lines(entries)?;
         append(&log.path, &text)?;
         if !written_elsewhere {
             log.bytes += text.len() as u64;
@@ -413,10 +411,10 @@ fn open_private(path: &PathBuf, options: &mut OpenOptions) -> io::Result<File> {
     options.mode(FILE_MODE).open(path)
 }
 
-fn lines(entries: impl IntoIterator<Item = impl std::borrow::Borrow<Entry>>) -> io::Result<String> {
+fn lines<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> io::Result<String> {
     let mut text = String::new();
     for entry in entries {
-        text.push_str(&serde_json::to_string(entry.borrow()).map_err(io::Error::other)?);
+        text.push_str(&serde_json::to_string(entry).map_err(io::Error::other)?);
         text.push('\n');
     }
     Ok(text)

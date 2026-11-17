@@ -84,7 +84,7 @@ fn text(value: &Option<serde_json::Value>) -> &str {
         .unwrap_or_default()
 }
 
-fn label(text: &str) -> String {
+pub(super) fn label(text: &str) -> String {
     let first = text.lines().next().unwrap_or_default().trim();
     let mut label: String = first.chars().take(MAX_LABEL_CHARS).collect();
     if first.chars().count() > MAX_LABEL_CHARS {
@@ -414,7 +414,7 @@ impl Lines for Feed<'_> {
                         if STOP_TOOLS.contains(&name.as_str())
                             && let Some(task) = input.stopped_task()
                         {
-                            state.finish_task(task, ChildState::Stopped, at);
+                            state.stop_task(task, at);
                         }
                         if let Some(tracked) = input.tracked(id, name, at) {
                             state.track(tracked);
@@ -485,11 +485,11 @@ impl Summary {
         }
     }
 
-    fn finish_task(&mut self, task: &str, state: ChildState, at: u64) {
+    fn stop_task(&mut self, task: &str, at: u64) {
         if let Some(tracked) = self.tracked.iter_mut().find(|tracked| {
             tracked.task.as_deref() == Some(task) && tracked.state == ChildState::Running
         }) {
-            tracked.state = state;
+            tracked.state = ChildState::Stopped;
             tracked.at = at;
         }
     }

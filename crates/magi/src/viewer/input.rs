@@ -19,8 +19,7 @@ pub enum Input {
     Resize,
     Cells { width: u32, height: u32 },
     Closed,
-    Click { column: u16, row: u16 },
-    Wheel { up: bool, column: u16, row: u16 },
+    Wheel { up: bool },
 }
 
 #[derive(Debug, PartialEq)]
@@ -180,9 +179,8 @@ fn csi(colours: &mut Vec<u8>, body: &[u8]) -> Option<Input> {
         ([b'6'], b'~') => Some(Input::Key(Key::PageDown)),
         ([b'2', b'7', b';', .., b';', b'1', b'3'], b'~') => Some(Input::Key(Key::Newline)),
         ([b'6', b';', size @ ..], b't') => cell_size(size),
-        ([b'?', ..], _) => None,
         ([b'<', mouse @ ..], b'M') => mouse_press(mouse),
-        ([b'<', ..], _) => None,
+        ([b'?' | b'<', ..], _) => None,
         _ => final_key(last).map(Input::Key),
     }
 }
@@ -194,21 +192,10 @@ fn cell_size(params: &[u8]) -> Option<Input> {
 }
 
 fn mouse_press(params: &[u8]) -> Option<Input> {
-    let text = std::str::from_utf8(params).ok()?;
-    let mut numbers = text.split(';').map(str::parse::<u16>);
-    let (button, column, row) = (
-        numbers.next()?.ok()?,
-        numbers.next()?.ok()?,
-        numbers.next()?.ok()?,
-    );
-    let (column, row) = (column.checked_sub(1)?, row.checked_sub(1)?);
+    let button = std::str::from_utf8(params).ok()?.split(';').next()?;
     match button {
-        0 => Some(Input::Click { column, row }),
-        64 | 65 => Some(Input::Wheel {
-            up: button == 64,
-            column,
-            row,
-        }),
+        "64" => Some(Input::Wheel { up: true }),
+        "65" => Some(Input::Wheel { up: false }),
         _ => None,
     }
 }
@@ -489,22 +476,10 @@ mod tests {
     }
 
     #[test]
-    fn clicks_and_the_wheel_arrive_as_input_and_releases_are_ignored() {
+    fn the_wheel_arrives_as_input_and_clicks_and_releases_are_ignored() {
         assert_eq!(
             parse(&[b"\x1b[<0;12;5M\x1b[<0;12;5m\x1b[<64;1;1M\x1b[<65;1;1M\x1b[<2;3;3M"]),
-            [
-                Input::Click { column: 11, row: 4 },
-                Input::Wheel {
-                    up: true,
-                    column: 0,
-                    row: 0
-                },
-                Input::Wheel {
-                    up: false,
-                    column: 0,
-                    row: 0
-                },
-            ]
+            [Input::Wheel { up: true }, Input::Wheel { up: false }]
         );
     }
 

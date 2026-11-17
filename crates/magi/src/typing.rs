@@ -26,7 +26,6 @@ pub fn prompt(
 ) -> Result<String, String> {
     let pane = pane.ok_or_else(|| not_in_rex(session))?;
     let text = prompt_text(text)?;
-    ready_for_prompt(session)?;
     let _typing = TYPING.lock().unwrap_or_else(PoisonError::into_inner);
     paste(pane, &text)?;
     thread::sleep(SUBMIT_AFTER);
@@ -171,24 +170,6 @@ fn prompt_text(text: &str) -> Result<String, String> {
     Ok(text.to_string())
 }
 
-fn ready_for_prompt(session: &AgentSession) -> Result<(), String> {
-    match &session.state {
-        SessionState::Idle => Ok(()),
-        SessionState::Working { .. } => Err(format!(
-            "{} is still working: send it when it's idle",
-            session.title
-        )),
-        SessionState::Waiting(Waiting::Permission(_) | Waiting::Trust) => Err(format!(
-            "{} is asking for permission: allow or deny it first",
-            session.title
-        )),
-        SessionState::Waiting(Waiting::Input(_)) => Err(format!(
-            "{} is waiting on a question in its pane: open it to answer",
-            session.title
-        )),
-    }
-}
-
 fn send(pane: &Location, text: &str) -> Result<(), String> {
     rex(
         pane,
@@ -224,31 +205,12 @@ fn rex(pane: &Location, args: &[&str]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::Agent;
 
-    fn session(agent: Agent, state: SessionState) -> AgentSession {
+    fn session(state: SessionState) -> AgentSession {
         AgentSession {
-            agent,
-            id: "s1".into(),
             title: "fix the build".into(),
-            project: String::new(),
             state,
-            state_secs: 0,
-            model: String::new(),
-            context_tokens: 0,
-            context_used: None,
-            cost_micros: 0,
-            cost_complete: true,
-            pane: None,
-            usage: None,
-            children: Vec::new(),
-            branch: None,
-            parent: None,
-            activity: None,
-            mode: None,
-            queued: None,
-            remote: None,
-            pr: None,
+            ..AgentSession::example("s1")
         }
     }
 
@@ -282,22 +244,10 @@ mod tests {
     }
 
     #[test]
-    fn only_an_idle_session_takes_a_message() {
-        let ready = |state| ready_for_prompt(&session(Agent::ClaudeCode, state)).is_ok();
-        assert!(ready(SessionState::Idle));
-        assert!(!ready(SessionState::Working { tool: None }));
-        assert!(!ready(SessionState::Waiting(Waiting::Permission(None))));
-        assert!(!ready(SessionState::Waiting(Waiting::Input(
-            "question".into()
-        ))));
-    }
-
-    #[test]
     fn an_answer_goes_only_to_the_prompt_the_viewer_saw() {
-        let mut asking = session(
-            Agent::ClaudeCode,
-            SessionState::Waiting(Waiting::Permission(Some("Bash".into()))),
-        );
+        let mut asking = session(SessionState::Waiting(Waiting::Permission(Some(
+            "Bash".into(),
+        ))));
         asking.state_secs = 9;
         let seen = |tool: &str, waiting_secs| Seen {
             tool: Some(tool.into()),
@@ -310,7 +260,7 @@ mod tests {
             Err("fix the build is asking something new: look again before answering".into())
         );
         assert!(same_prompt(&asking, &seen("Bash", 30)).is_err());
-        let idle = session(Agent::ClaudeCode, SessionState::Idle);
+        let idle = session(SessionState::Idle);
         assert_eq!(
             same_prompt(&idle, &seen("Bash", 0)),
             Err("fix the build isn't asking for permission now".into())
@@ -319,40 +269,33 @@ mod tests {
 
     #[test]
     fn a_choice_goes_only_to_the_question_the_viewer_saw() {
-        let mut asking = session(
-            Agent::ClaudeCode,
-            SessionState::Waiting(Waiting::Input("input needed".into())),
-        );
+        let mut asking = session(SessionState::Waiting(Waiting::Input("input needed".into())));
         asking.state_secs = 9;
         assert!(same_question(&asking, 2, 10).is_ok());
         assert!(same_question(&asking, 0, 9).is_err());
         assert!(same_question(&asking, 10, 9).is_err());
         assert!(same_question(&asking, 1, 30).is_err());
-        let idle = session(Agent::ClaudeCode, SessionState::Idle);
+        let idle = session(SessionState::Idle);
         assert!(same_question(&idle, 1, 0).is_err());
     }
 
     #[test]
     fn only_a_working_session_in_rex_can_be_stopped() {
         assert_eq!(
-            stop(&session(Agent::ClaudeCode, SessionState::Idle), None),
+            stop(&session(SessionState::Idle), None),
             Err("fix the build isn't working on anything".into())
         );
         assert_eq!(
-            stop(
-                &session(Agent::ClaudeCode, SessionState::Working { tool: None }),
-                None
-            ),
+            stop(&session(SessionState::Working { tool: None }), None),
             Err("fix the build isn't in a Rex pane, so magi can't type into it".into())
         );
     }
 
     #[test]
     fn nothing_is_typed_into_a_session_outside_rex() {
-        let asking = session(
-            Agent::ClaudeCode,
-            SessionState::Waiting(Waiting::Permission(Some("Bash".into()))),
-        );
+        let asking = session(SessionState::Waiting(Waiting::Permission(Some(
+            "Bash".into(),
+        ))));
         let seen = Seen {
             tool: Some("Bash".into()),
             waiting_secs: 0,
@@ -362,7 +305,7 @@ mod tests {
             Err("fix the build isn't in a Rex pane, so magi can't type into it".into())
         );
         assert_eq!(
-            prompt(&session(Agent::ClaudeCode, SessionState::Idle), None, "hi"),
+            prompt(&session(SessionState::Idle), None, "hi"),
             Err("fix the build isn't in a Rex pane, so magi can't type into it".into())
         );
     }

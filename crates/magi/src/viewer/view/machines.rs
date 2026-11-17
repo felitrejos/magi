@@ -6,7 +6,7 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{Cursor, body, clip, draw_panel, panel, truncate};
+use super::{Cursor, body, clip, draw_panel, spread, truncate};
 use crate::proto::{CoreKind, FULL};
 use crate::viewer::graphics::{Chart, Graphics, Kind, Series};
 use crate::viewer::model::{
@@ -82,13 +82,8 @@ pub fn render_detail(
     draw_panel(
         frame,
         area,
-        panel(
-            vec![Span::styled(row.name.clone(), style::bold(theme().text))],
-            Some(vec![Span::styled(
-                place.to_string(),
-                style::fg(theme().dim),
-            )]),
-        ),
+        vec![Span::styled(row.name.clone(), style::bold(theme().text))],
+        vec![Span::styled(place.to_string(), style::fg(theme().dim))],
     );
     let area = body(area);
     let width = area.width as usize;
@@ -116,7 +111,7 @@ pub fn render_detail(
                         style::fg(theme().warn),
                     ),
                     Span::styled(
-                        format!("cielago forwards close {short}"),
+                        format!("magi forwards close {short}"),
                         style::fg(theme().dim),
                     ),
                 ],
@@ -309,7 +304,7 @@ fn draw_tile(
     let mut cursor = Cursor::new(rect);
     cursor.line(
         frame,
-        spread_line(
+        spread(
             vec![
                 Span::styled(tile.title, style::bold(theme().text)),
                 Span::raw("  "),
@@ -320,7 +315,7 @@ fn draw_tile(
         ),
     );
     for (left, right) in &tile.notes {
-        cursor.line(frame, spread_line(left.clone(), right.clone(), width));
+        cursor.line(frame, spread(left.clone(), right.clone(), width));
     }
     let samples = tile.series.first().map_or(0, |(values, _)| values.len());
     let chart = Chart {
@@ -379,7 +374,7 @@ fn draw_scaled(
         Rect::new(area.x, area.y, area.width, 1),
     );
     frame.render_widget(
-        Paragraph::new(spread_line(
+        Paragraph::new(spread(
             vec![faint(format!(
                 "{} · {} ago",
                 scale.bottom,
@@ -440,7 +435,7 @@ fn draw_cores(
             let average = group.cores.iter().map(|index| load(*index)).sum::<f32>()
                 / group.cores.len() as f32;
             frame.render_widget(
-                Paragraph::new(spread_line(
+                Paragraph::new(spread(
                     vec![Span::styled(group.title, style::fg(theme().dim))],
                     vec![Span::styled(
                         format!(
@@ -595,7 +590,7 @@ fn draw_processes(frame: &mut Frame, area: Rect, sample: &crate::proto::Sample) 
     let mut cursor = Cursor::new(area);
     cursor.line(
         frame,
-        spread_line(
+        spread(
             vec![Span::styled("Using it", style::bold(theme().text))],
             vec![Span::styled(
                 format!("{:>6}  {:>8}", "CPU", "memory"),
@@ -624,7 +619,7 @@ fn draw_processes(frame: &mut Frame, area: Rect, sample: &crate::proto::Sample) 
         );
         cursor.line(
             frame,
-            spread_line(
+            spread(
                 left,
                 vec![Span::styled(
                     format!("{cpu:>6}  {:>8}", units::bytes(process.memory)),
@@ -649,10 +644,6 @@ fn percent_span(value: f32, subsystem: Subsystem) -> Span<'static> {
         units::percent(value).trim().to_string(),
         style::bold(level_text(value, subsystem)),
     )
-}
-
-fn spread_line(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
-    super::spread(left, right, width)
 }
 
 fn temperature_color(degrees: f32) -> Color {

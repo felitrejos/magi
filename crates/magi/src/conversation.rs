@@ -359,6 +359,7 @@ fn shorten(detail: &str, cwd: &str, home: &str) -> String {
     }
     match inside(home) {
         Some(relative) => format!("~/{relative}"),
+        None if home.is_empty() => detail.to_string(),
         None => detail.replace(&format!("{home}/"), "~/"),
     }
 }
@@ -938,6 +939,7 @@ mod tests {
             "cd ~/web && cargo test"
         );
         assert_eq!(shorten("/etc/hosts", "", "/home/me"), "/etc/hosts");
+        assert_eq!(shorten("cat /etc/hosts", "", ""), "cat /etc/hosts");
     }
 
     #[test]

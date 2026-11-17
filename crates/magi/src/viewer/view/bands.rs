@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -94,7 +94,7 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
             Line::Heading(text, color) => {
                 Composed::of(vec![Span::styled(*text, style::bold(*color))])
             }
-            Line::Machine(row) => machine_line(row, &row.name, width),
+            Line::Machine(row) => machine_line(row, width),
             Line::Session(agent, asking) => {
                 let tag = agent.machine.as_str();
                 let forwards = model.forwards_to(&agent.session.id, &agent.machine, now);
@@ -157,12 +157,12 @@ fn lines<'a>(
     lines
 }
 
-fn machine_line(row: &Row<'_>, name: &str, width: usize) -> Composed {
+fn machine_line(row: &Row<'_>, width: usize) -> Composed {
     let name_width = NAME_WIDTH.min(width / 3);
     let mut left = Composed::of(vec![Span::styled(
         format!(
             "{:<name_width$}",
-            truncate(name, name_width.saturating_sub(1))
+            truncate(&row.name, name_width.saturating_sub(1))
         ),
         style::bold(theme().text),
     )]);
@@ -416,11 +416,8 @@ fn top_line(
         format!("   {}", summary.0),
         style::fg(summary.1),
     ));
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
     let plans = model.plans(now);
-    let right = plans_line(&plans, PLAN_METER, now_secs);
+    let right = plans_line(&plans, PLAN_METER, crate::log::now_secs());
     left.spread(right, usize::from(area.width)).draw(
         frame,
         graphics,

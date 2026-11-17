@@ -201,7 +201,7 @@ impl Panes {
             .retain(|_, (at, _)| now.duration_since(*at) < REREAD_PROCESS_AFTER);
         let found = environment(pid).map_or_else(Environment::default, |bytes| Environment {
             location: location(&bytes),
-            delegated_by: variable(&bytes, b"CIELAGO_PARENT"),
+            delegated_by: variable(&bytes, b"MAGI_PARENT"),
         });
         self.processes.insert(process, (now, found.clone()));
         found
@@ -339,13 +339,13 @@ mod tests {
 
     #[test]
     fn work_sent_from_another_session_names_it_in_its_environment() {
-        let environment = b"PATH=/bin\0CIELAGO_PARENT=9fb6fe92\0CIELAGO_PARENTS=x\0";
+        let environment = b"PATH=/bin\0MAGI_PARENT=9fb6fe92\0MAGI_PARENTS=x\0";
         assert_eq!(
-            variable(environment, b"CIELAGO_PARENT").as_deref(),
+            variable(environment, b"MAGI_PARENT").as_deref(),
             Some("9fb6fe92")
         );
-        assert_eq!(variable(b"CIELAGO_PARENT=\0", b"CIELAGO_PARENT"), None);
-        assert_eq!(variable(b"PATH=/bin\0", b"CIELAGO_PARENT"), None);
+        assert_eq!(variable(b"MAGI_PARENT=\0", b"MAGI_PARENT"), None);
+        assert_eq!(variable(b"PATH=/bin\0", b"MAGI_PARENT"), None);
     }
 
     #[test]

@@ -76,14 +76,7 @@ pub fn run(port: u16, command: Cli) -> io::Result<()> {
             subagent,
             within,
         } => watch::wait(&mut client, &session, subagent.as_deref(), within),
-        Cli::Send { session, text } => {
-            let found = client.session(&session).map_err(io::Error::other)?;
-            let request = Request::Prompt {
-                session: found.session.id.clone(),
-                text,
-            };
-            client.ask(found.endpoint, &request, ANSWER_WITHIN)
-        }
+        Cli::Send { session, text } => send(&mut client, &session, text),
         Cli::Answer { session, allow } => answer(&mut client, &session, allow),
         Cli::Choose { session, option } => choose(&mut client, &session, option),
         Cli::Move { session, to } => move_to(&mut client, &session, &to),
@@ -95,7 +88,7 @@ pub fn run(port: u16, command: Cli) -> io::Result<()> {
         } => start(
             &mut client,
             &machine,
-            Request::Open {
+            &Request::Open {
                 place,
                 codex,
                 model,
@@ -154,7 +147,7 @@ fn sessions(client: &Client, as_json: bool) -> io::Result<()> {
 pub(super) fn start(
     client: &mut Client,
     machine: &str,
-    request: Request,
+    request: &Request,
 ) -> Result<String, String> {
     let machine = client.machine(machine)?;
     let endpoint = client
@@ -166,7 +159,7 @@ pub(super) fn start(
         .iter()
         .map(|agent| agent.session.id.clone())
         .collect();
-    let said = client.ask(endpoint, &request, START_WITHIN)?;
+    let said = client.ask(endpoint, request, START_WITHIN)?;
     let deadline = Instant::now() + LINK_WITHIN;
     let mut started = None;
     while Instant::now() < deadline {
@@ -220,6 +213,15 @@ pub(super) fn listed(client: &Client) -> Value {
             })
             .collect(),
     )
+}
+
+pub(super) fn send(client: &mut Client, query: &str, text: String) -> Result<String, String> {
+    let found = client.session(query)?;
+    let request = Request::Prompt {
+        session: found.session.id.clone(),
+        text,
+    };
+    client.ask(found.endpoint, &request, ANSWER_WITHIN)
 }
 
 pub(super) fn answer(client: &mut Client, query: &str, allow: bool) -> Result<String, String> {

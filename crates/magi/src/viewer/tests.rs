@@ -686,7 +686,8 @@ fn a_moved_session_shows_the_ports_its_old_machine_forwards_to_it() {
         shown.contains("localhost:5000 → homelab for a session that left"),
         "{shown}"
     );
-    assert!(shown.contains("cielago forwards close gone"), "{shown}");
+    assert!(shown.contains("magi forwards close gone"), "{shown}");
+    assert!(!shown.contains("localhost:4000 →"), "{shown}");
     assert_eq!(
         model.moved_forwards(now),
         [(Endpoint::Local, "s1".to_string())],
@@ -708,7 +709,6 @@ fn a_moved_session_shows_the_ports_its_old_machine_forwards_to_it() {
         [],
         "a host named only by its ssh login is still the machine s1 runs on"
     );
-    assert!(!shown.contains("localhost:4000 →"), "{shown}");
 }
 
 #[test]
@@ -942,12 +942,12 @@ fn the_launcher_says_why_a_machine_listed_no_projects() {
         homelab,
         LinkUpdate::Reply(crate::proto::Reply {
             ok: false,
-            text: "cielago isn't installed".into(),
+            text: "magi-remote is missing".into(),
         }),
         now,
     );
     handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-    assert!(asked_and_failed(&model, "cielago isn't installed"));
+    assert!(asked_and_failed(&model, "magi-remote is missing"));
 }
 
 #[test]

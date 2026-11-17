@@ -55,14 +55,12 @@ struct Palette {
     magenta: Rgb,
 }
 
-pub fn update(reply: &[u8]) -> bool {
+pub fn update(reply: &[u8]) {
     let mut current = CURRENT.write().unwrap_or_else(PoisonError::into_inner);
     let palette = Palette::parse(reply, current.0);
-    if palette == current.0 {
-        return false;
+    if palette != current.0 {
+        *current = (palette, Theme::from(palette));
     }
-    *current = (palette, Theme::from(palette));
-    true
 }
 
 pub fn theme() -> Theme {
@@ -80,7 +78,7 @@ impl From<Palette> for Theme {
             track: toward_background(0.84),
             guide: toward_background(0.78),
             selected: toward_background(0.88),
-            panel: palette.panel(0.0),
+            panel: palette.panel(),
             prose: toward_background(PROSE),
             accent: palette.green.into(),
             second: palette.magenta.into(),
@@ -93,7 +91,7 @@ impl From<Palette> for Theme {
 }
 
 impl Palette {
-    fn panel(self, raise: f32) -> Color {
+    fn panel(self) -> Color {
         let Rgb(r, g, b) = self.background;
         let lightness = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
         let lift = if lightness < 128 {
@@ -101,7 +99,7 @@ impl Palette {
         } else {
             LIGHT_LIFT
         };
-        self.background.mix(self.foreground, lift + raise)
+        self.background.mix(self.foreground, lift)
     }
 
     fn parse(reply: &[u8], base: Self) -> Self {
@@ -230,13 +228,13 @@ mod tests {
             background: Rgb(13, 17, 23),
             ..FALLBACK
         };
-        assert_eq!(dark.panel(0.0), Color::Rgb(21, 25, 31));
+        assert_eq!(dark.panel(), Color::Rgb(21, 25, 31));
         let light = Palette {
             foreground: Rgb(30, 30, 30),
             background: Rgb(250, 250, 250),
             ..FALLBACK
         };
-        assert_eq!(light.panel(0.0), Color::Rgb(243, 243, 243));
+        assert_eq!(light.panel(), Color::Rgb(243, 243, 243));
     }
 
     #[test]

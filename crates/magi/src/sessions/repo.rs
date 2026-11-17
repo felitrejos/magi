@@ -20,15 +20,9 @@ pub fn locate(cwd: &str) -> Repo {
             };
         }
         if let Some(gitdir) = linked_gitdir(&git) {
-            return match main_repo(&gitdir) {
-                Some(main) => Repo {
-                    project: name(main),
-                    branch: branch(&gitdir),
-                },
-                None => Repo {
-                    project: name(dir),
-                    branch: branch(&gitdir),
-                },
+            return Repo {
+                project: name(main_repo(&gitdir).unwrap_or(dir)),
+                branch: branch(&gitdir),
             };
         }
     }

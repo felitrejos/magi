@@ -7,13 +7,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::handoff;
 
 const BROWSE: &str = r#"cd "$0" || exit 1
-export MAGI_TOOL="$2" MAGI_PALETTE="$5"
+export MAGI_TOOL="$2"
 "$3" --ansi --delimiter='	' --with-nth=1,2 --header="$1" --header-first \
   --layout=reverse --info=inline-right --prompt='filter files > ' --no-sort --exact \
-  --keep-right --footer="$6" \
+  --keep-right --footer="$5" \
   --preview="$4" \
   --preview-window='right,62%,border-left,<60(down,65%,border-top)' \
-  --bind="$7" < files
+  --bind='enter:ignore' < files
 cd / && rm -rf "$0""#;
 const DELTA_PREVIEW: &str = r#""$MAGI_TOOL" --paging=never --width=$FZF_PREVIEW_COLUMNS < {3}"#;
 const NEW_FILE: &str = "new file, not yet added: ";
@@ -64,13 +64,6 @@ fn sections(diff: &str) -> Vec<Section> {
     sections
 }
 
-struct Entry {
-    left: String,
-    label: String,
-    file: String,
-    text: Vec<u8>,
-}
-
 pub fn diff(diff: &str, title: &str, popups: &Path) -> io::Result<Option<Vec<String>>> {
     let dirs = handoff::search_dirs();
     let (Some(fzf), Some(delta)) = (handoff::find("fzf", &dirs), handoff::find("delta", &dirs))
@@ -87,67 +80,33 @@ pub fn diff(diff: &str, title: &str, popups: &Path) -> io::Result<Option<Vec<Str
         sections.iter().map(|section| section.added).sum::<u32>(),
         sections.iter().map(|section| section.removed).sum::<u32>()
     );
-    let entries = sections
-        .into_iter()
-        .enumerate()
-        .map(|(index, section)| Entry {
-            left: format!(
-                "\x1b[32m+{}\x1b[0m \x1b[31m−{}\x1b[0m",
-                section.added, section.removed
-            ),
-            label: section.path,
-            file: format!("{index}.diff"),
-            text: section.text.into_bytes(),
-        })
-        .collect();
-    let browser = Browser {
-        fzf: &fzf,
-        tool: &delta,
-        preview: DELTA_PREVIEW,
-        palette: "",
-        footer: PICK,
-        enter: "enter:ignore".into(),
-    };
-    browser.open(entries, &header, popups).map(Some)
+    let dir = fresh_dir(popups)?;
+    let mut list = String::new();
+    for (index, section) in sections.into_iter().enumerate() {
+        let file = format!("{index}.diff");
+        write_private(&dir.join(&file), section.text.as_bytes())?;
+        let label: String = section.path.chars().filter(|c| !c.is_control()).collect();
+        list.push_str(&format!(
+            "\x1b[32m+{}\x1b[0m \x1b[31m−{}\x1b[0m\t{label}\t{file}\n",
+            section.added, section.removed
+        ));
+    }
+    write_private(&dir.join("files"), list.as_bytes())?;
+    Ok(Some(vec![
+        "sh".into(),
+        "-c".into(),
+        BROWSE.into(),
+        dir.to_string_lossy().into_owned(),
+        header,
+        delta.to_string_lossy().into_owned(),
+        fzf.to_string_lossy().into_owned(),
+        DELTA_PREVIEW.into(),
+        PICK.into(),
+    ]))
 }
 
 fn files(count: usize) -> String {
     format!("{count} {}", if count == 1 { "file" } else { "files" })
-}
-
-struct Browser<'a> {
-    fzf: &'a Path,
-    tool: &'a Path,
-    preview: &'a str,
-    palette: &'a str,
-    footer: &'a str,
-    enter: String,
-}
-
-impl Browser<'_> {
-    fn open(&self, entries: Vec<Entry>, header: &str, popups: &Path) -> io::Result<Vec<String>> {
-        let dir = fresh_dir(popups)?;
-        let mut list = String::new();
-        for entry in entries {
-            write_private(&dir.join(&entry.file), &entry.text)?;
-            let label: String = entry.label.chars().filter(|c| !c.is_control()).collect();
-            list.push_str(&format!("{}\t{label}\t{}\n", entry.left, entry.file));
-        }
-        write_private(&dir.join("files"), list.as_bytes())?;
-        Ok(vec![
-            "sh".into(),
-            "-c".into(),
-            BROWSE.into(),
-            dir.to_string_lossy().into_owned(),
-            header.to_string(),
-            self.tool.to_string_lossy().into_owned(),
-            self.fzf.to_string_lossy().into_owned(),
-            self.preview.to_string(),
-            self.palette.to_string(),
-            self.footer.to_string(),
-            self.enter.clone(),
-        ])
-    }
 }
 
 pub fn fresh_dir(popups: &Path) -> io::Result<PathBuf> {

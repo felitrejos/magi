@@ -27,7 +27,7 @@ and let the user decide before send_message, answer_permission, choose_option, \
 move_session or start_session.";
 
 pub fn run(port: u16) -> io::Result<()> {
-    let mut client = Client::connect(port)?;
+    let mut client: Option<Client> = None;
     let (lines, incoming) = mpsc::channel();
     thread::Builder::new().name("stdin".into()).spawn(move || {
         for line in io::stdin().lock().lines() {
@@ -40,15 +40,25 @@ pub fn run(port: u16) -> io::Result<()> {
     let mut out = io::stdout().lock();
     loop {
         let line = match incoming.recv_timeout(PUMP_EVERY) {
-            Ok(line) => line,
-            Err(RecvTimeoutError::Timeout) => {
-                client.wait(Duration::ZERO)?;
-                continue;
-            }
+            Ok(line) => Some(line),
+            Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         };
-        client.wait(Duration::ZERO)?;
-        if let Some(reply) = respond(&line, |name, arguments| call(&mut client, name, arguments)) {
+        if let Some(client) = client.as_mut() {
+            client.wait(Duration::ZERO)?;
+        }
+        let Some(line) = line else {
+            continue;
+        };
+        if let Some(reply) = respond(&line, |name, arguments| {
+            let connected = match client.take() {
+                Some(connected) => connected,
+                None => Client::connect(port).map_err(|error| {
+                    format!("magi's overview isn't reachable ({error}). It needs magi agent running on your machines and Tailscale; the tools that send work elsewhere still work without it")
+                })?,
+            };
+            call(client.insert(connected), name, arguments)
+        }) {
             serde_json::to_writer(&mut out, &reply)?;
             writeln!(out)?;
             out.flush()?;
@@ -260,14 +270,7 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
                 Duration::from_secs(seconds),
             )
         }
-        "send_message" => {
-            let found = client.session(&text("session")?)?;
-            let request = Request::Prompt {
-                session: found.session.id.clone(),
-                text: text("text")?,
-            };
-            client.ask(found.endpoint, &request, ANSWER_WITHIN)
-        }
+        "send_message" => cli::send(client, &text("session")?, text("text")?),
         "answer_permission" => {
             let allow = arguments["allow"]
                 .as_bool()
@@ -303,7 +306,7 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
                 codex: arguments["codex"].as_bool() == Some(true),
                 model: arguments["model"].as_str().map(str::to_string),
             };
-            cli::start(client, &machine, request)
+            cli::start(client, &machine, &request)
         }
         _ => Err(format!("magi has no tool {name}")),
     }

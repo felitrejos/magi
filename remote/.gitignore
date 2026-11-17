@@ -1,0 +1,4 @@
+bin/
+dist/
+/magi-remote
+.DS_Store

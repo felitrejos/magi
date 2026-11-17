@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use super::limits::percent;
-use crate::proto::{self, CodexModel, Window};
+use crate::proto::{self, CodexModel, Window, basis_points};
 
 const ANSWER_WITHIN: Duration = Duration::from_secs(15);
 const MAX_MODELS: usize = 12;
@@ -143,7 +142,7 @@ fn windows(line: &str) -> Option<Vec<Window>> {
             .flatten()
             .map(|window| Window {
                 minutes: window.window_duration_mins,
-                used: percent(window.used_percent),
+                used: basis_points(window.used_percent),
                 resets_at: window.resets_at,
             })
             .collect(),

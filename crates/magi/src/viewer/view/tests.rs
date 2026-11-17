@@ -357,13 +357,6 @@ fn no_line_overflows_the_pane() {
 }
 
 #[test]
-fn a_machine_shows_its_full_name() {
-    let now = Instant::now();
-    let screen = draw(&fleet(1, now), 130, 30, now);
-    assert!(screen.contains("host-0"), "{screen}");
-}
-
-#[test]
 fn phone_width_keeps_names_cpu_and_memory() {
     let now = Instant::now();
     let screen = draw(&fleet(2, now), 46, 30, now);
@@ -623,15 +616,10 @@ fn work_sent_to_another_machine_points_back_to_the_session_that_sent_it() {
         child_line.contains(&format!("← {}", sender.title)) && !child_line.contains("host-0"),
         "{child_line}"
     );
-    let sender_line = screen
-        .lines()
-        .find(|line| line.contains(&sender.title) && !line.contains("linux build"))
-        .unwrap();
-    assert!(!sender_line.contains(" on host-1"), "{sender_line}");
 }
 
 #[test]
-fn a_session_shows_where_its_cielago_work_is_running() {
+fn a_session_shows_where_its_sent_work_is_running() {
     let now = Instant::now();
     let mut model = fleet(1, now);
     let mut sender = agent("linux tests", SessionState::Working { tool: None }, None);

@@ -1,18 +1,24 @@
 {
   "name": "magi",
-  "description": "Plugins from magi: cielago hands a running Claude Code session off to another machine, or sends it work there",
+  "description": "Hand a running Claude Code session off to another machine, let Claude send work to your other machines, and see every session on all of them",
   "owner": {
     "name": "felitrejos",
     "url": "https://github.com/felitrejos"
   },
   "plugins": [
     {
-      "name": "cielago",
-      "description": "Say \"hand this off to <host>\" and the session continues there with Remote Control, or have Claude send tests and tasks to another machine",
-      "source": "./cielago/plugin",
-      "version": "0.7.1",
+      "name": "magi",
+      "description": "Say \"hand this off to my homelab\" and the session continues there, have Claude send tests and tasks to another machine, and see every session from one place",
+      "source": "./plugin",
+      "version": "0.8.0",
       "category": "productivity",
-      "tags": ["remote", "handoff", "sessions", "tasks", "mcp"]
+      "tags": [
+        "remote",
+        "handoff",
+        "sessions",
+        "tasks",
+        "mcp"
+      ]
     }
   ]
 }

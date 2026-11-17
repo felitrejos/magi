@@ -33,6 +33,10 @@ pub fn prompt_chars(text: &str) -> impl Iterator<Item = char> + '_ {
 pub type BasisPoints = u16;
 pub const FULL: BasisPoints = 10_000;
 
+pub fn basis_points(percent: f64) -> BasisPoints {
+    (percent.clamp(0.0, 100.0) * f64::from(FULL) / 100.0).round() as BasisPoints
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Hello {
     pub version: u16,

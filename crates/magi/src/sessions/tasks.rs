@@ -8,7 +8,6 @@ use crate::proto::{Child, ChildKind, ChildState};
 
 const READ_EVERY: Duration = Duration::from_secs(2);
 const START_TOLERANCE_SECS: i64 = 2;
-const MAX_LABEL_CHARS: usize = 60;
 const FINISHED: [&str; 2] = ["collected", "gone"];
 const FORGET_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_RECORD_BYTES: u64 = 256 * 1024;
@@ -40,7 +39,7 @@ pub struct Tasks {
 impl Tasks {
     pub fn for_this_user() -> Option<Self> {
         let home = std::env::var_os("HOME")?;
-        Some(Self::new(Path::new(&home).join(".cielago").join("tasks")))
+        Some(Self::new(Path::new(&home).join(".magi").join("tasks")))
     }
 
     fn new(dir: PathBuf) -> Self {
@@ -103,14 +102,14 @@ fn read(dir: &Path) -> HashMap<(i32, i64), Vec<Child>> {
             .file_stem()
             .map(|stem| format!("task:{}", stem.to_string_lossy()))
             .unwrap_or_default();
-        if let Some((caller, child)) = child(id, record) {
+        if let Some((caller, child)) = child(id, &record) {
             by_caller.entry(caller).or_default().push(child);
         }
     }
     by_caller
 }
 
-fn child(id: String, record: Record) -> Option<((i32, i64), Child)> {
+fn child(id: String, record: &Record) -> Option<((i32, i64), Child)> {
     let caller = (record.caller_pid?, record.caller_started?);
     if FINISHED.contains(&record.state.as_str()) {
         return None;
@@ -119,11 +118,6 @@ fn child(id: String, record: Record) -> Option<((i32, i64), Child)> {
         .into_iter()
         .find(|text| !text.trim().is_empty())
         .map_or(record.kind.as_str(), String::as_str);
-    let first_line = what.lines().next().unwrap_or_default().trim();
-    let mut label: String = first_line.chars().take(MAX_LABEL_CHARS).collect();
-    if first_line.chars().count() > MAX_LABEL_CHARS {
-        label.push('…');
-    }
     let state = match record.state.as_str() {
         "" => "running",
         state => state,
@@ -133,7 +127,7 @@ fn child(id: String, record: Record) -> Option<((i32, i64), Child)> {
         Child {
             id,
             kind: ChildKind::Task,
-            label,
+            label: super::transcript::label(what),
             detail: format!("on {} · {state}", record.host),
             state: ChildState::Running,
             secs: 0,
@@ -153,7 +147,7 @@ mod tests {
 
     #[test]
     fn a_task_is_named_by_what_it_runs_and_says_where_and_how_it_is_doing() {
-        let (caller, task) = child("task:t1".into(), record(
+        let (caller, task) = child("task:t1".into(), &record(
             r#"{"kind":"run","host":"homelab","name":"","command":"cargo test --workspace\nsecond","state":"running","caller_pid":42,"caller_started":1000}"#,
         ))
         .unwrap();
@@ -171,7 +165,7 @@ mod tests {
                 doing: None,
             }
         );
-        let (_, delegated) = child("task:t1".into(), record(
+        let (_, delegated) = child("task:t1".into(), &record(
             r#"{"kind":"delegate","host":"homelab","prompt":"Fix the flaky login test","caller_pid":42,"caller_started":1000}"#,
         ))
         .unwrap();
@@ -184,21 +178,21 @@ mod tests {
         assert!(
             child(
                 "task:t1".into(),
-                record(r#"{"state":"collected","caller_pid":1,"caller_started":1}"#)
+                &record(r#"{"state":"collected","caller_pid":1,"caller_started":1}"#)
             )
             .is_none()
         );
         assert!(
             child(
                 "task:t1".into(),
-                record(r#"{"state":"gone","caller_pid":1,"caller_started":1}"#)
+                &record(r#"{"state":"gone","caller_pid":1,"caller_started":1}"#)
             )
             .is_none()
         );
         assert!(
             child(
                 "task:t1".into(),
-                record(r#"{"state":"running","command":"make"}"#)
+                &record(r#"{"state":"running","command":"make"}"#)
             )
             .is_none()
         );

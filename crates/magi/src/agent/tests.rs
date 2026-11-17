@@ -8,27 +8,10 @@ use crate::proto::PermissionMode;
 
 fn working(id: &str) -> AgentSession {
     AgentSession {
-        agent: proto::Agent::ClaudeCode,
-        id: id.into(),
         title: "fix the build".into(),
-        project: String::new(),
         state: SessionState::Working { tool: None },
-        state_secs: 0,
-        model: String::new(),
-        context_tokens: 0,
-        context_used: None,
-        cost_micros: 0,
-        cost_complete: true,
-        pane: None,
-        usage: None,
-        children: Vec::new(),
-        branch: None,
-        parent: None,
-        activity: None,
         mode: Some(PermissionMode::Auto),
-        queued: None,
-        remote: None,
-        pr: None,
+        ..AgentSession::example(id)
     }
 }
 

@@ -135,7 +135,7 @@ impl ClaudeSessions {
         let mut seen: Vec<Seen> = registered
             .into_iter()
             .map(|session| Seen {
-                state: state(&session.status, None),
+                state: state(&session.status),
                 state_secs: secs_between(session.status_since_ms, now_ms),
                 cwd: Some(session.cwd),
                 name: session.name,
@@ -144,11 +144,9 @@ impl ClaudeSessions {
                 pid: Some(session.pid),
             })
             .collect();
-        let mut notices: Vec<String> = (!scan.unknown.is_empty())
-            .then(|| FORMAT_CHANGED.to_string())
-            .into_iter()
-            .collect();
+        let mut notices = Vec::new();
         if !scan.unknown.is_empty() {
+            notices.push(FORMAT_CHANGED.to_string());
             let mut ids: Vec<String> = scan.unknown.iter().flatten().cloned().collect();
             if scan.unknown.iter().any(Option::is_none) {
                 self.refresh_recent(now);
@@ -198,7 +196,7 @@ impl ClaudeSessions {
                     .map(|transcript| transcript.path().to_path_buf());
                 let cwd = session_cwd(&session, tracked);
                 Found {
-                    session: describe(session, tracked, context),
+                    session: describe(session, tracked, context, &cwd),
                     pid,
                     transcript,
                     cwd,
@@ -283,13 +281,11 @@ fn secs_between(earlier_ms: u64, now_ms: u64) -> u32 {
     (now_ms.saturating_sub(earlier_ms) / 1000) as u32
 }
 
-fn state(status: &Status, running_tool: Option<&str>) -> SessionState {
+fn state(status: &Status) -> SessionState {
     match status {
-        Status::Busy => SessionState::Working {
-            tool: running_tool.map(str::to_string),
-        },
+        Status::Busy => SessionState::Working { tool: None },
         Status::Waiting(reason) if reason == "permission prompt" => {
-            SessionState::Waiting(Waiting::Permission(running_tool.map(str::to_string)))
+            SessionState::Waiting(Waiting::Permission(None))
         }
         Status::Waiting(reason) => SessionState::Waiting(Waiting::Input(reason.clone())),
         Status::Idle => SessionState::Idle,
@@ -336,10 +332,14 @@ fn with_steps(mut children: Vec<Child>, tracked: &Tracked) -> Vec<Child> {
     children
 }
 
-fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>) -> AgentSession {
+fn describe(
+    session: Seen,
+    tracked: &Tracked,
+    context_used: Option<BasisPoints>,
+    cwd: &str,
+) -> AgentSession {
     let main = tracked.transcript.as_ref();
-    let cwd = session_cwd(&session, tracked);
-    let repo = repo::locate(&cwd);
+    let repo = repo::locate(cwd);
     let project = repo.project.clone();
     let title: String = session
         .name
@@ -369,7 +369,7 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
         pane: None,
         usage: None,
         children: main
-            .map(|transcript| with_steps(transcript.children(unix_now()), tracked))
+            .map(|transcript| with_steps(transcript.children(crate::log::now_secs()), tracked))
             .unwrap_or_default(),
         branch: repo.branch,
         parent: None,
@@ -381,12 +381,6 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,24 +388,24 @@ mod tests {
     #[test]
     fn claude_status_decides_the_state_and_the_transcript_names_the_tool() {
         assert_eq!(
-            with_tool(state(&Status::Busy, None), Some("Edit")),
+            with_tool(state(&Status::Busy), Some("Edit")),
             SessionState::Working {
                 tool: Some("Edit".into())
             }
         );
         assert_eq!(
             with_tool(
-                state(&Status::Waiting("permission prompt".into()), None),
+                state(&Status::Waiting("permission prompt".into())),
                 Some("Bash")
             ),
             SessionState::Waiting(Waiting::Permission(Some("Bash".into())))
         );
         assert_eq!(
-            state(&Status::Waiting("input needed".into()), None),
+            state(&Status::Waiting("input needed".into())),
             SessionState::Waiting(Waiting::Input("input needed".into()))
         );
         assert_eq!(
-            with_tool(state(&Status::Idle, None), Some("Bash")),
+            with_tool(state(&Status::Idle), Some("Bash")),
             SessionState::Idle
         );
     }

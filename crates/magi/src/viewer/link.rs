@@ -168,9 +168,7 @@ impl Link {
             }
             Err(error) => return lost(error, false),
         };
-        let silence = (Duration::from_millis(u64::from(welcome.interval_ms)) * 3)
-            .clamp(MIN_SILENCE_TIMEOUT, MAX_SILENCE_TIMEOUT);
-        if let Err(error) = conn.set_read_timeout(Some(silence)) {
+        if let Err(error) = conn.set_read_timeout(Some(silence(welcome.interval_ms))) {
             return lost(error, false);
         }
         match conn.try_clone() {
@@ -220,6 +218,11 @@ impl Link {
         }
         self.stop.load(Ordering::Relaxed)
     }
+}
+
+fn silence(interval_ms: u32) -> Duration {
+    (Duration::from_millis(u64::from(interval_ms)) * 3)
+        .clamp(MIN_SILENCE_TIMEOUT, MAX_SILENCE_TIMEOUT)
 }
 
 fn describe(error: &io::Error) -> String {
@@ -336,11 +339,7 @@ mod tests {
         assert!(matches!(next(&events), LinkUpdate::Lost(reason) if reason == "no answer"));
         assert!(started.elapsed() < MIN_SILENCE_TIMEOUT + Duration::from_secs(2));
         server.join().unwrap();
-        assert_eq!(
-            (Duration::from_millis(u64::from(u32::MAX)) * 3)
-                .clamp(MIN_SILENCE_TIMEOUT, MAX_SILENCE_TIMEOUT),
-            MAX_SILENCE_TIMEOUT
-        );
+        assert_eq!(silence(u32::MAX), MAX_SILENCE_TIMEOUT);
     }
 
     #[test]

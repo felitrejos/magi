@@ -91,16 +91,8 @@ pub fn run(config: Config) -> io::Result<()> {
     write_terminal(terminal::MODES)?;
     topology::spawn(sender.clone())?;
     spawn_input(sender, terminal::unanswered(&reply).to_vec())?;
-    let result = write_status(alerts::CLEAR_ALL).and_then(|()| {
-        event_loop(
-            &mut terminal,
-            &events,
-            &mut links,
-            config.port,
-            alerts,
-            &mut graphics,
-        )
-    });
+    let result = write_status(alerts::CLEAR_ALL)
+        .and_then(|()| event_loop(&mut terminal, &events, &mut links, alerts, &mut graphics));
     let cleared = write_status(alerts::CLEAR_ALL)
         .and_then(|()| write_terminal(terminal::RESET_MODES))
         .and_then(|()| graphics.clear(&mut io::stdout()));
@@ -171,11 +163,10 @@ fn event_loop(
     terminal: &mut DefaultTerminal,
     events: &Receiver<Event>,
     links: &mut Links,
-    port: u16,
     alerts: alerts::Alerts,
     graphics: &mut Graphics,
 ) -> io::Result<()> {
-    let mut model = Model::new(port, Instant::now(), alerts);
+    let mut model = Model::new(links.port, Instant::now(), alerts);
     links.reconcile(&mut model, &[Endpoint::Local])?;
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME;
@@ -356,12 +347,8 @@ fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
         }
     };
     host.send(&model.menu(now));
-    let magi = std::env::current_exe().map_or_else(
-        |_| "magi".to_string(),
-        |path| path.to_string_lossy().into_owned(),
-    );
     let command = vec![
-        magi,
+        magi(),
         "launch".into(),
         host.path().to_string_lossy().into_owned(),
     ];
@@ -382,9 +369,8 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
     if !offered {
         return;
     }
-    let rows = model.rows(now);
-    let label = choice.machine.clone();
-    let Some(endpoint) = rows
+    let Some(endpoint) = model
+        .rows(now)
         .iter()
         .find(|row| row.name == choice.machine)
         .map(|row| row.endpoint)
@@ -398,13 +384,14 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
             proto::OpenIn::Folder(choice.dir.clone())
         },
         codex: choice.codex,
-        model: choice.model.clone(),
+        model: choice.model,
     };
     match links.request(endpoint, &request) {
         Ok(()) => {
             let name = choice.dir.rsplit('/').next().unwrap_or(&choice.dir);
             model.await_session(endpoint, name, now);
             let agent = if choice.codex { "Codex" } else { "Claude" };
+            let label = &choice.machine;
             let said = if choice.chat {
                 format!("Opening a {agent} chat on {label}…")
             } else {
@@ -433,20 +420,13 @@ fn step(model: &mut Model, delta: isize, now: Instant) {
 }
 
 fn ask_for_diff(model: &mut Model, links: &Links, now: Instant) {
-    let found = match model.selection(now) {
-        Some(model::Focus::Agent(id)) => model
-            .agents(now)
-            .into_iter()
-            .find(|agent| agent.session.id == id)
-            .map(|agent| {
-                (
-                    agent.endpoint,
-                    agent.session.id.clone(),
-                    agent.session.title.clone(),
-                )
-            }),
-        _ => None,
-    };
+    let found = model.selected_agent(now).map(|agent| {
+        (
+            agent.endpoint,
+            agent.session.id.clone(),
+            agent.session.title.clone(),
+        )
+    });
     let Some((endpoint, session, title)) = found else {
         return model.flash("select a session first".into(), false, now);
     };
@@ -490,13 +470,7 @@ fn open_alerts(links: &Links) {
     if !links.rex {
         return;
     }
-    let command = vec![
-        std::env::current_exe().map_or_else(
-            |_| "magi".to_string(),
-            |path| path.to_string_lossy().into_owned(),
-        ),
-        "alerts".into(),
-    ];
+    let command = vec![magi(), "alerts".into()];
     let sender = links.sender.clone();
     let _ = thread::Builder::new().name("popup".into()).spawn(move || {
         let _ = sender.send(Event::Opened(rex::float(
@@ -510,19 +484,21 @@ fn open_alerts(links: &Links) {
 fn page_command(text: &str, title: &str, popups: &Path) -> io::Result<Vec<String>> {
     let path = browse::fresh_dir(popups)?.join("changes.diff");
     browse::write_private(&path, text.as_bytes())?;
-    let magi = std::env::current_exe().map_or_else(
-        |_| "magi".to_string(),
-        |path| path.to_string_lossy().into_owned(),
-    );
-    let mut command = vec![
-        magi,
+    Ok(vec![
+        magi(),
         "page".into(),
         "--remove".into(),
         "--title".into(),
         title.to_string(),
-    ];
-    command.push(path.to_string_lossy().into_owned());
-    Ok(command)
+        path.to_string_lossy().into_owned(),
+    ])
+}
+
+fn magi() -> String {
+    std::env::current_exe().map_or_else(
+        |_| "magi".to_string(),
+        |path| path.to_string_lossy().into_owned(),
+    )
 }
 
 fn adopt(model: &mut Model, links: &Links, now: Instant) {
@@ -748,14 +724,11 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             }
         }
         Event::Input(Input::Recheck) => write_terminal(terminal::COLOURS)?,
-        Event::Input(Input::Theme(reply)) => {
-            style::update(&reply);
-        }
+        Event::Input(Input::Theme(reply)) => style::update(&reply),
         Event::Input(Input::Resize) => write_terminal(terminal::CELL_SIZE)?,
         Event::Input(Input::Cells { width, height }) => model.cell_size = Some((width, height)),
         Event::Input(Input::Closed) => return Ok(Flow::Quit),
-        Event::Input(Input::Click { .. }) => {}
-        Event::Input(Input::Wheel { up, .. }) => wheel(model, up, now),
+        Event::Input(Input::Wheel { up }) => wheel(model, up, now),
         Event::Topology(topology) => {
             let mut wanted: Vec<Endpoint> = std::iter::once(Endpoint::Local)
                 .chain(

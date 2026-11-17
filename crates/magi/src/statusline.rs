@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::net;
-use crate::proto::{self, BasisPoints, FIVE_HOURS, FULL, ONE_WEEK, StatusReport, Window};
+use crate::proto::{self, BasisPoints, FIVE_HOURS, ONE_WEEK, StatusReport, Window, basis_points};
 
 const SEND_WAIT: Duration = Duration::from_millis(300);
 const NEW_FILE_MODE: u32 = 0o600;
@@ -106,10 +106,6 @@ fn report(report: StatusReport) {
     }
 }
 
-fn basis_points(percent: f64) -> BasisPoints {
-    (percent.clamp(0.0, 100.0) * f64::from(FULL) / 100.0).round() as BasisPoints
-}
-
 fn window(minutes: u32, json: Option<&WindowJson>) -> Option<Window> {
     let json = json?;
     Some(Window {
@@ -200,10 +196,9 @@ fn edit_settings_at(
     path: &Path,
     change: impl FnOnce(&mut Map<String, Value>) -> bool,
 ) -> io::Result<()> {
-    let path = path.to_path_buf();
-    let before = Snapshot::of(&path)?;
+    let before = Snapshot::of(path)?;
     let mut settings = match &before {
-        Some(snapshot) => parse_settings(&snapshot.bytes, &path)?,
+        Some(snapshot) => parse_settings(&snapshot.bytes, path)?,
         None => Map::new(),
     };
     if !change(&mut settings) {
@@ -227,7 +222,7 @@ fn edit_settings_at(
         )?;
     }
     let temp = write_new(dir, text.as_bytes(), mode)?;
-    let changed = match (&before, Snapshot::of(&path)?) {
+    let changed = match (&before, Snapshot::of(path)?) {
         (None, None) => false,
         (Some(before), Some(now)) => now.modified != before.modified || now.bytes != before.bytes,
         _ => true,
@@ -238,7 +233,7 @@ fn edit_settings_at(
             "Claude Code changed settings.json while magi was editing it; run the command again",
         ));
     }
-    fs::rename(&temp, &path)
+    fs::rename(&temp, path)
 }
 
 fn replace(dir: &Path, path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {

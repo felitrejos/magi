@@ -1,0 +1,18 @@
+{
+  "name": "magi",
+  "description": "Hand a running Claude Code session off to another machine, let Claude send work to your other machines, and see every session on all of them",
+  "version": "0.8.0",
+  "author": {
+    "name": "felitrejos",
+    "url": "https://github.com/felitrejos"
+  },
+  "homepage": "https://github.com/felitrejos/magi",
+  "mcpServers": {
+    "magi": {
+      "command": "magi",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}
