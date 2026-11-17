@@ -863,3 +863,82 @@ func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
 		t.Errorf("a task started without the tool server has a caller: %+v", s.Task)
 	}
 }
+
+func TestClosingIdleCopiesIsReportedOnlyWhenCollectingAndNotWhileAnotherCielagoHoldsOne(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	idle := Outcome{State: "done", Kept: true, Ended: time.Now().Add(-2 * keepCopies)}
+	unreachable := &Task{ID: "0000000a", Kind: kindDelegate, Host: "gone", Outcome: &idle}
+	held := &Task{ID: "0000000b", Kind: kindDelegate, Host: "server", Outcome: &idle}
+	for _, task := range []*Task{unreachable, held} {
+		if err := task.save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unlock, err := lockTask(held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	text, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "true"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, "idle task copies") {
+		t.Errorf("starting work reports closing idle copies:\n%s", text)
+	}
+	note := sweepIdleCopies()
+	if !strings.Contains(note, "task 0000000a") || strings.Contains(note, "0000000b") {
+		t.Errorf("note = %q", note)
+	}
+}
+
+const fakeParentClaude = `#!/bin/sh
+prompt=$(cat)
+echo "parent=$CIELAGO_PARENT" >> "$HOME/claude-parents"
+printf '{"type":"result","subtype":"success","num_turns":1,"result":"did: %s"}\n' "$prompt"
+`
+
+func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	f.tool("claude", fakeParentClaude)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), "41.json", `{"pid":41,"sessionId":"9fb6fe92","name":"fix login"}`)
+	args, _ := delegateArgs(delegateInput{})
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "first", Claude: args, Caller: caller{PID: 41}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := s.Task.ID
+	label := machineEmoji() + " ← fix login"
+	if !strings.Contains(describeStarted(s, "why"), "tab \""+label+"\"") {
+		t.Errorf("started:\n%s", describeStarted(s, "why"))
+	}
+	f.waitForTask(id)
+	if _, err := collectTask(id, false); err != nil {
+		t.Fatal(err)
+	}
+	r, err := replyTask(context.Background(), id, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Task.tabLabel() != label {
+		t.Errorf("the follow-up's tab is %q", r.Task.tabLabel())
+	}
+	windows, _ := exec.Command("tmux", "list-windows", "-a", "-F", "#{window_name}").Output()
+	if strings.Contains(string(windows), " · delegate ") {
+		t.Errorf("tmux windows = %q", windows)
+	}
+	f.waitForTask(id)
+	if got := f.read(f.home, "claude-parents"); got != "parent=9fb6fe92\nparent=9fb6fe92\n" {
+		t.Errorf("claude ran with %q", got)
+	}
+
+	var old Task
+	if err := json.Unmarshal([]byte(`{"id":"0000000c","kind":"delegate","name":"api"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.tabLabel() != "api · delegate 0000000c" || strings.Join(withParent(old.Parent, []string{"sh"}), " ") != "sh" {
+		t.Errorf("an older task's tab is %q", old.tabLabel())
+	}
+}

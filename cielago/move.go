@@ -136,11 +136,14 @@ func (m mover) codex(local *Local, host Host, s remoteSession) error {
 	if err := s.refuseUnsure(local); err != nil {
 		return m.fail(err)
 	}
+	if err := refuseOpenCodex(local, s.ID, s.Running); err != nil {
+		return m.fail(err)
+	}
 	remote, err := newRemote(local.Context(), host.SSH)
 	if err != nil {
 		return m.fail(err)
 	}
-	if err := refuseOpenCodex(remote, s.ID); err != nil {
+	if err := refuseOpenCodex(remote, s.ID, nil); err != nil {
 		return m.fail(err)
 	}
 	if len(s.Running) == 0 {
@@ -316,10 +319,10 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 				return disarm(errors.New("the session ended before its turn did, so it didn't move"))
 			}
 			live, _, err := readLiveSession(s.Live.PID)
-			if err != nil {
+			if err != nil && !halfWritten(err) {
 				return disarm(err)
 			}
-			if live.Status != "idle" {
+			if err != nil || live.Status != "idle" {
 				idleSince = time.Time{}
 			} else if idleSince.IsZero() {
 				idleSince = time.Now()
@@ -363,6 +366,11 @@ func readLiveSession(pid int) (liveSession, bool, error) {
 		return liveSession{}, false, err
 	}
 	return s, true, nil
+}
+
+func halfWritten(err error) bool {
+	var syntax *json.SyntaxError
+	return errors.As(err, &syntax)
 }
 
 func writeMoveResult(sessionID string, r moveReport) error {

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ratatui::Frame;
@@ -104,8 +103,8 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
                     .get(&agent.machine)
                     .map_or(agent.machine.as_str(), String::as_str);
                 let forwards = model.forwards_to(&agent.session.id, &agent.machine, now);
-                let links = family(agent, &agents, &tags);
-                session_line(agent, (*asking).then_some(tag), &forwards, &links, width)
+                let parent = parent_link(agent, &agents);
+                session_line(agent, (*asking).then_some(tag), &forwards, parent, width)
             }
         };
         composed.draw(frame, graphics, area, style);
@@ -233,54 +232,17 @@ fn machine_line(row: &Row<'_>, name: &str, width: usize) -> Composed {
     )
 }
 
-fn family(
-    agent: &AgentRow<'_>,
-    agents: &[AgentRow<'_>],
-    tags: &HashMap<String, String>,
-) -> Vec<String> {
-    let tag = |machine: &str| {
-        tags.get(machine)
-            .map_or(machine, String::as_str)
-            .to_string()
-    };
-    let mut links = Vec::new();
-    if let Some(parent) = agent
-        .session
-        .parent
-        .as_ref()
-        .and_then(|id| agents.iter().find(|other| other.session.id == *id))
-    {
-        links.push(format!("← {}", parent.session.title));
-    }
-    let mut elsewhere: Vec<String> = agents
-        .iter()
-        .filter(|other| {
-            other.machine != agent.machine
-                && other.session.parent.as_ref() == Some(&agent.session.id)
-        })
-        .map(|other| tag(&other.machine))
-        .collect();
-    elsewhere.sort();
-    let mut counted: Vec<(String, usize)> = Vec::new();
-    for machine in elsewhere {
-        match counted.last_mut() {
-            Some((last, count)) if *last == machine => *count += 1,
-            _ => counted.push((machine, 1)),
-        }
-    }
-    links.extend(
-        counted
-            .into_iter()
-            .map(|(machine, count)| format!("{count} on {machine}")),
-    );
-    links
+fn parent_link(agent: &AgentRow<'_>, agents: &[AgentRow<'_>]) -> Option<String> {
+    let id = agent.session.parent.as_ref()?;
+    let parent = agents.iter().find(|other| other.session.id == *id)?;
+    Some(format!("← {}", parent.session.title))
 }
 
 fn session_line(
     agent: &AgentRow<'_>,
     machine: Option<&str>,
     forwards: &[(u16, ForwardState)],
-    links: &[String],
+    parent: Option<String>,
     width: usize,
 ) -> Composed {
     let title_width = (width / 3).clamp(MIN_TITLE.min(width / 2), MAX_TITLE);
@@ -352,24 +314,10 @@ fn session_line(
             },
         ));
     }
-    let running = session
-        .children
-        .iter()
-        .filter(|child| child.state == crate::proto::ChildState::Running)
-        .count();
-    if running > 0 {
-        details.push((
-            1,
-            match running {
-                1 => "1 subagent".to_string(),
-                running => format!("{running} subagents"),
-            },
-        ));
-    }
     if session.queued.is_some() {
         details.push((0, "queued".into()));
     }
-    details.extend(links.iter().map(|link| (0, link.clone())));
+    details.extend(parent.map(|link| (0, link)));
     if let Some(pr) = &session.pr {
         details.push((1, pull_request(pr)));
     }

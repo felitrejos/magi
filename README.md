@@ -21,34 +21,35 @@
 
 This repo holds two apps that work together or alone:
 
-- **magi** is the overview of every Claude Code and Codex session on your
-  machines, and each machine's load, in one [Rex](https://www.superlogical.com/rex)
-  pane. You work in the agents themselves; magi puts each session in the
+- **magi** shows every Claude Code and Codex session on your machines, and
+  each machine's load, in one [Rex](https://www.superlogical.com/rex) pane.
+  You still work in the agents themselves. magi puts each session in the
   right place and tells you when one needs you.
-- **cielago** moves a Claude Code or Codex session, with its conversation
-  and uncommitted work, to another machine, and lets Claude send work there.
-  It works on its own, from any Claude Code session, over SSH.
+- **cielago** moves a Claude Code or Codex session to another machine, along
+  with its conversation and uncommitted work. It also lets Claude send work
+  there. It works on its own, from any Claude Code session, over SSH.
 
 ## magi
 
-- **Every session, every machine.** Made to sit beside Rex's sidebar: what
-  needs you on top, then a band per machine with its load and a line per
-  session saying what it's doing. Any number of machines, no server or
-  config file.
+- **Every session, every machine.** magi is built to sit next to Rex's
+  sidebar. What needs you is at the top. Below that, each machine gets a
+  band with its load and one line per session saying what it's doing. It
+  handles any number of machines and needs no server or config file.
 - **Sessions in their place.** A new session opens on whichever machine has
-  room, in a Rex session named after its folder and a tab for its repo. Each
-  subagent gets a tab of its own beside it, showing its work live, that
-  closes when it's done.
-- **Answer from the overview.** Allow or deny a prompt, see a session's diff,
-  or jump to its pane. Everything else happens in the session itself.
-- **Drive it from the Claude app.** Sessions magi starts run with Remote
-  Control, named after their repo and machine, so the Claude app on your
-  desktop or phone can talk to them; `magi start` prints the link.
-- **Limits and alerts.** Your Claude and Codex 5-hour and weekly windows, and
-  an alert when a session needs you, a machine goes quiet or a plan nearly
-  runs out.
-- **Light and private.** The agent idles at 0% CPU, and only devices signed in
-  to your tailnet as you can connect.
+  room. It goes in a Rex session named after its folder, in a tab for its
+  repo. Each subagent gets its own tab beside it. That tab shows the
+  subagent's work live and closes when it's done.
+- **Answer from the overview.** You can allow or deny a prompt, see a
+  session's diff, or jump to its pane. Everything else happens in the
+  session itself.
+- **Drive it from the Claude app.** Sessions that magi starts run with Remote
+  Control and are named after their repo and machine. That lets the Claude
+  app on your desktop or phone talk to them. `magi start` prints the link.
+- **Limits and alerts.** magi shows your 5-hour and weekly windows for Claude
+  and Codex. It alerts you when a session needs you, a machine goes quiet or
+  a plan nearly runs out.
+- **Light and private.** The agent idles at 0% CPU. Only devices signed in to
+  your tailnet as you can connect.
 
 ```bash
 curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh
@@ -57,44 +58,45 @@ magi                  # in a Rex pane
 ```
 
 This installs magi and cielago. magi needs [Tailscale](https://tailscale.com)
-and Rex **0.1.0-preview.20** on every machine, and runs only in Rex. While Rex
-is in preview, magi follows its latest release only. Run `magi statusline
-install` where you use Claude Code to see its context use and plan windows.
+and Rex **0.1.0-preview.20** on every machine, and it only runs in Rex. While
+Rex is in preview, magi follows only its latest release. To see Claude Code's
+context use and plan windows, run `magi statusline install` where you use it.
 
 ## cielago
 
 cielago moves a Claude Code session to another machine, with or without
-magi. In any Claude Code session, say "hand this off to my homelab": when the
+magi. In any Claude Code session, say "hand this off to my homelab". When the
 turn ends, the conversation, branch, uncommitted changes and listed secrets
-land there, and the session carries on in a tab of its own, remembering
+land there. The session carries on in a tab of its own and remembers
 everything.
 
 <p align="center">
   <img src="assets/cielago.gif" alt="A Claude Code session in Rex on a Mac is asked what its project does, then told to hand itself off to the homelab. cielago moves it, and the session continues on the homelab, where it still remembers the answer it gave." width="820">
 </p>
 
-- **From the CLI.** `cielago move <session> <host>` sends a session,
-  `cielago pull <host>` brings one back, and `cielago doctor` checks both
-  ends. In magi, `m` does the same.
+- **From the CLI.** `cielago move <session> <host>` sends a session.
+  `cielago pull <host>` brings one back. `cielago doctor` checks both ends.
+  In magi, `m` moves the selected session to the machine you pick.
 - **Codex too.** `cielago move` and `cielago pull` take Codex sessions as
-  well: the conversation, branch, changes and secrets move the same way, and
-  it reopens with `codex resume` in a tab of its own. A Codex mid-turn moves
-  when the turn ends. A plain `codex` open in the same folder has to be quit
-  first, since cielago can't tell which session it shows. There's no "hand
-  this off" from inside Codex; set `codex` for the host when `cielago init`
-  asks.
-- **Send work.** Claude gets tools to run a command elsewhere, hand a task to
-  a background Claude, or open a second session, each in a copy of your
-  working tree. Claude asks you first.
+  well. The conversation, branch, changes and secrets move the same way, and
+  the session reopens with `codex resume` in a tab of its own. If Codex is
+  in the middle of a turn, it moves when the turn ends. If a plain `codex`
+  is open in the same folder, quit it first, because cielago can't tell
+  which session it shows. You move a Codex session from the CLI or magi,
+  since Codex has no "hand this off". The other machine needs Codex
+  installed, and `cielago init` asks for its path.
+- **Send work.** Claude gets tools to run a command on another machine, hand
+  a task to a background Claude, or open a second session. Each one runs in
+  a copy of your working tree. Claude asks you first.
 - **The right machine for the job.** With magi, each machine reports its
   system, architecture and tools, including whether Docker is running. A
-  Linux build from a Mac goes to your Linux machine natively; a container
-  on the machine with the most room is the fallback, and this machine is
-  the last resort.
+  Linux build started on a Mac goes to your Linux machine and runs natively.
+  The fallback is a container on the machine with the most room. This
+  machine is the last resort.
 - **Ports follow.** A project's `.cielago.toml` names what to start when it
   arrives and which ports to forward back, so `localhost:3000` keeps working.
-- **Rex or tmux.** Sessions open in Rex when it's there and in tmux
-  otherwise, over plain SSH.
+- **Rex or tmux.** Sessions open in Rex when it's there and in tmux when it
+  isn't. Both work over plain SSH.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/felitrejos/magi/main/install.sh | sh -s cielago
@@ -104,8 +106,8 @@ claude plugin marketplace add felitrejos/magi && claude plugin install cielago@m
 
 ### From scripts and other tools
 
-The same actions work from the command line, so another orchestrator, a
-script or Claude itself can use magi underneath:
+The same actions work from the command line. That way another orchestrator,
+a script or Claude itself can use magi underneath:
 
 ```bash
 magi sessions --json            # every session on every machine
@@ -120,31 +122,32 @@ magi wait fix-login             # returns once it's done or needs you
 ```
 
 `wait` and `recent` are the cheap way for an agent to keep an eye on other
-work: one blocking command instead of checking again and again, and a few
-lines per step instead of a whole transcript. Both take a subagent too:
-`magi wait fix-login "find auth"`.
+work. `wait` is one blocking command, so the agent doesn't have to check
+again and again. `recent` gives a few lines per step instead of a whole
+transcript. Both take a subagent too: `magi wait fix-login "find auth"`.
 
-`magi mcp` offers the same as MCP tools, so Claude can look after your other
-sessions from Claude Desktop, Claude Code or any MCP client. In Claude Code:
-`claude mcp add magi -- magi mcp`. In Claude Desktop, add to
-`claude_desktop_config.json`:
+`magi mcp` offers the same actions as MCP tools, so Claude can look after
+your other sessions from Claude Desktop, Claude Code or any MCP client. In
+Claude Code, run `claude mcp add magi -- magi mcp`. In Claude Desktop, add
+this to `claude_desktop_config.json`:
 
 ```json
 { "mcpServers": { "magi": { "command": "/Users/you/.local/bin/magi", "args": ["mcp"] } } }
 ```
 
-Looking (machines, sessions, subagents, recent work, waiting, diffs, alerts) needs no approval
-from the tools' side; acting (message, answer, choose, move, start) is marked
-as such, so your client asks you first.
+The tools that only look (machines, sessions, subagents, recent work,
+waiting, diffs, alerts) need no approval from the tools' side. The tools
+that act (message, answer, choose, move, start) are marked as such, so your
+client asks you first.
 
 ## How it works
 
 Each machine runs `magi agent` in the background (launchd or a systemd user
-service). The viewer finds agents through Tailscale and gets a compact sample
-from each every second. The agent reads what the coding agents already write
-(`~/.claude`, `~/.codex`) and follows Rex's events for each pane's state. When
-you answer a session, the agent on that machine types it into the session's
-Rex pane.
+service). The viewer finds the agents through Tailscale and gets a small
+sample from each one every second. The agent reads the files the coding
+agents already write (`~/.claude`, `~/.codex`) and follows Rex's events to
+know each pane's state. When you answer a session, the agent on that machine
+types your answer into the session's Rex pane.
 
 | Agent on an M4 MacBook | CPU | Memory |
 |---|---|---|
@@ -154,11 +157,13 @@ Rex pane.
 
 ## FAQ
 
-**Can magi tell when Codex needs approval?** Yes, from Codex 0.164 on: Codex
-reports its prompts to Rex the way Claude Code does, and magi follows them.
+**Can magi tell when Codex needs approval?** Yes, from Codex 0.164 on.
+Codex reports its prompts to Rex the way Claude Code does, and magi follows
+them.
 
-**Does the status line slow Claude Code down?** No. It prints first, gives the
-agent at most 300 ms, and never replaces a status line you already have.
+**Does the status line slow Claude Code down?** No. It prints first and
+gives the agent at most 300 ms. It never replaces a status line you already
+have.
 
 **What if Claude Code changes its files?** They aren't a documented format.
 magi notices, says so, and falls back to what the transcripts show.

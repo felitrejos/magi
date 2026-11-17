@@ -33,6 +33,21 @@ fn working(id: &str) -> AgentSession {
 }
 
 #[test]
+fn a_message_for_a_session_asking_to_trust_its_folder_is_refused_not_queued() {
+    let agent = Agent::new(identity(), Duration::from_secs(1), Board::default());
+    let pane = Location::in_test("session:1", "block:1");
+    let mut trusting = working("trust:block:1");
+    trusting.state = SessionState::Waiting(proto::Waiting::Trust);
+    assert!(
+        agent
+            .queue(&trusting, Some(&pane), "fix the login")
+            .unwrap_err()
+            .contains("trust its folder")
+    );
+    assert!(agent.queued.lock().unwrap().is_empty());
+}
+
+#[test]
 fn a_message_for_a_busy_session_waits_until_it_is_idle_and_can_be_dropped() {
     let agent = Agent::new(identity(), Duration::from_secs(1), Board::default());
     let pane = Location::in_test("session:1", "block:1");

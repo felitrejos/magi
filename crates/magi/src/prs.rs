@@ -77,15 +77,17 @@ impl Prs {
         let asked = key.clone();
         let spawned = thread::Builder::new().name("gh".into()).spawn(move || {
             let (cwd, branch) = &asked;
-            let pr = bounded::output(
+            let output = bounded::output(
                 Command::new(gh)
                     .args(["pr", "view", branch, "--json", FIELDS])
                     .current_dir(cwd),
                 ASK_WITHIN,
-            )
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| parse(&output.stdout));
+            );
+            let pr = match output {
+                Ok(output) if output.status.success() => Some(parse(&output.stdout)),
+                Ok(output) if no_pull_request(&output.stderr) => Some(None),
+                Ok(_) | Err(_) => None,
+            };
             answered(&known, &asked, pr);
         });
         if spawned.is_err() {
@@ -94,13 +96,19 @@ impl Prs {
     }
 }
 
-fn answered(known: &Mutex<HashMap<Key, Known>>, key: &Key, pr: Option<PullRequest>) {
+fn no_pull_request(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr).contains("no pull requests found")
+}
+
+fn answered(known: &Mutex<HashMap<Key, Known>>, key: &Key, pr: Option<Option<PullRequest>>) {
     if let Some(entry) = known
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get_mut(key)
     {
-        entry.pr = pr;
+        if let Some(pr) = pr {
+            entry.pr = pr;
+        }
         entry.asking = false;
     }
 }
@@ -205,10 +213,23 @@ mod tests {
         );
         let key = ("/repo".to_string(), "fix".to_string());
         let pr = parse(br#"{"isDraft":false,"number":3,"reviewDecision":"","state":"OPEN","statusCheckRollup":[],"url":"u"}"#);
-        answered(&prs.known, &key, pr);
+        answered(&prs.known, &key, Some(pr));
         assert!(prs.update(&mut sessions, &cwds, now).is_empty());
         assert_eq!(sessions[0].pr.as_ref().map(|pr| pr.number), Some(3));
         assert_eq!(prs.update(&mut sessions, &cwds, now + ASK_EVERY).len(), 1);
+        answered(&prs.known, &key, None);
+        prs.update(&mut sessions, &cwds, now + ASK_EVERY);
+        assert_eq!(
+            sessions[0].pr.as_ref().map(|pr| pr.number),
+            Some(3),
+            "a failed lookup keeps what was known"
+        );
+        answered(&prs.known, &key, Some(None));
+        prs.update(&mut sessions, &cwds, now + ASK_EVERY);
+        assert_eq!(sessions[0].pr, None, "gh saying there's no PR clears it");
+        assert!(no_pull_request(
+            b"no pull requests found for branch \"fix\""
+        ));
     }
 
     #[test]

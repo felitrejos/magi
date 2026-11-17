@@ -32,6 +32,7 @@ use claude::ClaudeSessions;
 use codex::Codex;
 use limits::{Limits, Reading};
 
+const REPORTED_WITHIN_SECS: u32 = 5;
 const READ_BUDGET_PER_POLL: u64 = 32 << 20;
 const CONTEXT_KEPT_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -272,7 +273,7 @@ impl Sessions {
                 session.activity = reported.activity();
             }
             let mut children = session.children;
-            if let Some(running) = &running {
+            if let (Some(running), Some(_)) = (&running, &reported) {
                 follow_reports(&mut children, running);
             }
             if let (Some(pid), Some(tasks)) = (pid, &mut self.tasks) {
@@ -306,7 +307,8 @@ fn follow_reports(children: &mut [Child], running: &HashMap<String, String>) {
         match running.get(agent) {
             Some(doing) if !doing.is_empty() => child.doing = Some(doing.clone()),
             Some(_) => {}
-            None => child.state = ChildState::Stopped,
+            None if child.secs >= REPORTED_WITHIN_SECS => child.state = ChildState::Stopped,
+            None => {}
         }
     }
 }
@@ -323,7 +325,7 @@ mod tests {
             label: String::new(),
             detail: String::new(),
             state: ChildState::Running,
-            secs: 0,
+            secs: REPORTED_WITHIN_SECS,
             task: task.map(str::to_string),
             doing: None,
         };
@@ -337,6 +339,16 @@ mod tests {
             &HashMap::from([("a1".to_string(), "Bash(cargo test)".to_string())]),
         );
         assert_eq!(children[0].doing.as_deref(), Some("Bash(cargo test)"));
+        let mut launching = vec![Child {
+            secs: 0,
+            ..subagent("t4", Some("a4"))
+        }];
+        follow_reports(&mut launching, &HashMap::new());
+        assert_eq!(
+            launching[0].state,
+            ChildState::Running,
+            "a subagent Rex hasn't heard of yet is just starting"
+        );
         let states: Vec<ChildState> = children.iter().map(|child| child.state).collect();
         assert_eq!(
             states,

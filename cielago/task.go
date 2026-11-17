@@ -47,6 +47,8 @@ type Task struct {
 	RunDir   string    `json:"run_dir"`
 	Where    string    `json:"where"`
 	Tab      Tab       `json:"tab"`
+	Label    string    `json:"tab_label,omitempty"`
+	Parent   string    `json:"parent_session,omitempty"`
 	Outcome  *Outcome  `json:"outcome,omitempty"`
 	Group    string    `json:"group,omitempty"`
 	Session  string    `json:"claude_session,omitempty"`

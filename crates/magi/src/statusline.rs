@@ -5,6 +5,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
@@ -88,12 +90,13 @@ fn read(input: StatusInput) -> (String, Option<StatusReport>) {
 }
 
 fn report(report: StatusReport) {
-    let sent = net::status_socket().and_then(|path| {
-        let mut stream = UnixStream::connect(path)?;
-        stream.set_write_timeout(Some(SEND_WAIT))?;
-        proto::write_frame(&mut stream, &report)
+    let (done, finished) = mpsc::channel();
+    thread::spawn(move || {
+        let sent = net::status_socket()
+            .and_then(|path| proto::write_frame(&mut UnixStream::connect(path)?, &report));
+        let _ = done.send(sent);
     });
-    if let Err(error) = sent
+    if let Ok(Err(error)) = finished.recv_timeout(SEND_WAIT)
         && !matches!(
             error.kind(),
             io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused

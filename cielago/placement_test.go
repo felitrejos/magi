@@ -51,3 +51,15 @@ func TestAMachineWithoutRoomOrOutOfReachIsNotOffered(t *testing.T) {
 		t.Fatalf("%v", places)
 	}
 }
+
+func TestAToolMagiDoesntCheckForRulesNoMachineOut(t *testing.T) {
+	homelab := machineFor("homelab", "Ubuntu 26.04", "x86_64", 0.2, "node")
+	view := fleetView{Machines: []machineInfo{{Name: "homelab", Fleet: &homelab}}}
+	needs := needsInput{OS: "linux", Tools: []string{"node", "pnpm"}}
+	if places := view.places(needs); len(places) != 1 || !places[0].native {
+		t.Fatalf("%v", places)
+	}
+	if text := describePlaces(view, needs); !strings.Contains(text, "pnpm isn't checked, so it isn't counted") || strings.Contains(text, "No machine can run") {
+		t.Fatal(text)
+	}
+}

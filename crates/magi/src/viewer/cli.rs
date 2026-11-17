@@ -187,7 +187,7 @@ pub(super) fn start(
         client.wait(LINK_EVERY).map_err(|error| error.to_string())?;
     }
     Ok(match started {
-        Some(session) if session.state.is_waiting() => format!(
+        Some(session) if session.state == SessionState::Waiting(Waiting::Trust) => format!(
             "{said}\n{} is asking you to trust its folder: magi answer {} yes",
             session.title, session.id
         ),
@@ -224,16 +224,20 @@ pub(super) fn listed(client: &Client) -> Value {
 
 pub(super) fn answer(client: &mut Client, query: &str, allow: bool) -> Result<String, String> {
     let found = client.session(query)?;
-    let SessionState::Waiting(Waiting::Permission(tool)) = &found.session.state else {
-        return Err(format!(
-            "{} isn't asking for permission",
-            found.session.title
-        ));
+    let tool = match &found.session.state {
+        SessionState::Waiting(Waiting::Permission(tool)) => tool.clone(),
+        SessionState::Waiting(Waiting::Trust) => None,
+        _ => {
+            return Err(format!(
+                "{} isn't asking for permission",
+                found.session.title
+            ));
+        }
     };
     let request = Request::Answer {
         session: found.session.id.clone(),
         allow,
-        tool: tool.clone(),
+        tool,
         waiting_secs: found.session.state_secs,
     };
     client.ask(found.endpoint, &request, ANSWER_WITHIN)

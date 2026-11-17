@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -112,9 +113,6 @@ func staleTurn(m Machine, s remoteSession) (string, error) {
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		pid, start, _ := strings.Cut(line, " ")
-		if start == "" {
-			continue
-		}
 		secs, err := strconv.ParseInt(start, 10, 64)
 		if err != nil {
 			return "", fmt.Errorf("unreadable start time %q of process %s on %s: %w", start, pid, m.Name(), err)
@@ -126,20 +124,22 @@ func staleTurn(m Machine, s remoteSession) (string, error) {
 	return event.Timestamp, nil
 }
 
-func refuseOpenCodex(m Machine, id string) error {
+func refuseOpenCodex(m Machine, id string, stopping []int) error {
 	out, err := sh(m, codexScript, "open", id)
 	if err != nil {
 		return err
 	}
-	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
-	if line == "" {
-		return nil
+	for line := range strings.Lines(string(out)) {
+		pid, args, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if slices.ContainsFunc(stopping, func(running int) bool { return strconv.Itoa(running) == pid }) {
+			continue
+		}
+		if strings.Contains(args, " app-server") {
+			return fmt.Errorf("session %s is still open in the Codex background server on %s (pid %s); it lets go once it has been idle for a while, or run codex app-server daemon restart there (which interrupts other Codex work on it), then try again", shortID(id), m.Name(), pid)
+		}
+		return fmt.Errorf("session %s is open in Codex on %s (pid %s); quit it there, then try again", shortID(id), m.Name(), pid)
 	}
-	pid, args, _ := strings.Cut(line, " ")
-	if strings.Contains(args, " app-server") {
-		return fmt.Errorf("session %s is still open in the Codex background server on %s (pid %s) from before it left; it lets go once it has been idle for a while, or run codex app-server daemon restart there (which interrupts other Codex work on it), then try again", shortID(id), m.Name(), pid)
-	}
-	return fmt.Errorf("session %s is open in Codex on %s (pid %s); quit it there, then try again", shortID(id), m.Name(), pid)
+	return nil
 }
 
 func (s remoteSession) refuseUnsure(m Machine) error {

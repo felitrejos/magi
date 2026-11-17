@@ -48,6 +48,14 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	}
 	group := localGroup(ws.MainRoot, host.LocalRoots)
 	id := newTaskID()
+	label, parentID := taskTabLabel(ws.Name, spec.Kind, id), ""
+	delegator, err := delegatingSession(spec.Caller, ws.Name)
+	if err != nil {
+		return nil, err
+	}
+	if delegator != nil {
+		label, parentID = delegator.tabLabel(), delegator.ID
+	}
 	t := &Task{
 		ID:       id,
 		Kind:     spec.Kind,
@@ -62,6 +70,8 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		Starting: true,
 		Prompt:   spec.Prompt,
 		Dir:      remoteHome + "/.cielago/tasks/" + id,
+		Label:    label,
+		Parent:   parentID,
 		Turn:     1,
 		State:    "starting",
 		Caller:   spec.Caller.PID,
@@ -140,16 +150,8 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		return nil, removeCopy(fmt.Errorf("unknown task kind %q", spec.Kind))
 	}
 
-	label := taskTabLabel(ws.Name, spec.Kind, id)
-	delegator, err := delegatingSession(spec.Caller, ws.Name)
-	if err != nil {
-		return nil, removeCopy(err)
-	}
-	if delegator != nil {
-		label, command = delegator.tabLabel(), delegator.wrap(command)
-	}
 	launcher := newLauncher(host, remote)
-	tab, err := launcher.Start(group, label, t.RunDir, command, spec.Kind == kindSession)
+	tab, err := launcher.Start(group, t.Label, t.RunDir, withParent(t.Parent, command), spec.Kind == kindSession)
 	if err != nil {
 		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
 	}

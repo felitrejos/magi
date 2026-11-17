@@ -72,7 +72,8 @@ pub(super) fn session(session: &AgentSession) -> Value {
     let asking = match &session.state {
         SessionState::Waiting(Waiting::Permission(tool)) => json!({"permission": tool}),
         SessionState::Waiting(Waiting::Input(question)) => json!({"question": question}),
-        _ => Value::Null,
+        SessionState::Waiting(Waiting::Trust) => json!({"trust": true}),
+        SessionState::Working { .. } | SessionState::Idle => Value::Null,
     };
     json!({
         "id": session.id,
@@ -266,6 +267,11 @@ mod tests {
             ..busy.clone()
         };
         assert_eq!(session(&asking)["asking"], json!({"permission": "Bash"}));
+        let trusting = AgentSession {
+            state: SessionState::Waiting(Waiting::Trust),
+            ..busy.clone()
+        };
+        assert_eq!(session(&trusting)["asking"], json!({"trust": true}));
         assert_eq!(session(&asking)["mode"], json!("plan"));
         let remote = AgentSession {
             remote: Some("session_01abc".into()),

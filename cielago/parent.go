@@ -18,6 +18,9 @@ func delegatingSession(c caller, project string) (*parentSession, error) {
 		return nil, nil
 	}
 	live, found, err := readLiveSession(c.PID)
+	if halfWritten(err) {
+		return nil, nil
+	}
 	if err != nil || !found || live.SessionID == "" {
 		return nil, err
 	}
@@ -32,8 +35,11 @@ func (p *parentSession) tabLabel() string {
 	return machineEmoji() + " ← " + p.Name
 }
 
-func (p *parentSession) wrap(command []string) []string {
-	return append([]string{"env", parentEnv + "=" + p.ID}, command...)
+func withParent(id string, command []string) []string {
+	if id == "" {
+		return command
+	}
+	return append([]string{"env", parentEnv + "=" + id}, command...)
 }
 
 func machineEmoji() string {

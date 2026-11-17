@@ -33,6 +33,7 @@ const REQUEST_MAX_BYTES: usize = 16 * 1024;
 const STATUS_RETRY: Duration = Duration::from_millis(10);
 const STATUS_READ_TIMEOUT: Duration = Duration::from_secs(1);
 const SESSIONS_EVERY: Duration = Duration::from_secs(1);
+const MIN_POLL_GAP: Duration = Duration::from_millis(250);
 
 type Frame = Arc<[u8]>;
 
@@ -120,6 +121,7 @@ struct Starting {
     pane: opener::OpenedPane,
     title: String,
     since: Instant,
+    asking: bool,
 }
 
 const TRUST_PREFIX: &str = "trust:";
@@ -140,6 +142,12 @@ impl Agent {
             };
         }
         let pane = pane.ok_or_else(|| typing::not_in_rex(session))?;
+        if session.state == SessionState::Waiting(proto::Waiting::Trust) {
+            return Err(format!(
+                "{} is asking to trust its folder: answer that first",
+                session.title
+            ));
+        }
         if session.state == SessionState::Idle {
             drop(queued);
             return typing::prompt(session, Some(pane), text);
@@ -189,6 +197,7 @@ impl Agent {
                 pane,
                 title,
                 since: Instant::now(),
+                asking: false,
             });
     }
 
@@ -200,17 +209,13 @@ impl Agent {
             .values()
             .map(|location| location.block.as_str())
             .collect();
-        starting.retain(|start| {
-            now.duration_since(start.since) < WATCH_START_FOR
-                && !running.contains(start.pane.block.as_str())
-        });
-        for start in starting.iter() {
-            let Some(location) = Location::here(&start.pane.session, &start.pane.block) else {
+        starting.retain(|start| !running.contains(start.pane.block.as_str()));
+        for start in starting.iter_mut() {
+            let location = Location::here(&start.pane.session, &start.pane.block);
+            start.asking = location.as_ref().is_some_and(typing::asks_to_trust);
+            let (true, Some(location)) = (start.asking, location) else {
                 continue;
             };
-            if !typing::asks_to_trust(&location) {
-                continue;
-            }
             let id = format!("{TRUST_PREFIX}{}", start.pane.block);
             snapshot.sessions.push(trusting(
                 &id,
@@ -220,6 +225,7 @@ impl Agent {
             ));
             snapshot.panes.insert(id, location);
         }
+        starting.retain(|start| start.asking || now.duration_since(start.since) < WATCH_START_FOR);
     }
 
     fn settle(&self, snapshot: &mut Snapshot) {
@@ -349,6 +355,10 @@ impl Nudge {
         self.changed.notify_all();
     }
 
+    fn lower(&self) {
+        *self.raised.lock().unwrap_or_else(PoisonError::into_inner) = false;
+    }
+
     fn wait(&self, longest: Duration) -> bool {
         let raised = self.raised.lock().unwrap_or_else(PoisonError::into_inner);
         let (mut raised, _) = self
@@ -370,9 +380,17 @@ fn spawn_sessions(mut sessions: Sessions, agent: Arc<Agent>) -> io::Result<()> {
                     .unwrap_or_else(PoisonError::into_inner) = snapshot;
             };
             let mut woken = true;
+            let mut was_watched = false;
+            let mut polled = Instant::now() - MIN_POLL_GAP;
             loop {
                 let watched = !agent.hub.is_idle();
+                let joined = watched && !was_watched;
+                was_watched = watched;
                 if watched || woken {
+                    if !joined {
+                        thread::sleep(MIN_POLL_GAP.saturating_sub(polled.elapsed()));
+                    }
+                    polled = Instant::now();
                     let mut snapshot = sessions.poll(&agent.board);
                     if watched {
                         agent.prs.fill(&mut snapshot.sessions, &snapshot.cwds);
@@ -380,7 +398,7 @@ fn spawn_sessions(mut sessions: Sessions, agent: Arc<Agent>) -> io::Result<()> {
                     agent.settle(&mut snapshot);
                     agent.mirror_subagents(&snapshot);
                     store(snapshot);
-                    if woken {
+                    if watched && (woken || joined) {
                         agent.fresh.raise();
                     }
                 }
@@ -396,6 +414,7 @@ fn spawn_sampler(mut collector: Collector, agent: Arc<Agent>) -> io::Result<()> 
         .spawn(move || {
             loop {
                 agent.hub.wait_for_subscribers();
+                agent.fresh.lower();
                 if let Err(error) = collector.sample() {
                     agent.notices.info(format!("sampling failed: {error}"));
                 }

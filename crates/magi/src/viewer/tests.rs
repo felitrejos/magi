@@ -522,7 +522,7 @@ fn select(model: &mut Model, id: &str) {
 }
 
 #[test]
-fn a_session_counts_its_running_subagents_whose_work_has_tabs_of_their_own() {
+fn a_session_leaves_its_running_subagents_to_their_own_tabs() {
     let (mut model, mut links) = fleet();
     let now = Instant::now();
     let mut parent = claude("s1", 0);
@@ -540,7 +540,7 @@ fn a_session_counts_its_running_subagents_whose_work_has_tabs_of_their_own() {
     select_first_session(&mut model);
     handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
     let shown = screen(&model);
-    assert!(shown.contains("1 subagent"), "{shown}");
+    assert!(!shown.contains("subagent"), "{shown}");
 }
 
 #[test]
@@ -691,6 +691,22 @@ fn a_moved_session_shows_the_ports_its_old_machine_forwards_to_it() {
         model.moved_forwards(now),
         [(Endpoint::Local, "s1".to_string())],
         "only the forward to a machine s1 has left is closed; one for an ended session stays"
+    );
+    let LinkUpdate::Sample(mut unknown) = live_sample(1_000, None) else {
+        unreachable!()
+    };
+    unknown.forwards = vec![crate::proto::Forward {
+        session: "s1".into(),
+        host: "server".into(),
+        ssh: "me@homelab".into(),
+        ports: vec![3000],
+        state: crate::proto::ForwardState::Connected,
+    }];
+    model.apply(Endpoint::Local, LinkUpdate::Sample(unknown), now);
+    assert_eq!(
+        model.moved_forwards(now),
+        [],
+        "a host named only by its ssh login is still the machine s1 runs on"
     );
     assert!(!shown.contains("localhost:4000 →"), "{shown}");
 }
@@ -944,4 +960,19 @@ fn a_codex_session_can_be_moved_like_a_claude_one() {
     select_first_session(&mut model);
     let keys = footer(&model);
     assert!(keys.contains("m move"), "{keys}");
+}
+
+#[test]
+fn a_session_asking_to_trust_its_folder_can_be_answered_from_the_overview() {
+    let (mut model, _) = fleet();
+    let now = Instant::now();
+    let mut session = in_rex(claude("s1", 0));
+    session.state = crate::proto::SessionState::Waiting(crate::proto::Waiting::Trust);
+    model.apply(Endpoint::Local, live_sample(1_000, Some(session)), now);
+    select_first_session(&mut model);
+    let keys = footer(&model);
+    assert!(
+        keys.contains("y trust") && keys.contains("n leave"),
+        "{keys}"
+    );
 }

@@ -13,6 +13,7 @@ const EVERY: Duration = Duration::from_millis(500);
 const ASK_REX_EVERY: Duration = Duration::from_secs(2);
 const REPORTED_WITHIN: Duration = Duration::from_secs(15);
 const LINGER: Duration = Duration::from_secs(10);
+const GIVE_UP_AFTER_FAILURES: u32 = 5;
 const DIM: &str = "\x1b[2m";
 const BOLD: &str = "\x1b[1m";
 const GREEN: &str = "\x1b[32m";
@@ -84,6 +85,7 @@ struct Alive {
     seen: bool,
     asked: Option<Instant>,
     running: bool,
+    failures: u32,
 }
 
 impl Alive {
@@ -96,8 +98,14 @@ impl Alive {
         }
         self.asked = Some(Instant::now());
         self.running = match parent.running_children() {
-            Ok(ids) => still_running(&ids, id, &mut self.seen, waited),
-            Err(_) => false,
+            Ok(ids) => {
+                self.failures = 0;
+                still_running(&ids, id, &mut self.seen, waited)
+            }
+            Err(_) => {
+                self.failures += 1;
+                self.failures < GIVE_UP_AFTER_FAILURES
+            }
         };
         self.running
     }

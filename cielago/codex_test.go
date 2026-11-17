@@ -99,6 +99,23 @@ func (t tui) exitsWithin(d time.Duration) bool {
 	}
 }
 
+func (f *fixture) codexAppServer(codexHome, id string) {
+	f.t.Helper()
+	lock := filepath.Join(codexHome, "thread-writer-locks", id+".lock")
+	f.write(filepath.Dir(lock), filepath.Base(lock), "")
+	f.write(filepath.Join(f.home, "daemon"), "codex", "#!/bin/sh\nexec 3<\"$2\"\nsleep 60 3<&-\n")
+	daemon := filepath.Join(f.home, "daemon", "codex")
+	if err := os.Chmod(daemon, 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	server := exec.Command(daemon, "app-server", lock)
+	if err := server.Start(); err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Cleanup(func() { server.Process.Kill(); server.Wait() })
+	time.Sleep(200 * time.Millisecond)
+}
+
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  strings.Builder
@@ -343,19 +360,7 @@ func TestACodexMoveIsRefusedWhileTheOtherMachineStillHasItOpen(t *testing.T) {
 	id := "01a1c7ca-8144-7e23-82c1-87dc991d71dc"
 	local := f.codexRollout(filepath.Join(f.home, ".codex"), id, f.local, longAgo, false)
 	codex := f.codexTUI(f.local, "resume", id)
-	lock := filepath.Join(f.remoteCodexHome(), "thread-writer-locks", id+".lock")
-	f.write(filepath.Dir(lock), filepath.Base(lock), "")
-	f.write(filepath.Join(f.home, "daemon"), "codex", "#!/bin/sh\nexec 3<\"$2\"\nsleep 60 3<&-\n")
-	daemon := filepath.Join(f.home, "daemon", "codex")
-	if err := os.Chmod(daemon, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	server := exec.Command(daemon, "app-server", lock)
-	if err := server.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { server.Process.Kill(); server.Wait() })
-	time.Sleep(200 * time.Millisecond)
+	f.codexAppServer(f.remoteCodexHome(), id)
 
 	var out strings.Builder
 	if err := moveCommand([]string{id, "server", "--json"}, &out); err != errReported {
@@ -369,5 +374,58 @@ func TestACodexMoveIsRefusedWhileTheOtherMachineStillHasItOpen(t *testing.T) {
 	}
 	if got := f.read(filepath.Dir(local), filepath.Base(local)); got != rollout(id, f.local, longAgo, false) {
 		t.Errorf("the rollout here changed: %q", got)
+	}
+}
+
+func TestACodexMoveIsRefusedWhileTheAppHereHasItOpen(t *testing.T) {
+	f := newFixture(t)
+	f.codexHost(true)
+	id := "01a1c7ca-8144-7e23-82c1-87dc991d71dd"
+	local := f.codexRollout(filepath.Join(f.home, ".codex"), id, f.local, longAgo, false)
+	f.codexAppServer(filepath.Join(f.home, ".codex"), id)
+
+	var out strings.Builder
+	if err := moveCommand([]string{id, "server", "--json"}, &out); err != errReported {
+		t.Fatalf("move: %v\n%s", err, out.String())
+	}
+	if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, "background server on "+f.machine().Name()) {
+		t.Errorf("events = %+v", events)
+	}
+	if got := f.read(filepath.Dir(local), filepath.Base(local)); got != rollout(id, f.local, longAgo, false) {
+		t.Errorf("the rollout here changed: %q", got)
+	}
+	if got := f.read(filepath.Join(f.remoteCodexHome(), "sessions"), rolloutName+id+".jsonl"); got != "<missing>" {
+		t.Errorf("the rollout reached the server: %q", got)
+	}
+}
+
+func TestPullIsRefusedWhileTheAppThereHasTheCodexSessionOpen(t *testing.T) {
+	f := newFixture(t)
+	f.codexHost(true)
+	id := "01a1c7ca-8144-7e23-82c1-87dc991d71de"
+	remote := f.codexRollout(f.remoteCodexHome(), id, f.remote, longAgo, false)
+	f.codexAppServer(f.remoteCodexHome(), id)
+
+	_, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
+	if err == nil || !strings.Contains(err.Error(), "background server on fakehost") {
+		t.Fatalf("pull = %v", err)
+	}
+	if got := f.read(filepath.Dir(remote), filepath.Base(remote)); got != rollout(id, f.remote, longAgo, false) {
+		t.Errorf("the rollout there changed: %q", got)
+	}
+}
+
+func TestABusyCodexTurnIsntTakenForStaleWhenPsSpeaksAnotherLanguage(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("LC_ALL", "fr_FR.UTF-8")
+	id := "01a1c7ca-8144-7e23-82c1-87dc991d71df"
+	f.codexRollout(filepath.Join(f.home, ".codex"), id, f.local, time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano), true)
+	f.codexTUI(f.local, "resume", id)
+	s, err := findCodexSession(f.machine(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Running) != 1 || s.StaleTurn != "" {
+		t.Errorf("session = %+v", s)
 	}
 }

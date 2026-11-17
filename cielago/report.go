@@ -74,6 +74,9 @@ func describeStarted(s *started, why string) string {
 }
 
 func (t *Task) tabLabel() string {
+	if t.Label != "" {
+		return t.Label
+	}
 	return taskTabLabel(t.Name, t.Kind, t.ID)
 }
 

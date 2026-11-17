@@ -446,7 +446,10 @@ pub struct MoveSuggestion {
 }
 
 fn same_machine(name: &str, machine: &str) -> bool {
-    let short = |name: &str| name.split('.').next().unwrap_or(name).to_string();
+    let short = |name: &str| {
+        let host = name.rsplit_once('@').map_or(name, |(_, host)| host);
+        host.split('.').next().unwrap_or(host).to_string()
+    };
     !name.is_empty() && short(name).eq_ignore_ascii_case(&short(machine))
 }
 
@@ -704,17 +707,21 @@ impl Model {
     pub fn moved_forwards(&self, now: Instant) -> Vec<(Endpoint, String)> {
         let rows = self.rows(now);
         let agents = self.agents(now);
-        let agents = &agents;
+        let (rows, agents) = (&rows, &agents);
         rows.iter()
             .filter_map(|row| Some((row.endpoint, row.machine()?.latest.as_ref()?)))
             .flat_map(|(endpoint, sample)| {
                 sample.forwards.iter().filter_map(move |forward| {
-                    let moved = agents.iter().any(|agent| {
-                        agent.live
-                            && agent.session.id == forward.session
-                            && !same_machine(&forward.host, &agent.machine)
-                            && !same_machine(&forward.ssh, &agent.machine)
-                    });
+                    let host = rows.iter().find(|row| {
+                        same_machine(&forward.host, &row.name)
+                            || same_machine(&forward.ssh, &row.name)
+                    })?;
+                    let moved = host.state() == Some(&LinkState::Live)
+                        && agents.iter().any(|agent| {
+                            agent.live
+                                && agent.session.id == forward.session
+                                && agent.machine != host.name
+                        });
                     moved.then(|| (endpoint, forward.session.clone()))
                 })
             })

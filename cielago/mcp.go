@@ -132,7 +132,6 @@ func planGate(plans []plan, despite bool) (string, error) {
 }
 
 func startElsewhere(ctx context.Context, host string, spec TaskSpec, despite bool) (string, error) {
-	swept := sweepIdleCopies()
 	spec.Caller = self
 	agents := spec.Kind != kindRun
 	picks, skipped, plans, err := chooseHosts(ctx, host, agents)
@@ -170,7 +169,7 @@ func startElsewhere(ctx context.Context, host string, spec TaskSpec, despite boo
 		if len(skipped) > 0 {
 			why += "; skipped " + strings.Join(skipped, "; ")
 		}
-		return heads + describeStarted(s, why) + swept, nil
+		return heads + describeStarted(s, why), nil
 	}
 	return "", fmt.Errorf("no machine has room for it: %s", strings.Join(skipped, "; "))
 }

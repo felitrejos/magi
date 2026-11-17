@@ -594,9 +594,10 @@ fn answer(model: &mut Model, links: &Links, allow: bool, now: Instant) {
     let Some(agent) = model.selected_agent(now) else {
         return;
     };
-    let proto::SessionState::Waiting(proto::Waiting::Permission(tool)) = &agent.session.state
-    else {
-        return;
+    let tool = match &agent.session.state {
+        proto::SessionState::Waiting(proto::Waiting::Permission(tool)) => tool.clone(),
+        proto::SessionState::Waiting(proto::Waiting::Trust) => None,
+        _ => return,
     };
     if agent.session.pane.is_none() {
         let reason = format!(
@@ -608,7 +609,7 @@ fn answer(model: &mut Model, links: &Links, allow: bool, now: Instant) {
     let request = proto::Request::Answer {
         session: agent.session.id.clone(),
         allow,
-        tool: tool.clone(),
+        tool,
         waiting_secs: agent.session.state_secs,
     };
     if let Err(error) = links.request(agent.endpoint, &request) {

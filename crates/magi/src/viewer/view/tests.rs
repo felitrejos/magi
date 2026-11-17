@@ -637,5 +637,5 @@ fn work_sent_to_another_machine_points_back_to_the_session_that_sent_it() {
         .lines()
         .find(|line| line.contains(&sender.title) && !line.contains("linux build"))
         .unwrap();
-    assert!(sender_line.contains("1 on host-1"), "{sender_line}");
+    assert!(!sender_line.contains(" on host-1"), "{sender_line}");
 }

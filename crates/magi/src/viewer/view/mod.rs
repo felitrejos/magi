@@ -397,6 +397,9 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         SessionState::Waiting(Waiting::Permission(_)) if in_rex && agent.live => {
             actions.extend([("y", "allow"), ("n", "deny")]);
         }
+        SessionState::Waiting(Waiting::Trust) if in_rex && agent.live => {
+            actions.extend([("y", "trust"), ("n", "leave")]);
+        }
         SessionState::Waiting(Waiting::Input(_)) if in_rex && agent.live => {
             actions.push(("1–9", "choose"));
         }

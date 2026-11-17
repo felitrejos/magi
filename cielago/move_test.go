@@ -279,3 +279,42 @@ func TestAReusedPidIsNotTakenForTheSession(t *testing.T) {
 		t.Error("stop killed a process that only had the session's pid")
 	}
 }
+
+func TestAHalfWrittenSessionFileKeepsTheMoveWaiting(t *testing.T) {
+	f := newFixture(t)
+	f.moveHost()
+	id := "0f0f0f0f-1111-2222-3333-eeeeeeeeeeee"
+	proc, _ := f.localSession(id, "busy")
+	path, _ := armedPath(id, ".json")
+	done := make(chan string, 1)
+	go func() {
+		var out strings.Builder
+		moveCommand([]string{id, "server", "--json"}, &out)
+		done <- out.String()
+	}()
+	if !waitForFile(t, path, 5*time.Second) {
+		t.Fatalf("the session wasn't armed: %s", <-done)
+	}
+	pid := strconv.Itoa(proc.Process.Pid)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"`+id)
+	select {
+	case out := <-done:
+		t.Fatalf("move gave up on a half-written session file: %s", out)
+	case <-time.After(time.Second):
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the session was disarmed: %v", err)
+	}
+	os.Remove(path)
+	if err := writeMoveResult(id, moveReport{Event: "moved", OK: true, Message: "Moved."}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case out := <-done:
+		if events := moveEvents(t, out); events[len(events)-1].Event != "moved" {
+			t.Errorf("events = %+v", events)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("move didn't report the hook's result")
+	}
+}

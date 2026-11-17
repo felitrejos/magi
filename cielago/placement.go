@@ -10,10 +10,11 @@ import (
 type needsInput struct {
 	OS    string   `json:"os,omitempty" jsonschema:"the operating system the work has to run on: linux or macos"`
 	Arch  string   `json:"arch,omitempty" jsonschema:"the CPU architecture it has to run on: x86_64 or arm64"`
-	Tools []string `json:"tools,omitempty" jsonschema:"programs it needs, such as cargo, go, node, swift, xcodebuild, nvidia-smi or docker"`
+	Tools []string `json:"tools,omitempty" jsonschema:"programs it needs; only cargo, go, node, python3, swift, xcodebuild, gcc, clang, make, nvidia-smi, docker and podman are checked, and any other tool is left out of the choice"`
 }
 
 var (
+	checkedTools   = []string{"cargo", "go", "node", "python3", "swift", "xcodebuild", "gcc", "clang", "make", "nvidia-smi", "docker", "podman"}
 	containerTools = []string{"docker", "podman"}
 	hostOnlyTools  = []string{"xcodebuild", "nvidia-smi"}
 )
@@ -69,7 +70,7 @@ func (n needsInput) native(m fleetMachine) bool {
 
 func (n needsInput) hasTools(m fleetMachine) bool {
 	for _, tool := range n.Tools {
-		if !slices.Contains(m.Tools, tool) {
+		if slices.Contains(checkedTools, tool) && !slices.Contains(m.Tools, tool) {
 			return false
 		}
 	}
@@ -147,13 +148,24 @@ func (view fleetView) places(needs needsInput) []spot {
 	return places
 }
 
+func (n needsInput) unchecked() string {
+	var b strings.Builder
+	for _, tool := range n.Tools {
+		if !slices.Contains(checkedTools, tool) {
+			fmt.Fprintf(&b, "%s isn't checked, so it isn't counted.\n", tool)
+		}
+	}
+	return b.String()
+}
+
 func describePlaces(view fleetView, needs needsInput) string {
 	places := view.places(needs)
 	if len(places) == 0 {
-		return fmt.Sprintf("\nNo machine can run work that needs %s: none has it natively, and none with room has Docker or Podman running.\n", needs)
+		return fmt.Sprintf("\nNo machine can run work that needs %s: none has it natively, and none with room has Docker or Podman running.\n", needs) + needs.unchecked()
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\nFor work that needs %s, best first:\n", needs)
+	b.WriteString(needs.unchecked())
 	for _, p := range places {
 		fmt.Fprintf(&b, "- %s\n", p)
 	}

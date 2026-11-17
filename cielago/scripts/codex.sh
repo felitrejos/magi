@@ -47,7 +47,7 @@ started_at() {
     boot=$(awk '/^btime/ {print $2}' /proc/stat)
     echo $((boot + ticks / 100))
   else
-    TZ=UTC date -j -f '%a %b %d %T %Y' "$(TZ=UTC ps -o lstart= -p "$1" | tr -s ' ' | sed 's/^ //;s/ $//')" +%s
+    LC_ALL=C TZ=UTC date -j -f '%a %b %d %T %Y' "$(LC_ALL=C TZ=UTC ps -o lstart= -p "$1" | tr -s ' ' | sed 's/^ //;s/ $//')" +%s
   fi
 }
 
@@ -112,7 +112,14 @@ case $command in
     fi
     ;;
   started)
-    for pid; do printf '%s %s\n' "$pid" "$(started_at "$pid")"; done
+    for pid; do
+      at=$(started_at "$pid")
+      if [ -z "$at" ]; then
+        echo "couldn't read when process $pid started" >&2
+        exit 1
+      fi
+      printf '%s %s\n' "$pid" "$at"
+    done
     ;;
   stop)
     rollout=$1 stale=$2

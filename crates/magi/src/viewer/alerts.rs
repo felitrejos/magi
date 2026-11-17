@@ -74,7 +74,8 @@ pub struct Alerts {
     active: HashMap<String, Active>,
     pending: HashMap<String, Instant>,
     inherited: HashMap<String, Entry>,
-    inherited_dismissed: HashSet<String>,
+    inherited_dismissed: HashMap<String, Entry>,
+    elsewhere: Vec<String>,
     inherit_until: Instant,
     history: VecDeque<Entry>,
     log: Option<Log>,
@@ -105,6 +106,7 @@ impl Alerts {
             pending: HashMap::new(),
             inherited: open,
             inherited_dismissed: dismissed,
+            elsewhere: Vec::new(),
             inherit_until: now + INHERIT_GRACE,
             history,
             log: path.map(|path| Log {
@@ -152,7 +154,11 @@ impl Alerts {
 
     pub fn update(&mut self, conditions: Vec<Condition>, now: Instant, now_secs: u64) -> Changes {
         let mut changes = Changes {
-            resolved: self.dismissed_elsewhere(),
+            resolved: {
+                let mut resolved = std::mem::take(&mut self.elsewhere);
+                resolved.extend(self.dismissed_elsewhere());
+                resolved
+            },
             ..Changes::default()
         };
         let mut entries = Vec::new();
@@ -170,7 +176,7 @@ impl Alerts {
                 }
                 continue;
             }
-            if self.inherited_dismissed.remove(&condition.key) {
+            if self.inherited_dismissed.remove(&condition.key).is_some() {
                 self.activate(condition, now_secs, true);
                 continue;
             }
@@ -211,7 +217,13 @@ impl Alerts {
             }
         }
         if now >= self.inherit_until {
-            self.inherited_dismissed.clear();
+            for (_, dismissed) in self.inherited_dismissed.drain() {
+                entries.push(Entry {
+                    at: now_secs,
+                    event: Event::Resolved,
+                    ..dismissed
+                });
+            }
             for (key, raised) in self.inherited.drain() {
                 entries.push(Entry {
                     at: now_secs,
@@ -252,7 +264,7 @@ impl Alerts {
                 None => match self.inherited.get(&key) {
                     Some(raised) if entry.at >= raised.at => {
                         self.inherited.remove(&key);
-                        self.inherited_dismissed.insert(key.clone());
+                        self.inherited_dismissed.insert(key.clone(), entry.clone());
                         true
                     }
                     _ => false,
@@ -294,18 +306,30 @@ impl Alerts {
         while self.history.len() > KEPT {
             self.history.pop_front();
         }
+        let Some(log) = &self.log else {
+            return Ok(());
+        };
+        let written_elsewhere = size(&log.path) != log.bytes;
+        if written_elsewhere && log.lines + entries.len() > REWRITE_AT {
+            let dismissed = self.dismissed_elsewhere();
+            self.elsewhere.extend(dismissed);
+        }
         let Some(log) = &mut self.log else {
             return Ok(());
         };
         log.lines += entries.len();
-        let written = if log.lines > REWRITE_AT {
+        if log.lines > REWRITE_AT {
             log.lines = self.history.len();
-            rewrite(&log.path, &self.history)
-        } else {
-            append(&log.path, &entries)
-        };
-        log.bytes = size(&log.path);
-        written
+            rewrite(&log.path, &self.history)?;
+            log.bytes = size(&log.path);
+            return Ok(());
+        }
+        let text = lines(&entries)?;
+        append(&log.path, &text)?;
+        if !written_elsewhere {
+            log.bytes += text.len() as u64;
+        }
+        Ok(())
     }
 }
 
@@ -352,12 +376,12 @@ pub fn dismiss_open(path: &PathBuf, now_secs: u64) -> io::Result<()> {
     if entries.is_empty() {
         return Ok(());
     }
-    append(path, &entries)
+    append(path, &lines(&entries)?)
 }
 
-fn still_open(history: &VecDeque<Entry>) -> (HashMap<String, Entry>, HashSet<String>) {
+fn still_open(history: &VecDeque<Entry>) -> (HashMap<String, Entry>, HashMap<String, Entry>) {
     let mut open = HashMap::new();
-    let mut dismissed = HashSet::new();
+    let mut dismissed = HashMap::new();
     for entry in history {
         match entry.event {
             Event::Raised => {
@@ -370,7 +394,7 @@ fn still_open(history: &VecDeque<Entry>) -> (HashMap<String, Entry>, HashSet<Str
             }
             Event::Dismissed => {
                 if open.remove(&entry.key).is_some() {
-                    dismissed.insert(entry.key.clone());
+                    dismissed.insert(entry.key.clone(), entry.clone());
                 }
             }
         }
@@ -398,9 +422,8 @@ fn lines(entries: impl IntoIterator<Item = impl std::borrow::Borrow<Entry>>) -> 
     Ok(text)
 }
 
-fn append(path: &PathBuf, entries: &[Entry]) -> io::Result<()> {
-    open_private(path, OpenOptions::new().create(true).append(true))?
-        .write_all(lines(entries)?.as_bytes())
+fn append(path: &PathBuf, text: &str) -> io::Result<()> {
+    open_private(path, OpenOptions::new().create(true).append(true))?.write_all(text.as_bytes())
 }
 
 fn rewrite(path: &PathBuf, history: &VecDeque<Entry>) -> io::Result<()> {
@@ -831,6 +854,27 @@ mod tests {
         reopened.update(Vec::new(), start, 50);
         let back = reopened.update(vec![changed.clone()], start, 60);
         assert_eq!(back.raised, vec![changed]);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_dismissal_that_outlived_its_cause_is_closed_so_the_alert_can_come_back() {
+        let path = temp("dismiss-gone");
+        let start = Instant::now();
+        let plan = condition("plan/ClaudeCode/5h", Duration::ZERO);
+        Alerts::open(path.clone(), start)
+            .unwrap()
+            .update(vec![plan.clone()], start, 10);
+        dismiss_open(&path, 20).unwrap();
+        let mut restarted = Alerts::open(path.clone(), start).unwrap();
+        restarted.update(Vec::new(), start + INHERIT_GRACE, 30);
+        let (open, dismissed) = still_open(&read_history(&path).unwrap());
+        assert!(open.is_empty() && dismissed.is_empty());
+        let mut later = Alerts::open(path.clone(), start).unwrap();
+        assert_eq!(
+            later.update(vec![plan.clone()], start, 40).raised,
+            vec![plan]
+        );
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

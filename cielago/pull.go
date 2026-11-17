@@ -81,7 +81,10 @@ func (p Pull) Run() (res Pulled, err error) {
 			if _, err := exec.LookPath("codex"); err != nil {
 				return fmt.Errorf("session %s is a Codex session, and codex isn't installed on %s", shortID(session.ID), local.Name())
 			}
-			if err := refuseOpenCodex(local, session.ID); err != nil {
+			if err := refuseOpenCodex(remote, session.ID, session.Running); err != nil {
+				return err
+			}
+			if err := refuseOpenCodex(local, session.ID, nil); err != nil {
 				return err
 			}
 		}

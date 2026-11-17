@@ -9,6 +9,7 @@ use crate::proto::{
 
 const READ_WITHIN: Duration = Duration::from_secs(15);
 const CHECK_EVERY: Duration = Duration::from_secs(1);
+const IDLE_AFTER: Duration = Duration::from_secs(3);
 
 pub fn subagents(client: &Client) -> Vec<Value> {
     client
@@ -93,13 +94,21 @@ pub fn wait(
     let child = subagent
         .map(|query| child(&found, query).map(|child| child.id.clone()))
         .transpose()?;
-    let deadline = Instant::now() + within;
+    let started = Instant::now();
+    let deadline = started + within;
     loop {
         let agents = client.model.agents(Instant::now());
         let Some(now) = agents.iter().find(|agent| agent.session.id == id) else {
             return Ok(format!("{} has ended", found.session.title));
         };
-        let settled = settled(now.session, child.as_deref());
+        if !now.live {
+            return Err(format!("{}'s machine isn't answering", found.session.title));
+        }
+        let settled = settled(
+            now.session,
+            child.as_deref(),
+            started.elapsed() < IDLE_AFTER,
+        );
         if let Some(settled) = settled {
             return Ok(settled);
         }
@@ -112,7 +121,7 @@ pub fn wait(
     }
 }
 
-fn settled(session: &AgentSession, child: Option<&str>) -> Option<String> {
+fn settled(session: &AgentSession, child: Option<&str>, just_asked: bool) -> Option<String> {
     match child {
         Some(child) => {
             let known = session.children.iter().find(|known| known.id == child);
@@ -126,6 +135,7 @@ fn settled(session: &AgentSession, child: Option<&str>) -> Option<String> {
         }
         None => match &session.state {
             SessionState::Working { .. } => None,
+            SessionState::Idle if just_asked => None,
             SessionState::Idle => Some(format!("{} is idle", session.title)),
             SessionState::Waiting(_) => Some(format!("{} needs you", session.title)),
         },
@@ -209,21 +219,26 @@ mod tests {
         session.title = "fix login".into();
         session.state = SessionState::Working { tool: None };
         session.children = vec![subagent("t1", "find auth", ChildState::Running)];
-        assert_eq!(settled(&session, None), None);
-        assert_eq!(settled(&session, Some("t1")), None);
+        assert_eq!(settled(&session, None, false), None);
+        assert_eq!(settled(&session, Some("t1"), false), None);
         session.children[0].state = ChildState::Done;
         assert_eq!(
-            settled(&session, Some("t1")).as_deref(),
+            settled(&session, Some("t1"), false).as_deref(),
             Some("fix login ↳ find auth has finished")
         );
         session.state = SessionState::Waiting(Waiting::Permission(None));
         assert_eq!(
-            settled(&session, None).as_deref(),
+            settled(&session, None, true).as_deref(),
             Some("fix login needs you")
         );
         session.state = SessionState::Idle;
         assert_eq!(
-            settled(&session, None).as_deref(),
+            settled(&session, None, true),
+            None,
+            "a message sent just now hasn't started yet"
+        );
+        assert_eq!(
+            settled(&session, None, false).as_deref(),
             Some("fix login is idle")
         );
     }

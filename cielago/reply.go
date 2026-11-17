@@ -71,7 +71,7 @@ func sweepIdleCopies() string {
 	errs := []error{err}
 	for _, t := range tasks {
 		if t.Outcome != nil && t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies {
-			if _, err := closeIdleCopy(t.ID, keepCopies); err != nil {
+			if _, err := closeIdleCopy(t.ID, keepCopies); err != nil && !errors.Is(err, errTaskBusy) {
 				errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
 			}
 		}
@@ -146,7 +146,7 @@ func replyTask(ctx context.Context, id, message string) (*started, error) {
 		return nil, err
 	}
 	launcher := newLauncher(host, r)
-	tab, err := launcher.Start(t.Group, t.tabLabel(), t.RunDir, t.delegateCommand(host, "", true), false)
+	tab, err := launcher.Start(t.Group, t.tabLabel(), t.RunDir, withParent(t.Parent, t.delegateCommand(host, "", true)), false)
 	if err != nil {
 		return nil, errors.Join(err, launcher.Discard(tab))
 	}
