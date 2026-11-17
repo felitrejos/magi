@@ -143,6 +143,10 @@ func initConfig(in io.Reader, out io.Writer) error {
 	if h.Claude, err = p.ask("Path to claude on "+name, firstNonEmpty(h.Claude, string(detected))); err != nil {
 		return err
 	}
+	detected, _ = sh(remote, `for c in "$HOME/.local/bin/codex" "$(command -v codex 2>/dev/null)" /opt/homebrew/bin/codex /usr/local/bin/codex; do [ -x "$c" ] && { printf '%s' "$c" | sed "s|^$HOME/|~/|"; exit 0; }; done; true`)
+	if h.Codex, err = p.ask("Path to codex on "+name+", to move Codex sessions there (blank if you don't use Codex there)", firstNonEmpty(h.Codex, string(detected))); err != nil {
+		return err
+	}
 	roots, err := p.ask("Where projects live on "+name+" (comma-separated; new ones go in the first)", firstNonEmpty(strings.Join(h.Roots, ", "), strings.Join(existing(remote, projectFolders), ", "), "~/projects"))
 	if err != nil {
 		return err

@@ -138,6 +138,7 @@ fn child(id: String, record: Record) -> Option<((i32, i64), Child)> {
             state: ChildState::Running,
             secs: 0,
             task: None,
+            doing: None,
         },
     ))
 }
@@ -167,6 +168,7 @@ mod tests {
                 state: ChildState::Running,
                 secs: 0,
                 task: None,
+                doing: None,
             }
         );
         let (_, delegated) = child("task:t1".into(), record(

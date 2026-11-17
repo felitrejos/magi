@@ -9,7 +9,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::alerts::{Entry, Event, Severity, read_history};
+use super::alerts::{Entry, Event, Severity, dismiss_open, read_history};
 use super::input::{self, Input, Key};
 use super::style::{self, theme};
 use super::terminal;
@@ -40,14 +40,15 @@ pub fn run() -> io::Result<()> {
                 Ok(Input::Key(Key::Char('q') | Key::Escape | Key::Interrupt))
                 | Ok(Input::Closed)
                 | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-                Ok(Input::Key(Key::Down | Key::Char('j'))) => top += 1,
-                Ok(Input::Key(Key::Up | Key::Char('k'))) => top = top.saturating_sub(1),
+                Ok(Input::Key(Key::Down | Key::Char('d'))) => top += 1,
+                Ok(Input::Key(Key::Up | Key::Char('u'))) => top = top.saturating_sub(1),
                 Ok(Input::Key(Key::PageDown | Key::Char(' '))) => top += page,
                 Ok(Input::Key(Key::PageUp | Key::Char('b'))) => top = top.saturating_sub(page),
                 Ok(Input::Wheel { up, .. }) => {
                     top = if up { top.saturating_sub(3) } else { top + 3 }
                 }
                 Ok(Input::Key(Key::First | Key::Char('g'))) => top = 0,
+                Ok(Input::Key(Key::Char('c'))) => dismiss_open(&path, log::now_secs())?,
                 _ => {}
             }
         }
@@ -94,15 +95,27 @@ fn draw(frame: &mut Frame, entries: &[Entry], top: &mut usize) -> usize {
     let body = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 3);
     let lines = feed(entries, log::now_secs(), width);
     let room = usize::from(body.height);
+    let overflows = lines.len() > room;
     *top = (*top).min(lines.len().saturating_sub(room));
     let shown: Vec<Line<'static>> = lines.into_iter().skip(*top).take(room).collect();
     frame.render_widget(Paragraph::new(shown), body);
-    let keys = Line::from(vec![
+    let mut keys = vec![
         Span::styled("esc", style::bold(theme().text)),
-        Span::styled(" close   ", style::fg(theme().faint)),
-        Span::styled("j k", style::bold(theme().text)),
-        Span::styled(" scroll", style::fg(theme().faint)),
-    ]);
+        Span::styled(" close", style::fg(theme().faint)),
+    ];
+    if open > 0 {
+        keys.extend([
+            Span::styled("   c", style::bold(theme().text)),
+            Span::styled(" clear", style::fg(theme().faint)),
+        ]);
+    }
+    if overflows {
+        keys.extend([
+            Span::styled("   u d", style::bold(theme().text)),
+            Span::styled(" scroll", style::fg(theme().faint)),
+        ]);
+    }
+    let keys = Line::from(keys);
     frame.render_widget(
         Paragraph::new(keys),
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
@@ -112,7 +125,7 @@ fn draw(frame: &mut Frame, entries: &[Entry], top: &mut usize) -> usize {
 
 struct Item<'a> {
     raised: &'a Entry,
-    resolved: Option<u64>,
+    closed: Option<(u64, Event)>,
 }
 
 fn items(entries: &[Entry]) -> Vec<Item<'_>> {
@@ -121,15 +134,15 @@ fn items(entries: &[Entry]) -> Vec<Item<'_>> {
         match entry.event {
             Event::Raised => items.push(Item {
                 raised: entry,
-                resolved: None,
+                closed: None,
             }),
-            Event::Resolved => {
+            Event::Resolved | Event::Dismissed => {
                 if let Some(item) = items
                     .iter_mut()
                     .rev()
-                    .find(|item| item.raised.key == entry.key && item.resolved.is_none())
+                    .find(|item| item.raised.key == entry.key && item.closed.is_none())
                 {
-                    item.resolved = Some(entry.at);
+                    item.closed = Some((entry.at, entry.event));
                 }
             }
         }
@@ -141,7 +154,7 @@ fn items(entries: &[Entry]) -> Vec<Item<'_>> {
 fn open_count(entries: &[Entry]) -> usize {
     items(entries)
         .iter()
-        .filter(|item| item.resolved.is_none())
+        .filter(|item| item.closed.is_none())
         .count()
 }
 
@@ -181,13 +194,14 @@ pub fn feed(entries: &[Entry], now: u64, width: usize) -> Vec<Line<'static>> {
             )));
             last_day = day;
         }
-        let color = match (item.resolved, item.raised.severity) {
+        let color = match (item.closed, item.raised.severity) {
             (Some(_), _) => theme().dim,
             (None, Severity::Error) => theme().crit,
             (None, _) => theme().warn,
         };
-        let outcome = match item.resolved {
-            Some(at) => format!(
+        let outcome = match item.closed {
+            Some((_, Event::Dismissed)) => "dismissed".into(),
+            Some((at, _)) => format!(
                 "resolved after {}",
                 crate::viewer::units::duration(Duration::from_secs(
                     at.saturating_sub(item.raised.at)
@@ -202,7 +216,7 @@ pub fn feed(entries: &[Entry], now: u64, width: usize) -> Vec<Line<'static>> {
                     style::fg(theme().faint),
                 ),
                 Span::styled(
-                    if item.resolved.is_some() {
+                    if item.closed.is_some() {
                         "○ "
                     } else {
                         "● "
@@ -212,7 +226,11 @@ pub fn feed(entries: &[Entry], now: u64, width: usize) -> Vec<Line<'static>> {
                 Span::styled(item.raised.text.clone(), style::fg(color)),
             ],
             vec![Span::styled(
-                format!("{} · {outcome}", item.raised.machine),
+                if item.raised.machine.is_empty() {
+                    outcome
+                } else {
+                    format!("{} · {outcome}", item.raised.machine)
+                },
                 style::fg(theme().faint),
             )],
             width,
@@ -250,7 +268,7 @@ mod tests {
 
     #[test]
     fn the_feed_groups_alerts_by_day_newest_first_with_how_each_was_resolved() {
-        let now = log::now_secs();
+        let now = 1_794_830_400;
         let entries = [
             entry(now - DAY - 600, Event::Raised, "a", "old one needs you"),
             entry(now - DAY - 480, Event::Resolved, "a", "old one needs you"),

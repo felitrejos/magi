@@ -149,12 +149,11 @@ func writeApprovals(approvals map[string]string) error {
 	}
 	defer os.Remove(f.Name())
 	for file, hash := range approvals {
-		if _, err := fmt.Fprintf(f, "%s\t%s\n", hash, file); err != nil {
-			f.Close()
-			return err
+		if _, err = fmt.Fprintf(f, "%s\t%s\n", hash, file); err != nil {
+			break
 		}
 	}
-	if err := f.Close(); err != nil {
+	if err := errors.Join(err, f.Close()); err != nil {
 		return err
 	}
 	return os.Rename(f.Name(), path)

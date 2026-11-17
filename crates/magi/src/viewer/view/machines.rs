@@ -69,7 +69,6 @@ pub fn render_detail(
     now: Instant,
     graphics: &mut Graphics,
 ) {
-    let label = model.labels.machine_label(&row.name);
     let orphans = model.orphaned_forwards(&row.name, now);
     let port = model.port;
     if area.height < 4 || area.width < 16 {
@@ -84,15 +83,9 @@ pub fn render_detail(
         frame,
         area,
         panel(
-            vec![Span::styled(
-                label.unwrap_or(&row.name).to_string(),
-                style::bold(theme().text),
-            )],
+            vec![Span::styled(row.name.clone(), style::bold(theme().text))],
             Some(vec![Span::styled(
-                match label {
-                    Some(_) => format!("{} · {place}", row.name),
-                    None => place.to_string(),
-                },
+                place.to_string(),
                 style::fg(theme().dim),
             )]),
         ),

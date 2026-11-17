@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::alerts;
 use super::client::{Client, short_id};
-use super::fleet;
+use super::{fleet, watch};
 use crate::log;
 use crate::proto::{OpenIn, Request, SessionState, Waiting};
 
@@ -45,6 +45,19 @@ pub enum Cli {
         model: Option<String>,
     },
     Events,
+    Subagents {
+        json: bool,
+    },
+    Recent {
+        session: String,
+        subagent: Option<String>,
+        items: usize,
+    },
+    Wait {
+        session: String,
+        subagent: Option<String>,
+        within: Duration,
+    },
 }
 
 pub fn run(port: u16, command: Cli) -> io::Result<()> {
@@ -52,6 +65,17 @@ pub fn run(port: u16, command: Cli) -> io::Result<()> {
     let said = match command {
         Cli::Sessions { json } => return sessions(&client, json),
         Cli::Events => return events(&mut client),
+        Cli::Subagents { json } => return subagents(&client, json),
+        Cli::Recent {
+            session,
+            subagent,
+            items,
+        } => watch::recent(&mut client, &session, subagent.as_deref(), items),
+        Cli::Wait {
+            session,
+            subagent,
+            within,
+        } => watch::wait(&mut client, &session, subagent.as_deref(), within),
         Cli::Send { session, text } => {
             let found = client.session(&session).map_err(io::Error::other)?;
             let request = Request::Prompt {
@@ -82,6 +106,18 @@ pub fn run(port: u16, command: Cli) -> io::Result<()> {
     writeln!(io::stdout(), "{text}")
 }
 
+fn subagents(client: &Client, as_json: bool) -> io::Result<()> {
+    let mut out = io::stdout().lock();
+    if as_json {
+        serde_json::to_writer(&mut out, &watch::subagents(client))?;
+        return writeln!(out);
+    }
+    for line in watch::subagent_lines(client) {
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
 fn sessions(client: &Client, as_json: bool) -> io::Result<()> {
     let agents = client.model.agents(Instant::now());
     let mut out = io::stdout().lock();
@@ -97,6 +133,7 @@ fn sessions(client: &Client, as_json: bool) -> io::Result<()> {
                 format!("asks to run {}", tool.as_deref().unwrap_or("something"))
             }
             SessionState::Waiting(Waiting::Input(_)) => "asks a question".into(),
+            SessionState::Waiting(Waiting::Trust) => "asks to trust its folder".into(),
             SessionState::Working { .. } => "working".into(),
             SessionState::Idle => "idle".into(),
         };
@@ -150,6 +187,10 @@ pub(super) fn start(
         client.wait(LINK_EVERY).map_err(|error| error.to_string())?;
     }
     Ok(match started {
+        Some(session) if session.state.is_waiting() => format!(
+            "{said}\n{} is asking you to trust its folder: magi answer {} yes",
+            session.title, session.id
+        ),
         Some(session) => match session.remote_url() {
             Some(url) => format!(
                 "{said}\n{} ({}): {url}",

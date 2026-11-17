@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::cmd;
+use crate::bounded;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 const MACOS_APP_CLI: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
@@ -64,12 +64,13 @@ struct WhoisJson {
 }
 
 pub fn status() -> io::Result<Status> {
-    let status: StatusJson = cmd::json(program(), &["status", "--json"], TIMEOUT)?;
+    let status: StatusJson = bounded::json(program(), &["status", "--json"], TIMEOUT)?;
     Ok(parse_status(status))
 }
 
 pub fn whois_login(peer: SocketAddr) -> io::Result<String> {
-    let whois: WhoisJson = cmd::json(program(), &["whois", "--json", &peer.to_string()], TIMEOUT)?;
+    let whois: WhoisJson =
+        bounded::json(program(), &["whois", "--json", &peer.to_string()], TIMEOUT)?;
     Ok(whois.profile.login_name)
 }
 

@@ -2,9 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -14,13 +13,12 @@ use crate::conversation::Reader;
 use crate::handoff;
 use crate::net::{self, Conn};
 use crate::proto::{
-    self, AgentMessage, AgentSession, ChildKind, Content, Hello, Identity, PROTOCOL_VERSION, Reply,
-    Request, Said, Screen, SessionState, SharedLabels, Shown, StatusReport, Welcome,
+    self, AgentMessage, AgentSession, Content, Hello, Identity, OpenIn, PROTOCOL_VERSION, Reply,
+    Request, SessionState, Shown, StatusReport, View, Welcome,
 };
-use crate::screen::Capturer;
 use crate::sessions::rex::Location;
 use crate::sessions::{Board, Sessions, Snapshot};
-use crate::{children, log, mirrors, opener, show, tailscale, typing};
+use crate::{children, log, mirrors, opener, prs, show, tailscale, tools, typing};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -32,7 +30,6 @@ const FRAME_BACKLOG: usize = 4;
 const HELLO_MAX_BYTES: usize = 8;
 const STATUS_MAX_BYTES: usize = 4096;
 const REQUEST_MAX_BYTES: usize = 16 * 1024;
-const SCREEN_EVERY: Duration = Duration::from_millis(500);
 const STATUS_RETRY: Duration = Duration::from_millis(10);
 const STATUS_READ_TIMEOUT: Duration = Duration::from_secs(1);
 const SESSIONS_EVERY: Duration = Duration::from_secs(1);
@@ -48,12 +45,7 @@ pub fn run(config: Config) -> io::Result<()> {
     let collector = Collector::new()?;
     let info = collector.info();
     let board = Board::saved_at(net::state_dir()?.join("plans.json"));
-    let agent = Arc::new(Agent::new(
-        identity_of(&info),
-        config.interval,
-        board,
-        shared_path().ok(),
-    ));
+    let agent = Arc::new(Agent::new(identity_of(&info), config.interval, board));
     let socket = net::local_socket()?;
     let local = net::bind_local(&socket)?;
     log::info(format!(
@@ -86,11 +78,10 @@ fn identity_of(info: &SystemInfo) -> Identity {
         hostname: collect::hostname(),
         tailscale_node: tailscale::status().ok().map(|status| status.node),
         os: info.os.clone(),
-        kernel: info.kernel.clone(),
         arch: std::env::consts::ARCH.to_string(),
+        tools: tools::available(),
         cpu_model: info.cpu_model.clone(),
         core_kinds: info.core_kinds.clone(),
-        agent_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
 
@@ -110,15 +101,6 @@ fn spawn_identity_refresh(info: SystemInfo, agent: Arc<Agent>) -> io::Result<()>
     Ok(())
 }
 
-#[derive(Default)]
-struct Watcher {
-    screen: Capturer,
-    conversation: Reader,
-    subagents: HashMap<String, PathBuf>,
-}
-
-type Target = (String, Option<String>);
-
 struct Agent {
     identity: RwLock<Identity>,
     interval: Duration,
@@ -128,11 +110,20 @@ struct Agent {
     board: Board,
     sessions: Mutex<Snapshot>,
     fresh: Nudge,
-    shared: Mutex<Option<SharedLabels>>,
-    shared_file: Option<PathBuf>,
     queued: Mutex<HashMap<String, String>>,
     mirrored: Mutex<HashSet<(String, String)>>,
+    starting: Mutex<Vec<Starting>>,
+    prs: prs::Prs,
 }
+
+struct Starting {
+    pane: opener::OpenedPane,
+    title: String,
+    since: Instant,
+}
+
+const TRUST_PREFIX: &str = "trust:";
+const WATCH_START_FOR: Duration = Duration::from_secs(90);
 
 impl Agent {
     fn queue(
@@ -148,12 +139,10 @@ impl Agent {
                 None => Err("write something to send".into()),
             };
         }
+        let pane = pane.ok_or_else(|| typing::not_in_rex(session))?;
         if session.state == SessionState::Idle {
             drop(queued);
-            return typing::prompt(session, pane, text);
-        }
-        if pane.is_none() {
-            return typing::prompt(session, pane, text);
+            return typing::prompt(session, Some(pane), text);
         }
         queued.insert(session.id.clone(), text.to_string());
         Ok(format!(
@@ -192,7 +181,49 @@ impl Agent {
         }
     }
 
+    fn expect_start(&self, pane: opener::OpenedPane, title: String) {
+        self.starting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Starting {
+                pane,
+                title,
+                since: Instant::now(),
+            });
+    }
+
+    fn list_starting(&self, snapshot: &mut Snapshot) {
+        let mut starting = self.starting.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        let running: HashSet<&str> = snapshot
+            .panes
+            .values()
+            .map(|location| location.block.as_str())
+            .collect();
+        starting.retain(|start| {
+            now.duration_since(start.since) < WATCH_START_FOR
+                && !running.contains(start.pane.block.as_str())
+        });
+        for start in starting.iter() {
+            let Some(location) = Location::here(&start.pane.session, &start.pane.block) else {
+                continue;
+            };
+            if !typing::asks_to_trust(&location) {
+                continue;
+            }
+            let id = format!("{TRUST_PREFIX}{}", start.pane.block);
+            snapshot.sessions.push(trusting(
+                &id,
+                &start.title,
+                &start.pane,
+                now.duration_since(start.since),
+            ));
+            snapshot.panes.insert(id, location);
+        }
+    }
+
     fn settle(&self, snapshot: &mut Snapshot) {
+        self.list_starting(snapshot);
         let mut queued = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
         queued.retain(|id, _| snapshot.sessions.iter().any(|session| session.id == *id));
         for session in &mut snapshot.sessions {
@@ -235,62 +266,9 @@ impl Agent {
         }
     }
 
-    fn capture_child(
-        &self,
-        session: &str,
-        child: &str,
-        watcher: &mut Watcher,
-    ) -> Result<Content, String> {
-        let (found, transcript) = {
-            let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
-            let found = snapshot
-                .sessions
-                .iter()
-                .find(|found| found.id == session)
-                .and_then(|found| found.children.iter().find(|known| known.id == child))
-                .map(|known| (known.kind, known.task.clone()));
-            (found, snapshot.transcripts.get(session).cloned())
-        };
-        let (kind, task) = found.ok_or("that has finished and isn't listed any more")?;
-        let (_, parent) = transcript.ok_or("that session's transcript isn't on this machine")?;
-        match kind {
-            ChildKind::Subagent => {
-                let path = match watcher.subagents.get(child) {
-                    Some(path) => path.clone(),
-                    None => {
-                        let path = children::subagent_transcript(&parent, child)
-                            .ok_or("its transcript isn't there yet")?;
-                        watcher.subagents.insert(child.to_string(), path.clone());
-                        path
-                    }
-                };
-                watcher
-                    .conversation
-                    .read(&path, proto::Agent::ClaudeCode)
-                    .map(Content::Conversation)
-            }
-            ChildKind::Shell => {
-                let task = task.ok_or("it hasn't started yet")?;
-                let session_id = parent
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .ok_or("that session's transcript has an odd name")?;
-                children::shell_output(session_id, &task).map(|output| {
-                    Content::Conversation(vec![Said::Reply(format!("````\n{output}\n````"))])
-                })
-            }
-            ChildKind::Task => Err("cielago keeps this task's result: run cielago tasks".into()),
-        }
-    }
-
-    fn capture(
-        &self,
-        session: &str,
-        child: Option<&str>,
-        watcher: &mut Watcher,
-    ) -> Result<Content, String> {
+    fn read(&self, session: &str, child: Option<&str>) -> Result<Content, String> {
         if let Some(child) = child {
-            return self.capture_child(session, child, watcher);
+            return self.read_subagent(session, child);
         }
         let (pane, transcript, asking) = {
             let snapshot = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
@@ -305,28 +283,32 @@ impl Agent {
             )
         };
         match (pane, transcript) {
-            (Some(pane), _) if asking => watcher
-                .screen
-                .capture(&pane, Instant::now())
-                .map(Content::Screen),
-            (_, Some((agent, path))) => watcher
-                .conversation
+            (Some(pane), _) if asking => pane.screen().map(Content::Screen),
+            (_, Some((agent, path))) => Reader::default()
                 .read(&path, agent)
                 .map(Content::Conversation),
-            (Some(pane), None) => watcher
-                .screen
-                .capture(&pane, Instant::now())
-                .map(Content::Screen),
+            (Some(pane), None) => pane.screen().map(Content::Screen),
             (None, None) => Err("that session has ended".into()),
         }
     }
 
-    fn new(
-        identity: Identity,
-        interval: Duration,
-        board: Board,
-        shared_file: Option<PathBuf>,
-    ) -> Self {
+    fn read_subagent(&self, session: &str, child: &str) -> Result<Content, String> {
+        let parent = self
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .transcripts
+            .get(session)
+            .map(|(_, path)| path.clone())
+            .ok_or("that session's transcript isn't on this machine")?;
+        let transcript = children::subagent_transcript(&parent, child)
+            .ok_or("that subagent's transcript isn't there")?;
+        Reader::default()
+            .read(&transcript, proto::Agent::ClaudeCode)
+            .map(Content::Conversation)
+    }
+
+    fn new(identity: Identity, interval: Duration, board: Board) -> Self {
         Self {
             identity: RwLock::new(identity),
             interval,
@@ -336,32 +318,10 @@ impl Agent {
             board,
             sessions: Mutex::new(Snapshot::default()),
             fresh: Nudge::default(),
-            shared: Mutex::new(shared_file.as_deref().and_then(load_shared)),
-            shared_file,
             queued: Mutex::default(),
             mirrored: Mutex::default(),
-        }
-    }
-
-    fn share_labels(&self, shared: SharedLabels) {
-        {
-            let mut known = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
-            if known
-                .as_ref()
-                .is_some_and(|known| known.updated_ms >= shared.updated_ms)
-            {
-                return;
-            }
-            *known = Some(shared.clone());
-        }
-        if let Some(path) = &self.shared_file
-            && let Err(error) = save_shared(path, &shared)
-        {
-            self.notices
-                .info(format!("couldn't keep the shared labels: {error}"));
-        }
-        if let Ok(frame) = proto::encode_frame(&AgentMessage::Labels(shared)) {
-            self.hub.publish(frame.into());
+            starting: Mutex::default(),
+            prs: prs::Prs::default(),
         }
     }
 
@@ -375,26 +335,6 @@ impl Agent {
                 .clone(),
         }
     }
-}
-
-fn shared_path() -> io::Result<PathBuf> {
-    Ok(net::state_dir()?.join("shared-labels.json"))
-}
-
-fn load_shared(path: &std::path::Path) -> Option<SharedLabels> {
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-fn save_shared(path: &std::path::Path, shared: &SharedLabels) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(
-        &temporary,
-        serde_json::to_vec_pretty(shared).map_err(io::Error::other)?,
-    )?;
-    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
-    std::fs::rename(&temporary, path)
 }
 
 #[derive(Default)]
@@ -429,18 +369,20 @@ fn spawn_sessions(mut sessions: Sessions, agent: Arc<Agent>) -> io::Result<()> {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner) = snapshot;
             };
-            let mut woken = false;
+            let mut woken = true;
             loop {
-                if agent.hub.is_idle() {
-                    store(Default::default());
-                    agent.hub.wait_for_subscribers();
-                }
-                let mut snapshot = sessions.poll(&agent.board);
-                agent.settle(&mut snapshot);
-                agent.mirror_subagents(&snapshot);
-                store(snapshot);
-                if woken {
-                    agent.fresh.raise();
+                let watched = !agent.hub.is_idle();
+                if watched || woken {
+                    let mut snapshot = sessions.poll(&agent.board);
+                    if watched {
+                        agent.prs.fill(&mut snapshot.sessions, &snapshot.cwds);
+                    }
+                    agent.settle(&mut snapshot);
+                    agent.mirror_subagents(&snapshot);
+                    store(snapshot);
+                    if woken {
+                        agent.fresh.raise();
+                    }
                 }
                 woken = sessions.wait(SESSIONS_EVERY);
             }
@@ -684,16 +626,6 @@ fn serve(conn: &mut dyn Conn, agent: &Arc<Agent>, origin: Origin) -> io::Result<
         Origin::Tailnet(peer) => log::info(format!("viewer {peer} connected")),
     }
     let (replies, frames) = agent.hub.subscribe_with_replies();
-    let shared = agent
-        .shared
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
-    if let Some(frame) =
-        shared.and_then(|shared| proto::encode_frame(&AgentMessage::Labels(shared)).ok())
-    {
-        let _ = replies.try_send(frame.into());
-    }
     spawn_requests(conn.try_clone()?, replies, Arc::clone(agent))?;
     let streamed = frames
         .into_iter()
@@ -712,7 +644,6 @@ fn spawn_requests(
         .name("requests".into())
         .spawn(move || {
             let mut buf = Vec::new();
-            let mut watcher: Option<mpsc::Sender<Option<Target>>> = None;
             while let Ok(request) =
                 proto::read_frame_within::<Request, _>(&mut *conn, &mut buf, REQUEST_MAX_BYTES)
             {
@@ -730,8 +661,13 @@ fn spawn_requests(
                         waiting_secs,
                     } => {
                         let seen = typing::Seen { tool, waiting_secs };
+                        let trust = session.starts_with(TRUST_PREFIX);
                         type_into(&session, &agent, &replies, |found, pane| {
-                            typing::answer(found, pane, allow, &seen)
+                            if trust {
+                                typing::trust(found, pane, allow)
+                            } else {
+                                typing::answer(found, pane, allow, &seen)
+                            }
                         });
                     }
                     Request::Choose {
@@ -746,6 +682,14 @@ fn spawn_requests(
                     Request::Stop { session } => {
                         type_into(&session, &agent, &replies, typing::stop);
                     }
+                    Request::CloseForward { session } => {
+                        in_background(&replies, move |replies| {
+                            match opener::close_forward(&session) {
+                                Ok(text) => reply(replies, true, text),
+                                Err(text) => reply(replies, false, text),
+                            }
+                        });
+                    }
                     Request::Diff { session } => {
                         let agent = Arc::clone(&agent);
                         in_background(&replies, move |replies| {
@@ -754,9 +698,6 @@ fn spawn_requests(
                                 let _ = replies.send(frame.into());
                             }
                         });
-                    }
-                    Request::ShareLabels(shared) => {
-                        agent.share_labels(shared);
                     }
                     Request::Folders => {
                         in_background(&replies, |replies| {
@@ -793,79 +734,36 @@ fn spawn_requests(
                         codex,
                         model,
                     } => {
+                        let agent = Arc::clone(&agent);
                         in_background(&replies, move |replies| {
                             match opener::open(&place, codex, model.as_deref()) {
-                                Ok(text) => reply(replies, true, text),
+                                Ok(opened) => {
+                                    if let (Some(pane), false) = (opened.pane, codex) {
+                                        agent.expect_start(pane, place_title(&place));
+                                    }
+                                    reply(replies, true, opened.message);
+                                }
                                 Err(text) => reply(replies, false, text),
                             }
                         });
                     }
-                    Request::Watch { session, child } => {
-                        let target = session.map(|session| (session, child));
-                        let delivered = watcher
-                            .as_ref()
-                            .is_some_and(|watcher| watcher.send(target.clone()).is_ok());
-                        if !delivered && target.is_some() {
-                            watcher =
-                                spawn_watcher(target, replies.clone(), Arc::clone(&agent)).ok();
-                        }
+                    Request::Read { session, child } => {
+                        let agent = Arc::clone(&agent);
+                        in_background(&replies, move |replies| {
+                            let read = View {
+                                view: agent.read(&session, child.as_deref()),
+                                session,
+                                child,
+                            };
+                            if let Ok(frame) = proto::encode_frame(&AgentMessage::Read(read)) {
+                                let _ = replies.send(frame.into());
+                            }
+                        });
                     }
                 }
             }
         })?;
     Ok(())
-}
-
-fn spawn_watcher(
-    first: Option<Target>,
-    replies: SyncSender<Frame>,
-    agent: Arc<Agent>,
-) -> io::Result<mpsc::Sender<Option<Target>>> {
-    let (watch, changes) = mpsc::channel();
-    thread::Builder::new()
-        .name("screen".into())
-        .spawn(move || {
-            let mut watching = first;
-            let mut capturer = Watcher::default();
-            let mut last: Option<Screen> = None;
-            loop {
-                if let Some((session, child)) = &watching {
-                    let screen = Screen {
-                        session: session.clone(),
-                        child: child.clone(),
-                        view: agent.capture(session, child.as_deref(), &mut capturer),
-                    };
-                    if last.as_ref() != Some(&screen) {
-                        let Ok(frame) = proto::encode_frame(&AgentMessage::Screen(screen.clone()))
-                        else {
-                            return;
-                        };
-                        if replies.send(frame.into()).is_err() {
-                            return;
-                        }
-                        last = Some(screen);
-                    }
-                }
-                let next = if watching.is_some() {
-                    match changes.recv_timeout(SCREEN_EVERY) {
-                        Ok(next) => next,
-                        Err(RecvTimeoutError::Timeout) => continue,
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
-                } else {
-                    match changes.recv() {
-                        Ok(next) => next,
-                        Err(_) => return,
-                    }
-                };
-                let next = changes.try_iter().last().unwrap_or(next);
-                if next != watching {
-                    last = None;
-                }
-                watching = next;
-            }
-        })?;
-    Ok(watch)
 }
 
 fn move_session(session: &str, to: &str, agent: &Agent, replies: &SyncSender<Frame>) {
@@ -932,6 +830,47 @@ fn adopt(session: &str, agent: &Agent) -> Result<String, String> {
     }
     let cwd = cwd.ok_or_else(|| format!("magi doesn't know which folder {} is in", found.title))?;
     opener::adopt(&cwd, session)
+}
+
+fn place_title(place: &OpenIn) -> String {
+    match place {
+        OpenIn::Folder(dir) => dir
+            .rsplit('/')
+            .find(|part| !part.is_empty())
+            .unwrap_or(dir)
+            .to_string(),
+        OpenIn::Chats => "a new chat".into(),
+    }
+}
+
+fn trusting(id: &str, title: &str, pane: &opener::OpenedPane, waiting: Duration) -> AgentSession {
+    AgentSession {
+        agent: proto::Agent::ClaudeCode,
+        id: id.into(),
+        title: title.into(),
+        project: title.into(),
+        state: SessionState::Waiting(proto::Waiting::Trust),
+        state_secs: u32::try_from(waiting.as_secs()).unwrap_or(u32::MAX),
+        model: String::new(),
+        context_tokens: 0,
+        context_used: None,
+        cost_micros: 0,
+        cost_complete: true,
+        pane: Some(proto::RexPane {
+            session: pane.session.clone(),
+            window: pane.window.clone(),
+            block: pane.block.clone(),
+        }),
+        usage: None,
+        children: Vec::new(),
+        branch: None,
+        parent: None,
+        activity: None,
+        mode: None,
+        queued: None,
+        remote: None,
+        pr: None,
+    }
 }
 
 fn type_into(
@@ -1104,374 +1043,4 @@ impl Hub {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    use std::path::PathBuf;
-
-    use super::*;
-    use crate::proto::PermissionMode;
-
-    fn working(id: &str) -> AgentSession {
-        AgentSession {
-            agent: proto::Agent::ClaudeCode,
-            id: id.into(),
-            title: "fix the build".into(),
-            project: String::new(),
-            state: SessionState::Working { tool: None },
-            state_secs: 0,
-            model: String::new(),
-            context_tokens: 0,
-            context_used: None,
-            tokens: Default::default(),
-            cost_micros: 0,
-            cost_complete: true,
-            age_secs: 0,
-            pane: None,
-            usage: None,
-            children: Vec::new(),
-            branch: None,
-            worktree: None,
-            parent: None,
-            activity: None,
-            mode: Some(PermissionMode::Auto),
-            queued: None,
-            remote: None,
-        }
-    }
-
-    #[test]
-    fn a_message_for_a_busy_session_waits_until_it_is_idle_and_can_be_dropped() {
-        let agent = Agent::new(identity(), Duration::from_secs(1), Board::default(), None);
-        let pane = Location::in_test("session:1", "block:1");
-        let busy = working("s1");
-        assert!(
-            agent
-                .queue(&busy, Some(&pane), "then run the tests")
-                .unwrap()
-                .starts_with("Queued")
-        );
-        let mut snapshot = Snapshot {
-            sessions: vec![busy.clone()],
-            ..Snapshot::default()
-        };
-        agent.settle(&mut snapshot);
-        assert_eq!(
-            snapshot.sessions[0].queued.as_deref(),
-            Some("then run the tests")
-        );
-        assert!(
-            agent
-                .queue(&busy, Some(&pane), "  ")
-                .unwrap()
-                .starts_with("Dropped")
-        );
-        assert!(agent.queue(&busy, Some(&pane), "").is_err());
-        agent.queue(&busy, Some(&pane), "again").unwrap();
-        snapshot.sessions[0].state = SessionState::Idle;
-        agent.settle(&mut snapshot);
-        assert_eq!(snapshot.sessions[0].queued, None);
-        assert!(agent.queued.lock().unwrap().is_empty());
-        assert!(agent.queue(&busy, None, "no pane").is_err());
-    }
-
-    #[test]
-    fn an_agent_keeps_the_newest_shared_labels_and_hands_them_to_every_viewer() {
-        let mut agent = Agent::new(identity(), Duration::from_secs(1), Board::default(), None);
-        let dir = std::env::temp_dir().join(format!("magi-shared-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("shared-labels.json");
-        agent.shared_file = Some(path.clone());
-        let viewer = agent.hub.subscribe();
-        let mut newer = SharedLabels {
-            updated_ms: 20,
-            ..SharedLabels::default()
-        };
-        newer.machines.insert("homelab".into(), "Server".into());
-        agent.share_labels(newer.clone());
-        let frame = viewer.try_recv().unwrap();
-        let mut buf = Vec::new();
-        let message: AgentMessage = proto::read_frame(&mut &frame[..], &mut buf).unwrap();
-        assert_eq!(message, AgentMessage::Labels(newer.clone()));
-        agent.share_labels(SharedLabels {
-            updated_ms: 10,
-            ..SharedLabels::default()
-        });
-        assert!(viewer.try_recv().is_err());
-        assert_eq!(load_shared(&path), Some(newer));
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    fn identity() -> Identity {
-        Identity {
-            hostname: "test".into(),
-            tailscale_node: None,
-            os: String::new(),
-            kernel: String::new(),
-            arch: String::new(),
-            cpu_model: String::new(),
-            core_kinds: Vec::new(),
-            agent_version: String::new(),
-        }
-    }
-
-    struct LocalAgent {
-        socket: PathBuf,
-    }
-
-    impl Drop for LocalAgent {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(self.socket.parent().unwrap());
-        }
-    }
-
-    fn start_local_agent(name: &str, interval: Duration) -> LocalAgent {
-        let socket = std::env::temp_dir()
-            .join(format!("magi-agent-{}-{name}", std::process::id()))
-            .join("agent.sock");
-        let agent = Arc::new(Agent::new(identity(), interval, Board::default(), None));
-        let listener = net::bind_local(&socket).unwrap();
-        spawn_sampler(Collector::new().unwrap(), Arc::clone(&agent)).unwrap();
-        thread::spawn(move || accept_local(&listener, &agent));
-        LocalAgent { socket }
-    }
-
-    fn connect(agent: &LocalAgent, version: u16) -> (UnixStream, AgentMessage) {
-        let mut stream = UnixStream::connect(&agent.socket).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        proto::write_frame(&mut stream, &Hello { version }).unwrap();
-        let reply = proto::read_frame(&mut stream, &mut Vec::new()).unwrap();
-        (stream, reply)
-    }
-
-    #[test]
-    fn a_viewer_asking_to_move_a_session_that_ended_is_told_so_alongside_its_samples() {
-        let agent = start_local_agent("requests", Duration::from_millis(100));
-        let (mut stream, reply) = connect(&agent, PROTOCOL_VERSION);
-        assert!(matches!(reply, AgentMessage::Welcome(_)), "{reply:?}");
-        proto::write_frame(
-            &mut stream,
-            &Request::Move {
-                session: "gone".into(),
-                to: "homelab".into(),
-            },
-        )
-        .unwrap();
-        let mut buf = Vec::new();
-        let reply = (0..50)
-            .find_map(
-                |_| match proto::read_frame(&mut stream, &mut buf).unwrap() {
-                    AgentMessage::Reply(reply) => Some(reply),
-                    _ => None,
-                },
-            )
-            .expect("a reply among the samples");
-        assert_eq!(
-            reply,
-            Reply {
-                ok: false,
-                text: "that session has ended".into()
-            }
-        );
-        let next: AgentMessage = proto::read_frame(&mut stream, &mut buf).unwrap();
-        assert!(matches!(next, AgentMessage::Sample(_)), "{next:?}");
-    }
-
-    #[test]
-    fn watching_a_session_the_agent_does_not_know_says_it_has_ended() {
-        let agent = start_local_agent("watch", Duration::from_millis(100));
-        let (mut stream, reply) = connect(&agent, PROTOCOL_VERSION);
-        assert!(matches!(reply, AgentMessage::Welcome(_)), "{reply:?}");
-        proto::write_frame(
-            &mut stream,
-            &Request::Watch {
-                session: Some("elsewhere".into()),
-                child: None,
-            },
-        )
-        .unwrap();
-        let mut buf = Vec::new();
-        let screen = (0..50)
-            .find_map(
-                |_| match proto::read_frame(&mut stream, &mut buf).unwrap() {
-                    AgentMessage::Screen(screen) => Some(screen),
-                    _ => None,
-                },
-            )
-            .expect("a screen among the samples");
-        assert_eq!(
-            screen,
-            Screen {
-                session: "elsewhere".into(),
-                child: None,
-                view: Err("that session has ended".into()),
-            }
-        );
-        proto::write_frame(
-            &mut stream,
-            &Request::Watch {
-                session: None,
-                child: None,
-            },
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn streams_samples_after_welcoming_a_local_viewer() {
-        let agent = start_local_agent("streams", Duration::from_millis(100));
-        let (mut stream, reply) = connect(&agent, PROTOCOL_VERSION);
-        let AgentMessage::Welcome(welcome) = reply else {
-            panic!("expected a welcome, got {reply:?}")
-        };
-        assert_eq!(welcome.interval_ms, 100);
-        assert_eq!(welcome.identity.hostname, "test");
-
-        let mut buf = Vec::new();
-        for _ in 0..3 {
-            let message: AgentMessage = proto::read_frame(&mut stream, &mut buf).unwrap();
-            let AgentMessage::Sample(sample) = message else {
-                panic!("expected a sample, got {message:?}")
-            };
-            assert!(sample.memory.total > 0);
-        }
-    }
-
-    #[test]
-    fn viewers_share_one_sampler_and_disconnects_are_pruned() {
-        let agent = start_local_agent("shared", Duration::from_millis(50));
-        let (first, _) = connect(&agent, PROTOCOL_VERSION);
-        let (mut second, _) = connect(&agent, PROTOCOL_VERSION);
-        drop(first);
-        let mut buf = Vec::new();
-        for _ in 0..5 {
-            let message: AgentMessage = proto::read_frame(&mut second, &mut buf).unwrap();
-            assert!(matches!(message, AgentMessage::Sample(_)));
-        }
-    }
-
-    #[test]
-    fn rejects_a_viewer_speaking_another_protocol_version() {
-        let agent = start_local_agent("version", Duration::from_millis(100));
-        let (_, reply) = connect(&agent, PROTOCOL_VERSION + 1);
-        assert!(matches!(reply, AgentMessage::Rejected(reason) if reason.contains("protocol")));
-    }
-
-    #[test]
-    fn hostile_clients_are_cut_off_without_hurting_real_viewers() {
-        let agent = start_local_agent("hostile", Duration::from_millis(50));
-        let (mut viewer, _) = connect(&agent, PROTOCOL_VERSION);
-
-        let mut oversized = UnixStream::connect(&agent.socket).unwrap();
-        oversized.write_all(&(1u32 << 20).to_le_bytes()).unwrap();
-        let mut trickle = UnixStream::connect(&agent.socket).unwrap();
-        trickle
-            .set_read_timeout(Some(HANDSHAKE_TIMEOUT * 2))
-            .unwrap();
-        let trickler = {
-            let mut trickle = trickle.try_clone().unwrap();
-            thread::spawn(move || {
-                for byte in [1u8, 0, 0, 0] {
-                    if trickle.write_all(&[byte]).is_err() {
-                        return;
-                    }
-                    thread::sleep(HANDSHAKE_TIMEOUT / 3);
-                }
-            })
-        };
-
-        let started = Instant::now();
-        let mut buf = Vec::new();
-        assert!(proto::read_frame::<AgentMessage, _>(&mut oversized, &mut buf).is_err());
-        assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(proto::read_frame::<AgentMessage, _>(&mut trickle, &mut buf).is_err());
-        let waited = started.elapsed();
-        assert!(
-            waited < HANDSHAKE_TIMEOUT + Duration::from_secs(1),
-            "trickling client held on for {waited:?}"
-        );
-
-        for _ in 0..3 {
-            let message: AgentMessage = proto::read_frame(&mut viewer, &mut buf).unwrap();
-            assert!(matches!(message, AgentMessage::Sample(_)));
-        }
-        trickler.join().unwrap();
-    }
-
-    #[test]
-    fn connections_beyond_the_cap_are_closed() {
-        let agent = start_local_agent("cap", Duration::from_millis(200));
-        let held: Vec<UnixStream> = (0..MAX_CONNECTIONS)
-            .map(|_| connect(&agent, PROTOCOL_VERSION).0)
-            .collect();
-        let mut extra = UnixStream::connect(&agent.socket).unwrap();
-        let _ = extra.set_read_timeout(Some(Duration::from_secs(5)));
-        let _ = proto::write_frame(
-            &mut extra,
-            &Hello {
-                version: PROTOCOL_VERSION,
-            },
-        );
-        assert!(proto::read_frame::<AgentMessage, _>(&mut extra, &mut Vec::new()).is_err());
-        drop(held);
-    }
-
-    #[test]
-    fn status_reports_are_recorded_and_oversized_ones_dropped() {
-        let agent = Agent::new(identity(), Duration::from_secs(1), Board::default(), None);
-        let dir = std::env::temp_dir().join(format!("magi-status-{}", std::process::id()));
-        let path = dir.join("status.sock");
-        let listener = net::bind_local(&path).unwrap();
-        let agent = Arc::new(agent);
-        {
-            let agent = Arc::clone(&agent);
-            thread::spawn(move || accept_status(&listener, &agent));
-        }
-        let report = StatusReport {
-            session_id: "s".into(),
-            context_used: Some(4_200),
-            windows: Vec::new(),
-        };
-        proto::write_frame(&mut UnixStream::connect(&path).unwrap(), &report).unwrap();
-        let oversized = StatusReport {
-            session_id: "x".repeat(STATUS_MAX_BYTES),
-            ..report.clone()
-        };
-        proto::write_frame(&mut UnixStream::connect(&path).unwrap(), &oversized).unwrap();
-        let silent = UnixStream::connect(&path).unwrap();
-        let started = Instant::now();
-        proto::write_frame(
-            &mut UnixStream::connect(&path).unwrap(),
-            &StatusReport {
-                session_id: "t".into(),
-                ..report.clone()
-            },
-        )
-        .unwrap();
-        while agent.board.context("t").is_none() {
-            assert!(
-                started.elapsed() < STATUS_READ_TIMEOUT * 3,
-                "a silent client blocked status reports"
-            );
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(agent.board.context("s"), Some(4_200));
-        assert_eq!(agent.board.context(&oversized.session_id), None);
-        drop(silent);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn hub_drops_subscribers_whose_receiver_is_gone() {
-        let hub = Hub::default();
-        let kept = hub.subscribe();
-        drop(hub.subscribe());
-        assert!(hub.publish(Arc::from(&b"frame"[..])));
-        assert_eq!(&*kept.recv().unwrap(), b"frame");
-        drop(kept);
-        assert!(!hub.publish(Arc::from(&b"frame"[..])));
-    }
-}
+mod tests;

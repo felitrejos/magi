@@ -35,4 +35,6 @@ var (
 	projectScript string
 	//go:embed scripts/task.sh
 	taskScript string
+	//go:embed scripts/codex.sh
+	codexScript string
 )

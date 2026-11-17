@@ -21,6 +21,9 @@ pub(super) fn state_text(session: &AgentSession, live: bool) -> (String, Color) 
         SessionState::Waiting(Waiting::Input(reason)) => {
             (format!("needs you · {reason}"), theme().warn)
         }
+        SessionState::Waiting(Waiting::Trust) => {
+            ("needs you · trust its folder".into(), theme().warn)
+        }
         SessionState::Working { tool: Some(tool) } => (format!("working · {tool}"), theme().accent),
         SessionState::Working { tool: None } => ("working".into(), theme().accent),
         SessionState::Idle => (format!("idle {since}"), theme().dim),

@@ -1,23 +1,10 @@
-use std::ffi::OsString;
-use std::path::PathBuf;
-use std::process::Command;
-use std::time::Duration;
-
 use serde::Deserialize;
 
-use crate::bounded;
 use crate::proto::RexPane;
+use crate::sessions::rex::Location;
 
-const REX_LIMIT: Duration = Duration::from_secs(5);
 pub const POPUP: [f32; 4] = [0.06, 0.05, 0.88, 0.9];
 pub const MODAL: [f32; 4] = [0.2, 0.15, 0.6, 0.6];
-
-struct Here {
-    session: String,
-    block: String,
-    server: Option<OsString>,
-    bin_dir: PathBuf,
-}
 
 #[derive(Deserialize)]
 struct Listing {
@@ -32,11 +19,11 @@ struct Block {
 }
 
 pub fn available() -> bool {
-    here().is_some()
+    Location::from_env().is_some()
 }
 
 pub fn float(label: &str, command: &[String], bounds: [f32; 4]) -> Result<(), String> {
-    let here = here().ok_or("open magi in a Rex pane to see this")?;
+    let here = Location::from_env().ok_or("open magi in a Rex pane to see this")?;
     let listing = rex(&here, &["block", "ls", "--json", "-s", &here.session])?;
     let listing: Listing = serde_json::from_slice(&listing)
         .map_err(|error| format!("Rex listed its panes in a form magi can't read: {error}"))?;
@@ -72,7 +59,7 @@ pub fn float(label: &str, command: &[String], bounds: [f32; 4]) -> Result<(), St
 }
 
 pub fn open(pane: &RexPane, machine: Option<&str>) -> Result<(), String> {
-    let here = here().ok_or("open magi in a Rex pane to jump to agents")?;
+    let here = Location::from_env().ok_or("open magi in a Rex pane to jump to agents")?;
     let listing = rex(&here, &["block", "ls", "--json", "-s", &here.session])?;
     let listing: Listing = serde_json::from_slice(&listing)
         .map_err(|error| format!("Rex listed its panes in a form magi can't read: {error}"))?;
@@ -136,7 +123,7 @@ struct ClientInfo {
     label: Option<String>,
 }
 
-fn clients(here: &Here, server: &[String]) -> Result<Vec<Client>, String> {
+fn clients(here: &Location, server: &[String]) -> Result<Vec<Client>, String> {
     let mut args: Vec<&str> = server.iter().map(String::as_str).collect();
     args.extend(["client", "ls", "--json"]);
     let listing = rex(here, &args)?;
@@ -145,7 +132,7 @@ fn clients(here: &Here, server: &[String]) -> Result<Vec<Client>, String> {
         .map_err(|error| format!("Rex listed its clients in a form magi can't read: {error}"))
 }
 
-fn host_label(here: &Here, machine: &str) -> Result<String, String> {
+fn host_label(here: &Location, machine: &str) -> Result<String, String> {
     let listing = rex(here, &["hosts", "list", "--json"])?;
     let hosts: Hosts = serde_json::from_slice(&listing)
         .map_err(|error| format!("Rex listed its hosts in a form magi can't read: {error}"))?;
@@ -195,40 +182,9 @@ struct Host {
     endpoints: Vec<String>,
 }
 
-fn here() -> Option<Here> {
-    Some(Here {
-        session: std::env::var("REX_SESSION")
-            .ok()
-            .filter(|id| !id.is_empty())?,
-        block: std::env::var("REX_BLOCK")
-            .ok()
-            .filter(|id| !id.is_empty())?,
-        server: std::env::var_os("REX_SERVER"),
-        bin_dir: std::env::var_os("REX_BIN_DIR").map(PathBuf::from)?,
-    })
-}
-
-fn rex(here: &Here, args: &[&str]) -> Result<Vec<u8>, String> {
-    let mut command = Command::new(here.bin_dir.join("rex"));
-    command
-        .args(["--autostart=false", "--timeout", "3s"])
-        .args(args);
-    match &here.server {
-        Some(server) => command.env("REX_SERVER", server),
-        None => command.env_remove("REX_SERVER"),
-    };
-    let output = bounded::output(&mut command, REX_LIMIT)
-        .map_err(|error| format!("can't run rex: {error}"))?;
-    if output.status.success() {
-        return Ok(output.stdout);
-    }
-    let reason = String::from_utf8_lossy(&output.stderr);
-    let reason = reason
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("rex failed")
-        .trim_start_matches("Error: ");
-    Err(format!("Rex couldn't open it: {reason}"))
+fn rex(here: &Location, args: &[&str]) -> Result<Vec<u8>, String> {
+    here.call(args)
+        .map_err(|reason| format!("Rex couldn't open it: {reason}"))
 }
 
 #[cfg(test)]

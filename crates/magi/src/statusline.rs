@@ -5,8 +5,6 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
@@ -90,13 +88,19 @@ fn read(input: StatusInput) -> (String, Option<StatusReport>) {
 }
 
 fn report(report: StatusReport) {
-    let (done, finished) = mpsc::channel();
-    thread::spawn(move || {
-        let sent = net::status_socket()
-            .and_then(|path| proto::write_frame(&mut UnixStream::connect(path)?, &report));
-        let _ = done.send(sent);
+    let sent = net::status_socket().and_then(|path| {
+        let mut stream = UnixStream::connect(path)?;
+        stream.set_write_timeout(Some(SEND_WAIT))?;
+        proto::write_frame(&mut stream, &report)
     });
-    let _ = finished.recv_timeout(SEND_WAIT);
+    if let Err(error) = sent
+        && !matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        )
+    {
+        eprintln!("magi: {error}");
+    }
 }
 
 fn basis_points(percent: f64) -> BasisPoints {

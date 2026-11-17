@@ -7,8 +7,9 @@
 - Before reading anything from a connection it asks `tailscale whois` who the
   peer is, and accepts only devices signed in as the same user as the agent's
   machine. Tagged devices are refused.
-- Traffic is encrypted by Tailscale (WireGuard). magi adds no other transport
-  and contacts nothing else.
+- Traffic is encrypted by Tailscale (WireGuard). magi adds no other transport.
+  Beyond your machines it contacts only the services named below: Anthropic's
+  usage endpoint, and GitHub through your own `gh`.
 - Frames are size-checked before allocation, handshakes have a deadline, and an
   agent serves at most 32 connections at once.
 
@@ -19,8 +20,9 @@
   agents a viewer could, and can do only what a viewer can. `magi mcp` talks
   only over its standard input and output, to the program that started it,
   and marks every tool that types into a session as not read-only, so MCP
-  clients ask before using it. Its `recent_work` tool hands that program a
-  session's messages and tool calls, which the viewer's samples never carry.
+  clients ask before using it. Its `recent_work` tool, like `magi recent`,
+  hands that program a session's or subagent's messages and tool calls,
+  which the viewer's samples never carry.
 - Local viewers, the status line and the new-session launcher (which the
   viewer opens in a Rex floating pane and talks to for one choice) use Unix
   sockets in `~/.local/state/magi/`, a folder only you can open. The viewer
@@ -46,17 +48,25 @@
 - For each agent process it reads that process's CPU time and memory, and
   from its environment only `REX_SESSION`, `REX_BLOCK`, `REX_SERVER` and
   `REX_BIN_DIR`. Nothing else in the environment is kept or sent.
-- When a viewer selects a session, the agent sends that one session's live
-  view to that viewer only, until it selects something else: the visible
-  screen of its Rex pane, or for a session outside Rex, such as one in the
-  Claude desktop app, its latest messages and tool calls from the end of its
-  transcript. This is the only time conversation text leaves the machine, and
-  only to a viewer signed in as you.
-- A viewer can ask an agent to watch a session, message it, answer its
-  permission prompt or question, stop its turn, start a new session in one of
-  that machine's folders with `cielago open`, continue a Claude Code session
-  in Rex as a copy (`claude --resume --fork-session`, which leaves the
-  original untouched), or move a Claude Code session with cielago. The agent
+- For a session on a git branch, the agent runs `gh pr view` in its folder,
+  at most every two minutes per branch, for that branch's pull request state,
+  checks and review. It uses `gh`'s own sign-in, and does nothing if `gh`
+  isn't installed.
+- Conversation text leaves the machine only when `magi recent` or `magi
+  mcp`'s `recent_work` asks for it: one session's or subagent's latest
+  messages and tool calls, or the visible screen of its Rex pane, sent only
+  to a client signed in as you.
+- A viewer can ask an agent to message a session, answer its permission
+  prompt or question, stop its turn, start a new session in one of that
+  machine's folders with `cielago open`, continue a Claude Code session in
+  Rex as a copy (`claude --resume --fork-session`, which leaves the original
+  untouched), move a Claude Code or Codex session with cielago, or close a
+  port forward whose session now runs on another machine (`cielago forwards
+  close`; a viewer asks once that's been true for a minute). On its own, the
+  agent opens a read-only tab beside a session for each running subagent,
+  running `magi follow`, which closes when the subagent finishes; and for 90
+  seconds after starting a session it watches that pane for Claude's
+  folder-trust question, so it can be answered from the overview. The agent
   acts only on sessions it found itself, checks the machine name, and runs
   `rex` and `cielago` with arguments, never through a shell, each with a time
   limit after which it and anything it started are stopped.
@@ -66,27 +76,24 @@
   also strips escapes from pastes, so a message can't end the paste early),
   and is sent only while the session is idle, so it can't land in a prompt
   that opened meanwhile. An answer is a single key (`1` to allow, `Esc` to
-  deny), sent only while that session still waits on the same prompt the
-  viewer saw: same tool, waiting as long. Messages and answers to one
+  deny, a digit to choose), sent only while that session still waits on the
+  same prompt the viewer saw: same tool, waiting as long. Trusting a folder
+  is `↓` then Enter (or Enter if Yes is already selected), sent only while
+  the pane still shows the trust question. Messages and answers to one
   machine are typed one at a time. Since a message can ask the agent to do
   anything, only viewers signed in as you can send one, like everything else.
-- `d` asks the agent for a session's changes (`git diff HEAD` and the
+- `v` asks the agent for a session's changes (`git diff HEAD` and the
   names of new files, in the session's own folder, under 1 MB). The viewer
   writes the answer to files only you can read in
   `~/.local/state/magi/popups/`, shows them in a Rex floating pane on its
   own machine (through fzf and delta, which draw only from those files),
   and the pane deletes them when it closes.
-- Machine labels you set in a viewer are sent to every agent you're
-  connected to, which keeps the newest set in
-  `~/.local/state/magi/shared-labels.json` (only you can read it) and
-  passes it to your other viewers. Only viewers signed in as you can send
-  or receive them, as with everything else.
 - `magi statusline install` edits only `statusLine` in
   `~/.claude/settings.json`, writes atomically, keeps the file's permissions
   and leaves a backup with the same permissions.
-- The only files magi writes on its own are the alert history
-  (`~/.local/state/magi/alerts.jsonl`) and your last plan windows
-  (`~/.local/state/magi/plans.json`), both readable only by you.
+- The files magi keeps, all in `~/.local/state/magi/` and readable only by
+  you, are the alert history (`alerts.jsonl`), your last plan windows
+  (`plans.json`) and, while a diff is open, its `popups/`.
 
 ## Moving work with cielago
 

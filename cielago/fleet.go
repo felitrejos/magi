@@ -23,6 +23,8 @@ type fleetMachine struct {
 	Here        bool      `json:"here"`
 	Live        bool      `json:"live"`
 	OS          string    `json:"os"`
+	Arch        string    `json:"arch"`
+	Tools       []string  `json:"tools"`
 	Cores       int       `json:"cores"`
 	CPU         float64   `json:"cpu"`
 	Load        []float64 `json:"load"`

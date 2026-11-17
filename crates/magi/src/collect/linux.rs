@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::mem::MaybeUninit;
@@ -73,7 +73,6 @@ impl Collector {
             .and_then(|text| procfs::cpu_model(&text));
         SystemInfo {
             os: os.unwrap_or_else(|| "Linux".to_string()),
-            kernel: format!("Linux {}", kernel_release()),
             cpu_model: cpu_model.unwrap_or_default(),
             core_kinds: super::cores::kinds(),
         }
@@ -186,17 +185,6 @@ fn filesystem(path: &str) -> Option<Filesystem> {
         total: used + u64::from(stats.f_bavail) * block,
         used,
     })
-}
-
-fn kernel_release() -> String {
-    let mut name = MaybeUninit::<libc::utsname>::uninit();
-    if unsafe { libc::uname(name.as_mut_ptr()) } != 0 {
-        return String::new();
-    }
-    let name = unsafe { name.assume_init() };
-    unsafe { CStr::from_ptr(name.release.as_ptr()) }
-        .to_string_lossy()
-        .into_owned()
 }
 
 #[cfg(test)]

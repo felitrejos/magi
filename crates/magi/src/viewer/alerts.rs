@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::base64;
 use super::model::{self, Level, LinkState, Model, Subsystem};
-use super::units;
-use crate::proto::{FULL, Plan, SessionState, Waiting, Window};
+use crate::proto::{Checks, FULL, Plan, PrState, SessionState, Waiting};
 
 const KEPT: usize = 200;
 const REWRITE_AT: usize = KEPT * 2;
@@ -19,9 +18,7 @@ const CRITICAL_FOR: Duration = Duration::from_secs(60);
 const CLEAR_AFTER: Duration = Duration::from_secs(30);
 const LOST_REMEMBERED_SECS: u64 = 24 * 60 * 60;
 const PLAN_ALERT_AT: u16 = 9_000;
-const PACE_FROM: u16 = 5_000;
-const PACE_AFTER_SECS: u64 = 10 * 60;
-const PACE_ROUNDING_SECS: u64 = 5 * 60;
+const PLAN_HOLD: Duration = Duration::from_secs(60);
 const INHERIT_GRACE: Duration = Duration::from_secs(30);
 const FILE_MODE: u32 = 0o600;
 
@@ -47,6 +44,7 @@ pub struct Condition {
 pub enum Event {
     Raised,
     Resolved,
+    Dismissed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,12 +67,14 @@ struct Active {
     condition: Condition,
     raised_at: u64,
     missing_since: Option<Instant>,
+    dismissed: bool,
 }
 
 pub struct Alerts {
     active: HashMap<String, Active>,
     pending: HashMap<String, Instant>,
     inherited: HashMap<String, Entry>,
+    inherited_dismissed: HashSet<String>,
     inherit_until: Instant,
     history: VecDeque<Entry>,
     log: Option<Log>,
@@ -84,6 +84,7 @@ pub struct Alerts {
 struct Log {
     path: PathBuf,
     lines: usize,
+    bytes: u64,
 }
 
 impl Alerts {
@@ -97,21 +98,20 @@ impl Alerts {
     }
 
     fn with_history(history: VecDeque<Entry>, path: Option<PathBuf>, now: Instant) -> Self {
-        let mut open = HashMap::new();
-        for entry in &history {
-            match entry.event {
-                Event::Raised => open.insert(entry.key.clone(), entry.clone()),
-                Event::Resolved => open.remove(&entry.key),
-            };
-        }
+        let (open, dismissed) = still_open(&history);
         let lines = history.len();
         Self {
             active: HashMap::new(),
             pending: HashMap::new(),
             inherited: open,
+            inherited_dismissed: dismissed,
             inherit_until: now + INHERIT_GRACE,
             history,
-            log: path.map(|path| Log { path, lines }),
+            log: path.map(|path| Log {
+                bytes: size(&path),
+                path,
+                lines,
+            }),
             problem: None,
         }
     }
@@ -121,7 +121,10 @@ impl Alerts {
     }
 
     pub fn active(&self) -> impl Iterator<Item = &Condition> {
-        self.active.values().map(|active| &active.condition)
+        self.active
+            .values()
+            .filter(|active| !active.dismissed)
+            .map(|active| &active.condition)
     }
 
     fn lost_machines(&self) -> impl Iterator<Item = (&str, &str, u64)> {
@@ -148,24 +151,32 @@ impl Alerts {
     }
 
     pub fn update(&mut self, conditions: Vec<Condition>, now: Instant, now_secs: u64) -> Changes {
-        let mut changes = Changes::default();
+        let mut changes = Changes {
+            resolved: self.dismissed_elsewhere(),
+            ..Changes::default()
+        };
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
         for condition in conditions {
             seen.insert(condition.key.clone());
             if let Some(active) = self.active.get_mut(&condition.key) {
                 active.missing_since = None;
-                if active.condition.text != condition.text
-                    || active.condition.severity != condition.severity
+                if !active.dismissed
+                    && (active.condition.text != condition.text
+                        || active.condition.severity != condition.severity)
                 {
                     changes.raised.push(condition.clone());
                     active.condition = condition;
                 }
                 continue;
             }
+            if self.inherited_dismissed.remove(&condition.key) {
+                self.activate(condition, now_secs, true);
+                continue;
+            }
             if let Some(raised) = self.inherited.remove(&condition.key) {
                 changes.raised.push(condition.clone());
-                self.activate(condition, raised.at);
+                self.activate(condition, raised.at, false);
                 continue;
             }
             let since = *self.pending.entry(condition.key.clone()).or_insert(now);
@@ -175,7 +186,7 @@ impl Alerts {
             self.pending.remove(&condition.key);
             entries.push(entry(&condition, Event::Raised, now_secs));
             changes.raised.push(condition.clone());
-            self.activate(condition, now_secs);
+            self.activate(condition, now_secs, false);
         }
         self.pending.retain(|key, _| seen.contains(key));
         let mut ended = Vec::new();
@@ -200,6 +211,7 @@ impl Alerts {
             }
         }
         if now >= self.inherit_until {
+            self.inherited_dismissed.clear();
             for (key, raised) in self.inherited.drain() {
                 entries.push(Entry {
                     at: now_secs,
@@ -209,24 +221,70 @@ impl Alerts {
                 changes.resolved.push(key);
             }
         }
-        if !entries.is_empty() {
-            self.problem = self
-                .record(entries)
-                .err()
-                .map(|error| format!("alert history not saved: {error}"));
-        }
+        self.save(entries);
         changes
     }
 
-    fn activate(&mut self, condition: Condition, raised_at: u64) {
+    fn dismissed_elsewhere(&mut self) -> Vec<String> {
+        let Some(log) = &mut self.log else {
+            return Vec::new();
+        };
+        let bytes = size(&log.path);
+        if bytes == log.bytes {
+            return Vec::new();
+        }
+        log.bytes = bytes;
+        let Ok(history) = read_history(&log.path) else {
+            return Vec::new();
+        };
+        let mut dismissed = Vec::new();
+        for entry in history
+            .into_iter()
+            .filter(|entry| entry.event == Event::Dismissed)
+        {
+            let key = entry.key.clone();
+            let newly = match self.active.get_mut(&key) {
+                Some(active) if !active.dismissed && entry.at >= active.raised_at => {
+                    active.dismissed = true;
+                    true
+                }
+                Some(_) => false,
+                None => match self.inherited.get(&key) {
+                    Some(raised) if entry.at >= raised.at => {
+                        self.inherited.remove(&key);
+                        self.inherited_dismissed.insert(key.clone());
+                        true
+                    }
+                    _ => false,
+                },
+            };
+            if newly {
+                self.history.push_back(entry);
+                dismissed.push(key);
+            }
+        }
+        dismissed
+    }
+
+    fn activate(&mut self, condition: Condition, raised_at: u64, dismissed: bool) {
         self.active.insert(
             condition.key.clone(),
             Active {
                 condition,
                 raised_at,
                 missing_since: None,
+                dismissed,
             },
         );
+    }
+
+    fn save(&mut self, entries: Vec<Entry>) {
+        if !entries.is_empty() {
+            self.problem = self
+                .record(entries)
+                .err()
+                .map(|error| format!("alert history not saved: {error}"));
+        }
     }
 
     fn record(&mut self, entries: Vec<Entry>) -> io::Result<()> {
@@ -240,11 +298,14 @@ impl Alerts {
             return Ok(());
         };
         log.lines += entries.len();
-        if log.lines > REWRITE_AT {
+        let written = if log.lines > REWRITE_AT {
             log.lines = self.history.len();
-            return rewrite(&log.path, &self.history);
-        }
-        append(&log.path, &entries)
+            rewrite(&log.path, &self.history)
+        } else {
+            append(&log.path, &entries)
+        };
+        log.bytes = size(&log.path);
+        written
     }
 }
 
@@ -276,6 +337,49 @@ pub fn read_history(path: &PathBuf) -> io::Result<VecDeque<Entry>> {
         }
     }
     Ok(history)
+}
+
+pub fn dismiss_open(path: &PathBuf, now_secs: u64) -> io::Result<()> {
+    let (open, _) = still_open(&read_history(path)?);
+    let entries: Vec<Entry> = open
+        .into_values()
+        .map(|raised| Entry {
+            at: now_secs,
+            event: Event::Dismissed,
+            ..raised
+        })
+        .collect();
+    if entries.is_empty() {
+        return Ok(());
+    }
+    append(path, &entries)
+}
+
+fn still_open(history: &VecDeque<Entry>) -> (HashMap<String, Entry>, HashSet<String>) {
+    let mut open = HashMap::new();
+    let mut dismissed = HashSet::new();
+    for entry in history {
+        match entry.event {
+            Event::Raised => {
+                dismissed.remove(&entry.key);
+                open.insert(entry.key.clone(), entry.clone());
+            }
+            Event::Resolved => {
+                dismissed.remove(&entry.key);
+                open.remove(&entry.key);
+            }
+            Event::Dismissed => {
+                if open.remove(&entry.key).is_some() {
+                    dismissed.insert(entry.key.clone());
+                }
+            }
+        }
+    }
+    (open, dismissed)
+}
+
+fn size(path: &PathBuf) -> u64 {
+    fs::metadata(path).map_or(0, |metadata| metadata.len())
 }
 
 fn open_private(path: &PathBuf, options: &mut OpenOptions) -> io::Result<File> {
@@ -314,10 +418,22 @@ pub fn conditions(model: &Model, now: Instant, now_secs: u64) -> Vec<Condition> 
     let rows = model.rows(now);
     let mut found = Vec::new();
     for agent in model.agents(now).iter().filter(|agent| agent.live) {
+        if let Some(pr) = agent.session.pr.as_ref().filter(|pr| {
+            pr.checks == Checks::Failing && matches!(pr.state, PrState::Open | PrState::Draft)
+        }) {
+            found.push(Condition {
+                key: format!("pr/{}/{}", agent.machine, agent.session.id),
+                machine: agent.machine.clone(),
+                text: format!("{}: PR #{} checks failing", agent.session.title, pr.number),
+                severity: Severity::Error,
+                hold: Duration::ZERO,
+            });
+        }
         let SessionState::Waiting(waiting) = &agent.session.state else {
             continue;
         };
         let (severity, what) = match waiting {
+            Waiting::Trust => (Severity::Permission, "asks you to trust its folder".into()),
             Waiting::Permission(Some(tool)) => {
                 (Severity::Permission, format!("wants to run {tool}"))
             }
@@ -381,34 +497,27 @@ pub fn conditions(model: &Model, now: Instant, now_secs: u64) -> Vec<Condition> 
             });
         }
     }
-    found.extend(plan_conditions(&model.plans(now), now_secs));
+    found.extend(plan_conditions(&model.plans(now)));
     found
 }
 
-fn plan_conditions(plans: &[&Plan], now_secs: u64) -> Vec<Condition> {
+fn plan_conditions(plans: &[&Plan]) -> Vec<Condition> {
     let mut found = Vec::new();
     for plan in plans {
-        for window in &plan.windows {
-            let runs_out = runs_out_in(window, now_secs);
-            if window.used < PLAN_ALERT_AT && runs_out.is_none() {
-                continue;
-            }
+        for window in plan
+            .windows
+            .iter()
+            .filter(|window| window.used >= PLAN_ALERT_AT)
+        {
             let label = window.label();
             let mut text = format!(
                 "{} {label} plan {}% used",
                 plan.agent.name(),
                 u32::from(window.used) * 100 / u32::from(FULL)
             );
-            if let Some(secs) = runs_out.filter(|secs| *secs > 0) {
-                let rounded = secs.div_ceil(PACE_ROUNDING_SECS) * PACE_ROUNDING_SECS;
-                text.push_str(&format!(
-                    ", runs out in about {} at this pace",
-                    units::duration(Duration::from_secs(rounded))
-                ));
-            }
             if let Some(other) = plans
                 .iter()
-                .find(|other| other.agent != plan.agent && has_room(other, now_secs))
+                .find(|other| other.agent != plan.agent && has_room(other))
             {
                 text.push_str(&format!(
                     ". Start the next session in {}",
@@ -420,35 +529,19 @@ fn plan_conditions(plans: &[&Plan], now_secs: u64) -> Vec<Condition> {
                 machine: String::new(),
                 text,
                 severity: Severity::Error,
-                hold: Duration::ZERO,
+                hold: PLAN_HOLD,
             });
         }
     }
     found
 }
 
-fn runs_out_in(window: &Window, now_secs: u64) -> Option<u64> {
-    let left = u64::from(FULL.saturating_sub(window.used));
-    if left == 0 {
-        return Some(0);
-    }
-    let started = window
-        .resets_at
-        .checked_sub(u64::from(window.minutes) * 60)?;
-    let elapsed = now_secs.checked_sub(started)?;
-    if window.used < PACE_FROM || elapsed < PACE_AFTER_SECS || now_secs >= window.resets_at {
-        return None;
-    }
-    let secs = left * elapsed / u64::from(window.used);
-    (now_secs + secs < window.resets_at).then_some(secs)
-}
-
-fn has_room(plan: &Plan, now_secs: u64) -> bool {
+fn has_room(plan: &Plan) -> bool {
     !plan.windows.is_empty()
         && plan
             .windows
             .iter()
-            .all(|window| window.used < PLAN_ALERT_AT && runs_out_in(window, now_secs).is_none())
+            .all(|window| window.used < PLAN_ALERT_AT)
 }
 
 pub fn report(changes: &Changes) -> String {
@@ -686,6 +779,62 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_alerts_only_once_it_is_nearly_used_up_whatever_its_pace() {
+        let plan = |agent, used| Plan {
+            agent,
+            windows: vec![crate::proto::Window {
+                minutes: crate::proto::ONE_WEEK,
+                used,
+                resets_at: 1,
+            }],
+            as_of: 0,
+        };
+        let (claude, codex) = (
+            plan(crate::proto::Agent::ClaudeCode, 8_600),
+            plan(crate::proto::Agent::Codex, 9_100),
+        );
+        let found = plan_conditions(&[&claude, &codex]);
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0].text.starts_with("Codex") && found[0].text.contains("91% used"),
+            "{}",
+            found[0].text
+        );
+        assert!(
+            found[0]
+                .text
+                .ends_with("Start the next session in Claude Code")
+        );
+    }
+
+    #[test]
+    fn a_dismissed_alert_stays_quiet_until_its_cause_clears_and_returns() {
+        let path = temp("dismiss");
+        let start = Instant::now();
+        let plan = condition("plan/Codex/30d", Duration::ZERO);
+        let mut alerts = Alerts::open(path.clone(), start).unwrap();
+        alerts.update(vec![plan.clone()], start, 10);
+        assert_eq!(alerts.active().count(), 1);
+        dismiss_open(&path, 20).unwrap();
+        let mut changed = plan.clone();
+        changed.text = "Codex 30d plan 91% used".into();
+        let dismissed = alerts.update(vec![changed.clone()], start, 30);
+        assert_eq!(dismissed.resolved, vec![plan.key.clone()]);
+        assert!(dismissed.raised.is_empty());
+        assert_eq!(alerts.active().count(), 0);
+        let mut reopened = Alerts::open(path.clone(), start).unwrap();
+        assert_eq!(
+            reopened.update(vec![changed.clone()], start, 40),
+            Changes::default()
+        );
+        assert_eq!(reopened.active().count(), 0);
+        reopened.update(Vec::new(), start, 50);
+        let back = reopened.update(vec![changed.clone()], start, 60);
+        assert_eq!(back.raised, vec![changed]);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn history_survives_a_restart_without_repeating_alerts_that_are_still_true() {
         let path = temp("restart");
         let start = Instant::now();
@@ -739,11 +888,10 @@ mod tests {
                     hostname: "nas".into(),
                     tailscale_node: Some("nas".into()),
                     os: String::new(),
-                    kernel: String::new(),
                     arch: String::new(),
+                    tools: Vec::new(),
                     cpu_model: String::new(),
                     core_kinds: Vec::new(),
-                    agent_version: String::new(),
                 },
             })),
             later,

@@ -24,9 +24,16 @@ const (
 )
 
 type openReport struct {
-	Event   string `json:"event"`
-	OK      bool   `json:"ok"`
-	Message string `json:"message"`
+	Event   string    `json:"event"`
+	OK      bool      `json:"ok"`
+	Message string    `json:"message"`
+	Pane    *openPane `json:"pane,omitempty"`
+}
+
+type openPane struct {
+	Session string `json:"session"`
+	Window  string `json:"window"`
+	Block   string `json:"block"`
 }
 
 func openCommand(args []string, out io.Writer) error {
@@ -131,9 +138,7 @@ func openCommand(args []string, out io.Writer) error {
 		if resume == "" && !inProjectFolders(root, roots) {
 			return fail(fmt.Errorf("%s isn't in one of this machine's project folders", root))
 		}
-		if group, err = localGroup(root, roots); err != nil {
-			return fail(err)
-		}
+		group = localGroup(root, roots)
 		name = baseName(root)
 	}
 	if name == "" || name == "." || name == "/" || strings.HasPrefix(name, "-") {
@@ -145,7 +150,7 @@ func openCommand(args []string, out io.Writer) error {
 		command = []string{"--resume", resume, "--fork-session", "--remote-control=" + remote}
 	}
 	if codex {
-		agent, label, command = "codex", name+" · codex", nil
+		agent, label, command = "codex", codexTabLabel(name), nil
 	}
 	if model != "" {
 		command = append(command, "--model", model)
@@ -166,7 +171,8 @@ func openCommand(args []string, out io.Writer) error {
 	if tab.SessionCreated {
 		where += ", which is new"
 	}
-	return report(openReport{Event: "opened", OK: true, Message: where})
+	pane := &openPane{Session: tab.Session, Window: tab.Window, Block: tab.Pane}
+	return report(openReport{Event: "opened", OK: true, Message: where, Pane: pane})
 }
 
 func remoteName(repo, machine string) string {

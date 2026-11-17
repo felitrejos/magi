@@ -1,7 +1,6 @@
 mod agent;
 mod bounded;
 mod children;
-mod cmd;
 mod collect;
 mod conversation;
 mod handoff;
@@ -10,12 +9,13 @@ mod mirrors;
 mod net;
 mod opener;
 mod proto;
-mod screen;
+mod prs;
 mod service;
 mod sessions;
 mod show;
 mod statusline;
 mod tailscale;
+mod tools;
 mod typing;
 mod viewer;
 
@@ -23,6 +23,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use lexopt::prelude::*;
+
+const RECENT_ITEMS: usize = 20;
+const WAIT_WITHIN: Duration = Duration::from_secs(30 * 60);
 
 const USAGE: &str = "magi: live monitoring for your machines and coding agents, in one Rex pane
 
@@ -34,10 +37,10 @@ Usage:
   magi agent [--port PORT] [--interval MS]             run the agent in this terminal
   magi statusline install                              add a Claude Code status line that reports context % and plan limits
   magi statusline uninstall                            remove it from ~/.claude/settings.json
-  magi page [--diff] [--title TITLE] FILE              show a Markdown file or a diff in a pager
+  magi page [--title TITLE] FILE                       show a diff in a pager
   magi launch SOCKET                                   the new-session launcher the viewer opens in a Rex float
   magi alerts                                          the alert history as a feed, by day
-  magi follow TRANSCRIPT                               a subagent's work, live, for its mirror tab
+  magi follow TRANSCRIPT --session S --block B         a subagent's work, live, for its mirror tab
   magi sessions [--json]                               every session on every machine
   magi send SESSION TEXT                               message a session, queued until it's idle
   magi answer SESSION yes|no                           allow or deny what it asks to run
@@ -46,9 +49,13 @@ Usage:
   magi start MACHINE FOLDER|--chat [--codex] [--model M]
                                                        start a session there, in a Rex tab for its folder
   magi events                                          what needs you, as JSON lines, as it happens
+  magi subagents [--json]                              every running subagent and the step it's on
+  magi recent SESSION [SUBAGENT] [--items N]           its latest messages and steps, one line each
+  magi wait SESSION [SUBAGENT] [--for 10m]             until it stops working, or the subagent ends
   magi mcp                                             all of the above as an MCP server, for Claude Desktop and others
 
-  SESSION is the start of its id or a unique part of its title.
+  SESSION is the start of its id, its title, or at least four letters of its title.
+  SUBAGENT is its id or its label, matched the same way.
   magi --version
   magi --help
 
@@ -68,7 +75,7 @@ enum Command {
     Page(std::path::PathBuf, viewer::Page, bool),
     Launch(std::path::PathBuf),
     Alerts,
-    Follow(std::path::PathBuf),
+    Follow(std::path::PathBuf, String, String),
     Cli(u16, viewer::Cli),
     Mcp(u16),
     Version,
@@ -95,7 +102,9 @@ fn main() -> ExitCode {
         Command::Page(path, page, remove) => viewer::page(&path, page, remove),
         Command::Launch(socket) => viewer::launch(&socket),
         Command::Alerts => viewer::alerts(),
-        Command::Follow(transcript) => viewer::follow(&transcript),
+        Command::Follow(transcript, session, block) => {
+            viewer::follow(&transcript, &session, &block)
+        }
         Command::Cli(port, command) => viewer::cli(port, command),
         Command::Mcp(port) => viewer::mcp(port),
         Command::Version => {
@@ -138,9 +147,12 @@ enum Mode {
     Move,
     Start,
     Events,
+    Subagents,
+    Recent,
+    Wait,
 }
 
-const CLI_COMMANDS: [(&str, Mode); 7] = [
+const CLI_COMMANDS: [(&str, Mode); 10] = [
     ("sessions", Mode::Sessions),
     ("send", Mode::Send),
     ("answer", Mode::Answer),
@@ -148,27 +160,44 @@ const CLI_COMMANDS: [(&str, Mode); 7] = [
     ("move", Mode::Move),
     ("start", Mode::Start),
     ("events", Mode::Events),
+    ("subagents", Mode::Subagents),
+    ("recent", Mode::Recent),
+    ("wait", Mode::Wait),
 ];
+
+#[derive(Default)]
+struct Flags {
+    json: bool,
+    codex: bool,
+    chat: bool,
+    model: Option<String>,
+    items: Option<usize>,
+    within: Option<Duration>,
+}
 
 fn is_cli(mode: Mode) -> bool {
     CLI_COMMANDS.iter().any(|(_, known)| *known == mode)
 }
 
-fn cli(
-    mode: Mode,
-    rest: Vec<String>,
-    json: bool,
-    codex: bool,
-    chat: bool,
-    model: Option<String>,
-) -> Result<viewer::Cli, lexopt::Error> {
+fn cli(mode: Mode, rest: Vec<String>, flags: Flags) -> Result<viewer::Cli, lexopt::Error> {
     let mut rest = rest.into_iter();
     let mut next = |what: &str| {
         rest.next()
             .ok_or_else(|| lexopt::Error::from(format!("missing {what}")))
     };
     Ok(match mode {
-        Mode::Sessions => viewer::Cli::Sessions { json },
+        Mode::Sessions => viewer::Cli::Sessions { json: flags.json },
+        Mode::Subagents => viewer::Cli::Subagents { json: flags.json },
+        Mode::Recent => viewer::Cli::Recent {
+            session: next("the session")?,
+            subagent: next("").ok(),
+            items: flags.items.unwrap_or(RECENT_ITEMS),
+        },
+        Mode::Wait => viewer::Cli::Wait {
+            session: next("the session")?,
+            subagent: next("").ok(),
+            within: flags.within.unwrap_or(WAIT_WITHIN),
+        },
         Mode::Events => viewer::Cli::Events,
         Mode::Send => {
             let session = next("the session")?;
@@ -208,7 +237,7 @@ fn cli(
         }
         Mode::Start => {
             let machine = next("the machine")?;
-            let place = if chat {
+            let place = if flags.chat {
                 proto::OpenIn::Chats
             } else {
                 proto::OpenIn::Folder(next("the folder")?)
@@ -216,29 +245,41 @@ fn cli(
             viewer::Cli::Start {
                 machine,
                 place,
-                codex,
-                model,
+                codex: flags.codex,
+                model: flags.model,
             }
         }
         _ => unreachable!("only the commands for other clients come here"),
     })
 }
 
+fn duration(text: &str) -> Result<Duration, lexopt::Error> {
+    let (number, unit) = text.split_at(text.trim_end_matches(char::is_alphabetic).len());
+    let number: u64 = number
+        .parse()
+        .map_err(|_| format!("{text:?} isn't a length of time like 90s, 10m or 1h"))?;
+    let secs = match unit {
+        "" | "s" => number,
+        "m" => number * 60,
+        "h" => number * 3600,
+        _ => return Err(format!("{text:?} isn't a length of time like 90s, 10m or 1h").into()),
+    };
+    Ok(Duration::from_secs(secs))
+}
+
 fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
     let mut mode = Mode::Viewer;
     let mut port = proto::DEFAULT_PORT;
     let mut interval_ms: u32 = 1000;
-    let mut json = false;
+    let mut flags = Flags::default();
     let mut page = viewer::Page {
         title: String::new(),
-        diff: false,
     };
     let mut remove = false;
     let mut file = None;
+    let mut rex_session = None;
+    let mut rex_block = None;
     let mut rest: Vec<String> = Vec::new();
-    let mut codex = false;
-    let mut chat = false;
-    let mut model = None;
     while let Some(arg) = parser.next()? {
         match arg {
             Value(value)
@@ -250,20 +291,37 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
                     .map(|(_, mode)| *mode)
                     .expect("checked just above");
             }
-            Long("json") if mode == Mode::Sessions => json = true,
-            Long("codex") if mode == Mode::Start => codex = true,
-            Long("chat") if mode == Mode::Start => chat = true,
-            Long("model") if mode == Mode::Start => model = Some(parser.value()?.string()?),
+            Long("json") if matches!(mode, Mode::Sessions | Mode::Subagents) => flags.json = true,
+            Long("codex") if mode == Mode::Start => flags.codex = true,
+            Long("chat") if mode == Mode::Start => flags.chat = true,
+            Long("model") if mode == Mode::Start => {
+                flags.model = Some(parser.value()?.string()?);
+            }
+            Long("items") if mode == Mode::Recent => {
+                flags.items = Some(
+                    parser
+                        .value()?
+                        .string()?
+                        .parse()
+                        .map_err(|_| "--items is a number")?,
+                );
+            }
+            Long("for") if mode == Mode::Wait => {
+                flags.within = Some(duration(&parser.value()?.string()?)?);
+            }
             Value(value) if is_cli(mode) => rest.push(value.string()?),
             Value(value) if value == "agent" && mode == Mode::Viewer => mode = Mode::Agent,
             Value(value) if value == "fleet" && mode == Mode::Viewer => mode = Mode::Fleet,
-            Long("json") if mode == Mode::Fleet => json = true,
+            Long("json") if mode == Mode::Fleet => flags.json = true,
             Value(value) if value == "page" && mode == Mode::Viewer => mode = Mode::Page,
             Value(value) if value == "launch" && mode == Mode::Viewer => mode = Mode::Launch,
             Value(value) if value == "alerts" && mode == Mode::Viewer => mode = Mode::Alerts,
             Value(value) if value == "follow" && mode == Mode::Viewer => mode = Mode::Follow,
+            Long("session") if mode == Mode::Follow => {
+                rex_session = Some(parser.value()?.string()?)
+            }
+            Long("block") if mode == Mode::Follow => rex_block = Some(parser.value()?.string()?),
             Value(value) if value == "mcp" && mode == Mode::Viewer => mode = Mode::Mcp,
-            Long("diff") if mode == Mode::Page => page.diff = true,
             Long("remove") if mode == Mode::Page => remove = true,
             Long("title") if mode == Mode::Page => page.title = parser.value()?.string()?,
             Value(value)
@@ -306,12 +364,11 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         interval: Duration::from_millis(u64::from(interval_ms)),
     };
     if is_cli(mode) {
-        return cli(mode, rest, json, codex, chat, model)
-            .map(|command| Command::Cli(port, command));
+        return cli(mode, rest, flags).map(|command| Command::Cli(port, command));
     }
     Ok(match mode {
         Mode::Viewer => Command::Viewer(viewer::Config { port }),
-        Mode::Fleet => Command::Fleet(viewer::Config { port }, json),
+        Mode::Fleet => Command::Fleet(viewer::Config { port }, flags.json),
         Mode::Agent => Command::Agent(config),
         Mode::Install => Command::Install(config),
         Mode::Uninstall => Command::Uninstall,
@@ -321,7 +378,11 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         Mode::Launch => Command::Launch(file.ok_or("magi launch needs the viewer's socket")?),
         Mode::Alerts => Command::Alerts,
         Mode::Mcp => Command::Mcp(port),
-        Mode::Follow => Command::Follow(file.ok_or("magi follow needs a subagent's transcript")?),
+        Mode::Follow => Command::Follow(
+            file.ok_or("magi follow needs a subagent's transcript")?,
+            rex_session.ok_or("magi follow needs --session, its parent's Rex session")?,
+            rex_block.ok_or("magi follow needs --block, its parent's Rex pane")?,
+        ),
         Mode::Page => {
             let file = file.ok_or("magi page needs a file")?;
             if page.title.is_empty() {
@@ -338,6 +399,16 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wait_takes_seconds_minutes_or_hours() {
+        assert_eq!(duration("90").unwrap(), Duration::from_secs(90));
+        assert_eq!(duration("90s").unwrap(), Duration::from_secs(90));
+        assert_eq!(duration("10m").unwrap(), Duration::from_secs(600));
+        assert_eq!(duration("1h").unwrap(), Duration::from_secs(3600));
+        assert!(duration("soon").is_err());
+        assert!(duration("5d").is_err());
+    }
 
     fn cli(args: &[&str]) -> Result<viewer::Cli, String> {
         match parse(lexopt::Parser::from_args(args.iter().copied())) {

@@ -55,10 +55,6 @@ impl Collector {
                 "macOS {}",
                 sysctl_string("kern.osproductversion").unwrap_or_default()
             ),
-            kernel: format!(
-                "Darwin {}",
-                sysctl_string("kern.osrelease").unwrap_or_default()
-            ),
             cpu_model: sysctl_string("machdep.cpu.brand_string").unwrap_or_default(),
             core_kinds: super::cores::kinds(),
         }

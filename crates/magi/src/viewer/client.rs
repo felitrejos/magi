@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::model::{Endpoint, LinkState, LinkUpdate, Model, Presence};
 use super::{EVENT_BACKLOG, Event, Links, alerts, handle, net, topology};
-use crate::proto::{AgentSession, Reply, Request, Screen, Shown};
+use crate::proto::{AgentSession, Reply, Request, Shown, View};
 
 const SETTLE_WITHIN: Duration = Duration::from_secs(3);
 const MIN_ID_PREFIX: usize = 4;
@@ -21,7 +21,7 @@ pub struct Client {
 pub enum Answer {
     Reply(Reply),
     Shown(Shown),
-    Screen(Screen),
+    Read(View),
 }
 
 #[derive(Clone)]
@@ -84,14 +84,7 @@ impl Client {
     pub fn machine(&self, name: &str) -> Result<String, String> {
         let rows = self.model.rows(Instant::now());
         rows.iter()
-            .find(|row| {
-                row.name.eq_ignore_ascii_case(name)
-                    || self
-                        .model
-                        .labels
-                        .machine_label(&row.name)
-                        .is_some_and(|label| label.eq_ignore_ascii_case(name))
-            })
+            .find(|row| row.name.eq_ignore_ascii_case(name))
             .map(|row| row.name.clone())
             .ok_or_else(|| {
                 let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
@@ -126,7 +119,7 @@ impl Client {
     pub fn reply(&mut self, endpoint: Endpoint, within: Duration) -> Result<String, String> {
         let reply = self.answer(endpoint, within, |answer| match answer {
             Answer::Reply(reply) => Some(reply),
-            Answer::Shown(_) | Answer::Screen(_) => None,
+            Answer::Shown(_) | Answer::Read(_) => None,
         })?;
         if reply.ok {
             Ok(reply.text)
@@ -170,9 +163,7 @@ impl Client {
         let answer = match event {
             Event::Link(endpoint, _, LinkUpdate::Reply(reply)) => (endpoint, Answer::Reply(reply)),
             Event::Link(endpoint, _, LinkUpdate::Shown(shown)) => (endpoint, Answer::Shown(shown)),
-            Event::Link(endpoint, _, LinkUpdate::Screen(screen)) => {
-                (endpoint, Answer::Screen(screen))
-            }
+            Event::Link(endpoint, _, LinkUpdate::Read(read)) => (endpoint, Answer::Read(read)),
             event => return handle(event, &mut self.model, &mut self.links).map(drop),
         };
         self.inbox.push_back(answer);
@@ -194,7 +185,7 @@ pub fn settled(model: &Model, now: Instant) -> bool {
     })
 }
 
-fn pick(candidates: &[(&str, &str)], query: &str) -> Result<usize, String> {
+pub fn pick(candidates: &[(&str, &str)], query: &str) -> Result<usize, String> {
     let wanted = query.to_lowercase();
     let matching = |found: &dyn Fn(&str, &str) -> bool| -> Vec<usize> {
         (0..candidates.len())

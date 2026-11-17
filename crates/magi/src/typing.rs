@@ -4,14 +4,13 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::bounded;
 use crate::proto::{self, AgentSession, MAX_PROMPT_CHARS, SessionState, Waiting};
 use crate::sessions::rex::Location;
 
-const REX_LIMIT: Duration = Duration::from_secs(3);
 const SUBMIT_AFTER: Duration = Duration::from_millis(300);
 const ALLOW: &str = "1";
 const DENY: &str = "\x1b";
+const DOWN: &str = "\x1b[B";
 
 static TYPING: Mutex<()> = Mutex::new(());
 
@@ -48,6 +47,53 @@ pub fn answer(
     let what = tool.as_deref().unwrap_or("it");
     let verb = if allow { "Allowed" } else { "Denied" };
     Ok(format!("{verb} {what} in {}", session.title))
+}
+
+const TRUST_PROMPT: &str = "trust this folder";
+
+pub fn asks_to_trust(pane: &Location) -> bool {
+    pane.screen()
+        .is_ok_and(|screen| screen.contains(TRUST_PROMPT))
+}
+
+pub fn trust(
+    session: &AgentSession,
+    pane: Option<&Location>,
+    allow: bool,
+) -> Result<String, String> {
+    let pane = pane.ok_or_else(|| not_in_rex(session))?;
+    let _typing = TYPING.lock().unwrap_or_else(PoisonError::into_inner);
+    let keys = trust_keys(&pane.screen()?, allow).ok_or_else(|| {
+        format!(
+            "{} isn't asking to trust its folder any more",
+            session.title
+        )
+    })?;
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            thread::sleep(SUBMIT_AFTER);
+        }
+        send(pane, key)?;
+    }
+    Ok(if allow {
+        format!("Trusted {}'s folder", session.title)
+    } else {
+        format!("Left {} untrusted, and it closed", session.title)
+    })
+}
+
+fn trust_keys(screen: &str, allow: bool) -> Option<&'static [&'static str]> {
+    if !screen.contains(TRUST_PROMPT) {
+        return None;
+    }
+    if !allow {
+        return Some(&[DENY]);
+    }
+    let on_yes = screen
+        .lines()
+        .find(|line| line.contains('❯'))
+        .is_some_and(|line| line.contains("Yes"));
+    Some(if on_yes { &["\r"] } else { &[DOWN, "\r"] })
 }
 
 pub fn stop(session: &AgentSession, pane: Option<&Location>) -> Result<String, String> {
@@ -104,7 +150,7 @@ fn same_prompt<'a>(session: &'a AgentSession, seen: &Seen) -> Result<&'a Option<
     }
 }
 
-fn not_in_rex(session: &AgentSession) -> String {
+pub fn not_in_rex(session: &AgentSession) -> String {
     format!(
         "{} isn't in a Rex pane, so magi can't type into it",
         session.title
@@ -132,7 +178,7 @@ fn ready_for_prompt(session: &AgentSession) -> Result<(), String> {
             "{} is still working: send it when it's idle",
             session.title
         )),
-        SessionState::Waiting(Waiting::Permission(_)) => Err(format!(
+        SessionState::Waiting(Waiting::Permission(_) | Waiting::Trust) => Err(format!(
             "{} is asking for permission: allow or deny it first",
             session.title
         )),
@@ -171,19 +217,8 @@ fn paste(pane: &Location, text: &str) -> Result<(), String> {
 }
 
 fn rex(pane: &Location, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = bounded::output(&mut pane.rex("2s", args), REX_LIMIT)
-        .map_err(|error| format!("can't run rex: {error}"))?;
-    if output.status.success() {
-        return Ok(output.stdout);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let reason = stderr
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("rex failed")
-        .trim_start_matches("Error: ");
-    Err(format!("Rex couldn't type into the pane: {reason}"))
+    pane.call(args)
+        .map_err(|reason| format!("Rex couldn't type into the pane: {reason}"))
 }
 
 #[cfg(test)]
@@ -202,21 +237,37 @@ mod tests {
             model: String::new(),
             context_tokens: 0,
             context_used: None,
-            tokens: Default::default(),
             cost_micros: 0,
             cost_complete: true,
-            age_secs: 0,
             pane: None,
             usage: None,
             children: Vec::new(),
             branch: None,
-            worktree: None,
             parent: None,
             activity: None,
             mode: None,
             queued: None,
             remote: None,
+            pr: None,
         }
+    }
+
+    #[test]
+    fn trusting_a_folder_moves_to_yes_only_when_the_cursor_is_on_no() {
+        let asking = |cursor_on_yes: bool| {
+            let (no, yes) = if cursor_on_yes {
+                (" ", "❯")
+            } else {
+                ("❯", " ")
+            };
+            format!(
+                "Quick safety check: Is this a project you created or one you trust?\n\n {no} No, exit\n {yes} Yes, I trust this folder\n\n Enter to confirm · Esc to cancel"
+            )
+        };
+        assert_eq!(trust_keys(&asking(false), true), Some(&[DOWN, "\r"][..]));
+        assert_eq!(trust_keys(&asking(true), true), Some(&["\r"][..]));
+        assert_eq!(trust_keys(&asking(false), false), Some(&[DENY][..]));
+        assert_eq!(trust_keys("❯ hi\n⏺ Hi!", true), None);
     }
 
     #[test]

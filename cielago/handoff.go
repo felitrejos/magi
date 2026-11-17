@@ -20,6 +20,8 @@ type Handoff struct {
 	Note           string
 	Stay           bool
 	Progress       func(step string)
+	Codex          bool
+	Rollout        string
 }
 
 type Step struct {
@@ -31,17 +33,26 @@ type Result struct {
 	Steps     []Step
 	ShownOn   []string
 	Where     string
-	ShowNote  error
-	TabNote   error
-	SetupNote error
-	ParkNote  error
-	TrustNote error
-	PortNote  error
+	Notes     []error
 	Ports     []int
 	NewFolder string
 	From      string
 	FromDir   string
 	ToDir     string
+}
+
+func (r *Result) note(err error) {
+	if err != nil {
+		r.Notes = append(r.Notes, err)
+	}
+}
+
+func (r Result) Noted() string {
+	notes := make([]string, len(r.Notes))
+	for i, note := range r.Notes {
+		notes[i] = strings.ReplaceAll(note.Error(), "\n", "; ")
+	}
+	return strings.Join(notes, "; ")
 }
 
 func (r Result) Forwarded() string {
@@ -64,13 +75,11 @@ func (r Result) Total() time.Duration {
 }
 
 func (r Result) Summary() string {
-	var total time.Duration
 	parts := make([]string, len(r.Steps))
 	for i, s := range r.Steps {
-		total += s.Took
 		parts[i] = fmt.Sprintf("%s %.1fs", s.Name, s.Took.Seconds())
 	}
-	return fmt.Sprintf("%.1fs (%s)", total.Seconds(), strings.Join(parts, ", "))
+	return fmt.Sprintf("%.1fs (%s)", r.Total().Seconds(), strings.Join(parts, ", "))
 }
 
 type stepper struct {
@@ -91,148 +100,197 @@ func (s *stepper) run(name string, fn func() error) error {
 	return nil
 }
 
-func (h Handoff) Run() (res Result, err error) {
+type handoffRun struct {
+	Handoff
+	st          stepper
+	res         Result
+	local       *Local
+	remote      *Remote
+	ws          Workspace
+	where       Placement
+	remoteDir   string
+	project     *Project
+	launcher    Launcher
+	tab         Tab
+	synced      bool
+	launchedAt  time.Time
+	setupStatus string
+	rollout     string
+	written     int
+}
+
+func (h Handoff) Run() (Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), handoffBudget)
 	defer cancel()
-	st := stepper{progress: h.Progress}
-	defer func() { res.Steps = st.steps }()
+	r := &handoffRun{Handoff: h, st: stepper{progress: h.Progress}}
+	err := r.run(ctx)
+	r.res.Steps = r.st.steps
+	return r.res, err
+}
 
-	local, err := newLocal(ctx)
-	if err != nil {
-		return res, err
+func (r *handoffRun) run(ctx context.Context) error {
+	var err error
+	if r.local, err = newLocal(ctx); err != nil {
+		return err
 	}
-	var remote *Remote
-	var ws Workspace
-	var where Placement
-	if err := st.run("inspect", func() (err error) {
-		if ws, err = readWorkspace(local, h.Cwd, h.Host.Secrets, h.Host.Exclude); err != nil {
+	if err := r.st.run("inspect", func() error { return r.inspect(ctx) }); err != nil {
+		return err
+	}
+	project, err := approvedProject(r.local, r.ws.Root)
+	r.project = project
+	r.res.note(err)
+	r.remoteDir = filepath.Join(r.where.Root, r.ws.Subdir)
+	r.res.NewFolder, r.res.From, r.res.FromDir, r.res.ToDir = r.where.NewFolder, r.local.Name(), r.Cwd, r.remoteDir
+	r.launcher = newLauncher(r.Host, r.remote)
+
+	if err := r.st.run("sync", func() error {
+		return syncProject(r.local, r.remote, r.ws, r.where, r.Host.Exclude, func() error { return pushGit(r.local, r.remote, r.ws, r.where.Root) })
+	}); err != nil {
+		return r.undo(err, false)
+	}
+	r.synced = true
+	var sidecar string
+	if err := r.st.run("transcript", func() (err error) {
+		if r.Codex {
+			r.rollout, r.written, err = moveRollout(r.local, r.TranscriptPath, r.Rollout, r.ws.Root, r.remote, r.where.Root)
 			return err
 		}
-		home, err := homeDir(local)
-		if err != nil {
-			return err
-		}
-		if err := refuseHome(ws, home, local.Name()); err != nil {
-			return err
-		}
-		if remote, err = newRemote(ctx, h.Host.SSH); err != nil {
-			return err
-		}
-		group, err := localGroup(ws.MainRoot, h.Host.LocalRoots)
-		if err != nil {
-			return err
-		}
-		where, err = place(remote, ws, h.Host.Roots, group, h.Host.Exclude)
+		sidecar, err = moveTranscript(r.local, r.TranscriptPath, r.ws, r.remote, r.where, r.remoteDir)
 		return err
 	}); err != nil {
-		return res, err
+		return r.undo(err, false)
 	}
-	project, err := approvedProject(local, ws.Root)
-	if err != nil {
-		res.SetupNote = err
+	if err := r.st.run("launch", func() error { return r.launch(sidecar) }); err != nil {
+		return r.undo(err, false)
 	}
-	res.NewFolder = where.NewFolder
-	res.From = local.Name()
-	res.FromDir = h.Cwd
-	remoteDir := filepath.Join(where.Root, ws.Subdir)
-	res.ToDir = remoteDir
-
-	launcher := newLauncher(h.Host, remote)
-	var tab Tab
-	synced := false
-	undo := func(err error, startTimedOut bool) error {
-		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		remote.SetContext(cleanup)
-		if startTimedOut {
-			if trusted, trustErr := isTrusted(remote, remoteDir); trustErr == nil && !trusted {
-				err = fmt.Errorf("%w: the new session was waiting for you to trust %s; accept that there and hand off again", err, remoteDir)
-			}
+	if err := r.st.run("start", func() error {
+		if r.Codex {
+			return waitForCodex(r.remote, r.rollout, r.written)
 		}
-		if tab.Pane != "" {
-			if stopErr := stopSession(remote, h.SessionID); stopErr != nil {
-				err = fmt.Errorf("%w; stopping it there also failed: %v", err, stopErr)
-			}
-		}
-		if closeErr := launcher.Discard(tab); closeErr != nil {
-			err = fmt.Errorf("%w; removing the new tab also failed: %v", err, closeErr)
-		}
-		return undoSync(err, remote, ws, where, synced)
-	}
-
-	if err := st.run("sync", func() error {
-		return syncProject(local, remote, ws, where, h.Host.Exclude, func() error { return pushGit(local, remote, ws, where.Root) })
+		return waitForRemoteControl(r.remote, r.SessionID, r.launchedAt)
 	}); err != nil {
-		return res, undo(err, false)
+		return r.undo(err, true)
 	}
-	synced = true
+	r.finish()
+	return nil
+}
 
-	sidecar := ""
-	if err := st.run("transcript", func() (err error) {
-		sidecar, err = moveTranscript(local, h.TranscriptPath, ws, remote, where, remoteDir)
+func (r *handoffRun) inspect(ctx context.Context) error {
+	var err error
+	if r.ws, err = readWorkspace(r.local, r.Cwd, r.Host.Secrets, r.Host.Exclude); err != nil {
 		return err
-	}); err != nil {
-		return res, undo(err, false)
 	}
+	home, err := homeDir(r.local)
+	if err != nil {
+		return err
+	}
+	if err := refuseHome(r.ws, home, r.local.Name()); err != nil {
+		return err
+	}
+	if r.remote, err = newRemote(ctx, r.Host.SSH); err != nil {
+		return err
+	}
+	r.where, err = place(r.remote, r.ws, r.Host.Roots, localGroup(r.ws.MainRoot, r.Host.LocalRoots), r.Host.Exclude)
+	return err
+}
 
-	var launchedAt time.Time
-	var setupStatus string
-	name := baseName(where.Root)
-	if err := st.run("launch", func() (err error) {
-		if launchedAt, err = clock(remote); err != nil {
+func (r *handoffRun) launch(sidecar string) error {
+	var err error
+	if r.launchedAt, err = clock(r.remote); err != nil {
+		return err
+	}
+	projectNote := ""
+	if r.project != nil {
+		if r.setupStatus, err = prepareSetupStatus(r.remote, r.SessionID); err != nil {
 			return err
 		}
-		projectNote := ""
-		if project != nil {
-			if setupStatus, err = prepareSetupStatus(remote, h.SessionID); err != nil {
-				return err
-			}
-			projectNote = projectPrompt(project, setupStatus)
-		}
-		res.TrustNote = carryTrust(local, remote, h.Cwd, remoteDir)
-		prompt := handoffPrompt(Prompt{From: local.Name(), To: h.HostName, OldDir: h.Cwd, NewDir: remoteDir, Git: ws.Git != nil, Note: h.Note, Sidecar: sidecar, Project: projectNote})
-		command := []string{expandHome(h.Host.Claude, where.Home), "--resume", h.SessionID, "--remote-control", name, prompt}
-		if tab, err = launcher.Start(where.Group, claudeTabLabel(name), remoteDir, command, !h.Stay); err != nil {
-			return err
-		}
-		if !h.Stay {
-			res.ShownOn, res.ShowNote = launcher.Show(tab)
-		}
-		res.Where = launcher.Where(where.Group)
-		return nil
-	}); err != nil {
-		return res, undo(err, false)
+		projectNote = projectPrompt(r.project, r.setupStatus)
 	}
-
-	if err := st.run("start", func() error { return waitForRemoteControl(remote, h.SessionID, launchedAt) }); err != nil {
-		return res, undo(err, true)
+	name := baseName(r.where.Root)
+	prompt := handoffPrompt(Prompt{From: r.local.Name(), To: r.HostName, OldDir: r.Cwd, NewDir: r.remoteDir, Git: r.ws.Git != nil, Note: r.Note, Sidecar: sidecar, Project: projectNote, Codex: r.Codex})
+	label, command := claudeTabLabel(name), []string{expandHome(r.Host.Claude, r.where.Home), "--resume", r.SessionID, "--remote-control", name, prompt}
+	if r.Codex {
+		r.res.note(carryCodexTrust(r.local, r.remote, r.Cwd, r.remoteDir, r.where.Root))
+		label, command = codexTabLabel(name), append([]string{expandHome(r.Host.Codex, r.where.Home)}, codexResume(r.SessionID, prompt)...)
+	} else {
+		r.res.note(carryTrust(r.local, r.remote, r.Cwd, r.remoteDir))
 	}
+	if r.tab, err = r.launcher.Start(r.where.Group, label, r.remoteDir, command, !r.Stay); err != nil {
+		return err
+	}
+	if !r.Stay {
+		var showErr error
+		if r.res.ShownOn, showErr = r.launcher.Show(r.tab); showErr != nil {
+			r.res.note(fmt.Errorf("showing the new tab failed: %w", showErr))
+		}
+	}
+	r.res.Where = r.launcher.Where(r.where.Group)
+	return nil
+}
 
+func (r *handoffRun) undo(err error, startTimedOut bool) error {
+	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	r.remote.SetContext(cleanup)
+	if startTimedOut && !r.trustedThere() {
+		err = fmt.Errorf("%w: the new session was waiting for you to trust %s; accept that there and hand off again", err, r.remoteDir)
+	}
+	if r.tab.Pane != "" {
+		stop := stopSession
+		if r.Codex {
+			stop = stopCodexSession
+		}
+		if stopErr := stop(r.remote, r.SessionID); stopErr != nil {
+			err = fmt.Errorf("%w; stopping it there also failed: %v", err, stopErr)
+		}
+	}
+	if closeErr := r.launcher.Discard(r.tab); closeErr != nil {
+		err = fmt.Errorf("%w; removing the new tab also failed: %v", err, closeErr)
+	}
+	return undoSync(err, r.remote, r.ws, r.where, r.synced)
+}
+
+func (r *handoffRun) trustedThere() bool {
+	if r.Codex {
+		_, cfg, err := readCodexConfig(r.remote)
+		return err != nil || cfg.trusts(r.remoteDir)
+	}
+	trusted, err := isTrusted(r.remote, r.remoteDir)
+	return err != nil || trusted
+}
+
+func (r *handoffRun) finish() {
 	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	local.SetContext(finish)
-	remote.SetContext(finish)
-	res.ParkNote = errors.Join(settle(local, ws, h.Host.Exclude), recordTab(remote, h.SessionID, h.Host.Launcher, tab))
-	arrivalNote := closeForwardsOn(remote, h.SessionID)
-	if project != nil {
-		if err := st.run("panes", func() error { return startProject(remote, launcher, tab, where.Root, setupStatus, project) }); err != nil {
-			res.SetupNote = errors.Unwrap(err)
+	r.local.SetContext(finish)
+	r.remote.SetContext(finish)
+	if err := settle(r.local, r.ws, r.Host.Exclude); err != nil {
+		r.res.note(fmt.Errorf("marking this checkout as handed off failed, so handing the session back here will need a clean checkout: %w", err))
+	}
+	if err := recordTab(r.remote, r.SessionID, r.Host.Launcher, r.tab); err != nil {
+		r.res.note(fmt.Errorf("recording the new tab failed: %w", err))
+	}
+	r.res.note(closeForwardsOn(r.remote, r.SessionID))
+	if r.project != nil {
+		if err := r.st.run("panes", func() error { return startProject(r.remote, r.launcher, r.tab, r.where.Root, r.setupStatus, r.project) }); err != nil {
+			r.res.note(errors.Unwrap(err))
+		}
+		if len(r.project.Ports) > 0 {
+			if err := r.st.run("ports", func() error {
+				return startForwards(r.SessionID, r.HostName, r.Host.SSH, forwardVia(r.launcher, r.tab), r.project.Ports)
+			}); err != nil {
+				r.res.note(fmt.Errorf("forwarding its ports failed: %w", errors.Unwrap(err)))
+			} else {
+				r.res.Ports = r.project.Ports
+			}
 		}
 	}
-	res.PortNote = arrivalNote
-	if project != nil && len(project.Ports) > 0 {
-		forwardErr := st.run("ports", func() error {
-			return startForwards(h.SessionID, h.HostName, h.Host.SSH, forwardVia(launcher, tab), project.Ports)
-		})
-		if forwardErr == nil {
-			res.Ports = project.Ports
+	if r.Host.NewTabCommand != "" {
+		name := baseName(r.where.Root)
+		if err := r.st.run("tab", func() error {
+			return r.launcher.OpenProjectTab(r.tab, name, r.where.Root, strings.ReplaceAll(r.Host.NewTabCommand, "{repo}", quote(name)))
+		}); err != nil {
+			r.res.note(fmt.Errorf("the new tab's command didn't start: %w", errors.Unwrap(err)))
 		}
-		res.PortNote = errors.Join(res.PortNote, forwardErr)
 	}
-	if h.Host.NewTabCommand != "" {
-		res.TabNote = st.run("tab", func() error {
-			return launcher.OpenProjectTab(tab, name, where.Root, strings.ReplaceAll(h.Host.NewTabCommand, "{repo}", quote(name)))
-		})
-	}
-	return res, nil
 }

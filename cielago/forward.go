@@ -38,8 +38,6 @@ type forwardRecord struct {
 	Started time.Time `json:"started"`
 }
 
-// rexVia names the Rex server, and the session on it, that carries a session's forwards as
-// tunnel blocks. Without it, forwards go over ssh.
 type rexVia struct {
 	Server  string `json:"server"`
 	Session string `json:"session"`
@@ -124,14 +122,11 @@ func startForwards(session, host, ssh string, via *rexVia, ports []int) error {
 	cmd := exec.Command(self, "forward-run", session)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		os.Remove(path)
-		return err
+		return errors.Join(err, os.Remove(path))
 	}
 	record.PID = cmd.Process.Pid
 	if err := writeForward(path, record); err != nil {
-		syscall.Kill(-record.PID, syscall.SIGTERM)
-		os.Remove(path)
-		return err
+		return errors.Join(err, syscall.Kill(-record.PID, syscall.SIGTERM), os.Remove(path))
 	}
 	return cmd.Process.Release()
 }
@@ -161,8 +156,11 @@ func runForwards(session string) error {
 		return err
 	}
 	lock, err := holdLock(path)
-	if err != nil {
+	if errors.Is(err, syscall.EWOULDBLOCK) {
 		return nil
+	}
+	if err != nil {
+		return err
 	}
 	defer lock.Close()
 	wait := forwardRetry

@@ -178,7 +178,7 @@ impl Codex {
         now: Instant,
         now_ms: u64,
         budget: &mut u64,
-    ) -> (Vec<Found>, Option<Plan>) {
+    ) -> (Vec<Found>, Option<Plan>, Vec<String>) {
         if self
             .found_at
             .is_none_or(|at| now.duration_since(at) >= FIND_PROCESSES_EVERY)
@@ -195,8 +195,9 @@ impl Codex {
             }
             keep
         });
+        let mut problems = Vec::new();
         if !self.live.is_empty() {
-            self.read_titles(budget);
+            problems.extend(self.read_titles(budget));
         }
         let mut sessions = Vec::new();
         for (path, _) in &self.live {
@@ -207,13 +208,14 @@ impl Codex {
                     tail: Tail::new(path.clone()),
                     state: State::default(),
                 });
-            let _ = rollout.tail.advance(
+            let read = rollout.tail.advance(
                 budget,
                 &mut Feed {
                     state: &mut rollout.state,
                     claims: &mut self.claims,
                 },
             );
+            problems.extend(tail::unreadable(path, read));
             rollout.state.ledger.adopt(&mut self.claims);
         }
         let titles = self.titles.as_ref().map(|(_, titles)| titles);
@@ -236,7 +238,7 @@ impl Codex {
                 });
             }
         }
-        (sessions, self.plan(now, now_ms / 1000))
+        (sessions, self.plan(now, now_ms / 1000), problems)
     }
 
     fn find_live(&self) -> Vec<(PathBuf, i32)> {
@@ -255,14 +257,15 @@ impl Codex {
         live
     }
 
-    fn read_titles(&mut self, budget: &mut u64) {
+    fn read_titles(&mut self, budget: &mut u64) -> Option<String> {
         let (tail, titles) = self.titles.get_or_insert_with(|| {
             (
                 Tail::new(self.home.join("session_index.jsonl")),
                 Titles::default(),
             )
         });
-        let _ = tail.advance(budget, titles);
+        let read = tail.advance(budget, titles);
+        tail::unreadable(&self.home.join("session_index.jsonl"), read)
     }
 
     fn plan(&mut self, now: Instant, now_secs: u64) -> Option<Plan> {
@@ -446,20 +449,18 @@ fn describe(state: &State, titles: Option<&Titles>, now_ms: u64) -> Option<Agent
         context_used: state
             .context
             .map(|(tokens, window)| (tokens.min(window) * u64::from(FULL) / window) as BasisPoints),
-        tokens: state.ledger.tokens,
         cost_micros: state.ledger.cost_micros,
         cost_complete: !state.ledger.unpriced,
-        age_secs: (now_ms.saturating_sub(state.started_ms) / 1000) as u32,
         pane: None,
         usage: None,
         children: Vec::new(),
         branch: repo.branch,
-        worktree: repo.worktree,
         parent: None,
         activity: None,
         mode: None,
         queued: None,
         remote: None,
+        pr: None,
     })
 }
 
@@ -556,7 +557,7 @@ mod tests {
         );
         assert_eq!(session.model, "gpt-5.6-terra");
         assert_eq!(
-            session.tokens,
+            state.ledger.tokens,
             Tokens {
                 input: 120_000,
                 output: 100_000,
@@ -682,9 +683,9 @@ mod tests {
                 "{} {:<14} in {:>8} cached {:>8} out {:>7} cost ${:.4}{}",
                 &session.id[..8],
                 session.model,
-                session.tokens.input + session.tokens.cache_read,
-                session.tokens.cache_read,
-                session.tokens.output,
+                state.ledger.tokens.input + state.ledger.tokens.cache_read,
+                state.ledger.tokens.cache_read,
+                state.ledger.tokens.output,
                 session.cost_micros as f64 / 1e6,
                 if session.cost_complete {
                     ""

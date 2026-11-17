@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,20 +20,24 @@ import (
 
 var version = "dev"
 
-const usage = `cielago moves a Claude Code session to another machine, or sends it work there.
+const usage = `cielago moves a Claude Code or Codex session to another machine, or sends Claude work there.
 
 Usage:
   cielago init                          set up this machine and a machine to hand off to
   cielago doctor [host...]              check that everything a handoff needs is in place
-  cielago pull <host> [session-id]      bring a session back from <host> and continue it here
+  cielago pull <host> [session-id]      bring a Claude Code or Codex session back from <host>
+                                        and continue it here
   cielago move <session-id> <host> [--json] [--stay]
-                                        move a session running on this machine to <host>, from
-                                        outside it: now if it's idle, or when its turn ends
+                                        move a Claude Code or Codex session on this machine to
+                                        <host>, from outside it: now if it's idle, or when its
+                                        turn ends; Codex needs codex = "<path>" for <host>
   cielago status                        recent handoffs and parked checkouts
   cielago unpark [dir]                  stop treating a checkout as parked
   cielago allow [dir]                   let the project's .cielago.toml run after handoffs
-  cielago open <folder> [--codex]       start a Claude (or Codex) session there, in its project's
-                                        Rex session; --resume <id> continues a session as a copy;
+  cielago open <folder> [--codex] [--model <model>] [--json]
+                                        start a Claude (or Codex) session there, in a Rex session
+                                        named after its folder; --resume <id> continues a session
+                                        as a copy; --chat starts one in ~/Chats instead;
                                         --list prints the project folders it knows
   cielago forwards                      ports this machine forwards to sessions that moved
   cielago forwards close <session-id>   stop forwarding a moved session's ports
@@ -142,7 +145,7 @@ func currentVersion() string {
 	return version
 }
 
-func armedPath(sessionID string) (string, error) {
+func armedPath(sessionID, suffix string) (string, error) {
 	if !sessionIDPattern.MatchString(sessionID) {
 		return "", fmt.Errorf("%q is not a Claude session id", sessionID)
 	}
@@ -150,7 +153,23 @@ func armedPath(sessionID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".cielago", "armed", sessionID+".json"), nil
+	return filepath.Join(home, ".cielago", "armed", sessionID+suffix), nil
+}
+
+func writeArmed(path string, a armed, flag int) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|flag, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	return errors.Join(err, f.Close())
 }
 
 func arm(hostName, sessionID, note string, out io.Writer) error {
@@ -161,18 +180,11 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 	if err != nil {
 		return errors.New("CLAUDE_PID is not set; run arm from inside the Claude Code session being handed off")
 	}
-	path, err := armedPath(sessionID)
+	path, err := armedPath(sessionID, ".json")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	data, err := json.Marshal(armed{Host: hostName, PID: pid, Desktop: os.Getenv("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop", Note: note})
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := writeArmed(path, armed{Host: hostName, PID: pid, Desktop: os.Getenv("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop", Note: note}, os.O_TRUNC); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
@@ -190,7 +202,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if err := json.NewDecoder(in).Decode(&input); err != nil {
 		return err
 	}
-	path, err := armedPath(input.SessionID)
+	path, err := armedPath(input.SessionID, ".json")
 	if err != nil {
 		return err
 	}
@@ -218,23 +230,24 @@ func stopHook(in io.Reader, out io.Writer) error {
 
 	res, err := handoff(a, input)
 	if err != nil {
+		reason := fmt.Sprintf("cielago could not hand this session off to %s, so it is still running here: %v.", a.Host, err)
 		if a.Notify {
-			writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: fmt.Sprintf("the handoff to %s failed, so the session keeps running here: %v", a.Host, err)})
+			if writeErr := writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: fmt.Sprintf("the handoff to %s failed, so the session keeps running here: %v", a.Host, err)}); writeErr != nil {
+				reason += fmt.Sprintf(" Telling cielago move about it also failed: %v.", writeErr)
+			}
 		}
 		return json.NewEncoder(out).Encode(map[string]string{
 			"decision": "block",
-			"reason":   fmt.Sprintf("cielago could not hand this session off to %s, so it is still running here: %v. Tell the user what failed in plain words.", a.Host, err),
+			"reason":   reason + " Tell the user what failed in plain words.",
 		})
 	}
 	if a.Notify {
-		res.ParkNote = errors.Join(res.ParkNote, writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}))
+		res.note(writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}))
 	}
 	if err := retire(a, input.SessionID, input.TranscriptPath); err != nil {
 		return err
 	}
-	if logErr := appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}); logErr != nil {
-		res.ParkNote = errors.Join(res.ParkNote, logErr)
-	}
+	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}))
 	return json.NewEncoder(out).Encode(handedOff(a, res))
 }
 
@@ -243,29 +256,14 @@ func handedOff(a armed, res Result) map[string]string {
 	if len(res.ShownOn) > 0 {
 		where = fmt.Sprintf("It's open in %s, and with Remote Control it's in every Claude app on your account", strings.Join(res.ShownOn, ", "))
 	}
-	if res.ShowNote != nil {
-		where += fmt.Sprintf(" (%v)", res.ShowNote)
-	}
 	if res.NewFolder != "" {
 		where += fmt.Sprintf(". %s didn't have this project yet, so it now lives at %s", a.Host, res.NewFolder)
-	}
-	if res.ParkNote != nil {
-		where += fmt.Sprintf(". Marking this checkout as handed off failed (%v), so handing the session back here will need a clean checkout", res.ParkNote)
-	}
-	if res.TabNote != nil {
-		where += fmt.Sprintf(". The new tab's command didn't start: %v", res.TabNote)
-	}
-	if res.SetupNote != nil {
-		where += fmt.Sprintf(". %v", res.SetupNote)
-	}
-	if res.TrustNote != nil {
-		where += fmt.Sprintf(". %v", res.TrustNote)
 	}
 	if forwarded := res.Forwarded(); forwarded != "" {
 		where += ". " + forwarded
 	}
-	if res.PortNote != nil {
-		where += fmt.Sprintf(". Forwarding its ports failed: %v", res.PortNote)
+	if len(res.Notes) > 0 {
+		where += ". Notes: " + res.Noted()
 	}
 	took := res.Summary()
 	if a.Desktop {
@@ -280,35 +278,6 @@ func handedOff(a armed, res Result) map[string]string {
 	return map[string]string{
 		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. This copy is closing.", a.Host, took, where),
 	}
-}
-
-func isAncestor(pid int) (bool, error) {
-	for p := os.Getppid(); p > 1; {
-		if p == pid {
-			return true, nil
-		}
-		parent, err := parentOf(p)
-		if err != nil {
-			return false, err
-		}
-		p = parent
-	}
-	return false, nil
-}
-
-func parentOf(pid int) (int, error) {
-	if stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil {
-		fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
-		if len(fields) < 2 {
-			return 0, fmt.Errorf("unexpected /proc/%d/stat", pid)
-		}
-		return strconv.Atoi(fields[1])
-	}
-	out, err := run(context.Background(), "ps", "-o", "ppid=", "-p", strconv.Itoa(pid))
-	if err != nil {
-		return 0, err
-	}
-	return strconv.Atoi(strings.TrimSpace(string(out)))
 }
 
 func handoff(a armed, input stopInput) (Result, error) {
@@ -358,7 +327,7 @@ func setUpPulledProject(p *Project, root string, out io.Writer) string {
 	if p.Setup != "" {
 		fmt.Fprintf(out, "Running the project's setup: %s\n", p.Setup)
 		if err := runSetupHere(root, p.Setup, out); err != nil {
-			fmt.Fprintf(out, "Note: the setup failed (%v); Claude continues anyway.\n", err)
+			fmt.Fprintf(out, "Note: the setup failed (%v); the session continues anyway.\n", err)
 			fmt.Fprintf(&b, "The project's %s setup (%s) failed here before you continued (%v). ", projectFile, p.Setup, err)
 		} else {
 			fmt.Fprintf(&b, "The project's %s setup (%s) ran here before you continued. ", projectFile, p.Setup)
@@ -383,24 +352,15 @@ func pullCommand(hostName, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	if logErr := appendLog(logEntry{Time: time.Now(), Kind: "pull", Session: res.Session, From: hostName, To: local.Name(), FromDir: res.FromDir, ToDir: res.ToDir}); logErr != nil {
-		res.ParkNote = errors.Join(res.ParkNote, logErr)
-	}
+	res.note(appendLog(logEntry{Time: time.Now(), Kind: "pull", Session: res.Session, From: hostName, To: local.Name(), FromDir: res.FromDir, ToDir: res.ToDir}))
+	res.note(closeForwards(res.Session))
 	fmt.Printf("Pulled the session back from %s in %s.\n", hostName, res.Summary())
 	if res.NewFolder != "" {
 		fmt.Printf("This machine didn't have the project yet, so it now lives at %s.\n", res.NewFolder)
 	}
-	if res.ParkNote != nil {
-		fmt.Printf("Note: %v\n", res.ParkNote)
-	}
-	for _, note := range []error{res.TabNote, res.SetupNote} {
-		if note != nil {
-			fmt.Printf("Note: %v\n", note)
-		}
-	}
-	if err := closeForwards(res.Session); err != nil {
-		fmt.Printf("Note: %v\n", err)
+	for _, note := range res.Notes {
+		fmt.Printf("Note: %v\n", note)
 	}
 	res.PromptInfo.Project = setUpPulledProject(res.Project, res.ProjectRoot, os.Stdout)
-	return resumeHere(res.ToDir, res.Session, res.Name, handoffPrompt(res.PromptInfo))
+	return resumeHere(res.ToDir, res.Session, res.Name, handoffPrompt(res.PromptInfo), res.Codex)
 }

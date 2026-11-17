@@ -9,7 +9,7 @@ use super::*;
 use crate::proto::{Agent, Child, ChildKind, ChildState, Sample, TopProcess};
 use crate::proto::{
     AgentSession, DiskIo, FIVE_HOURS, Filesystem, Identity, Memory, NetIo, ONE_WEEK, Plan,
-    SessionState, Tokens, Waiting, Welcome, Window,
+    SessionState, Waiting, Welcome, Window,
 };
 use crate::viewer::alerts::Alerts;
 use crate::viewer::graphics::Graphics;
@@ -23,11 +23,10 @@ fn welcome(node: &str) -> LinkUpdate {
             hostname: node.into(),
             tailscale_node: Some(node.into()),
             os: "Ubuntu 24.04.1 LTS".into(),
-            kernel: "Linux 6.8.0-49-generic".into(),
-            arch: "x86_64".into(),
+            arch: String::new(),
+            tools: Vec::new(),
             cpu_model: "AMD Ryzen 7 5700U with Radeon Graphics".into(),
             core_kinds: Vec::new(),
-            agent_version: "0.1.0".into(),
         },
     }))
 }
@@ -43,25 +42,18 @@ fn agent(title: &str, state: SessionState, context_used: Option<u16>) -> AgentSe
         model: "claude-opus-5-5".into(),
         context_tokens: 831_053,
         context_used,
-        tokens: Tokens {
-            input: 940,
-            output: 598_164,
-            cache_read: 149_160_864,
-            cache_write: 1_608_265,
-        },
         cost_micros: 51_380_000,
         cost_complete: true,
-        age_secs: 7_900,
         pane: None,
         usage: None,
         children: Vec::new(),
         branch: None,
-        worktree: None,
         parent: None,
         activity: None,
         mode: None,
         queued: None,
         remote: None,
+        pr: None,
     }
 }
 
@@ -74,7 +66,6 @@ fn agents() -> Vec<AgentSession> {
         Some(3_400),
     );
     working.branch = Some("claude/quiet-fox".into());
-    working.worktree = Some("quiet-fox".into());
     working.children = vec![
         Child {
             id: "toolu_a".into(),
@@ -84,6 +75,7 @@ fn agents() -> Vec<AgentSession> {
             state: ChildState::Running,
             secs: 40,
             task: None,
+            doing: None,
         },
         Child {
             id: "toolu_b".into(),
@@ -93,6 +85,7 @@ fn agents() -> Vec<AgentSession> {
             state: ChildState::Done,
             secs: 300,
             task: Some("bash_1".into()),
+            doing: None,
         },
     ];
     let mut deploy = agent(
@@ -381,29 +374,6 @@ fn a_machine_is_tagged_by_its_first_word_unless_another_shares_it() {
 }
 
 #[test]
-#[ignore = "prints the screen: cargo test -- --ignored --nocapture print_wide"]
-fn print_wide() {
-    let now = Instant::now();
-    let mut model = fleet(2, now);
-    select_title(&mut model, "deploy fix", now);
-    println!("{}", draw(&model, 130, 34, now));
-}
-
-#[test]
-#[ignore = "prints the screen: cargo test -- --ignored --nocapture print_machine"]
-fn print_machine() {
-    let now = Instant::now();
-    println!("{}", draw(&fleet(2, now), 130, 40, now));
-}
-
-#[test]
-#[ignore = "prints the screen: cargo test -- --ignored --nocapture print_phone"]
-fn print_phone() {
-    let now = Instant::now();
-    println!("{}", draw(&fleet(2, now), 46, 60, now));
-}
-
-#[test]
 fn phone_width_keeps_names_cpu_and_memory() {
     let now = Instant::now();
     let screen = draw(&fleet(2, now), 46, 30, now);
@@ -635,4 +605,37 @@ fn links_in_printed_markdown_are_terminal_hyperlinks_and_unsafe_ones_are_dropped
         "{printed:?}"
     );
     assert!(!printed.contains("javascript:"), "{printed:?}");
+}
+
+#[test]
+fn work_sent_to_another_machine_points_back_to_the_session_that_sent_it() {
+    let now = Instant::now();
+    let mut model = fleet(2, now);
+    let sender = agents()
+        .into_iter()
+        .find(|session| session.title == "notes")
+        .unwrap();
+    let mut child = agent("linux build", SessionState::Working { tool: None }, None);
+    child.parent = Some(sender.id.clone());
+    let mut remote = sample(0.1, 8);
+    remote.sessions = vec![child];
+    model.apply(
+        Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2)),
+        LinkUpdate::Sample(Box::new(remote)),
+        now,
+    );
+    let screen = draw(&model, 220, 60, now);
+    let child_line = screen
+        .lines()
+        .find(|line| line.contains("linux build"))
+        .unwrap();
+    assert!(
+        child_line.contains(&format!("← {}", sender.title)) && !child_line.contains("host-0"),
+        "{child_line}"
+    );
+    let sender_line = screen
+        .lines()
+        .find(|line| line.contains(&sender.title) && !line.contains("linux build"))
+        .unwrap();
+    assert!(sender_line.contains("1 on host-1"), "{sender_line}");
 }

@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
-use super::model::{Focus, Model, Naming, Row};
+use super::model::{Focus, Model, Row, machine_tag};
 use super::style::{self, theme};
 use super::units;
 use crate::proto::{Agent, FULL, Plan, SessionState, Waiting};
@@ -129,10 +129,10 @@ fn draw_panel(frame: &mut Frame, area: Rect, header: Header<'static>) {
     frame.render_widget(Paragraph::new(line), row);
 }
 
-fn marks(model: &Model, rows: &[Row<'_>]) -> HashMap<String, String> {
+fn marks(rows: &[Row<'_>]) -> HashMap<String, String> {
     let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
     rows.iter()
-        .map(|row| (row.name.clone(), model.machine_label(&row.name, &names)))
+        .map(|row| (row.name.clone(), machine_tag(&row.name, &names).to_string()))
         .collect()
 }
 
@@ -328,9 +328,7 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
         }
         spans
     };
-    let line = if let Some(naming) = &model.naming {
-        naming_line(naming, width)
-    } else if let Some(pending) = &model.pending_move {
+    let line = if let Some(pending) = &model.pending_move {
         let question = format!(
             "Move {} from {} to {}?",
             pending.title, pending.from, pending.to
@@ -381,34 +379,6 @@ fn render_footer(frame: &mut Frame, area: Rect, model: &Model, now: Instant) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn naming_line(naming: &Naming, width: usize) -> Line<'static> {
-    let question = format!("Label {} as ", naming.machine);
-    let mut right = Vec::new();
-    for (index, (key, label)) in [("↵", "save"), ("esc", "cancel")].into_iter().enumerate() {
-        if index > 0 {
-            right.push(Span::raw("   "));
-        }
-        right.push(Span::styled(key, style::bold(theme().text)));
-        right.push(Span::styled(format!(" {label}"), style::fg(theme().faint)));
-    }
-    let hint = if naming.text.is_empty() {
-        "empty shows its own name"
-    } else {
-        ""
-    };
-    spread(
-        vec![
-            Span::styled(question, style::fg(theme().text)),
-            Span::styled("› ", style::fg(theme().accent)),
-            Span::styled(naming.text.clone(), style::bold(theme().text)),
-            Span::styled("▏", style::fg(theme().accent)),
-            Span::styled(hint, style::fg(theme().faint)),
-        ],
-        right,
-        width,
-    )
-}
-
 fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
     if let Some(Focus::Machine(_)) = model.selection(now) {
         let page = if model.machine_page.is_some() {
@@ -416,7 +386,7 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         } else {
             "details"
         };
-        return vec![("↵", page), ("P", "label"), ("c", "new session")];
+        return vec![("enter", page), ("c", "new session")];
     }
     let Some(agent) = model.selected_agent(now) else {
         return vec![("c", "new session")];
@@ -436,22 +406,18 @@ fn actions(model: &Model, now: Instant) -> Vec<(&'static str, &'static str)> {
         actions.push(("x", "stop"));
     }
     if in_rex {
-        actions.push(("↵", "open in Rex"));
+        actions.push(("enter", "open in Rex"));
     }
     if agent.live {
-        actions.push(("d", "diff"));
+        actions.push(("v", "diff"));
     }
-    if agent.live && agent.session.agent == Agent::ClaudeCode {
-        if !in_rex {
+    if agent.live {
+        if !in_rex && agent.session.agent == Agent::ClaudeCode {
             actions.push(("r", "continue in Rex"));
         }
         actions.push(("m", "move"));
     }
-    actions.extend([
-        ("p", "project"),
-        ("P", "rename project"),
-        ("c", "new session"),
-    ]);
+    actions.push(("c", "new session"));
     actions
 }
 

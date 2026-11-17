@@ -175,7 +175,7 @@ func outcomeState(o *Outcome) string {
 	return "Finished (" + o.Exit + "), collected " + ago(o.Ended)
 }
 
-func describeMachines(view fleetView) string {
+func describeMachines(view fleetView, needs needsInput) string {
 	var b strings.Builder
 	if view.FleetErr != nil {
 		fmt.Fprintf(&b, "Live load is unknown: %v. Without magi, cielago picks the first configured machine that answers.\n\n", view.FleetErr)
@@ -203,7 +203,10 @@ func describeMachines(view fleetView) string {
 			fmt.Fprintf(&b, "; NO ROOM now: %s", m.NoRoom)
 		}
 		if m.Fleet != nil {
-			fmt.Fprintf(&b, "; %s", strings.TrimSpace(m.Fleet.OS+" "+m.Fleet.describe()))
+			fmt.Fprintf(&b, "; %s", strings.Join(strings.Fields(platform(*m.Fleet)+" "+m.Fleet.describe()), " "))
+			if len(m.Fleet.Tools) > 0 {
+				fmt.Fprintf(&b, "; has %s", strings.Join(m.Fleet.Tools, ", "))
+			}
 			if load := m.Fleet.sessionLoad(); load != "" {
 				fmt.Fprintf(&b, "; %s", load)
 			}
@@ -215,7 +218,9 @@ func describeMachines(view fleetView) string {
 			fmt.Fprintf(&b, "    task %s (%s, started %s): %s\n", t.ID, t.Kind, ago(t.Created), t.summary())
 		}
 	}
-	if picks, _ := view.candidates(); len(picks) > 0 {
+	if !needs.empty() {
+		b.WriteString(describePlaces(view, needs))
+	} else if picks, _ := view.candidates(); len(picks) > 0 {
 		fmt.Fprintf(&b, "\nSuggested: %s, %s.\n", picks[0].Host, picks[0].Why)
 	} else {
 		b.WriteString("\nNo machine has room right now.\n")
@@ -253,7 +258,9 @@ func printTasks(w io.Writer) error {
 			if err == nil {
 				var st taskState
 				if st, err = probeTask(r, t); err == nil {
-					t.noteState(st.State)
+					err = t.noteState(st.State)
+				}
+				if err == nil {
 					states[i] = st.State
 					if st.State == "done" {
 						states[i] = "finished (" + st.Exit + "), not collected"

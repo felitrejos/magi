@@ -6,9 +6,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::registry::{self, Registry, Status};
 use super::repo;
+use super::tail;
 use super::transcript::Transcript;
 use super::{Board, Found};
-use crate::proto::{Agent, AgentSession, BasisPoints, SessionState, Tokens, Waiting};
+use crate::proto::{Agent, AgentSession, BasisPoints, Child, SessionState, Waiting};
 
 const FIND_TRANSCRIPT_EVERY: Duration = Duration::from_secs(10);
 const ACTIVE_WITHIN: Duration = Duration::from_secs(30 * 60);
@@ -29,7 +30,7 @@ pub struct ClaudeSessions {
 
 pub struct Polled {
     pub sessions: Vec<Found>,
-    pub notice: Option<String>,
+    pub notices: Vec<String>,
 }
 
 struct Tracked {
@@ -46,7 +47,6 @@ struct Seen {
     remote: Option<String>,
     state: SessionState,
     state_secs: u32,
-    age_secs: u32,
 }
 
 impl Tracked {
@@ -65,7 +65,7 @@ impl Tracked {
         now: Instant,
         budget: &mut u64,
         claims: &mut HashSet<String>,
-    ) {
+    ) -> Vec<String> {
         let due = self
             .looked_for_transcript
             .is_none_or(|at| now.duration_since(at) >= FIND_TRANSCRIPT_EVERY);
@@ -74,9 +74,11 @@ impl Tracked {
             self.transcript = registry::transcript(projects, session_id).map(Transcript::new);
         }
         let Some(transcript) = &mut self.transcript else {
-            return;
+            return Vec::new();
         };
-        let _ = transcript.advance(budget, claims);
+        let mut problems = Vec::new();
+        let read = transcript.advance(budget, claims);
+        problems.extend(tail::unreadable(transcript.path(), read));
         let subagents_dir = transcript.path().with_extension("").join("subagents");
         if let Ok(entries) = fs::read_dir(&subagents_dir) {
             for path in entries.flatten().map(|entry| entry.path()).filter(|path| {
@@ -89,10 +91,12 @@ impl Tracked {
             }
         }
         for subagent in self.subagents.values_mut() {
-            let _ = subagent.advance(budget, claims);
+            let read = subagent.advance(budget, claims);
+            problems.extend(tail::unreadable(subagent.path(), read));
         }
         self.transcripts_mut()
             .for_each(|transcript| transcript.adopt(claims));
+        problems
     }
 
     fn transcripts(&self) -> impl Iterator<Item = &Transcript> {
@@ -133,7 +137,6 @@ impl ClaudeSessions {
             .map(|session| Seen {
                 state: state(&session.status, None),
                 state_secs: secs_between(session.status_since_ms, now_ms),
-                age_secs: secs_between(session.started_ms, now_ms),
                 cwd: Some(session.cwd),
                 name: session.name,
                 remote: session.remote,
@@ -141,7 +144,10 @@ impl ClaudeSessions {
                 pid: Some(session.pid),
             })
             .collect();
-        let notice = (!scan.unknown.is_empty()).then(|| FORMAT_CHANGED.to_string());
+        let mut notices: Vec<String> = (!scan.unknown.is_empty())
+            .then(|| FORMAT_CHANGED.to_string())
+            .into_iter()
+            .collect();
         if !scan.unknown.is_empty() {
             let mut ids: Vec<String> = scan.unknown.iter().flatten().cloned().collect();
             if scan.unknown.iter().any(Option::is_none) {
@@ -177,7 +183,13 @@ impl ClaudeSessions {
                             .map(|(_, path)| Transcript::new(path.clone())),
                     )
                 });
-                tracked.follow(&projects, &session.id, now, budget, &mut self.claims);
+                notices.extend(tracked.follow(
+                    &projects,
+                    &session.id,
+                    now,
+                    budget,
+                    &mut self.claims,
+                ));
                 let context = board.context(&session.id);
                 let pid = session.pid;
                 let transcript = tracked
@@ -193,7 +205,7 @@ impl ClaudeSessions {
                 }
             })
             .collect();
-        Ok(Polled { sessions, notice })
+        Ok(Polled { sessions, notices })
     }
 
     fn refresh_recent(&mut self, now: Instant) {
@@ -239,7 +251,6 @@ impl ClaudeSessions {
                 SessionState::Idle
             },
             state_secs: quiet.as_secs() as u32,
-            age_secs: 0,
         }
     }
 }
@@ -309,6 +320,22 @@ fn session_cwd(session: &Seen, tracked: &Tracked) -> String {
         .unwrap_or_default()
 }
 
+fn with_steps(mut children: Vec<Child>, tracked: &Tracked) -> Vec<Child> {
+    for child in &mut children {
+        let Some(agent) = &child.task else {
+            continue;
+        };
+        let stem = format!("agent-{agent}");
+        child.doing = tracked
+            .subagents
+            .iter()
+            .find(|(path, _)| path.file_stem().is_some_and(|name| *name == *stem))
+            .and_then(|(_, transcript)| transcript.running_tool())
+            .map(str::to_string);
+    }
+    children
+}
+
 fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>) -> AgentSession {
     let main = tracked.transcript.as_ref();
     let cwd = session_cwd(&session, tracked);
@@ -332,11 +359,6 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
             .unwrap_or_default(),
         context_tokens: main.map_or(0, |transcript| transcript.state.context_tokens),
         context_used,
-        tokens: tracked
-            .transcripts()
-            .fold(Tokens::default(), |sum, transcript| {
-                sum + transcript.state.ledger.tokens
-            }),
         cost_micros: tracked
             .transcripts()
             .map(|transcript| transcript.state.ledger.cost_micros)
@@ -344,19 +366,18 @@ fn describe(session: Seen, tracked: &Tracked, context_used: Option<BasisPoints>)
         cost_complete: tracked
             .transcripts()
             .all(|transcript| !transcript.state.ledger.unpriced),
-        age_secs: session.age_secs,
         pane: None,
         usage: None,
         children: main
-            .map(|transcript| transcript.children(unix_now()))
+            .map(|transcript| with_steps(transcript.children(unix_now()), tracked))
             .unwrap_or_default(),
         branch: repo.branch,
-        worktree: repo.worktree,
         parent: None,
         activity: None,
         mode: main.and_then(|transcript| transcript.state.mode),
         queued: None,
         remote: session.remote,
+        pr: None,
     }
 }
 
@@ -437,7 +458,7 @@ mod tests {
                 &mut u64::MAX.clone(),
             )
             .unwrap();
-        assert_eq!(polled.notice.as_deref(), Some(FORMAT_CHANGED));
+        assert_eq!(polled.notices, [FORMAT_CHANGED]);
         assert_eq!(polled.sessions.len(), 2);
         let exact = &polled.sessions[0].session;
         assert_eq!(
@@ -455,7 +476,7 @@ mod tests {
                 tool: Some("Bash".into())
             }
         );
-        assert_eq!(session.tokens.output, 5);
+        assert!(session.cost_micros > 0);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 30;
+pub const PROTOCOL_VERSION: u16 = 35;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -99,25 +99,82 @@ pub struct AgentSession {
     pub model: String,
     pub context_tokens: u64,
     pub context_used: Option<BasisPoints>,
-    pub tokens: Tokens,
     pub cost_micros: u64,
     pub cost_complete: bool,
-    pub age_secs: u32,
     pub pane: Option<RexPane>,
     pub usage: Option<Usage>,
     pub children: Vec<Child>,
     pub branch: Option<String>,
-    pub worktree: Option<String>,
     pub parent: Option<String>,
     pub activity: Option<String>,
     pub mode: Option<PermissionMode>,
     pub queued: Option<String>,
     pub remote: Option<String>,
+    pub pr: Option<PullRequest>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PullRequest {
+    pub number: u32,
+    pub state: PrState,
+    pub checks: Checks,
+    pub review: Option<Review>,
+    pub url: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Checks {
+    None,
+    Running,
+    Passing,
+    Failing,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Review {
+    Required,
+    Approved,
+    ChangesRequested,
 }
 
 const REMOTE_PREFIX: &str = "https://claude.ai/code/";
 
 impl AgentSession {
+    #[cfg(test)]
+    pub fn example(id: &str) -> Self {
+        Self {
+            agent: Agent::ClaudeCode,
+            id: id.into(),
+            title: "run the tests".into(),
+            project: "api".into(),
+            state: SessionState::Idle,
+            state_secs: 0,
+            model: String::new(),
+            context_tokens: 0,
+            context_used: None,
+            cost_micros: 0,
+            cost_complete: true,
+            pane: None,
+            usage: None,
+            children: Vec::new(),
+            branch: None,
+            parent: None,
+            activity: None,
+            mode: None,
+            queued: None,
+            remote: None,
+            pr: None,
+        }
+    }
+
     pub fn remote_url(&self) -> Option<String> {
         self.remote
             .as_ref()
@@ -166,6 +223,7 @@ pub struct Child {
     pub state: ChildState,
     pub secs: u32,
     pub task: Option<String>,
+    pub doing: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +271,7 @@ impl SessionState {
 pub enum Waiting {
     Permission(Option<String>),
     Input(String),
+    Trust,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
@@ -242,10 +301,9 @@ pub enum AgentMessage {
     Sample(Sample),
     Rejected(String),
     Reply(Reply),
-    Screen(Screen),
+    Read(View),
     Folders(Vec<String>),
     Models(Vec<CodexModel>),
-    Labels(SharedLabels),
     Shown(Shown),
 }
 
@@ -274,9 +332,12 @@ pub enum Request {
         session: String,
         to: String,
     },
-    Watch {
-        session: Option<String>,
+    Read {
+        session: String,
         child: Option<String>,
+    },
+    CloseForward {
+        session: String,
     },
     Diff {
         session: String,
@@ -308,17 +369,10 @@ pub enum Request {
     Adopt {
         session: String,
     },
-    ShareLabels(SharedLabels),
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
-pub struct SharedLabels {
-    pub updated_ms: u64,
-    pub machines: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct Screen {
+pub struct View {
     pub session: String,
     pub child: Option<String>,
     pub view: Result<Content, String>,
@@ -326,7 +380,7 @@ pub struct Screen {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum Content {
-    Screen(Vec<Vec<Run>>),
+    Screen(String),
     Conversation(Vec<Said>),
 }
 
@@ -363,28 +417,6 @@ pub struct Change {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct Run {
-    pub text: String,
-    pub fg: Shade,
-    pub bg: Shade,
-    pub flags: u8,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Shade {
-    #[default]
-    Default,
-    Indexed(u8),
-    Rgb(u8, u8, u8),
-}
-
-pub const BOLD: u8 = 1;
-pub const DIM: u8 = 2;
-pub const ITALIC: u8 = 4;
-pub const UNDERLINE: u8 = 8;
-pub const INVERSE: u8 = 16;
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Reply {
     pub ok: bool,
     pub text: String,
@@ -401,11 +433,10 @@ pub struct Identity {
     pub hostname: String,
     pub tailscale_node: Option<String>,
     pub os: String,
-    pub kernel: String,
     pub arch: String,
+    pub tools: Vec<String>,
     pub cpu_model: String,
     pub core_kinds: Vec<CoreKind>,
-    pub agent_version: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

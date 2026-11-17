@@ -48,10 +48,6 @@ static PAINTS: LazyLock<Vec<(Scope, Paint)>> = LazyLock::new(|| {
         .collect()
 });
 
-pub fn markdown(text: &str, width: usize) -> Vec<Line<'static>> {
-    markdown_links(text, width).0
-}
-
 pub type Link = (String, String);
 
 pub fn markdown_links(text: &str, width: usize) -> (Vec<Line<'static>>, Vec<Link>) {
@@ -586,6 +582,10 @@ fn split_at_width(text: &str, width: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn markdown(text: &str, width: usize) -> Vec<Line<'static>> {
+        markdown_links(text, width).0
+    }
 
     fn texts(lines: &[Line<'_>]) -> Vec<String> {
         lines

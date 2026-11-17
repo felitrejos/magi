@@ -50,6 +50,8 @@ pub(super) fn describe(row: &Row<'_>) -> Value {
             "here": row.here,
             "live": true,
             "os": machine.identity.os,
+            "arch": machine.identity.arch,
+            "tools": machine.identity.tools,
             "cores": sample.cores.len(),
             "cpu": round(f32::from(sample.cpu) / f32::from(FULL)),
             "load": sample.load.map(round),
@@ -89,10 +91,18 @@ pub(super) fn session(session: &AgentSession) -> Value {
         "queued": session.queued,
         "in_rex": session.pane.is_some(),
         "remote_url": session.remote_url(),
+        "pr": session.pr.as_ref().map(|pr| json!({
+            "number": pr.number,
+            "url": pr.url,
+            "state": format!("{:?}", pr.state).to_lowercase(),
+            "checks": format!("{:?}", pr.checks).to_lowercase(),
+            "review": pr.review.map(|review| format!("{review:?}").to_lowercase()),
+        })),
         "subagents": session.children.iter().map(|child| json!({
             "id": child.id,
             "label": child.label,
             "running": child.state == ChildState::Running,
+            "doing": child.doing,
         })).collect::<Vec<_>>(),
         "cpu": usage.and_then(|usage| usage.cpu).map(|millicores| f64::from(millicores) / 1000.0),
         "memory": usage.map(|usage| usage.memory),
@@ -166,11 +176,10 @@ mod tests {
             hostname: "mac".into(),
             tailscale_node: Some("mac".into()),
             os: "macOS 27.2".into(),
-            kernel: String::new(),
             arch: String::new(),
+            tools: Vec::new(),
             cpu_model: String::new(),
             core_kinds: Vec::new(),
-            agent_version: String::new(),
         };
         model.apply(
             Endpoint::Local,
@@ -216,7 +225,7 @@ mod tests {
 
     #[test]
     fn sessions_carry_their_own_cpu_and_memory_and_plans_their_windows() {
-        use crate::proto::{Tokens, Usage, Window};
+        use crate::proto::{Usage, Window};
         let busy = AgentSession {
             agent: Agent::Codex,
             id: "c1".into(),
@@ -227,10 +236,8 @@ mod tests {
             model: String::new(),
             context_tokens: 0,
             context_used: None,
-            tokens: Tokens::default(),
             cost_micros: 0,
             cost_complete: true,
-            age_secs: 0,
             pane: None,
             usage: Some(Usage {
                 cpu: Some(2500),
@@ -238,18 +245,18 @@ mod tests {
             }),
             children: Vec::new(),
             branch: None,
-            worktree: None,
             parent: None,
             activity: None,
             mode: None,
             queued: None,
             remote: None,
+            pr: None,
         };
         assert_eq!(
             session(&busy),
             json!({"id": "c1", "agent": "codex", "title": "run the tests", "project": "api",
                    "branch": null, "state": "working", "asking": null, "activity": null,
-                   "mode": null, "queued": null, "in_rex": false, "remote_url": null,
+                   "mode": null, "queued": null, "in_rex": false, "remote_url": null, "pr": null,
                    "subagents": [],
                    "cpu": 2.5, "memory": 1u64 << 30})
         );
@@ -262,6 +269,7 @@ mod tests {
         assert_eq!(session(&asking)["mode"], json!("plan"));
         let remote = AgentSession {
             remote: Some("session_01abc".into()),
+            pr: None,
             ..busy.clone()
         };
         assert_eq!(

@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""Measure a magi agent's CPU, memory, frame size and delivery jitter.
-
-Runs the agent binary with a temporary HOME (so its local socket is private
-to the run) on a spare tailnet port, attaches fake viewers that speak the
-wire protocol, and reports per scenario. With --stress it repeats the viewer
-scenarios while every core runs a busy loop and extra processes sleep, to show
-the agent stays cheap and on time when the machine is overloaded.
-"""
-
 import argparse
 import os
 import platform
@@ -22,7 +13,7 @@ import tempfile
 import threading
 import time
 
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 32
 HELLO = struct.pack("<I", 1) + bytes([PROTOCOL_VERSION])
 
 

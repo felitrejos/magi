@@ -25,7 +25,8 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::proto::{
-    Agent, AgentSession, BasisPoints, Forward, Plan, StatusReport, TopProcess, Window,
+    Agent, AgentSession, BasisPoints, Child, ChildKind, ChildState, Forward, Plan, StatusReport,
+    TopProcess, Window,
 };
 use claude::ClaudeSessions;
 use codex::Codex;
@@ -200,7 +201,7 @@ impl Sessions {
         match self.claude.poll(board, now, now_ms, &mut budget) {
             Ok(polled) => {
                 found = polled.sessions;
-                snapshot.notices.extend(polled.notice);
+                snapshot.notices.extend(polled.notices);
             }
             Err(error) => snapshot
                 .notices
@@ -217,8 +218,9 @@ impl Sessions {
             snapshot.forwards = forwards.read();
         }
         if let Some(codex) = &mut self.codex {
-            let (sessions, plan) = codex.poll(now, now_ms, &mut budget);
+            let (sessions, plan, problems) = codex.poll(now, now_ms, &mut budget);
             found.extend(sessions);
+            snapshot.notices.extend(problems);
             snapshot.plans.extend(plan);
         }
         let pids: Vec<i32> = found.iter().filter_map(|found| found.pid).collect();
@@ -257,6 +259,9 @@ impl Sessions {
             let reported = pane
                 .as_ref()
                 .and_then(|(_, location)| self.events.status(location));
+            let running = pane
+                .as_ref()
+                .and_then(|(_, location)| self.events.running_children(location));
             let pane = pane.map(|(pane, location)| {
                 snapshot.panes.insert(session.id.clone(), location);
                 pane
@@ -267,13 +272,17 @@ impl Sessions {
                 session.activity = reported.activity();
             }
             let mut children = session.children;
+            if let Some(running) = &running {
+                follow_reports(&mut children, running);
+            }
             if let (Some(pid), Some(tasks)) = (pid, &mut self.tasks) {
                 children.extend(tasks.started_by(pid, now));
             }
             let parent = pid
                 .and_then(|pid| measured.parents.get(&pid))
                 .and_then(|parent| ids.get(parent))
-                .cloned();
+                .cloned()
+                .or_else(|| pid.and_then(|pid| self.panes.delegated_by(pid, now)));
             snapshot.sessions.push(AgentSession {
                 pane,
                 usage: pid.and_then(|pid| measured.usage.get(&pid).copied()),
@@ -286,9 +295,58 @@ impl Sessions {
     }
 }
 
+fn follow_reports(children: &mut [Child], running: &HashMap<String, String>) {
+    for child in children
+        .iter_mut()
+        .filter(|child| child.kind == ChildKind::Subagent && child.state == ChildState::Running)
+    {
+        let Some(agent) = &child.task else {
+            continue;
+        };
+        match running.get(agent) {
+            Some(doing) if !doing.is_empty() => child.doing = Some(doing.clone()),
+            Some(_) => {}
+            None => child.state = ChildState::Stopped,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_background_subagent_shows_what_rex_reports_and_stops_once_it_is_gone() {
+        let subagent = |id: &str, task: Option<&str>| Child {
+            id: id.into(),
+            kind: ChildKind::Subagent,
+            label: String::new(),
+            detail: String::new(),
+            state: ChildState::Running,
+            secs: 0,
+            task: task.map(str::to_string),
+            doing: None,
+        };
+        let mut children = vec![
+            subagent("t1", Some("a1")),
+            subagent("t2", Some("a2")),
+            subagent("t3", None),
+        ];
+        follow_reports(
+            &mut children,
+            &HashMap::from([("a1".to_string(), "Bash(cargo test)".to_string())]),
+        );
+        assert_eq!(children[0].doing.as_deref(), Some("Bash(cargo test)"));
+        let states: Vec<ChildState> = children.iter().map(|child| child.state).collect();
+        assert_eq!(
+            states,
+            [
+                ChildState::Running,
+                ChildState::Stopped,
+                ChildState::Running
+            ]
+        );
+    }
 
     fn claude_plan(board: &Board, now_secs: u64) -> Option<Plan> {
         limits::plan(
@@ -421,12 +479,11 @@ mod bench {
         println!("steady read: {:?}", started.elapsed() / reads);
         for session in snapshot.sessions {
             println!(
-                "  {:<12} {:<18} {:<40} {:<16} out {:>9} cost ${:.2}{}",
+                "  {:<12} {:<18} {:<40} {:<16} cost ${:.2}{}",
                 session.agent.name(),
                 session.project,
                 format!("{:?}", session.state),
                 session.model,
-                session.tokens.output,
                 session.cost_micros as f64 / 1e6,
                 if session.cost_complete {
                     ""

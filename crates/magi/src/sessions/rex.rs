@@ -14,6 +14,7 @@ const REFRESH_EVERY: Duration = Duration::from_secs(60);
 const RETRY_MISSING_AFTER: Duration = Duration::from_secs(5);
 const LIST_LIMIT: Duration = Duration::from_secs(2);
 const REREAD_PROCESS_AFTER: Duration = Duration::from_secs(60);
+const CALL_WITHIN: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Location {
@@ -34,6 +35,74 @@ impl Location {
         }
     }
 
+    pub fn from_env() -> Option<Self> {
+        let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+        Some(Self {
+            session: var("REX_SESSION")?,
+            block: var("REX_BLOCK")?,
+            server: std::env::var_os("REX_SERVER"),
+            bin_dir: std::env::var_os("REX_BIN_DIR").map(PathBuf::from)?,
+        })
+    }
+
+    pub fn here(session: &str, block: &str) -> Option<Self> {
+        let rex = crate::handoff::find("rex", &crate::handoff::search_dirs())?;
+        Some(Self {
+            session: session.into(),
+            block: block.into(),
+            server: None,
+            bin_dir: rex.parent()?.to_path_buf(),
+        })
+    }
+
+    pub fn call(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        let output = bounded::output(&mut self.rex("3s", args), CALL_WITHIN)
+            .map_err(|error| format!("can't run rex: {error}"))?;
+        if output.status.success() {
+            return Ok(output.stdout);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("rex failed")
+            .trim_start_matches("Error: ")
+            .to_string())
+    }
+
+    pub fn screen(&self) -> Result<String, String> {
+        self.call(&["capture", "-s", &self.session, "-b", &self.block, "--trim"])
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    pub fn program_status(&self) -> Result<Vec<serde_json::Value>, String> {
+        let reply = self.call(&[
+            "block",
+            "call",
+            "-s",
+            &self.session,
+            "-b",
+            &self.block,
+            "program_status",
+            "{}",
+        ])?;
+        let mut reply: serde_json::Value = serde_json::from_slice(&reply)
+            .map_err(|error| format!("Rex answered in a form magi can't read: {error}"))?;
+        match reply["records"].take() {
+            serde_json::Value::Array(records) => Ok(records),
+            _ => Err("Rex answered without the pane's status records".into()),
+        }
+    }
+
+    pub fn running_children(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .program_status()?
+            .iter()
+            .filter_map(running_child)
+            .collect())
+    }
+
     pub fn rex(&self, timeout: &str, args: &[&str]) -> Command {
         let mut command = Command::new(self.bin_dir.join("rex"));
         command
@@ -47,10 +116,19 @@ impl Location {
     }
 }
 
+pub fn running_child(record: &serde_json::Value) -> Option<String> {
+    let id = record["id"].as_str().filter(|id| !id.is_empty())?;
+    running(record).then(|| id.to_string())
+}
+
+pub fn running(record: &serde_json::Value) -> bool {
+    !matches!(record["state"].as_str(), Some("idle" | "done" | "error"))
+}
+
 #[derive(Default)]
 pub struct Panes {
     servers: HashMap<(Option<OsString>, String), Server>,
-    processes: HashMap<(i32, Option<i64>), (Instant, Option<Location>)>,
+    processes: HashMap<(i32, Option<i64>), (Instant, Environment)>,
 }
 
 struct Server {
@@ -104,7 +182,15 @@ impl Panes {
         Some((pane, here))
     }
 
+    pub fn delegated_by(&mut self, pid: i32, now: Instant) -> Option<String> {
+        self.environment(pid, now).delegated_by
+    }
+
     fn locate(&mut self, pid: i32, now: Instant) -> Option<Location> {
+        self.environment(pid, now).location
+    }
+
+    fn environment(&mut self, pid: i32, now: Instant) -> Environment {
         let process = (pid, super::registry::process_start_secs(pid));
         if let Some((at, found)) = self.processes.get(&process)
             && now.duration_since(*at) < REREAD_PROCESS_AFTER
@@ -113,10 +199,27 @@ impl Panes {
         }
         self.processes
             .retain(|_, (at, _)| now.duration_since(*at) < REREAD_PROCESS_AFTER);
-        let found = environment(pid).and_then(|environment| location(&environment));
+        let found = environment(pid).map_or_else(Environment::default, |bytes| Environment {
+            location: location(&bytes),
+            delegated_by: variable(&bytes, b"CIELAGO_PARENT"),
+        });
         self.processes.insert(process, (now, found.clone()));
         found
     }
+}
+
+#[derive(Clone, Default)]
+struct Environment {
+    location: Option<Location>,
+    delegated_by: Option<String>,
+}
+
+fn variable(environment: &[u8], wanted: &[u8]) -> Option<String> {
+    environment
+        .split(|byte| *byte == 0)
+        .find_map(|entry| entry.strip_prefix(wanted)?.strip_prefix(b"="))
+        .and_then(|value| String::from_utf8(value.to_vec()).ok())
+        .filter(|value| !value.is_empty())
 }
 
 fn location(environment: &[u8]) -> Option<Location> {
@@ -233,6 +336,17 @@ fn environment_of(arguments: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_sent_from_another_session_names_it_in_its_environment() {
+        let environment = b"PATH=/bin\0CIELAGO_PARENT=9fb6fe92\0CIELAGO_PARENTS=x\0";
+        assert_eq!(
+            variable(environment, b"CIELAGO_PARENT").as_deref(),
+            Some("9fb6fe92")
+        );
+        assert_eq!(variable(b"CIELAGO_PARENT=\0", b"CIELAGO_PARENT"), None);
+        assert_eq!(variable(b"PATH=/bin\0", b"CIELAGO_PARENT"), None);
+    }
 
     #[test]
     fn a_rex_pane_needs_its_session_block_and_rex_location() {

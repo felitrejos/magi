@@ -7,7 +7,6 @@ const MAX_NAME_CHARS: usize = 80;
 pub struct Repo {
     pub project: String,
     pub branch: Option<String>,
-    pub worktree: Option<String>,
 }
 
 pub fn locate(cwd: &str) -> Repo {
@@ -18,7 +17,6 @@ pub fn locate(cwd: &str) -> Repo {
             return Repo {
                 project: name(dir),
                 branch: branch(&git),
-                worktree: None,
             };
         }
         if let Some(gitdir) = linked_gitdir(&git) {
@@ -26,12 +24,10 @@ pub fn locate(cwd: &str) -> Repo {
                 Some(main) => Repo {
                     project: name(main),
                     branch: branch(&gitdir),
-                    worktree: Some(name(dir)),
                 },
                 None => Repo {
                     project: name(dir),
                     branch: branch(&gitdir),
-                    worktree: None,
                 },
             };
         }
@@ -97,7 +93,6 @@ mod tests {
             Repo {
                 project: "stampr".into(),
                 branch: Some("fix/retries".into()),
-                worktree: None,
             }
         );
     }
@@ -124,7 +119,6 @@ mod tests {
             Repo {
                 project: "magi".into(),
                 branch: Some("claude/quiet-fox".into()),
-                worktree: Some("quiet-fox".into()),
             }
         );
     }

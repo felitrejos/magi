@@ -319,7 +319,7 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	}
 
 	cfg, _, _ := loadConfig()
-	text := describeMachines(surveyFleet(context.Background(), cfg, true, true))
+	text := describeMachines(surveyFleet(context.Background(), cfg, true, true), needsInput{})
 	for _, want := range []string{
 		"This machine (laptop): cpu 90%",
 		"- homelab (ssh homelab): reachable; budget: at most 1 working agents; NO ROOM now: 1 agents are working there",
@@ -829,7 +829,9 @@ func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
 	if err != nil || time.Since(started) < 0 || time.Since(started) > 10*time.Minute {
 		t.Fatalf("this process started %v (%v)", started, err)
 	}
-	self = callerOf(context.Background(), os.Getpid())
+	if self, err = callerOf(context.Background(), os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { self = caller{} })
 	if _, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "sleep 0.5"}, false); err != nil {
 		t.Fatal(err)

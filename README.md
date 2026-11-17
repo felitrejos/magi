@@ -25,9 +25,9 @@ This repo holds two apps that work together or alone:
   machines, and each machine's load, in one [Rex](https://www.superlogical.com/rex)
   pane. You work in the agents themselves; magi puts each session in the
   right place and tells you when one needs you.
-- **cielago** moves a Claude Code session, with its conversation and
-  uncommitted work, to another machine, and lets Claude send work there. It
-  works on its own, from any Claude Code session, over SSH.
+- **cielago** moves a Claude Code or Codex session, with its conversation
+  and uncommitted work, to another machine, and lets Claude send work there.
+  It works on its own, from any Claude Code session, over SSH.
 
 ## magi
 
@@ -57,7 +57,7 @@ magi                  # in a Rex pane
 ```
 
 This installs magi and cielago. magi needs [Tailscale](https://tailscale.com)
-and Rex **0.1.0-preview.19** on every machine, and runs only in Rex. While Rex
+and Rex **0.1.0-preview.20** on every machine, and runs only in Rex. While Rex
 is in preview, magi follows its latest release only. Run `magi statusline
 install` where you use Claude Code to see its context use and plan windows.
 
@@ -76,9 +76,21 @@ everything.
 - **From the CLI.** `cielago move <session> <host>` sends a session,
   `cielago pull <host>` brings one back, and `cielago doctor` checks both
   ends. In magi, `m` does the same.
+- **Codex too.** `cielago move` and `cielago pull` take Codex sessions as
+  well: the conversation, branch, changes and secrets move the same way, and
+  it reopens with `codex resume` in a tab of its own. A Codex mid-turn moves
+  when the turn ends. A plain `codex` open in the same folder has to be quit
+  first, since cielago can't tell which session it shows. There's no "hand
+  this off" from inside Codex; set `codex` for the host when `cielago init`
+  asks.
 - **Send work.** Claude gets tools to run a command elsewhere, hand a task to
   a background Claude, or open a second session, each in a copy of your
-  working tree on the lightest machine. Claude asks you first.
+  working tree. Claude asks you first.
+- **The right machine for the job.** With magi, each machine reports its
+  system, architecture and tools, including whether Docker is running. A
+  Linux build from a Mac goes to your Linux machine natively; a container
+  on the machine with the most room is the fallback, and this machine is
+  the last resort.
 - **Ports follow.** A project's `.cielago.toml` names what to start when it
   arrives and which ports to forward back, so `localhost:3000` keeps working.
 - **Rex or tmux.** Sessions open in Rex when it's there and in tmux
@@ -102,7 +114,15 @@ magi answer fix-login yes       # or: magi choose fix-login 2
 magi move fix-login homelab
 magi start homelab ~/developer/stampr/stampr
 magi events                     # what needs you, as JSON lines
+magi subagents                  # every running subagent and the step it's on
+magi recent fix-login           # its latest steps, one line each
+magi wait fix-login             # returns once it's done or needs you
 ```
+
+`wait` and `recent` are the cheap way for an agent to keep an eye on other
+work: one blocking command instead of checking again and again, and a few
+lines per step instead of a whole transcript. Both take a subagent too:
+`magi wait fix-login "find auth"`.
 
 `magi mcp` offers the same as MCP tools, so Claude can look after your other
 sessions from Claude Desktop, Claude Code or any MCP client. In Claude Code:
@@ -113,8 +133,8 @@ sessions from Claude Desktop, Claude Code or any MCP client. In Claude Code:
 { "mcpServers": { "magi": { "command": "/Users/you/.local/bin/magi", "args": ["mcp"] } } }
 ```
 
-Looking (machines, sessions, recent work, diffs, alerts) needs no approval
-from the tools' side; acting (message, answer, move, start) is marked
+Looking (machines, sessions, subagents, recent work, waiting, diffs, alerts) needs no approval
+from the tools' side; acting (message, answer, choose, move, start) is marked
 as such, so your client asks you first.
 
 ## How it works

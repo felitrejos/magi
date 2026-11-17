@@ -20,13 +20,13 @@ func expandHome(path, home string) string {
 	return path
 }
 
-func localGroup(projectRoot string, localRoots []string) (string, error) {
+func localGroup(projectRoot string, localRoots []string) string {
 	for _, root := range localRoots {
 		if group, ok := groupUnderLocal(root, projectRoot); ok {
-			return group, nil
+			return group
 		}
 	}
-	return baseName(projectRoot), nil
+	return baseName(projectRoot)
 }
 
 func groupUnderLocal(root, path string) (string, bool) {

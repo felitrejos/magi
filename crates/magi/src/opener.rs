@@ -11,6 +11,7 @@ use crate::proto::OpenIn;
 
 const LIST_LIMIT: Duration = Duration::from_secs(10);
 const OPEN_LIMIT: Duration = Duration::from_secs(40);
+const CLOSE_WITHIN: Duration = Duration::from_secs(15);
 const MAX_DIR_BYTES: usize = 4096;
 const MAX_FOLDERS: usize = 500;
 
@@ -18,12 +19,26 @@ const MAX_FOLDERS: usize = 500;
 struct Report {
     ok: bool,
     message: String,
+    #[serde(default)]
+    pane: Option<OpenedPane>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct OpenedPane {
+    pub session: String,
+    pub window: String,
+    pub block: String,
+}
+
+pub struct Opened {
+    pub message: String,
+    pub pane: Option<OpenedPane>,
 }
 
 pub fn folders() -> Result<Vec<String>, String> {
     let output = cielago(&["open", "--list", "--json"], LIST_LIMIT)?;
     if !output.status.success() {
-        return Err(failure(&output));
+        return Err(failure(&output, "couldn't open a session"));
     }
     let mut folders: Vec<String> = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("cielago listed folders in a form magi can't read: {error}"))?;
@@ -50,7 +65,7 @@ impl Drop for Opening {
     }
 }
 
-pub fn open(place: &OpenIn, codex: bool, model: Option<&str>) -> Result<String, String> {
+pub fn open(place: &OpenIn, codex: bool, model: Option<&str>) -> Result<Opened, String> {
     if let OpenIn::Folder(dir) = place {
         check(dir)?;
     }
@@ -73,15 +88,18 @@ pub fn open(place: &OpenIn, codex: bool, model: Option<&str>) -> Result<String, 
     report(&output)
 }
 
-fn report(output: &Output) -> Result<String, String> {
+fn report(output: &Output) -> Result<Opened, String> {
     let report = std::str::from_utf8(&output.stdout)
         .ok()
         .and_then(|text| text.lines().last())
         .and_then(|line| serde_json::from_str::<Report>(line).ok());
     match report {
-        Some(report) if report.ok => Ok(report.message),
+        Some(report) if report.ok => Ok(Opened {
+            message: report.message,
+            pane: report.pane,
+        }),
         Some(report) => Err(format!("couldn't open a session: {}", report.message)),
-        None => Err(failure(output)),
+        None => Err(failure(output, "couldn't open a session")),
     }
 }
 
@@ -89,7 +107,7 @@ pub fn adopt(dir: &str, session: &str) -> Result<String, String> {
     check(dir)?;
     let _opening = Opening::start()?;
     let output = cielago(&["open", "--json", "--resume", session, dir], OPEN_LIMIT)?;
-    report(&output)
+    report(&output).map(|opened| opened.message)
 }
 
 fn check(dir: &str) -> Result<(), String> {
@@ -97,6 +115,16 @@ fn check(dir: &str) -> Result<(), String> {
         return Err(format!("{dir:?} isn't a folder path"));
     }
     Ok(())
+}
+
+pub fn close_forward(session: &str) -> Result<String, String> {
+    let output = cielago(&["forwards", "close", session], CLOSE_WITHIN)?;
+    if output.status.success() {
+        return Ok(format!(
+            "Closed the forward for session {session}, which moved on"
+        ));
+    }
+    Err(failure(&output, "couldn't close a forward"))
 }
 
 fn cielago(args: &[&str], limit: Duration) -> Result<Output, String> {
@@ -108,7 +136,7 @@ fn cielago(args: &[&str], limit: Duration) -> Result<Output, String> {
         .map_err(|error| format!("couldn't run cielago: {error}"))
 }
 
-fn failure(output: &Output) -> String {
+fn failure(output: &Output, what: &str) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let reason = stderr
         .lines()
@@ -116,7 +144,7 @@ fn failure(output: &Output) -> String {
         .rfind(|line| !line.is_empty())
         .unwrap_or("cielago failed")
         .trim_start_matches("cielago: ");
-    format!("couldn't open a session: {reason}")
+    format!("{what}: {reason}")
 }
 
 #[cfg(test)]

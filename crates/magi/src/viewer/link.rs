@@ -156,10 +156,9 @@ impl Link {
             Ok(
                 AgentMessage::Sample(_)
                 | AgentMessage::Reply(_)
-                | AgentMessage::Screen(_)
+                | AgentMessage::Read(_)
                 | AgentMessage::Folders(_)
                 | AgentMessage::Models(_)
-                | AgentMessage::Labels(_)
                 | AgentMessage::Shown(_),
             ) => {
                 return lost(
@@ -187,10 +186,9 @@ impl Link {
             let update = match proto::read_frame::<AgentMessage, _>(&mut *conn, &mut buf) {
                 Ok(AgentMessage::Sample(sample)) => LinkUpdate::Sample(Box::new(sample)),
                 Ok(AgentMessage::Reply(reply)) => LinkUpdate::Reply(reply),
-                Ok(AgentMessage::Screen(screen)) => LinkUpdate::Screen(screen),
+                Ok(AgentMessage::Read(read)) => LinkUpdate::Read(read),
                 Ok(AgentMessage::Folders(folders)) => LinkUpdate::Folders(folders),
                 Ok(AgentMessage::Models(models)) => LinkUpdate::Models(models),
-                Ok(AgentMessage::Labels(shared)) => LinkUpdate::Labels(shared),
                 Ok(AgentMessage::Shown(shown)) => LinkUpdate::Shown(shown),
                 Ok(AgentMessage::Rejected(reason)) => return Ended::Rejected(reason),
                 Ok(AgentMessage::Welcome(_)) => {
@@ -253,11 +251,10 @@ mod tests {
                 hostname: "fake".into(),
                 tailscale_node: None,
                 os: String::new(),
-                kernel: String::new(),
                 arch: String::new(),
+                tools: Vec::new(),
                 cpu_model: String::new(),
                 core_kinds: Vec::new(),
-                agent_version: String::new(),
             },
         })
     }

@@ -60,6 +60,7 @@ type liveSession struct {
 	BridgeSessionID *string `json:"bridgeSessionId"`
 	Status          string  `json:"status"`
 	Entrypoint      string  `json:"entrypoint"`
+	Name            string  `json:"name"`
 	ProcStart       any     `json:"procStart"`
 }
 
@@ -223,14 +224,20 @@ type Prompt struct {
 	Note                     string
 	Sidecar                  string
 	Project                  string
+	Codex                    bool
 }
 
 func handoffPrompt(p Prompt) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[cielago] This session was just handed off from %s to %s. The project is now at %s (it was %s on %s). ", p.From, p.To, p.NewDir, p.OldDir, p.From)
-	if p.Git {
+	switch {
+	case p.Git && p.Codex:
+		b.WriteString("Branch, commits, staged and unstaged changes and secret files were synced. ")
+	case p.Git:
 		b.WriteString("Branch, commits, staged and unstaged changes, secret files and project memory were synced. ")
-	} else {
+	case p.Codex:
+		b.WriteString("The folder's files were copied. ")
+	default:
 		b.WriteString("The folder's files and project memory were copied. ")
 	}
 	b.WriteString("Earlier messages mention the old paths: use the new ones from now on, and read a file again before editing it here. ")

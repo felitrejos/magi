@@ -150,7 +150,7 @@ impl Browser<'_> {
     }
 }
 
-fn fresh_dir(popups: &Path) -> io::Result<PathBuf> {
+pub fn fresh_dir(popups: &Path) -> io::Result<PathBuf> {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     DirBuilder::new()
         .recursive(true)
@@ -165,7 +165,7 @@ fn fresh_dir(popups: &Path) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

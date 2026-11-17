@@ -1,17 +1,14 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::bounded;
 use crate::children;
 use crate::proto::{Agent, ChildKind, ChildState};
 use crate::sessions::Snapshot;
 use crate::sessions::rex::Location;
 
-const REX_LIMIT: Duration = Duration::from_secs(3);
 const MAX_LABEL_CHARS: usize = 60;
 const SHELL: &str = "com.superlogical.terminal.shell";
 
@@ -103,7 +100,7 @@ struct Created {
 
 pub fn open(mirror: &Mirror, magi: &Path) -> Result<(), String> {
     let pane = &mirror.pane;
-    let listing = rex(pane, &["window", "ls", "-s", &pane.session, "--json"])?;
+    let listing = pane.call(&["window", "ls", "-s", &pane.session, "--json"])?;
     let windows: Windows = serde_json::from_slice(&listing)
         .map_err(|error| format!("Rex listed its tabs in a form magi can't read: {error}"))?;
     if windows
@@ -125,46 +122,39 @@ pub fn open(mirror: &Mirror, magi: &Path) -> Result<(), String> {
         "layout": {"block": {
             "flavor": SHELL,
             "label": mirror.label,
-            "options": {"command": [magi.to_string_lossy(), "follow", mirror.transcript.to_string_lossy()]},
+            "options": {"command": [
+                magi.to_string_lossy(),
+                "follow",
+                mirror.transcript.to_string_lossy(),
+                "--session",
+                pane.session,
+                "--block",
+                pane.block,
+            ]},
         }},
     });
-    let created = rex(
-        pane,
-        &[
-            "api",
-            "call",
-            "-s",
-            &pane.session,
-            "session.new_window",
-            &request.to_string(),
-        ],
-    )?;
+    let created = pane.call(&[
+        "api",
+        "call",
+        "-s",
+        &pane.session,
+        "session.new_window",
+        &request.to_string(),
+    ])?;
     let created: Created = serde_json::from_slice(&created)
         .map_err(|error| format!("Rex answered in a form magi can't read: {error}"))?;
     if let (Some(window), Some(before)) = (created.window_id, after_parent) {
         let request = json!({"window_id": window, "before_window_id": before});
-        rex(
-            pane,
-            &[
-                "api",
-                "call",
-                "-s",
-                &pane.session,
-                "session.move_window",
-                &request.to_string(),
-            ],
-        )?;
+        pane.call(&[
+            "api",
+            "call",
+            "-s",
+            &pane.session,
+            "session.move_window",
+            &request.to_string(),
+        ])?;
     }
     Ok(())
-}
-
-fn rex(pane: &Location, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = bounded::output(&mut pane.rex("2s", args), REX_LIMIT)
-        .map_err(|error| format!("can't run rex: {error}"))?;
-    if output.status.success() {
-        return Ok(output.stdout);
-    }
-    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
 }
 
 #[cfg(test)]

@@ -10,7 +10,6 @@ mod fleet;
 mod follow;
 mod graphics;
 mod input;
-mod labels;
 mod launcher;
 mod link;
 mod mcp;
@@ -22,15 +21,15 @@ mod terminal;
 mod topology;
 mod units;
 mod view;
+mod watch;
 
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
-use unicode_segmentation::UnicodeSegmentation;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::execute;
@@ -42,6 +41,7 @@ use input::{Input, Key};
 use link::{Dial, LinkHandle};
 use model::{Endpoint, Link, LinkUpdate, Model, Topology};
 
+const MOVED_FOR: Duration = Duration::from_secs(60);
 const FRAME: Duration = Duration::from_millis(33);
 const TICK: Duration = Duration::from_secs(1);
 const THEME_CHECK: Duration = Duration::from_secs(2);
@@ -62,7 +62,7 @@ pub enum Event {
 pub use cli::{Cli, run as cli};
 pub use feed::run as alerts;
 pub use fleet::print as fleet;
-pub use follow::run as follow;
+pub use follow::follow;
 pub use launcher::run as launch;
 pub use mcp::run as mcp;
 pub use page::{Page, run as page};
@@ -176,7 +176,6 @@ fn event_loop(
     graphics: &mut Graphics,
 ) -> io::Result<()> {
     let mut model = Model::new(port, Instant::now(), alerts);
-    model.labels = labels::Labels::open(net::state_dir()?.join("labels.json"));
     links.reconcile(&mut model, &[Endpoint::Local])?;
     let mut dirty = true;
     let mut last_draw = Instant::now() - FRAME;
@@ -192,6 +191,7 @@ fn event_loop(
             let conditions = alerts::conditions(&model, now, now_secs);
             let changes = model.alerts.update(conditions, now, now_secs);
             write_status(&alerts::report(&changes))?;
+            close_moved_forwards(&mut model, links, now);
             let mut out = io::stdout();
             execute!(out, BeginSynchronizedUpdate)?;
             let drawn = terminal
@@ -256,14 +256,6 @@ fn propose_move(model: &mut Model, now: Instant) {
     let Some(agent) = model.selected_agent(now) else {
         return;
     };
-    if agent.session.agent != proto::Agent::ClaudeCode {
-        let reason = format!(
-            "{} is a {} session; cielago moves Claude Code sessions",
-            agent.session.title,
-            agent.session.agent.name()
-        );
-        return model.flash(reason, false, now);
-    }
     if !agent.live {
         return model.flash(format!("{} isn't answering", agent.machine), false, now);
     }
@@ -295,7 +287,6 @@ enum Action {
     New,
     Stop,
     Adopt,
-    Label,
     Back,
     Diff,
 }
@@ -303,8 +294,8 @@ enum Action {
 fn action(key: &Key) -> Option<Action> {
     Some(match key {
         Key::Char('q') | Key::Interrupt => Action::Quit,
-        Key::Char('k') | Key::Up => Action::Up,
-        Key::Char('j') | Key::Down => Action::Down,
+        Key::Char('u') | Key::Up => Action::Up,
+        Key::Char('d') | Key::Down => Action::Down,
         Key::Char('g') | Key::First => Action::First,
         Key::Char('G') | Key::Last => Action::Last,
         Key::Char('a') => Action::Alerts,
@@ -315,9 +306,8 @@ fn action(key: &Key) -> Option<Action> {
         Key::Char('c') => Action::New,
         Key::Char('x') => Action::Stop,
         Key::Char('r') => Action::Adopt,
-        Key::Char('P') => Action::Label,
         Key::Escape => Action::Back,
-        Key::Char('d') => Action::Diff,
+        Key::Char('v') => Action::Diff,
         Key::Char(digit @ '1'..='9') => Action::Choose(*digit as u8 - b'0'),
         _ => return None,
     })
@@ -394,7 +384,7 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
     }
     let rows = model.rows(now);
     let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
-    let label = model.machine_label(&choice.machine, &names);
+    let label = model::machine_tag(&choice.machine, &names).to_string();
     let Some(endpoint) = rows
         .iter()
         .find(|row| row.name == choice.machine)
@@ -443,47 +433,6 @@ fn step(model: &mut Model, delta: isize, now: Instant) {
     }
 }
 
-fn start_labelling(model: &mut Model, now: Instant) {
-    let Some(model::Focus::Machine(machine)) = model.selection(now) else {
-        return model.flash("select a machine to label it".into(), false, now);
-    };
-    let text = model
-        .labels
-        .machine_label(&machine)
-        .unwrap_or_default()
-        .to_string();
-    model.naming = Some(model::Naming { machine, text });
-}
-
-fn edit_naming(model: &mut Model, mut naming: model::Naming, key: Key, now: Instant) {
-    match key {
-        Key::Char(c) if !c.is_control() => naming.text.push(c),
-        Key::Paste(text) => naming.text.extend(text.chars().filter(|c| !c.is_control())),
-        Key::Backspace => {
-            let last = naming.text.grapheme_indices(true).next_back();
-            naming.text.truncate(last.map_or(0, |(start, _)| start));
-        }
-        Key::Escape | Key::Interrupt => return,
-        Key::Enter => return apply_naming(model, naming, now),
-        _ => {}
-    }
-    model.naming = Some(naming);
-}
-
-fn apply_naming(model: &mut Model, naming: model::Naming, now: Instant) {
-    let machine = naming.machine;
-    match model.labels.label_machine(&machine, &naming.text) {
-        Ok(()) => {
-            let said = match model.labels.machine_label(&machine) {
-                Some(label) => format!("{machine} is now labelled {label}"),
-                None => format!("{machine} shows its own name again"),
-            };
-            model.flash(said, true, now);
-        }
-        Err(error) => model.flash(format!("couldn't save the labels: {error}"), false, now),
-    }
-}
-
 fn ask_for_diff(model: &mut Model, links: &Links, now: Instant) {
     let found = match model.selection(now) {
         Some(model::Focus::Agent(id)) => model
@@ -524,7 +473,7 @@ fn open_popup(model: &mut Model, links: &Links, shown: proto::Shown, now: Instan
     let title = "Changes";
     let command = match browse::diff(&diff, title, &popups) {
         Ok(Some(command)) => Ok(command),
-        Ok(None) => page_command(&diff, title, true),
+        Ok(None) => page_command(&diff, title, &popups),
         Err(error) => Err(error),
     };
     let command = match command {
@@ -559,8 +508,9 @@ fn open_alerts(links: &Links) {
     });
 }
 
-fn page_command(text: &str, title: &str, diff: bool) -> io::Result<Vec<String>> {
-    let path = popup_file(text, if diff { "diff" } else { "md" })?;
+fn page_command(text: &str, title: &str, popups: &Path) -> io::Result<Vec<String>> {
+    let path = browse::fresh_dir(popups)?.join("changes.diff");
+    browse::write_private(&path, text.as_bytes())?;
     let magi = std::env::current_exe().map_or_else(
         |_| "magi".to_string(),
         |path| path.to_string_lossy().into_owned(),
@@ -572,34 +522,8 @@ fn page_command(text: &str, title: &str, diff: bool) -> io::Result<Vec<String>> 
         "--title".into(),
         title.to_string(),
     ];
-    if diff {
-        command.push("--diff".into());
-    }
     command.push(path.to_string_lossy().into_owned());
     Ok(command)
-}
-
-fn popup_file(text: &str, extension: &str) -> io::Result<PathBuf> {
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    let dir = net::state_dir()?.join("popups");
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&dir)?;
-    let path = dir.join(format!(
-        "{}-{}.{extension}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
-    std::io::Write::write_all(&mut file, text.as_bytes())?;
-    Ok(path)
 }
 
 fn adopt(model: &mut Model, links: &Links, now: Instant) {
@@ -706,6 +630,24 @@ fn confirm_move(model: &mut Model, links: &Links, pending: model::PendingMove, n
     }
 }
 
+fn close_moved_forwards(model: &mut Model, links: &Links, now: Instant) {
+    let found = model.moved_forwards(now);
+    model.moved.retain(|key, _| found.contains(key));
+    for key in found {
+        let seen = model.moved.entry(key.clone()).or_insert(Some(now));
+        if let Some(since) = *seen
+            && now.duration_since(since) >= MOVED_FOR
+        {
+            let request = proto::Request::CloseForward {
+                session: key.1.clone(),
+            };
+            if links.request(key.0, &request).is_ok() {
+                *seen = None;
+            }
+        }
+    }
+}
+
 fn write_terminal(sequence: &[u8]) -> io::Result<()> {
     let mut out = io::stdout().lock();
     out.write_all(sequence)?;
@@ -731,38 +673,12 @@ fn handle_batch(
     }
     model.reselect(Instant::now());
     refresh_launcher(model, links, Instant::now());
-    share_labels(model, links);
     Ok(Flow::Continue)
-}
-
-fn share_labels(model: &mut Model, links: &Links) {
-    let updated = model.labels.updated_ms();
-    if updated <= model.shared_sent {
-        return;
-    }
-    let request = proto::Request::ShareLabels(model.labels.shared());
-    let sent = links
-        .handles
-        .keys()
-        .filter(|endpoint| {
-            model
-                .links
-                .get(endpoint)
-                .is_some_and(|link| link.state == model::LinkState::Live)
-        })
-        .filter(|endpoint| links.request(**endpoint, &request).is_ok())
-        .count();
-    if sent > 0 {
-        model.shared_sent = updated;
-    }
 }
 
 fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow> {
     let now = Instant::now();
     match event {
-        Event::Input(Input::Key(key)) if let Some(naming) = model.naming.take() => {
-            edit_naming(model, naming, key, now);
-        }
         Event::Input(Input::Key(key)) if let Some(mut pending) = model.pending_move.take() => {
             match key {
                 Key::Char('y') => confirm_move(model, links, pending, now),
@@ -813,7 +729,6 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
             Some(Action::New) => open_launcher(model, links, now),
             Some(Action::Stop) => stop(model, links, now),
             Some(Action::Adopt) => adopt(model, links, now),
-            Some(Action::Label) => start_labelling(model, now),
             Some(Action::Diff) => ask_for_diff(model, links, now),
             None => {}
         },
@@ -880,955 +795,4 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
 }
 
 #[cfg(test)]
-mod tests {
-    use std::net::Ipv4Addr;
-
-    use super::*;
-    use crate::proto::{AgentSession, Identity, RexPane, Sample, SessionState, Tokens, Welcome};
-
-    fn key(key: Key) -> Event {
-        Event::Input(Input::Key(key))
-    }
-
-    fn agent(model: &mut Model, endpoint: Endpoint, name: &str) {
-        model.links.insert(endpoint, Link::connecting());
-        let identity = Identity {
-            hostname: name.into(),
-            tailscale_node: Some(name.into()),
-            os: String::new(),
-            kernel: String::new(),
-            arch: String::new(),
-            cpu_model: String::new(),
-            core_kinds: Vec::new(),
-            agent_version: String::new(),
-        };
-        model.apply(
-            endpoint,
-            LinkUpdate::Welcome(Box::new(Welcome {
-                interval_ms: 1000,
-                identity,
-            })),
-            Instant::now(),
-        );
-    }
-
-    fn fleet() -> (Model, Links) {
-        let (sender, _) = mpsc::sync_channel(8);
-        let links = Links {
-            handles: HashMap::new(),
-            next_generation: 0,
-            port: 2015,
-            socket: PathBuf::new(),
-            sender,
-            rex: false,
-            launch: None,
-        };
-        let now = Instant::now();
-        let mut model = Model::new(2015, now, alerts::Alerts::in_memory(now));
-        agent(&mut model, Endpoint::Local, "mac");
-        agent(
-            &mut model,
-            Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2)),
-            "homelab",
-        );
-        agent(
-            &mut model,
-            Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 3)),
-            "nas",
-        );
-        (model, links)
-    }
-
-    fn selected(model: &Model) -> String {
-        match model.selection(Instant::now()) {
-            Some(model::Focus::Machine(name)) => name,
-            other => panic!("expected a machine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn arrow_keys_move_the_selection() {
-        let (mut model, mut links) = fleet();
-        handle_batch([key(Key::Down)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(selected(&model), "homelab");
-        handle_batch(
-            [key(Key::Down), key(Key::Down), key(Key::Up)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert_eq!(selected(&model), "homelab");
-        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(
-            model.selection(Instant::now()),
-            Some(model::Focus::Machine("nas".into()))
-        );
-    }
-
-    #[test]
-    fn the_selection_follows_its_machine_when_rows_reorder() {
-        let (mut model, mut links) = fleet();
-        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
-        agent(
-            &mut model,
-            Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 4)),
-            "laptop",
-        );
-        let sample = Event::Link(Endpoint::Local, 0, LinkUpdate::Sample(Box::default()));
-        handle_batch([sample].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(selected(&model), "nas");
-    }
-
-    #[test]
-    fn q_quits() {
-        let (mut model, mut links) = fleet();
-        let flow = handle_batch([key(Key::Char('q'))].into_iter(), &mut model, &mut links).unwrap();
-        assert!(flow == Flow::Quit);
-    }
-
-    fn with_session(model: &mut Model, pane: Option<RexPane>) {
-        let session = AgentSession {
-            agent: crate::proto::Agent::ClaudeCode,
-            id: "s1".into(),
-            title: "fix login".into(),
-            project: "web".into(),
-            state: SessionState::Idle,
-            state_secs: 0,
-            model: String::new(),
-            context_tokens: 0,
-            context_used: None,
-            tokens: Tokens::default(),
-            cost_micros: 0,
-            cost_complete: true,
-            age_secs: 0,
-            pane,
-            usage: None,
-            children: Vec::new(),
-            branch: None,
-            worktree: None,
-            parent: None,
-            activity: None,
-            mode: None,
-            queued: None,
-            remote: None,
-        };
-        let sample = Sample {
-            sessions: vec![session],
-            ..Sample::default()
-        };
-        model.apply(
-            Endpoint::Local,
-            LinkUpdate::Sample(Box::new(sample)),
-            Instant::now(),
-        );
-        select_first_session(model);
-    }
-
-    fn asked_and_failed(model: &Model, reason: &str) -> bool {
-        model
-            .folders
-            .values()
-            .any(|folders| matches!(folders, model::Folders::Failed(said) if said.contains(reason)))
-    }
-
-    fn screen(model: &Model) -> String {
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
-        terminal
-            .draw(|frame| view::render(frame, model, Instant::now(), &mut Graphics::cells_only()))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        (0..30)
-            .map(|y| {
-                (0..120)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn footer(model: &Model) -> String {
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
-        terminal
-            .draw(|frame| view::render(frame, model, Instant::now(), &mut Graphics::cells_only()))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        (0..120).map(|x| buffer[(x, 29)].symbol()).collect()
-    }
-
-    #[test]
-    fn enter_explains_when_a_session_is_not_in_rex() {
-        let (mut model, mut links) = fleet();
-        with_session(&mut model, None);
-        assert!(!footer(&model).contains("open"));
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some(("fix login isn't running in a Rex pane", false))
-        );
-        assert!(footer(&model).contains("fix login isn't running in a Rex pane"));
-    }
-
-    #[test]
-    fn a_session_shows_its_mode_and_what_is_queued_and_magi_leaves_the_mode_alone() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let mut session = in_rex(claude("s1", 0));
-        session.state = SessionState::Working { tool: None };
-        session.mode = Some(crate::proto::PermissionMode::Plan);
-        session.queued = Some("then commit".into());
-        model.apply(Endpoint::Local, live_sample(1_000, Some(session)), now);
-        select_first_session(&mut model);
-        let shown = screen(&model);
-        assert!(shown.contains("plan · queued"), "{shown}");
-        assert!(!footer(&model).contains("mode"), "{}", footer(&model));
-        handle_batch([key(Key::BackTab)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.flashed(Instant::now()), None);
-    }
-
-    #[test]
-    fn the_footer_offers_to_open_a_session_that_is_in_rex() {
-        let (mut model, _) = fleet();
-        with_session(
-            &mut model,
-            Some(RexPane {
-                session: "session:1".into(),
-                window: "window:2".into(),
-                block: "block:3".into(),
-            }),
-        );
-        assert!(
-            footer(&model).contains("↵ open in Rex"),
-            "{}",
-            footer(&model)
-        );
-        model.selected = 0;
-        assert!(!footer(&model).contains("open in Rex"));
-    }
-
-    fn live_sample(cpu: u16, session: Option<AgentSession>) -> LinkUpdate {
-        LinkUpdate::Sample(Box::new(Sample {
-            cpu,
-            cores: vec![0; 8],
-            sessions: session.into_iter().collect(),
-            ..Sample::default()
-        }))
-    }
-
-    fn claude(id: &str, millicores: u32) -> AgentSession {
-        AgentSession {
-            agent: crate::proto::Agent::ClaudeCode,
-            id: id.into(),
-            title: "run the tests".into(),
-            project: "api".into(),
-            state: SessionState::Working { tool: None },
-            state_secs: 0,
-            model: String::new(),
-            context_tokens: 0,
-            context_used: None,
-            tokens: Tokens::default(),
-            cost_micros: 0,
-            cost_complete: true,
-            age_secs: 0,
-            pane: None,
-            usage: Some(crate::proto::Usage {
-                cpu: Some(millicores),
-                memory: 0,
-            }),
-            children: Vec::new(),
-            branch: None,
-            worktree: None,
-            parent: None,
-            activity: None,
-            mode: None,
-            queued: None,
-            remote: None,
-        }
-    }
-
-    #[test]
-    fn m_proposes_the_least_busy_other_machine_and_only_y_sends_it() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(9_500, Some(claude("s1", 3_000))),
-            now,
-        );
-        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
-        let nas = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 3));
-        model.apply(homelab, live_sample(4_000, None), now);
-        model.apply(nas, live_sample(300, None), now);
-        select_first_session(&mut model);
-        let agent = model.selected_agent(now).unwrap();
-        assert_eq!(
-            model
-                .move_suggestion(&agent, now)
-                .map(|suggestion| suggestion.target.machine),
-            Some("nas".into())
-        );
-        handle_batch([key(Key::Char('m'))].into_iter(), &mut model, &mut links).unwrap();
-        let pending = model.pending_move.clone().unwrap();
-        assert_eq!((pending.from.as_str(), pending.to.as_str()), ("mac", "nas"));
-        assert!(footer(&model).contains("Move run the tests from mac to nas?"));
-        handle_batch([key(Key::Char('n'))].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.pending_move, None);
-        assert_eq!(model.flashed(now), None);
-        handle_batch(
-            [key(Key::Char('m')), key(Key::Char('y'))].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert_eq!(model.pending_move, None);
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some((
-                "couldn't ask mac to move it: that machine isn't connected",
-                false
-            ))
-        );
-    }
-
-    #[test]
-    fn a_move_is_suggested_when_a_session_weighs_on_a_machine_under_sustained_pressure() {
-        struct Machine {
-            cpu: u16,
-            memory: f32,
-            load: f32,
-        }
-        let quiet = Machine {
-            cpu: 1_000,
-            memory: 0.3,
-            load: 1.0,
-        };
-        let sample = |machine: &Machine, session: Option<AgentSession>| {
-            LinkUpdate::Sample(Box::new(Sample {
-                cpu: machine.cpu,
-                cores: vec![0; 8],
-                load: [machine.load; 3],
-                memory: crate::proto::Memory {
-                    total: 16 << 30,
-                    used: ((16u64 << 30) as f32 * machine.memory) as u64,
-                    ..Default::default()
-                },
-                sessions: session.into_iter().collect(),
-                ..Sample::default()
-            }))
-        };
-        let suggestion = |here: Machine, millicores: u32, gigabytes: u64, there: &Machine| {
-            let (mut model, _) = fleet();
-            let now = Instant::now();
-            let mut session = claude("s1", millicores);
-            session.usage = Some(crate::proto::Usage {
-                cpu: Some(millicores),
-                memory: gigabytes << 30,
-            });
-            model.apply(Endpoint::Local, sample(&here, Some(session)), now);
-            let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
-            model.apply(homelab, sample(there, None), now);
-            select_first_session(&mut model);
-            let agent = model.selected_agent(now).unwrap();
-            model
-                .move_suggestion(&agent, now)
-                .map(|suggestion| suggestion.pressure.describe("mac"))
-        };
-        let busy_cpu = || Machine {
-            cpu: 9_000,
-            ..quiet
-        };
-        assert_eq!(
-            suggestion(busy_cpu(), 2_000, 0, &quiet).as_deref(),
-            Some("mac's CPU has averaged 90% for a minute")
-        );
-        assert_eq!(suggestion(busy_cpu(), 500, 4, &quiet), None);
-        let crowded = Machine {
-            cpu: 6_000,
-            ..quiet
-        };
-        assert_eq!(suggestion(busy_cpu(), 2_000, 0, &crowded), None);
-        let full = || Machine {
-            memory: 0.95,
-            ..quiet
-        };
-        assert_eq!(
-            suggestion(full(), 0, 4, &quiet).as_deref(),
-            Some("mac's memory is 95% full")
-        );
-        assert_eq!(suggestion(full(), 3_000, 0, &quiet), None);
-        let loaded = Machine {
-            load: 12.0,
-            ..quiet
-        };
-        assert_eq!(
-            suggestion(loaded, 1_500, 0, &quiet).as_deref(),
-            Some("mac has a load of 12 on 8 cores")
-        );
-        assert_eq!(suggestion(Machine { ..quiet }, 4_000, 8, &quiet), None);
-    }
-
-    #[test]
-    fn replies_from_an_agent_show_in_the_footer_in_their_own_colour() {
-        let (mut model, _) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            LinkUpdate::Reply(crate::proto::Reply {
-                ok: true,
-                text: "moving run the tests to nas…".into(),
-            }),
-            now,
-        );
-        assert_eq!(
-            model.flashed(now),
-            Some(("moving run the tests to nas…", true))
-        );
-        assert!(footer(&model).contains("moving run the tests to nas…"));
-    }
-
-    #[test]
-    fn when_the_selected_session_ends_the_cursor_settles_and_then_stays_put() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let sample = |sessions: Vec<AgentSession>| {
-            LinkUpdate::Sample(Box::new(Sample {
-                cores: vec![0; 8],
-                sessions,
-                ..Sample::default()
-            }))
-        };
-        let named = |id: &str, title: &str, state: SessionState| AgentSession {
-            title: title.into(),
-            state,
-            ..claude(id, 0)
-        };
-        model.apply(
-            Endpoint::Local,
-            sample(vec![
-                named("a", "alpha", SessionState::Idle),
-                named("b", "bravo", SessionState::Idle),
-            ]),
-            now,
-        );
-        select(&mut model, "b");
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        assert_eq!(model.selected_agent(now).unwrap().session.id, "b");
-        model.apply(
-            Endpoint::Local,
-            sample(vec![named("a", "alpha", SessionState::Idle)]),
-            now,
-        );
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        let settled = model
-            .selected_agent(now)
-            .map(|agent| agent.session.id.clone());
-        assert_eq!(settled.as_deref(), Some("a"));
-        model.apply(
-            Endpoint::Local,
-            sample(vec![
-                named("a", "alpha", SessionState::Idle),
-                named(
-                    "c",
-                    "charlie",
-                    SessionState::Waiting(crate::proto::Waiting::Permission(None)),
-                ),
-            ]),
-            now,
-        );
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        assert_eq!(model.selected_agent(now).unwrap().session.id, "a");
-    }
-
-    fn in_rex(mut session: AgentSession) -> AgentSession {
-        session.state = SessionState::Idle;
-        session.pane = Some(RexPane {
-            session: "session:1".into(),
-            window: "window:2".into(),
-            block: "block:3".into(),
-        });
-        session
-    }
-
-    fn select_first_session(model: &mut Model) {
-        let index = model
-            .board(Instant::now())
-            .iter()
-            .position(|item| matches!(item, model::Focus::Agent(_)))
-            .unwrap();
-        model.selected = index;
-    }
-
-    fn select(model: &mut Model, id: &str) {
-        let index = model
-            .board(Instant::now())
-            .iter()
-            .position(|item| *item == model::Focus::Agent(id.into()))
-            .unwrap();
-        model.selected = index;
-    }
-
-    #[test]
-    fn a_session_counts_its_running_subagents_whose_work_has_tabs_of_their_own() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let mut parent = claude("s1", 0);
-        parent.children = vec![crate::proto::Child {
-            id: "toolu_a".into(),
-            kind: crate::proto::ChildKind::Subagent,
-            label: "Find the parser".into(),
-            detail: "Explore".into(),
-            state: crate::proto::ChildState::Running,
-            secs: 12,
-            task: None,
-        }];
-        model.apply(Endpoint::Local, live_sample(1_000, Some(parent)), now);
-        select_first_session(&mut model);
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        let shown = screen(&model);
-        assert!(shown.contains("↳ 1"), "{shown}");
-    }
-
-    #[test]
-    fn a_session_outside_rex_offers_to_continue_in_rex() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(claude("s1", 0))),
-            now,
-        );
-        select_first_session(&mut model);
-        assert!(screen(&model).contains("not in Rex"), "{}", screen(&model));
-        assert!(
-            footer(&model).contains("r continue in Rex"),
-            "{}",
-            footer(&model)
-        );
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some(("run the tests isn't running in a Rex pane", false))
-        );
-    }
-
-    #[test]
-    fn y_and_n_answer_only_a_session_asking_for_permission() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
-            now,
-        );
-        select_first_session(&mut model);
-        assert!(!screen(&model).contains("Needs you"));
-        handle_batch([key(Key::Char('y'))].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.flashed(Instant::now()), None);
-        let mut asking = in_rex(claude("s1", 0));
-        asking.state =
-            SessionState::Waiting(crate::proto::Waiting::Permission(Some("Bash".into())));
-        model.apply(Endpoint::Local, live_sample(1_000, Some(asking)), now);
-        model.reselect(now);
-        let shown = screen(&model);
-        assert!(
-            shown.contains("Needs you") && shown.contains("needs you · Bash"),
-            "{shown}"
-        );
-        assert!(
-            footer(&model).contains("y allow   n deny"),
-            "{}",
-            footer(&model)
-        );
-        handle_batch([key(Key::Char('n'))].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some(("couldn't answer it: that machine isn't connected", false))
-        );
-    }
-
-    #[test]
-    fn escape_never_quits() {
-        let (mut model, mut links) = fleet();
-        let flow = handle_batch(
-            [key(Key::Escape), key(Key::Escape)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert!(flow == Flow::Continue);
-    }
-
-    #[test]
-    fn after_a_move_the_selection_follows_the_session_to_its_new_machine() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(claude("s1", 0))),
-            now,
-        );
-        model.apply(homelab, live_sample(1_000, Some(claude("other", 0))), now);
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        model.follow("s1".into(), Endpoint::Local, "homelab".into(), now);
-        model.apply(Endpoint::Local, live_sample(1_000, None), now);
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        assert_eq!(model.selected_agent(now).map(|_| ()), None);
-        assert_eq!(model.rows(now)[model.selected].name, "homelab");
-        let mut arrived = claude("s1", 0);
-        arrived.title = "moved".into();
-        model.apply(homelab, live_sample(1_000, Some(arrived)), now);
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        let selected = model.selected_agent(now).unwrap();
-        assert_eq!(
-            (selected.session.id.as_str(), selected.endpoint),
-            ("s1", homelab)
-        );
-    }
-
-    #[test]
-    fn a_moved_session_shows_the_ports_its_old_machine_forwards_to_it() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
-        let LinkUpdate::Sample(mut here) = live_sample(1_000, None) else {
-            unreachable!()
-        };
-        here.forwards = vec![
-            crate::proto::Forward {
-                session: "s1".into(),
-                host: "homelab".into(),
-                ssh: "homelab".into(),
-                ports: vec![3000],
-                state: crate::proto::ForwardState::Waiting,
-            },
-            crate::proto::Forward {
-                session: "s1".into(),
-                host: "nas".into(),
-                ssh: "nas".into(),
-                ports: vec![4000],
-                state: crate::proto::ForwardState::Connected,
-            },
-            crate::proto::Forward {
-                session: "gone".into(),
-                host: "homelab".into(),
-                ssh: "homelab".into(),
-                ports: vec![5000],
-                state: crate::proto::ForwardState::Connected,
-            },
-        ];
-        model.apply(Endpoint::Local, LinkUpdate::Sample(here), now);
-        model.apply(homelab, live_sample(1_000, Some(claude("s1", 0))), now);
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        select_first_session(&mut model);
-        assert_eq!(model.selected_agent(now).unwrap().session.id, "s1");
-        let shown = screen(&model);
-        assert!(shown.contains("localhost:3000 waiting"), "{shown}");
-        assert!(!shown.contains("localhost:4000"), "{shown}");
-        assert!(!shown.contains("localhost:5000"), "{shown}");
-        model.machine_page = Some(model.rows(now)[0].name.clone());
-        let shown = screen(&model);
-        assert!(
-            shown.contains("localhost:5000 → homelab for a session that left"),
-            "{shown}"
-        );
-        assert!(shown.contains("cielago forwards close gone"), "{shown}");
-        assert!(!shown.contains("localhost:4000 →"), "{shown}");
-    }
-
-    #[test]
-    fn the_launcher_groups_a_project_across_machines_lists_active_ones_first_and_starts_the_choice()
-    {
-        let (mut model, links) = fleet();
-        let now = Instant::now();
-        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(in_project("s1", "web"))),
-            now,
-        );
-        model.apply(homelab, live_sample(1_000, None), now);
-        model
-            .folders
-            .insert(Endpoint::Local, model::Folders::Asking);
-        model.folders.insert(homelab, model::Folders::Asking);
-        model.apply(
-            Endpoint::Local,
-            LinkUpdate::Folders(vec![
-                "/home/me/api".into(),
-                "/home/me/clones/web".into(),
-                "/home/me/web".into(),
-            ]),
-            now,
-        );
-        let menu = model.menu(now);
-        assert_eq!(menu.machines[1].listing, launcher::Listing::Asking);
-        model.apply(
-            homelab,
-            LinkUpdate::Folders(vec!["/home/felipe/dev/web".into()]),
-            now,
-        );
-        let menu = model.menu(now);
-        let projects: Vec<(&str, bool, usize)> = menu
-            .projects
-            .iter()
-            .map(|project| (project.name.as_str(), project.active, project.folders.len()))
-            .collect();
-        assert_eq!(
-            projects,
-            [
-                ("No project", false, 2),
-                ("web", true, 2),
-                ("api", false, 1)
-            ]
-        );
-        assert!(menu.projects[0].chat);
-        assert_eq!(menu.projects[1].folders[0].dir, "/home/me/web");
-        let mut launcher = launcher::Launcher::new(menu);
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
-        terminal
-            .draw(|frame| view::launcher::float(frame, Some(&launcher)))
-            .unwrap();
-        let shown = format!("{:?}", terminal.backend().buffer());
-        for text in [
-            "New session",
-            "No project",
-            "~/Chats",
-            "web",
-            "active",
-            "suggested",
-            "Codex",
-        ] {
-            assert!(shown.contains(text), "missing {text:?}\n{shown}");
-        }
-        launcher.key(Key::Tab);
-        let launcher::Outcome::Start(choice) = launcher.key(Key::Enter) else {
-            panic!("enter should start the chosen session");
-        };
-        start_chosen(&mut model, &links, choice, now);
-        assert!(model.folders.is_empty());
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some(("couldn't open it: that machine isn't connected", false))
-        );
-    }
-
-    #[test]
-    fn r_asks_the_agent_to_continue_a_session_outside_rex_and_skips_one_inside() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(claude("s1", 0))),
-            now,
-        );
-        select_first_session(&mut model);
-        handle_batch([key(Key::Char('r'))].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(
-            model.flashed(Instant::now()),
-            Some((
-                "couldn't continue it in Rex: that machine isn't connected",
-                false
-            ))
-        );
-        let (mut model, mut links) = fleet();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(in_rex(claude("s1", 0)))),
-            now,
-        );
-        select_first_session(&mut model);
-        handle_batch([key(Key::Char('r'))].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.flashed(Instant::now()), None);
-    }
-
-    fn in_project(id: &str, project: &str) -> AgentSession {
-        let mut session = claude(id, 0);
-        session.project = project.into();
-        session.title = id.into();
-        session
-    }
-
-    #[test]
-    fn a_session_magi_opened_is_selected_when_it_appears_and_a_failed_open_selects_nothing() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
-        model.apply(
-            homelab,
-            live_sample(1_000, Some(in_project("old", "api"))),
-            now,
-        );
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        model.await_session(homelab, "api", now);
-        let LinkUpdate::Sample(mut sample) = live_sample(1_000, Some(in_project("old", "api")))
-        else {
-            unreachable!()
-        };
-        sample.sessions.push(in_project("new", "api"));
-        model.apply(homelab, LinkUpdate::Sample(sample.clone()), now);
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        assert_eq!(model.selected_agent(now).unwrap().session.id, "new");
-
-        let (mut model, mut links) = fleet();
-        model.apply(
-            homelab,
-            live_sample(1_000, Some(in_project("old", "api"))),
-            now,
-        );
-        model.await_session(homelab, "api", now);
-        model.apply(
-            homelab,
-            LinkUpdate::Reply(crate::proto::Reply {
-                ok: false,
-                text: "couldn't open a session: no".into(),
-            }),
-            now,
-        );
-        model.apply(homelab, LinkUpdate::Sample(sample), now);
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        assert_ne!(
-            model
-                .selected_agent(now)
-                .map(|agent| agent.session.id.clone()),
-            Some("new".into())
-        );
-    }
-
-    #[test]
-    fn p_on_a_machine_labels_it_everywhere_and_an_empty_label_brings_its_name_back() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(claude("s1", 0))),
-            now,
-        );
-        model.selected = 0;
-        let name = model.rows(now)[0].name.clone();
-        assert!(screen(&model).contains("P label"), "{}", screen(&model));
-        let mut keys = vec![key(Key::Char('P'))];
-        keys.extend("Studio".chars().map(|c| key(Key::Char(c))));
-        keys.push(key(Key::Enter));
-        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.labels.machine_label(&name), Some("Studio"));
-        let shown = screen(&model);
-        assert!(shown.contains("Studio"), "{shown}");
-        let mut keys = vec![key(Key::Char('P'))];
-        keys.extend((0..6).map(|_| key(Key::Backspace)));
-        keys.push(key(Key::Enter));
-        handle_batch(keys.into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.labels.machine_label(&name), None);
-        assert!(!screen(&model).contains("Studio"));
-    }
-
-    #[test]
-    fn arrows_walk_machines_and_their_sessions_in_order_and_pick_where_a_move_goes() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
-        let nas = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 3));
-        model.apply(
-            Endpoint::Local,
-            live_sample(1_000, Some(in_project("a", "api"))),
-            now,
-        );
-        model.apply(
-            homelab,
-            live_sample(1_000, Some(in_project("b", "web"))),
-            now,
-        );
-        model.apply(nas, live_sample(1_000, None), now);
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        let selected = |model: &Model| {
-            model
-                .selected_agent(now)
-                .map(|agent| agent.session.id.clone())
-        };
-        handle_batch([key(Key::Down)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(selected(&model).as_deref(), Some("a"));
-        handle_batch(
-            [key(Key::Down), key(Key::Down)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert_eq!(selected(&model).as_deref(), Some("b"));
-        handle_batch([key(Key::Last)].into_iter(), &mut model, &mut links).unwrap();
-        handle_batch([key(Key::Char('P'))].into_iter(), &mut model, &mut links).unwrap();
-        let Some(model::Naming { machine: name, .. }) = model.naming.take() else {
-            panic!("P on a machine should start labelling it");
-        };
-        assert!(name.contains("nas"), "{name}");
-        handle_batch([key(Key::Enter)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.machine_page.as_deref(), Some(name.as_str()));
-        handle_batch([key(Key::Escape)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.machine_page, None);
-        handle_batch(
-            [key(Key::First), key(Key::Down)].into_iter(),
-            &mut model,
-            &mut links,
-        )
-        .unwrap();
-        assert_eq!(selected(&model).as_deref(), Some("a"));
-        handle_batch([key(Key::Char('m'))].into_iter(), &mut model, &mut links).unwrap();
-        let first = model.pending_move.clone().unwrap().to;
-        handle_batch([key(Key::Right)].into_iter(), &mut model, &mut links).unwrap();
-        let second = model.pending_move.clone().unwrap().to;
-        assert_ne!(first, second);
-        assert!(["homelab", "nas"].contains(&second.as_str()), "{second}");
-        handle_batch([key(Key::Right)].into_iter(), &mut model, &mut links).unwrap();
-        assert_eq!(model.pending_move.clone().unwrap().to, first);
-    }
-
-    #[test]
-    #[ignore = "prints the screen: cargo test -- --ignored --nocapture print_zen"]
-    fn print_zen() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let mut session = in_rex(claude("s1", 0));
-        session.state = crate::proto::SessionState::Working { tool: None };
-        session.activity = Some("running the test suite before the commit".into());
-        let LinkUpdate::Sample(mut sample) = live_sample(1_000, Some(session)) else {
-            unreachable!()
-        };
-        let mut asking = in_project("s2", "stampr");
-        asking.title = "fix the checkout".into();
-        asking.state = crate::proto::SessionState::Waiting(crate::proto::Waiting::Permission(
-            Some("Bash(pnpm test)".into()),
-        ));
-        sample.sessions.push(asking);
-        sample.sessions.push(in_project("s3", "notes"));
-        model.apply(Endpoint::Local, LinkUpdate::Sample(sample), now);
-        select_first_session(&mut model);
-        handle_batch([key(Key::Char('z'))].into_iter(), &mut model, &mut links).unwrap();
-        println!("{}", screen(&model));
-    }
-
-    #[test]
-    fn the_launcher_says_why_a_machine_listed_no_projects() {
-        let (mut model, mut links) = fleet();
-        let now = Instant::now();
-        let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
-        model.apply(homelab, live_sample(1_000, None), now);
-        handle_batch([key(Key::Char('c'))].into_iter(), &mut model, &mut links).unwrap();
-        assert!(asked_and_failed(
-            &model,
-            "couldn't ask for its projects: that machine isn't connected"
-        ));
-        model.folders.insert(homelab, model::Folders::Asking);
-        model.apply(
-            homelab,
-            LinkUpdate::Reply(crate::proto::Reply {
-                ok: false,
-                text: "cielago isn't installed".into(),
-            }),
-            now,
-        );
-        handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-        assert!(asked_and_failed(&model, "cielago isn't installed"));
-    }
-}
+mod tests;

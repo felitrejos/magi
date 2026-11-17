@@ -21,7 +21,6 @@ pub use macos::Collector;
 #[derive(Clone)]
 pub struct SystemInfo {
     pub os: String,
-    pub kernel: String,
     pub cpu_model: String,
     pub core_kinds: Vec<crate::proto::CoreKind>,
 }

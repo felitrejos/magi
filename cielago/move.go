@@ -57,11 +57,6 @@ func (m mover) fail(err error) error {
 
 var errReported = errors.New("reported")
 
-func moveResultPath(sessionID string) (string, error) {
-	path, err := armedPath(sessionID)
-	return strings.TrimSuffix(path, ".json") + ".result.json", err
-}
-
 func moveCommand(args []string, out io.Writer) error {
 	m := mover{out: out}
 	var rest []string
@@ -76,7 +71,7 @@ func moveCommand(args []string, out io.Writer) error {
 		}
 	}
 	if len(rest) != 2 {
-		return m.fail(errors.New("usage: cielago move <claude-session-id> <host> [--json] [--stay]"))
+		return m.fail(errors.New("usage: cielago move <session-id> <host> [--json] [--stay]"))
 	}
 	m.session, m.host = rest[0], rest[1]
 	return m.run()
@@ -84,7 +79,7 @@ func moveCommand(args []string, out io.Writer) error {
 
 func (m mover) run() error {
 	if !sessionIDPattern.MatchString(m.session) {
-		return m.fail(fmt.Errorf("%q is not a Claude session id", m.session))
+		return m.fail(fmt.Errorf("%q is not a session id", m.session))
 	}
 	host, err := loadHost(m.host)
 	if err != nil {
@@ -104,6 +99,9 @@ func (m mover) run() error {
 	s, err := findLocalSession(local, m.session)
 	if err != nil {
 		return m.fail(err)
+	}
+	if s.Codex {
+		return m.codex(local, host, s)
 	}
 	if s.Live != nil {
 		running, err := isClaudeProcess(local, *s.Live)
@@ -131,15 +129,58 @@ func (m mover) run() error {
 	return m.now(local, host, s, stopped)
 }
 
+func (m mover) codex(local *Local, host Host, s remoteSession) error {
+	if host.Codex == "" {
+		return m.fail(fmt.Errorf("session %s is a Codex session; set codex to the path of codex on %s under [hosts.%s] in cielago's config to move it there", shortID(s.ID), m.host, tomlKey(m.host)))
+	}
+	if err := s.refuseUnsure(local); err != nil {
+		return m.fail(err)
+	}
+	remote, err := newRemote(local.Context(), host.SSH)
+	if err != nil {
+		return m.fail(err)
+	}
+	if err := refuseOpenCodex(remote, s.ID); err != nil {
+		return m.fail(err)
+	}
+	if len(s.Running) == 0 {
+		return m.now(local, host, s, false)
+	}
+	local.SetContext(context.Background())
+	interrupted := make(chan os.Signal, 1)
+	signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(interrupted)
+	for told := false; ; told = true {
+		err := stopCodex(local, s)
+		if exitCode(err) != exitBusy {
+			if err != nil {
+				return m.fail(err)
+			}
+			return m.now(local, host, s, true)
+		}
+		if !told {
+			m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", shortID(s.ID), m.host)})
+		}
+		if !slices.ContainsFunc(s.Running, func(pid int) bool { return syscall.Kill(pid, 0) == nil }) {
+			return m.fail(errors.New("the session ended before its turn did, so it didn't move"))
+		}
+		select {
+		case <-interrupted:
+			return m.fail(errors.New("cancelled; the session keeps running here"))
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
 func lockMove(sessionID string) (func(), error) {
-	path, err := armedPath(sessionID)
+	path, err := armedPath(sessionID, ".lock")
 	if err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(strings.TrimSuffix(path, ".json")+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -155,13 +196,10 @@ func findLocalSession(local *Local, id string) (remoteSession, error) {
 	if err == nil || !strings.HasPrefix(err.Error(), "no session ") {
 		return s, err
 	}
-	if out, codexErr := sh(local, `find "$HOME/.codex/sessions" -name "rollout-*-$1.jsonl" -print 2>/dev/null | head -n 1`, id); codexErr == nil && len(out) > 0 {
-		return s, fmt.Errorf("%s is a Codex session; cielago moves Claude Code sessions only", id)
-	}
 	if live, _ := liveSessions(local); slices.ContainsFunc(live, func(l liveSession) bool { return l.SessionID == id }) {
 		return s, fmt.Errorf("session %s hasn't started a conversation yet, so there's nothing to move", shortID(id))
 	}
-	return s, fmt.Errorf("no Claude Code session %s on %s", id, local.Name())
+	return s, fmt.Errorf("no Claude Code or Codex session %s on %s", id, local.Name())
 }
 
 func isClaudeProcess(m Machine, s liveSession) (bool, error) {
@@ -177,26 +215,20 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	progress := func(step string) {
 		m.report(moveReport{Event: "step", OK: true, Step: step, Message: fmt.Sprintf("Moving session %s to %s: %s", shortID(s.ID), m.host, step)})
 	}
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Stay: m.stay, Progress: progress}.Run()
+	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Stay: m.stay, Progress: progress, Codex: s.Codex, Rollout: s.Rollout}.Run()
 	if err != nil {
 		if stopped {
-			err = fmt.Errorf("%w. The session was stopped here; to carry on here instead, run claude --resume %s in %s", err, s.ID, s.Cwd)
+			err = fmt.Errorf("%w. The session was stopped here; to carry on here instead, run %s in %s", err, resumeHint(s), s.Cwd)
 		}
 		return m.fail(err)
 	}
 	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	local.SetContext(finish)
-	notes := []error{res.ParkNote, res.TabNote, res.SetupNote, res.ShowNote, res.TrustNote, res.PortNote}
-	if _, err := sh(local, `mv -- "$1" "$1.handed-off-to-$2"`, s.Transcript, m.host); err != nil {
-		notes = append(notes, fmt.Errorf("retiring the transcript here failed: %w", err))
+	if _, err := sh(local, retireScript, "", "0", s.Transcript, m.host, "", "", s.ID); err != nil && !tabGone(err) {
+		res.note(fmt.Errorf("retiring the session here failed: %w", err))
 	}
-	if err := closeLocalTab(local, s.ID); err != nil {
-		notes = append(notes, fmt.Errorf("closing its old tab here failed: %w", err))
-	}
-	if err := appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir}); err != nil {
-		notes = append(notes, err)
-	}
+	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir}))
 	msg := fmt.Sprintf("Moved session %s to %s in %s. It's running %s", shortID(s.ID), m.host, res.Summary(), res.Where)
 	if res.NewFolder != "" {
 		msg += fmt.Sprintf("; %s didn't have the project yet, so it now lives at %s", m.host, res.NewFolder)
@@ -204,60 +236,37 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	if forwarded := res.Forwarded(); forwarded != "" {
 		msg += "; " + forwarded
 	}
-	if note := errors.Join(notes...); note != nil {
-		msg += fmt.Sprintf(" (%v)", strings.ReplaceAll(note.Error(), "\n", "; "))
+	if len(res.Notes) > 0 {
+		msg += fmt.Sprintf(" (%s)", res.Noted())
 	}
 	m.report(moveReport{Event: "moved", OK: true, Message: msg + ".", ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports})
 	return nil
 }
 
-func closeLocalTab(local *Local, sessionID string) error {
-	out, err := sh(local, `f="$HOME/.cielago/tabs/$1"; if [ -f "$f" ]; then cat "$f"; rm -f "$f"; fi`, sessionID)
-	if err != nil || len(out) == 0 {
-		return err
-	}
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	if len(lines) != 3 {
-		return fmt.Errorf("unexpected tab record for session %s", sessionID)
-	}
-	if lines[0] == "tmux" {
-		_, err = sh(local, tmuxScript, "kill-window", lines[2])
-	} else {
-		_, err = run(local.Context(), "rex", "window", "close", "-s", lines[1], lines[2])
-	}
-	if err != nil && tabGone(err) {
-		return nil
-	}
-	return err
-}
-
 func (m mover) whenTurnEnds(s remoteSession) error {
-	path, err := armedPath(s.ID)
+	path, err := armedPath(s.ID, ".json")
 	if err != nil {
 		return m.fail(err)
 	}
-	result, err := moveResultPath(s.ID)
+	result, err := armedPath(s.ID, ".result.json")
 	if err != nil {
 		return m.fail(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.Remove(result); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return m.fail(err)
 	}
-	os.Remove(result)
-	data, err := json.Marshal(armed{Host: m.host, PID: s.Live.PID, Desktop: s.Live.Entrypoint == "claude-desktop", Notify: true, Stay: m.stay})
-	if err != nil {
-		return m.fail(err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	err = writeArmed(path, armed{Host: m.host, PID: s.Live.PID, Desktop: s.Live.Entrypoint == "claude-desktop", Notify: true, Stay: m.stay}, os.O_EXCL)
 	if errors.Is(err, os.ErrExist) {
 		return m.fail(errors.New("the session is already armed to move when its turn ends"))
 	}
-	if err != nil {
+	disarm := func(err error) error {
+		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			err = fmt.Errorf("%w; removing %s also failed: %v", err, path, rmErr)
+		}
 		return m.fail(err)
 	}
-	if _, err := f.Write(data); err != nil || f.Close() != nil {
-		os.Remove(path)
-		return m.fail(fmt.Errorf("arming the session failed: %v", err))
+	if err != nil {
+		return disarm(fmt.Errorf("arming the session failed: %w", err))
 	}
 	m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", shortID(s.ID), m.host)})
 
@@ -266,13 +275,15 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 	defer signal.Stop(interrupted)
 	local, err := newLocal(context.Background())
 	if err != nil {
-		os.Remove(path)
-		return m.fail(err)
+		return disarm(err)
 	}
 	var idleSince, takenAt time.Time
 	for {
-		if data, err := os.ReadFile(result); err == nil {
-			os.Remove(result)
+		data, err := os.ReadFile(result)
+		if err == nil {
+			if err := os.Remove(result); err != nil {
+				return m.fail(err)
+			}
 			var r moveReport
 			if err := json.Unmarshal(data, &r); err != nil {
 				return m.fail(fmt.Errorf("unreadable result from the Stop hook: %w", err))
@@ -283,8 +294,13 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 			}
 			return nil
 		}
-		_, armErr := os.Stat(path)
-		armedStill := armErr == nil
+		if !errors.Is(err, os.ErrNotExist) {
+			return m.fail(err)
+		}
+		armedStill, err := exists(path)
+		if err != nil {
+			return m.fail(err)
+		}
 		if !armedStill && takenAt.IsZero() {
 			takenAt = time.Now()
 		}
@@ -293,19 +309,22 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 		}
 		if armedStill {
 			alive, err := isClaudeProcess(local, *s.Live)
-			if err == nil && !alive {
-				os.Remove(path)
-				return m.fail(errors.New("the session ended before its turn did, so it didn't move"))
+			if err != nil {
+				return disarm(err)
 			}
-			if status := sessionStatus(local, s.Live.PID); status == "idle" {
-				if idleSince.IsZero() {
-					idleSince = time.Now()
-				} else if time.Since(idleSince) > moveHookGrace {
-					os.Remove(path)
-					return m.fail(errors.New("the session's turn ended but cielago's Stop hook didn't run; install the cielago Claude Code plugin on this machine"))
-				}
-			} else {
+			if !alive {
+				return disarm(errors.New("the session ended before its turn did, so it didn't move"))
+			}
+			live, _, err := readLiveSession(s.Live.PID)
+			if err != nil {
+				return disarm(err)
+			}
+			if live.Status != "idle" {
 				idleSince = time.Time{}
+			} else if idleSince.IsZero() {
+				idleSince = time.Now()
+			} else if time.Since(idleSince) > moveHookGrace {
+				return disarm(errors.New("the session's turn ended but cielago's Stop hook didn't run; install the cielago Claude Code plugin on this machine"))
 			}
 		}
 		select {
@@ -319,20 +338,35 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 	}
 }
 
-func sessionStatus(m Machine, pid int) string {
-	out, err := sh(m, `cat "$HOME/.claude/sessions/$1.json" 2>/dev/null`, strconv.Itoa(pid))
+func exists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func readLiveSession(pid int) (liveSession, bool, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return liveSession{}, false, err
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude", "sessions", strconv.Itoa(pid)+".json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return liveSession{}, false, nil
+	}
+	if err != nil {
+		return liveSession{}, false, err
 	}
 	var s liveSession
-	if json.Unmarshal(out, &s) != nil {
-		return ""
+	if err := json.Unmarshal(data, &s); err != nil {
+		return liveSession{}, false, err
 	}
-	return s.Status
+	return s, true, nil
 }
 
 func writeMoveResult(sessionID string, r moveReport) error {
-	path, err := moveResultPath(sessionID)
+	path, err := armedPath(sessionID, ".result.json")
 	if err != nil {
 		return err
 	}

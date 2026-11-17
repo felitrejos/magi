@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +35,7 @@ type Pulled struct {
 	PromptInfo  Prompt
 	Project     *Project
 	ProjectRoot string
+	Codex       bool
 }
 
 type remoteSession struct {
@@ -41,6 +43,11 @@ type remoteSession struct {
 	Transcript string
 	Cwd        string
 	Live       *liveSession
+	Codex      bool
+	Rollout    string
+	Running    []int
+	StaleTurn  string
+	Unsure     []string
 }
 
 func (p Pull) Run() (res Pulled, err error) {
@@ -67,6 +74,17 @@ func (p Pull) Run() (res Pulled, err error) {
 		if session, err = findRemoteSession(remote, p.HostName, p.SessionID); err != nil {
 			return err
 		}
+		if err := session.refuseUnsure(remote); err != nil {
+			return err
+		}
+		if session.Codex {
+			if _, err := exec.LookPath("codex"); err != nil {
+				return fmt.Errorf("session %s is a Codex session, and codex isn't installed on %s", shortID(session.ID), local.Name())
+			}
+			if err := refuseOpenCodex(local, session.ID); err != nil {
+				return err
+			}
+		}
 		if ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude); err != nil {
 			return err
 		}
@@ -87,13 +105,13 @@ func (p Pull) Run() (res Pulled, err error) {
 	}); err != nil {
 		return res, err
 	}
-	res.Session, res.Name = session.ID, baseName(where.Root)
+	res.Session, res.Name, res.Codex = session.ID, baseName(where.Root), session.Codex
 
 	if err := st.run("stop", func() error { return stopAtTurnEnd(remote, session, p.Out) }); err != nil {
 		return res, err
 	}
 	if err := closeRecordedTab(remote, p.Host, session.ID); err != nil {
-		res.TabNote = fmt.Errorf("closing the session's old tab on %s failed: %w", p.HostName, err)
+		res.note(fmt.Errorf("closing the session's old tab on %s failed: %w", p.HostName, err))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), pullBudget)
@@ -101,7 +119,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	local.SetContext(ctx)
 	remote.SetContext(ctx)
 	stopped := func(err error) error {
-		return fmt.Errorf("%w. The session is stopped on %s; to carry on there instead, run claude --resume %s in %s on %s", err, p.HostName, session.ID, session.Cwd, p.HostName)
+		return fmt.Errorf("%w. The session is stopped on %s; to carry on there instead, run %s in %s on %s", err, p.HostName, resumeHint(session), session.Cwd, p.HostName)
 	}
 	if err := st.run("inspect", func() (err error) {
 		ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude)
@@ -133,21 +151,22 @@ func (p Pull) Run() (res Pulled, err error) {
 	synced = true
 	var sidecar string
 	if err := st.run("transcript", func() (err error) {
+		if session.Codex {
+			_, _, err = moveRollout(remote, session.Transcript, session.Rollout, ws.Root, local, where.Root)
+			return err
+		}
 		sidecar, err = moveTranscript(remote, session.Transcript, ws, local, where, localDir)
 		return err
 	}); err != nil {
 		return res, undo(err)
 	}
-	res.ParkNote = settle(remote, ws, p.Host.Exclude)
-	if _, err := sh(remote, `mv -- "$1" "$2"`, session.Transcript, session.Transcript+".handed-off-to-"+local.Name()); err != nil {
-		res.ParkNote = errors.Join(res.ParkNote, err)
-	}
+	res.note(settle(remote, ws, p.Host.Exclude))
+	_, err = sh(remote, `mv -- "$1" "$2"`, session.Transcript, session.Transcript+".handed-off-to-"+local.Name())
+	res.note(err)
 	project, err := approvedProject(local, where.Root)
-	if err != nil {
-		res.SetupNote = err
-	}
+	res.note(err)
 	res.Project, res.ProjectRoot = project, where.Root
-	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Sidecar: sidecar}
+	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Sidecar: sidecar, Codex: session.Codex}
 	return res, nil
 }
 
@@ -164,7 +183,7 @@ func findRemoteSession(r *Remote, hostName, id string) (remoteSession, error) {
 
 func findSession(r Machine, id string) (remoteSession, error) {
 	if !sessionIDPattern.MatchString(id) {
-		return remoteSession{}, fmt.Errorf("%q is not a Claude session id", id)
+		return remoteSession{}, fmt.Errorf("%q is not a session id", id)
 	}
 	s := remoteSession{ID: id}
 	out, err := sh(r, sessionScript, "find", id)
@@ -172,7 +191,7 @@ func findSession(r Machine, id string) (remoteSession, error) {
 		return s, err
 	}
 	if s.Transcript = strings.TrimSpace(string(out)); s.Transcript == "" {
-		return s, fmt.Errorf("no session %s on %s", id, r.Name())
+		return findCodexSession(r, id)
 	}
 	sessions, err := liveSessions(r)
 	if err != nil {
@@ -187,30 +206,39 @@ func findSession(r Machine, id string) (remoteSession, error) {
 		s.Cwd = s.Live.Cwd
 		return s, nil
 	}
-	cwd, err := sh(r, sessionScript, "cwd", s.Transcript)
+	out, err = sh(r, sessionScript, "cwd", s.Transcript)
 	if err != nil {
 		return s, err
 	}
-	var record struct {
-		Cwd string `json:"cwd"`
+	for _, line := range slices.Backward(strings.Split(string(out), "\n")) {
+		var record struct {
+			Cwd string `json:"cwd"`
+		}
+		if json.Unmarshal([]byte(line), &record) == nil && record.Cwd != "" {
+			s.Cwd = record.Cwd
+			return s, nil
+		}
 	}
-	if json.Unmarshal([]byte("{"+strings.TrimSpace(string(cwd))+"}"), &record) != nil || record.Cwd == "" {
-		return s, fmt.Errorf("couldn't tell which folder session %s on %s ran in", id, r.Name())
-	}
-	s.Cwd = record.Cwd
-	return s, nil
+	return s, fmt.Errorf("couldn't tell which folder session %s on %s ran in", id, r.Name())
 }
 
 const exitBusy = 10
 
 func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
-	if s.Live == nil {
+	stop := func() error { return stopCodex(r, s) }
+	switch {
+	case s.Live != nil:
+		pid := strconv.Itoa(s.Live.PID)
+		stop = func() error {
+			_, err := sh(r, sessionScript, "stop", pid, s.ID, s.Live.since())
+			return err
+		}
+	case len(s.Running) == 0:
 		return nil
 	}
-	pid := strconv.Itoa(s.Live.PID)
 	told := false
 	for {
-		_, err := sh(r, sessionScript, "stop", pid, s.ID, s.Live.since())
+		err := stop()
 		if exitCode(err) != exitBusy {
 			return err
 		}
@@ -226,13 +254,17 @@ func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
 	}
 }
 
-func resumeHere(dir, sessionID, name, prompt string) error {
-	claude, err := exec.LookPath("claude")
+func resumeHere(dir, sessionID, name, prompt string, codex bool) error {
+	args := []string{"claude", "--resume", sessionID, "--remote-control", name, prompt}
+	if codex {
+		args = append([]string{"codex"}, codexResume(sessionID, prompt)...)
+	}
+	program, err := exec.LookPath(args[0])
 	if err != nil {
 		return err
 	}
 	if err := os.Chdir(dir); err != nil {
 		return err
 	}
-	return syscall.Exec(claude, []string{"claude", "--resume", sessionID, "--remote-control", name, prompt}, os.Environ())
+	return syscall.Exec(program, args, os.Environ())
 }

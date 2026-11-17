@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::client::{Answer, Client};
-use super::{alerts, cli, fleet};
+use super::{alerts, cli, fleet, watch};
 use crate::log;
-use crate::proto::{Content, OpenIn, Request, Said};
+use crate::proto::{OpenIn, Request};
 
 const PROTOCOLS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const PUMP_EVERY: Duration = Duration::from_millis(100);
@@ -16,6 +16,8 @@ const ANSWER_WITHIN: Duration = Duration::from_secs(15);
 const SHOWN_WITHIN: Duration = Duration::from_secs(30);
 const RECENT_ITEMS: usize = 20;
 const MAX_RECENT_ITEMS: usize = 200;
+const WAIT_SECS: u64 = 300;
+const MAX_WAIT_SECS: u64 = 1800;
 const MAX_TEXT: usize = 60_000;
 const INSTRUCTIONS: &str = "magi sees every Claude Code and Codex session on the user's machines \
 (those running a magi agent on their tailnet), with each machine's load and the user's plan \
@@ -124,15 +126,29 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "sessions",
-            "Every Claude Code and Codex session: state, what it's doing or asking, permission mode, queued message, subagents",
+            "Every Claude Code and Codex session: state, what it's doing or asking, queued message, pull request, subagents",
             json!({}),
             &[],
             true,
         ),
         tool(
             "recent_work",
-            "What a session said and did lately: its messages, replies and tool calls, newest last",
-            json!({"session": session, "items": {"type": "integer", "description": "How many of the latest items, 20 by default"}}),
+            "What a session, or one of its subagents, said and did lately: messages, replies and one line per tool call, newest last",
+            json!({"session": session, "subagent": {"type": "string", "description": "A subagent's id or a unique part of its label, from subagents"}, "items": {"type": "integer", "description": "How many of the latest items, 20 by default"}}),
+            &["session"],
+            true,
+        ),
+        tool(
+            "subagents",
+            "Every running subagent on every machine, with its session and the step it's on now",
+            json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "wait",
+            "Wait until a session stops working (it's idle or needs the user) or one of its subagents finishes, instead of checking again and again",
+            json!({"session": session, "subagent": {"type": "string", "description": "Wait for this subagent instead of the session"}, "seconds": {"type": "integer", "description": "Give up after this long, 300 by default, at most 1800"}}),
             &["session"],
             true,
         ),
@@ -173,7 +189,7 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "move_session",
-            "Move a Claude Code session, with its conversation and uncommitted work, to another machine once its turn ends",
+            "Move a Claude Code or Codex session, with its conversation and uncommitted work, to another machine once its turn ends",
             json!({"session": session, "machine": {"type": "string"}}),
             &["session", "machine"],
             false,
@@ -227,9 +243,23 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
             let items = arguments["items"].as_u64().map_or(RECENT_ITEMS, |items| {
                 (items as usize).clamp(1, MAX_RECENT_ITEMS)
             });
-            recent_work(client, &text("session")?, items)
+            let subagent = arguments["subagent"].as_str();
+            watch::recent(client, &text("session")?, subagent, items).map(|text| clip(&text))
         }
         "diff" => diff(client, &text("session")?),
+        "subagents" => Ok(pretty(Value::Array(watch::subagents(client)))),
+        "wait" => {
+            let seconds = arguments["seconds"]
+                .as_u64()
+                .map_or(WAIT_SECS, |seconds| seconds.clamp(1, MAX_WAIT_SECS));
+            let subagent = arguments["subagent"].as_str();
+            watch::wait(
+                client,
+                &text("session")?,
+                subagent,
+                Duration::from_secs(seconds),
+            )
+        }
         "send_message" => {
             let found = client.session(&text("session")?)?;
             let request = Request::Prompt {
@@ -276,75 +306,6 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
             cli::start(client, &machine, request)
         }
         _ => Err(format!("magi has no tool {name}")),
-    }
-}
-
-fn recent_work(client: &mut Client, query: &str, items: usize) -> Result<String, String> {
-    let found = client.session(query)?;
-    let id = found.session.id.clone();
-    client.send(
-        found.endpoint,
-        &Request::Watch {
-            session: Some(id.clone()),
-            child: None,
-        },
-    )?;
-    let view = client.answer(found.endpoint, ANSWER_WITHIN, |answer| match answer {
-        Answer::Screen(screen) if screen.session == id && screen.child.is_none() => {
-            Some(screen.view)
-        }
-        _ => None,
-    });
-    let _ = client.send(
-        found.endpoint,
-        &Request::Watch {
-            session: None,
-            child: None,
-        },
-    );
-    match view?? {
-        Content::Conversation(said) => {
-            let start = said.len().saturating_sub(items);
-            Ok(clip(
-                &said[start..]
-                    .iter()
-                    .map(line)
-                    .collect::<Vec<_>>()
-                    .join("\n\n"),
-            ))
-        }
-        Content::Screen(rows) => Ok(clip(
-            &rows
-                .iter()
-                .map(|row| row.iter().map(|run| run.text.as_str()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )),
-    }
-}
-
-fn line(said: &Said) -> String {
-    match said {
-        Said::You(text) => format!("User: {text}"),
-        Said::Reply(text) => format!("Agent: {text}"),
-        Said::Tool {
-            name,
-            detail,
-            change,
-            ..
-        } => {
-            let change = change.map_or_else(String::new, |change| {
-                format!(" (+{} −{})", change.added, change.removed)
-            });
-            format!("Tool {name}: {detail}{change}")
-        }
-        Said::Plan(steps) => {
-            let steps: Vec<String> = steps
-                .iter()
-                .map(|step| format!("- {}", step.text))
-                .collect();
-            format!("Plan:\n{}", steps.join("\n"))
-        }
     }
 }
 
@@ -414,7 +375,15 @@ mod tests {
             .collect();
         assert_eq!(
             read_only,
-            ["machines", "sessions", "recent_work", "diff", "alerts"]
+            [
+                "machines",
+                "sessions",
+                "recent_work",
+                "subagents",
+                "wait",
+                "diff",
+                "alerts"
+            ]
         );
         let called = answer(r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sessions","arguments":{"x":1}}}"#).unwrap();
         assert_eq!(called["result"]["content"][0]["text"], r#"listed {"x":1}"#);

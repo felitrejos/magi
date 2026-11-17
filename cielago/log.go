@@ -44,8 +44,7 @@ func appendLog(e logEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return json.NewEncoder(f).Encode(e)
+	return errors.Join(json.NewEncoder(f).Encode(e), f.Close())
 }
 
 func readLog() ([]logEntry, error) {

@@ -252,7 +252,7 @@ fn model_line(launcher: &Launcher, width: usize) -> Line<'static> {
 
 fn keys_line(width: usize) -> Line<'static> {
     let keys: Vec<Span<'static>> = [
-        ("↵", "start"),
+        ("enter", "start"),
         ("↑↓", "project"),
         ("←→", "machine"),
         ("⇥", "model"),

@@ -20,7 +20,6 @@ similar = "3.2.1"
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy", "parsing"] }
 unicode-segmentation = "1.12"
 unicode-width = "0.2.3"
-vt100 = "0.18.1"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "layout-cache"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }

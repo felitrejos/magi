@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 
 use crate::bounded;
-use crate::proto::{Agent, AgentSession, Reply};
+use crate::proto::{AgentSession, Reply};
 
 const INSTALL_DIRS: [&str; 4] = [
     ".local/bin",
@@ -37,7 +37,7 @@ pub fn start(
     to: &str,
     reply: impl Fn(Reply) + Send + 'static,
 ) -> Result<String, String> {
-    check(session, to)?;
+    check(to)?;
     let cielago = find("cielago", &search_dirs())
         .ok_or("cielago isn't installed on that machine: see github.com/felitrejos/magi")?;
     if MOVING.swap(true, Ordering::SeqCst) {
@@ -56,14 +56,7 @@ pub fn start(
     Ok(started)
 }
 
-fn check(session: &AgentSession, to: &str) -> Result<(), String> {
-    if session.agent != Agent::ClaudeCode {
-        return Err(format!(
-            "{} is a {} session; cielago moves Claude Code sessions",
-            session.title,
-            session.agent.name()
-        ));
-    }
+fn check(to: &str) -> Result<(), String> {
     let valid = !to.is_empty()
         && to.len() <= 253
         && !to.starts_with('-')
@@ -247,48 +240,14 @@ pub fn find(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{SessionState, Tokens};
-
-    fn session(agent: Agent) -> AgentSession {
-        AgentSession {
-            agent,
-            id: "0b7a3c1e".into(),
-            title: "fix login".into(),
-            project: "web".into(),
-            state: SessionState::Idle,
-            state_secs: 0,
-            model: String::new(),
-            context_tokens: 0,
-            context_used: None,
-            tokens: Tokens::default(),
-            cost_micros: 0,
-            cost_complete: true,
-            age_secs: 0,
-            pane: None,
-            usage: None,
-            children: Vec::new(),
-            branch: None,
-            worktree: None,
-            parent: None,
-            activity: None,
-            mode: None,
-            queued: None,
-            remote: None,
-        }
-    }
 
     #[test]
-    fn only_claude_code_sessions_move_and_only_to_plain_machine_names() {
-        let claude = session(Agent::ClaudeCode);
-        assert_eq!(check(&claude, "homelab"), Ok(()));
-        assert_eq!(check(&claude, "felipes-macbook-pro.tail"), Ok(()));
+    fn a_session_moves_only_to_a_plain_machine_name() {
+        assert_eq!(check("homelab"), Ok(()));
+        assert_eq!(check("felipes-macbook-pro.tail"), Ok(()));
         for bad in ["", "-oProxyCommand=x", "home lab", "a;b", "$(x)"] {
-            assert!(check(&claude, bad).is_err(), "{bad}");
+            assert!(check(bad).is_err(), "{bad}");
         }
-        assert_eq!(
-            check(&session(Agent::Codex), "homelab"),
-            Err("fix login is a Codex session; cielago moves Claude Code sessions".into())
-        );
     }
 
     #[test]

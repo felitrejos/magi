@@ -101,12 +101,34 @@ pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
+pub fn unreadable(path: &Path, read: io::Result<()>) -> Option<String> {
+    match read {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            Some(format!("can't read {}: {error}", path.display()))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use std::fs::OpenOptions;
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn a_missing_transcript_is_quiet_and_any_other_read_error_is_reported() {
+        let path = Path::new("/x/s.jsonl");
+        assert_eq!(unreadable(path, Ok(())), None);
+        let gone = io::Error::from(io::ErrorKind::NotFound);
+        assert_eq!(unreadable(path, Err(gone)), None);
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert!(
+            unreadable(path, Err(denied))
+                .is_some_and(|notice| notice.starts_with("can't read /x/s.jsonl"))
+        );
+    }
 
     pub fn temp(name: &str) -> PathBuf {
         let path =

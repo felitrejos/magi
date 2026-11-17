@@ -41,10 +41,9 @@ func claudeTabLabel(name string) string {
 	return name + " · claude"
 }
 
-// cielago and magi follow Rex's latest release, as Rex is in preview: bump these with it.
 const (
-	rexAPI     = 14
-	rexRelease = "0.1.0-preview.19"
+	rexAPI     = 16
+	rexRelease = "0.1.0-preview.20"
 )
 
 type Rex struct {
@@ -63,8 +62,6 @@ type rexWindow struct {
 	BlockIDs []string `json:"block_ids"`
 }
 
-// forwardVia is the Rex server and session to carry a session's forwards, when its tab is in Rex
-// and that server can be reached by label from here. Otherwise forwards go over ssh.
 func forwardVia(launcher Launcher, tab Tab) *rexVia {
 	x, ok := launcher.(Rex)
 	if !ok || x.server == "" || tab.Session == "" {

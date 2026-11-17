@@ -23,6 +23,7 @@ type Config struct {
 type Host struct {
 	SSH           string   `toml:"ssh"`
 	Claude        string   `toml:"claude"`
+	Codex         string   `toml:"codex,omitempty"`
 	Roots         []string `toml:"roots"`
 	Secrets       []string `toml:"secrets"`
 	Launcher      string   `toml:"launcher"`

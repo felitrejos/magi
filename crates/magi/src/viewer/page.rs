@@ -13,17 +13,19 @@ use ratatui::widgets::Paragraph;
 use super::input::{self, Input, Key};
 use super::style::{self, theme};
 use super::terminal;
-use super::view::markdown;
 
 pub struct Page {
     pub title: String,
-    pub diff: bool,
 }
 
 pub fn run(path: &Path, page: Page, remove: bool) -> io::Result<()> {
     let text = fs::read_to_string(path)?;
     if remove {
-        let _ = fs::remove_file(path);
+        fs::remove_file(path)?;
+        let popups = crate::net::state_dir()?.join("popups");
+        if let Some(dir) = path.parent().filter(|dir| dir.parent() == Some(&popups)) {
+            fs::remove_dir(dir)?;
+        }
     }
     let mut terminal = ratatui::try_init()?;
     let reply = terminal::probe(&mut io::stdout())?;
@@ -46,8 +48,8 @@ pub fn run(path: &Path, page: Page, remove: bool) -> io::Result<()> {
                     return Ok(());
                 }
                 Ok(Input::Closed) => return Ok(()),
-                Ok(Input::Key(Key::Down | Key::Char('j') | Key::Enter)) => top += 1,
-                Ok(Input::Key(Key::Up | Key::Char('k'))) => top = top.saturating_sub(1),
+                Ok(Input::Key(Key::Down | Key::Char('d') | Key::Enter)) => top += 1,
+                Ok(Input::Key(Key::Up | Key::Char('u'))) => top = top.saturating_sub(1),
                 Ok(Input::Key(Key::Char(' ' | 'f'))) => top += step,
                 Ok(Input::Key(Key::Char('b'))) => top = top.saturating_sub(step),
                 Ok(Input::Key(Key::First | Key::Char('g'))) => top = 0,
@@ -73,14 +75,9 @@ fn draw(frame: &mut Frame, page: &Page, text: &str, top: &mut usize) -> usize {
     if inner.height < 3 || inner.width < 10 {
         return 0;
     }
-    let width = inner.width as usize;
     let body = Rect::new(inner.x, inner.y + 2, inner.width, inner.height - 3);
     let room = body.height as usize;
-    let lines = if page.diff {
-        diff_lines(text)
-    } else {
-        markdown::markdown(text, width)
-    };
+    let lines = diff_lines(text);
     *top = (*top).min(lines.len().saturating_sub(room));
     let shown: Vec<Line<'static>> = lines.iter().skip(*top).take(room).cloned().collect();
     frame.render_widget(Paragraph::new(shown), body);
@@ -102,7 +99,7 @@ fn draw(frame: &mut Frame, page: &Page, text: &str, top: &mut usize) -> usize {
     let keys = Line::from(vec![
         Span::styled("esc", style::bold(theme().text)),
         Span::styled(" close   ", style::fg(theme().faint)),
-        Span::styled("j k", style::bold(theme().text)),
+        Span::styled("u d", style::bold(theme().text)),
         Span::styled(" scroll   ", style::fg(theme().faint)),
         Span::styled("space b", style::bold(theme().text)),
         Span::styled(" page", style::fg(theme().faint)),

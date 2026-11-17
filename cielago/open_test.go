@@ -47,9 +47,8 @@ func TestOpenFindsProjectsInTheUsualFoldersWhenThereIsNoConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group, err := localGroup(filepath.Join(real, "code", "stampr", "stampr-ops"), roots)
-	if err != nil || group != "stampr" {
-		t.Errorf("group = %q, %v", group, err)
+	if group := localGroup(filepath.Join(real, "code", "stampr", "stampr-ops"), roots); group != "stampr" {
+		t.Errorf("group = %q", group)
 	}
 }
 
@@ -93,8 +92,7 @@ func TestAProjectReachedThroughASymlinkedRootKeepsItsGroup(t *testing.T) {
 	if err := os.Symlink(real, filepath.Join(home, "projects")); err != nil {
 		t.Fatal(err)
 	}
-	group, err := localGroup(filepath.Join(real, "stampr", "web"), []string{"~/projects"})
-	if err != nil || group != "stampr" {
-		t.Errorf("group = %q, %v", group, err)
+	if group := localGroup(filepath.Join(real, "stampr", "web"), []string{"~/projects"}); group != "stampr" {
+		t.Errorf("group = %q", group)
 	}
 }

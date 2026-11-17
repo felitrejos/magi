@@ -3,12 +3,11 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use super::alerts::Alerts;
-use super::labels::Labels;
 use super::launcher::{self, Listing, Menu, Place};
 use super::units;
 use crate::proto::{
-    self, Agent, AgentSession, CodexModel, FULL, Forward, ForwardState, Identity, Plan, Reply,
-    Sample, SessionState, SharedLabels, Welcome,
+    self, AgentSession, CodexModel, FULL, Forward, ForwardState, Identity, Plan, Reply, Sample,
+    SessionState, Welcome,
 };
 use crate::tailscale::Peer;
 
@@ -44,9 +43,8 @@ pub enum LinkUpdate {
     Reply(Reply),
     Folders(Vec<String>),
     Models(Vec<CodexModel>),
-    Labels(SharedLabels),
     Shown(crate::proto::Shown),
-    Screen(crate::proto::Screen),
+    Read(crate::proto::View),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -323,8 +321,6 @@ pub struct Model {
     pub links: HashMap<Endpoint, Link>,
     pub selected: usize,
     pub port: u16,
-    pub labels: Labels,
-    pub naming: Option<Naming>,
     pub machine_page: Option<String>,
     pub alerts: Alerts,
     focus: Option<Focus>,
@@ -336,14 +332,8 @@ pub struct Model {
     pub folders: BTreeMap<Endpoint, Folders>,
     pub codex_models: BTreeMap<Endpoint, Vec<CodexModel>>,
     pub cell_size: Option<(u32, u32)>,
-    pub shared_sent: u64,
     awaiting: Option<Awaiting>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Naming {
-    pub machine: String,
-    pub text: String,
+    pub moved: HashMap<(Endpoint, String), Option<Instant>>,
 }
 
 struct Flash {
@@ -467,8 +457,6 @@ impl Model {
             links: HashMap::new(),
             selected: 0,
             port,
-            labels: Labels::default(),
-            naming: None,
             machine_page: None,
             alerts,
             focus: None,
@@ -480,8 +468,8 @@ impl Model {
             folders: BTreeMap::new(),
             codex_models: BTreeMap::new(),
             cell_size: None,
-            shared_sent: 0,
             awaiting: None,
+            moved: HashMap::new(),
         }
     }
 
@@ -508,29 +496,15 @@ impl Model {
                 }
                 return;
             }
-            LinkUpdate::Labels(shared) => {
-                let updated = shared.updated_ms;
-                match self.labels.adopt(shared) {
-                    Ok(true) => self.shared_sent = updated,
-                    Ok(false) => {}
-                    Err(error) => {
-                        self.flash(format!("couldn't save the labels: {error}"), false, now)
-                    }
-                }
-                return;
-            }
             LinkUpdate::Models(models) => {
                 if self.folders.contains_key(&endpoint) {
                     self.codex_models.insert(endpoint, models);
                 }
                 return;
             }
-            LinkUpdate::Screen(_) => return,
+            LinkUpdate::Read(_) => return,
             update => update,
         };
-        if matches!(update, LinkUpdate::Welcome(_)) {
-            self.shared_sent = 0;
-        }
         let Some(link) = self.links.get_mut(&endpoint) else {
             return;
         };
@@ -577,8 +551,7 @@ impl Model {
             LinkUpdate::Reply(_)
             | LinkUpdate::Folders(_)
             | LinkUpdate::Models(_)
-            | LinkUpdate::Labels(_)
-            | LinkUpdate::Screen(_)
+            | LinkUpdate::Read(_)
             | LinkUpdate::Shown(_) => {
                 unreachable!("replies, screens and folders are handled before a link is looked up")
             }
@@ -728,6 +701,26 @@ impl Model {
             .collect()
     }
 
+    pub fn moved_forwards(&self, now: Instant) -> Vec<(Endpoint, String)> {
+        let rows = self.rows(now);
+        let agents = self.agents(now);
+        let agents = &agents;
+        rows.iter()
+            .filter_map(|row| Some((row.endpoint, row.machine()?.latest.as_ref()?)))
+            .flat_map(|(endpoint, sample)| {
+                sample.forwards.iter().filter_map(move |forward| {
+                    let moved = agents.iter().any(|agent| {
+                        agent.live
+                            && agent.session.id == forward.session
+                            && !same_machine(&forward.host, &agent.machine)
+                            && !same_machine(&forward.ssh, &agent.machine)
+                    });
+                    moved.then(|| (endpoint, forward.session.clone()))
+                })
+            })
+            .collect()
+    }
+
     pub fn forwards_to(
         &self,
         session: &str,
@@ -800,7 +793,7 @@ impl Model {
     }
 
     pub fn move_suggestion(&self, agent: &AgentRow<'_>, now: Instant) -> Option<MoveSuggestion> {
-        if agent.session.agent != Agent::ClaudeCode || !agent.live {
+        if !agent.live {
             return None;
         }
         let rows = self.rows(now);
@@ -870,12 +863,6 @@ impl Model {
         self.focus = self.selection(now);
     }
 
-    pub fn machine_label(&self, name: &str, names: &[&str]) -> String {
-        self.labels
-            .machine_label(name)
-            .map_or_else(|| machine_tag(name, names).to_string(), str::to_string)
-    }
-
     pub fn end_launch(&mut self) {
         self.folders.clear();
         self.codex_models.clear();
@@ -902,7 +889,7 @@ impl Model {
             let machine = menu.machines.len();
             menu.machines.push(Place {
                 name: row.name.clone(),
-                tag: self.machine_label(&row.name, &names),
+                tag: machine_tag(&row.name, &names).to_string(),
                 cpu: row.machine().map_or(0.0, Machine::smoothed_cpu),
                 free: sample.map_or(0, |sample| {
                     sample.memory.total.saturating_sub(sample.memory.used)
@@ -1101,11 +1088,10 @@ mod tests {
                 hostname: node.into(),
                 tailscale_node: Some(node.into()),
                 os: "test".into(),
-                kernel: "test".into(),
-                arch: "test".into(),
+                arch: String::new(),
+                tools: Vec::new(),
                 cpu_model: "test".into(),
                 core_kinds: Vec::new(),
-                agent_version: "test".into(),
             },
         }))
     }
@@ -1233,7 +1219,7 @@ mod tests {
 
     #[test]
     fn agents_sort_by_who_needs_you_and_lost_machines_go_last() {
-        use crate::proto::{Agent, AgentSession, Tokens, Waiting};
+        use crate::proto::{Agent, AgentSession, Waiting};
         let now = Instant::now();
         let mut model = model_with(&[(LOCAL, "mac"), (HOMELAB, "homelab")], &[], now);
         let session = |title: &str, state: SessionState, state_secs: u32| AgentSession {
@@ -1246,20 +1232,18 @@ mod tests {
             model: String::new(),
             context_tokens: 0,
             context_used: None,
-            tokens: Tokens::default(),
             cost_micros: 0,
             cost_complete: true,
-            age_secs: 0,
             pane: None,
             usage: None,
             children: Vec::new(),
             branch: None,
-            worktree: None,
             parent: None,
             activity: None,
             mode: None,
             queued: None,
             remote: None,
+            pr: None,
         };
         let mac = Sample {
             sessions: vec![

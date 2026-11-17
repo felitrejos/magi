@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::rex::Location;
+use super::rex::{Location, running, running_child};
 use crate::proto::{SessionState, Waiting};
 use crate::{bounded, handoff};
 
@@ -61,14 +61,16 @@ impl Status {
     }
 }
 
-pub const REX_API: u64 = 14;
-pub const REX_RELEASE: &str = "0.1.0-preview.19";
+pub const REX_API: u64 = 16;
+pub const REX_RELEASE: &str = "0.1.0-preview.20";
 
 #[derive(Default)]
 struct Shared {
     outdated: Option<String>,
     statuses: HashMap<String, Status>,
+    children: HashMap<String, HashMap<String, String>>,
     asked: HashSet<String>,
+    listed: HashSet<String>,
     rearranged: HashSet<String>,
     woken: bool,
 }
@@ -98,45 +100,43 @@ impl Events {
     }
 
     pub fn status(&self, location: &Location) -> Option<Status> {
-        let first_time = {
-            let mut shared = self.lock();
-            if let Some(status) = shared.statuses.get(&location.block) {
-                return Some(status.clone());
-            }
-            shared.asked.insert(location.block.clone())
-        };
-        if !first_time {
-            return None;
+        if self.lock().asked.insert(location.block.clone()) {
+            self.list(location);
         }
-        let output = bounded::output(
-            &mut location.rex(
-                "1s",
-                &[
-                    "block",
-                    "call",
-                    "-s",
-                    &location.session,
-                    "-b",
-                    &location.block,
-                    "program_status",
-                    "{}",
-                ],
-            ),
-            ASK_WITHIN,
-        )
-        .ok()?;
-        let reply: Value = serde_json::from_slice(&output.stdout).ok()?;
-        let status = reply["records"].as_array()?.iter().find_map(|record| {
-            status(&json!({"id": record["id"].as_str().unwrap_or(""), "record": record}))
-        })?;
-        let mut shared = self.lock();
-        Some(
+        self.lock().statuses.get(&location.block).cloned()
+    }
+
+    pub fn running_children(&self, location: &Location) -> Option<HashMap<String, String>> {
+        let shared = self.lock();
+        shared.listed.contains(&location.block).then(|| {
             shared
-                .statuses
-                .entry(location.block.clone())
-                .or_insert(status)
-                .clone(),
-        )
+                .children
+                .get(&location.block)
+                .cloned()
+                .unwrap_or_default()
+        })
+    }
+
+    fn list(&self, location: &Location) {
+        let Ok(records) = location.program_status() else {
+            return;
+        };
+        let mut shared = self.lock();
+        let block = &location.block;
+        for record in &records {
+            if let Some(child) = running_child(record) {
+                shared
+                    .children
+                    .entry(block.clone())
+                    .or_default()
+                    .insert(child, doing(record));
+            } else if let Some(status) =
+                status(&json!({"id": record["id"].as_str().unwrap_or(""), "record": record}))
+            {
+                shared.statuses.entry(block.clone()).or_insert(status);
+            }
+        }
+        shared.listed.insert(block.clone());
     }
 
     pub fn rearranged(&self) -> HashSet<String> {
@@ -187,7 +187,9 @@ impl Events {
             }
             let mut shared = self.lock();
             shared.statuses.clear();
+            shared.children.clear();
             shared.asked.clear();
+            shared.listed.clear();
             drop(shared);
             thread::sleep(RECONNECT_AFTER);
         }
@@ -207,12 +209,36 @@ impl Events {
         let mut shared = self.lock();
         match name.as_str() {
             "program_status_changed" => {
-                if let Some(status) = status(&payload) {
-                    shared.statuses.insert(block, status);
+                let id = payload["id"].as_str().unwrap_or_default().to_string();
+                if id.is_empty() {
+                    if let Some(status) = status(&payload) {
+                        shared.statuses.insert(block, status);
+                    }
+                } else if running(&payload["record"]) {
+                    let doing = doing(&payload["record"]);
+                    shared.children.entry(block).or_default().insert(id, doing);
+                } else if let Some(children) = shared.children.get_mut(&block) {
+                    children.remove(&id);
                 }
             }
-            "program_status_removed" | "child_exited" => {
+            "program_status_removed" => {
+                for id in payload["ids"].as_array().into_iter().flatten() {
+                    match id.as_str() {
+                        Some("") => {
+                            shared.statuses.remove(&block);
+                        }
+                        Some(id) => {
+                            if let Some(children) = shared.children.get_mut(&block) {
+                                children.remove(id);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+            "child_exited" => {
                 shared.statuses.remove(&block);
+                shared.children.remove(&block);
             }
             _ => {}
         }
@@ -265,6 +291,19 @@ fn block_event(line: &str) -> Option<(String, String, Value)> {
     ))
 }
 
+fn doing(record: &Value) -> String {
+    clean(record["msg"].as_str().unwrap_or_default())
+}
+
+fn clean(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_ACTIVITY_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn status(payload: &Value) -> Option<Status> {
     let record = &payload["record"];
     let app = record["effective_app"].as_str()?;
@@ -276,13 +315,8 @@ fn status(payload: &Value) -> Option<Status> {
         kind: record["kind"].as_str().map(str::to_string),
         message: record["msg"]
             .as_str()
-            .map(|text| {
-                text.chars()
-                    .filter(|c| !c.is_control())
-                    .take(MAX_ACTIVITY_CHARS)
-                    .collect::<String>()
-            })
-            .filter(|text| !text.trim().is_empty()),
+            .map(clean)
+            .filter(|text| !text.is_empty()),
     })
 }
 
@@ -321,6 +355,43 @@ mod tests {
             r#"{"ids":[""],"reason":"prompt"}"#,
         ));
         assert_eq!(events.known("b1"), None);
+    }
+
+    #[test]
+    fn a_panes_running_subagents_follow_its_child_records() {
+        let events = Events::default();
+        let pane = Location::in_test("s", "b1");
+        assert_eq!(events.running_children(&pane), None);
+        events.lock().listed.insert("b1".into());
+        events.read(&event(
+            "program_status_changed",
+            r#"{"id":"a1","record":{"state":"working","effective_app":"claude-code","msg":"Read(src/main.rs)"},"reason":"report"}"#,
+        ));
+        events.read(&event(
+            "program_status_changed",
+            r#"{"id":"a2","record":{"state":"working","effective_app":"claude-code"},"reason":"report"}"#,
+        ));
+        events.read(&event(
+            "program_status_changed",
+            r#"{"id":"a2","record":{"state":"done","effective_app":"claude-code"},"reason":"report"}"#,
+        ));
+        events.read(&event(
+            "program_status_changed",
+            r#"{"id":"","record":{"state":"working","effective_app":"claude-code"},"reason":"report"}"#,
+        ));
+        assert_eq!(
+            events.running_children(&pane),
+            Some(HashMap::from([(
+                "a1".to_string(),
+                "Read(src/main.rs)".to_string()
+            )]))
+        );
+        events.read(&event(
+            "program_status_removed",
+            r#"{"ids":["a1"],"reason":"report"}"#,
+        ));
+        assert_eq!(events.running_children(&pane), Some(HashMap::new()));
+        assert!(events.known("b1").is_some());
     }
 
     #[test]

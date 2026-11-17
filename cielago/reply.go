@@ -42,7 +42,10 @@ func (t *Task) delegateCommand(host Host, setup string, resume bool) []string {
 func (t *Task) removeCopy(r *Remote) error {
 	slug := ""
 	if t.Kind == kindDelegate {
-		slug, _ = projectSlug(t.RunDir)
+		var err error
+		if slug, err = projectSlug(t.RunDir); err != nil {
+			return err
+		}
 	}
 	if _, err := sh(r, taskScript, "remove", t.Dir, slug); err != nil {
 		return fmt.Errorf("removing its copy at %s on %s failed: %w", t.Dir, t.Host, err)
@@ -63,13 +66,20 @@ func closeIdleCopy(id string, idle time.Duration) (bool, error) {
 	return true, t.closeCopy()
 }
 
-func sweepIdleCopies() {
-	tasks, _ := listTasks()
+func sweepIdleCopies() string {
+	tasks, err := listTasks()
+	errs := []error{err}
 	for _, t := range tasks {
 		if t.Outcome != nil && t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies {
-			closeIdleCopy(t.ID, keepCopies)
+			if _, err := closeIdleCopy(t.ID, keepCopies); err != nil {
+				errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
+			}
 		}
 	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Sprintf("Note: closing idle task copies failed: %v\n", err)
+	}
+	return ""
 }
 
 func (t *Task) closeCopy() error {
@@ -129,7 +139,7 @@ func replyTask(ctx context.Context, id, message string) (*started, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkRoom(r, t.Host, host, t); err != nil {
+	if err := checkRoom(r, t.Host, host, t, "room"); err != nil {
 		return nil, err
 	}
 	if _, err := shIn(r, `cd -- "$1" && rm -f exit status pid log view && cat > prompt`, []byte(message), t.Dir); err != nil {

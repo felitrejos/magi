@@ -37,7 +37,7 @@ case $command in
     printf '%s\n' "$newest"
     ;;
   cwd)
-    tail -n 400 "$1" | grep -oE '"cwd":"([^"\\]|\\.)*"' | tail -n 1
+    grep -F '"cwd":"' "$1" | tail -n 20
     ;;
   stop)
     pid=$1 id=$2 since=$3

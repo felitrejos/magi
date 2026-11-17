@@ -59,18 +59,15 @@ func moveEvents(t *testing.T, out string) []moveReport {
 	return events
 }
 
-func TestMoveRefusesCodexAndUnknownSessions(t *testing.T) {
+func TestMoveRefusesUnknownSessions(t *testing.T) {
 	f := newFixture(t)
 	f.moveHost()
-	codex := "01a1c7ca-8144-7e23-82c1-87dc991d71d6"
-	f.write(filepath.Join(f.home, ".codex", "sessions", "2026", "11", "11"), "rollout-2026-11-11T00-28-20-"+codex+".jsonl", "{}")
 	fresh := "0f0f0f0f-1111-2222-3333-eeeeeeeeeeee"
 	f.write(filepath.Join(f.home, ".claude", "sessions"), "4242.json", `{"pid":4242,"sessionId":"`+fresh+`","status":"idle"}`)
 	for id, want := range map[string]string{
 		fresh:                                  "session 0f0f0f0f hasn't started a conversation yet, so there's nothing to move",
-		codex:                                  "is a Codex session; cielago moves Claude Code sessions only",
-		"0f0f0f0f-1111-2222-3333-777777777777": "no Claude Code session 0f0f0f0f-1111-2222-3333-777777777777",
-		"not-an-id":                            "is not a Claude session id",
+		"0f0f0f0f-1111-2222-3333-777777777777": "no Claude Code or Codex session 0f0f0f0f-1111-2222-3333-777777777777",
+		"not-an-id":                            "is not a session id",
 	} {
 		var out strings.Builder
 		if err := moveCommand([]string{id, "server", "--json"}, &out); err != errReported {
@@ -124,7 +121,7 @@ func TestMovingABusySessionWaitsForItsTurnAndReportsTheHandoff(t *testing.T) {
 	f.moveHost()
 	id := "0f0f0f0f-1111-2222-3333-999999999999"
 	proc, _ := f.localSession(id, "busy")
-	path, _ := armedPath(id)
+	path, _ := armedPath(id, ".json")
 
 	done := make(chan string, 1)
 	go func() {
@@ -160,7 +157,7 @@ func TestAMoveThatStaysRemembersItUntilTheTurnEnds(t *testing.T) {
 	f.moveHost()
 	id := "0f0f0f0f-1111-2222-3333-dddddddddddd"
 	f.localSession(id, "busy")
-	path, _ := armedPath(id)
+	path, _ := armedPath(id, ".json")
 	done := make(chan string, 1)
 	go func() {
 		var out strings.Builder
@@ -195,7 +192,7 @@ func TestMoveSaysWhenTheStopHookNeverRuns(t *testing.T) {
 		moveCommand([]string{id, "server", "--json"}, &out)
 		done <- out.String()
 	}()
-	path, _ := armedPath(id)
+	path, _ := armedPath(id, ".json")
 	if !waitForFile(t, path, 5*time.Second) {
 		t.Fatal("the session wasn't armed")
 	}
@@ -219,14 +216,14 @@ func TestTheStopHookReportsAFailedMoveToTheWaitingCommand(t *testing.T) {
 	f := newFixture(t)
 	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nlauncher = \"tmux\"\n")
 	id := "0f0f0f0f-1111-2222-3333-bbbbbbbbbbbb"
-	path, _ := armedPath(id)
+	path, _ := armedPath(id, ".json")
 	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"server","pid":`+strconv.Itoa(os.Getppid())+`,"notify":true}`)
 	input := `{"session_id":"` + id + `","transcript_path":"/nowhere/` + id + `.jsonl","cwd":"/nowhere"}`
 	var out strings.Builder
 	if err := stopHook(strings.NewReader(input), &out); err != nil {
 		t.Fatal(err)
 	}
-	result, _ := moveResultPath(id)
+	result, _ := armedPath(id, ".result.json")
 	data, err := os.ReadFile(result)
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +249,7 @@ func TestASecondMoveOfTheSameSessionIsRefused(t *testing.T) {
 		t.Errorf("events = %+v", events)
 	}
 	unlock()
-	path, _ := armedPath(id)
+	path, _ := armedPath(id, ".json")
 	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"other","pid":1}`)
 	out.Reset()
 	moveCommand([]string{id, "server", "--json"}, &out)
