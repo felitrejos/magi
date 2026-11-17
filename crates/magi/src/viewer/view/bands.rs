@@ -7,7 +7,10 @@ use ratatui::text::Span;
 
 use super::agents::{cost, state_text};
 use super::{Composed, machines, plans_line, render_footer, selected_style, truncate};
-use crate::proto::{Checks, ForwardState, PrState, PullRequest, Review, SessionState};
+use crate::proto::{
+    AgentSession, Checks, ChildKind, ChildState, ForwardState, PrState, PullRequest, Review,
+    SessionState,
+};
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Focus, LinkState, Model, Row};
 use crate::viewer::style::{self, theme};
@@ -230,6 +233,17 @@ fn parent_link(agent: &AgentRow<'_>, agents: &[AgentRow<'_>]) -> Option<String> 
     Some(format!("← {}", parent.session.title))
 }
 
+fn sent_to(session: &AgentSession) -> Vec<&str> {
+    let mut hosts: Vec<&str> = session
+        .children
+        .iter()
+        .filter(|child| child.kind == ChildKind::Task && child.state == ChildState::Running)
+        .filter_map(|child| child.detail.strip_prefix("on ")?.split(" · ").next())
+        .collect();
+    hosts.dedup();
+    hosts
+}
+
 fn session_line(
     agent: &AgentRow<'_>,
     machine: Option<&str>,
@@ -310,6 +324,10 @@ fn session_line(
         details.push((0, "queued".into()));
     }
     details.extend(parent.map(|link| (0, link)));
+    let sent = sent_to(session);
+    if !sent.is_empty() {
+        details.push((0, format!("⇢ {}", sent.join(", "))));
+    }
     if let Some(pr) = &session.pr {
         details.push((1, pull_request(pr)));
     }

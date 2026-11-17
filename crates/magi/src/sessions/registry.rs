@@ -135,7 +135,7 @@ fn parse(text: &[u8]) -> Parsed {
     let status = match json.status.as_deref().unwrap_or_default() {
         "busy" => Status::Busy,
         "waiting" => Status::Waiting(json.waiting_for.unwrap_or_default()),
-        "idle" => Status::Idle,
+        "idle" | "shell" => Status::Idle,
         _ => return unknown(&value),
     };
     Parsed::Session(Registered {
@@ -286,6 +286,11 @@ mod tests {
         )));
         assert_eq!(waiting.status, Status::Waiting("permission prompt".into()));
         assert_eq!(session(parse(&entry("idle", ""))).status, Status::Idle);
+        assert_eq!(
+            session(parse(&entry("shell", ""))).status,
+            Status::Idle,
+            "Claude Code 2.1.326 writes shell when its turn is over but a background shell runs"
+        );
     }
 
     #[test]

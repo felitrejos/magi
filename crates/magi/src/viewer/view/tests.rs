@@ -629,3 +629,29 @@ fn work_sent_to_another_machine_points_back_to_the_session_that_sent_it() {
         .unwrap();
     assert!(!sender_line.contains(" on host-1"), "{sender_line}");
 }
+
+#[test]
+fn a_session_shows_where_its_cielago_work_is_running() {
+    let now = Instant::now();
+    let mut model = fleet(1, now);
+    let mut sender = agent("linux tests", SessionState::Working { tool: None }, None);
+    sender.children = vec![Child {
+        id: "task:6c58d408".into(),
+        kind: ChildKind::Task,
+        label: "linux-tests-demo".into(),
+        detail: "on homelab · running".into(),
+        state: ChildState::Running,
+        secs: 0,
+        task: None,
+        doing: None,
+    }];
+    let mut here = sample(0.1, 8);
+    here.sessions = vec![sender];
+    model.apply(Endpoint::Local, LinkUpdate::Sample(Box::new(here)), now);
+    let screen = draw(&model, 220, 60, now);
+    let line = screen
+        .lines()
+        .find(|line| line.contains("linux tests"))
+        .unwrap();
+    assert!(line.contains("⇢ homelab"), "{line}");
+}
