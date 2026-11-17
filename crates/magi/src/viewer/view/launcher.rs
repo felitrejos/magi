@@ -111,10 +111,10 @@ fn draw_projects(frame: &mut Frame, area: Rect, launcher: &Launcher) {
         .machines
         .iter()
         .filter_map(|place| match &place.listing {
-            Listing::Asking => Some(faint(&format!("asking {} for its projects…", place.tag))),
+            Listing::Asking => Some(faint(&format!("asking {} for its projects…", place.name))),
             Listing::Failed(reason) => Some(Line::from(clip(
                 vec![Span::styled(
-                    format!("{}: {reason}", place.tag),
+                    format!("{}: {reason}", place.name),
                     style::fg(theme().warn),
                 )],
                 width,
@@ -152,7 +152,7 @@ fn draw_projects(frame: &mut Frame, area: Rect, launcher: &Launcher) {
         let machines = project
             .folders
             .iter()
-            .map(|folder| launcher.menu.machines[folder.machine].tag.as_str())
+            .map(|folder| launcher.menu.machines[folder.machine].name.as_str())
             .collect::<Vec<_>>()
             .join(" · ");
         let right = vec![Span::styled(machines, style::fg(theme().faint))];
@@ -186,7 +186,7 @@ fn machine_line(launcher: &Launcher, width: usize) -> Line<'static> {
     let at = launcher.folder();
     for (index, folder) in project.folders.iter().enumerate() {
         let place = &launcher.menu.machines[folder.machine];
-        spans.push(pill(&place.tag, Some(index) == at, theme().text));
+        spans.push(pill(&place.name, Some(index) == at, theme().text));
     }
     if let Some(place) = launcher.place() {
         spans.push(Span::styled(

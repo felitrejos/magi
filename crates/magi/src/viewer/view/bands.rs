@@ -6,7 +6,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 
 use super::agents::{cost, state_text};
-use super::{Composed, machines, marks, plans_line, render_footer, selected_style, truncate};
+use super::{Composed, machines, plans_line, render_footer, selected_style, truncate};
 use crate::proto::{Checks, ForwardState, PrState, PullRequest, Review, SessionState};
 use crate::viewer::graphics::Graphics;
 use crate::viewer::model::{AgentRow, Focus, LinkState, Model, Row};
@@ -22,7 +22,7 @@ const MIN_TITLE: usize = 24;
 const MAX_TITLE: usize = 48;
 const MIN_DOING: usize = 12;
 const NARROW: usize = 72;
-const TAG_WIDTH: usize = 12;
+const TAG_WIDTH: usize = 22;
 
 enum Line<'a> {
     Heading(&'static str, Color),
@@ -77,7 +77,6 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
     let first = at
         .saturating_sub(room.saturating_sub(2))
         .min(lines.len().saturating_sub(room));
-    let tags = marks(&rows);
     let width = usize::from(body.width);
     for (offset, line) in lines.iter().skip(first).take(room).enumerate() {
         let area = Rect::new(body.x, body.y + offset as u16, body.width, 1);
@@ -92,16 +91,9 @@ pub fn render(frame: &mut Frame, model: &Model, now: Instant, graphics: &mut Gra
             Line::Heading(text, color) => {
                 Composed::of(vec![Span::styled(*text, style::bold(*color))])
             }
-            Line::Machine(row) => {
-                let tag = tags
-                    .get(&row.name)
-                    .map_or(row.name.as_str(), String::as_str);
-                machine_line(row, tag, width)
-            }
+            Line::Machine(row) => machine_line(row, &row.name, width),
             Line::Session(agent, asking) => {
-                let tag = tags
-                    .get(&agent.machine)
-                    .map_or(agent.machine.as_str(), String::as_str);
+                let tag = agent.machine.as_str();
                 let forwards = model.forwards_to(&agent.session.id, &agent.machine, now);
                 let parent = parent_link(agent, &agents);
                 session_line(agent, (*asking).then_some(tag), &forwards, parent, width)

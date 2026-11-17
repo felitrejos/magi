@@ -28,7 +28,6 @@ pub struct Menu {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Place {
     pub name: String,
-    pub tag: String,
     pub cpu: f32,
     pub free: u64,
     pub codex_models: Option<Vec<CodexModel>>,
@@ -535,7 +534,6 @@ mod tests {
     fn place(name: &str, cpu: f32, free_gb: u64) -> Place {
         Place {
             name: name.into(),
-            tag: name.into(),
             cpu,
             free: free_gb << 30,
             codex_models: Some(vec![

@@ -351,20 +351,6 @@ pub struct PendingMove {
     pub to: String,
 }
 
-pub fn machine_tag<'a>(name: &'a str, names: &[&str]) -> &'a str {
-    let tag = first_word(name);
-    let shared = names
-        .iter()
-        .filter(|other| first_word(other) == tag)
-        .count()
-        > 1;
-    if shared { name } else { tag }
-}
-
-fn first_word(name: &str) -> &str {
-    name.split(['-', '.', '_', ' ']).next().unwrap_or(name)
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Folders {
     Asking,
@@ -877,7 +863,6 @@ impl Model {
 
     pub fn menu(&self, now: Instant) -> Menu {
         let rows = self.rows(now);
-        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
         let agents = self.agents(now);
         let worked_in = |live: bool| -> Vec<String> {
             agents
@@ -896,7 +881,6 @@ impl Model {
             let machine = menu.machines.len();
             menu.machines.push(Place {
                 name: row.name.clone(),
-                tag: machine_tag(&row.name, &names).to_string(),
                 cpu: row.machine().map_or(0.0, Machine::smoothed_cpu),
                 free: sample.map_or(0, |sample| {
                     sample.memory.total.saturating_sub(sample.memory.used)

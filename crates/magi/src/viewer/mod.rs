@@ -383,8 +383,7 @@ fn start_chosen(model: &mut Model, links: &Links, choice: launcher::Choice, now:
         return;
     }
     let rows = model.rows(now);
-    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
-    let label = model::machine_tag(&choice.machine, &names).to_string();
+    let label = choice.machine.clone();
     let Some(endpoint) = rows
         .iter()
         .find(|row| row.name == choice.machine)

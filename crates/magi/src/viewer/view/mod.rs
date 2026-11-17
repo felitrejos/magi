@@ -4,7 +4,6 @@ pub(super) mod launcher;
 mod machines;
 pub(super) mod markdown;
 
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
@@ -14,7 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::graphics::Graphics;
-use super::model::{Focus, Model, Row, machine_tag};
+use super::model::{Focus, Model};
 use super::style::{self, theme};
 use super::units;
 use crate::proto::{Agent, FULL, Plan, SessionState, Waiting};
@@ -127,13 +126,6 @@ fn draw_panel(frame: &mut Frame, area: Rect, header: Header<'static>) {
         row.width as usize,
     );
     frame.render_widget(Paragraph::new(line), row);
-}
-
-fn marks(rows: &[Row<'_>]) -> HashMap<String, String> {
-    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
-    rows.iter()
-        .map(|row| (row.name.clone(), machine_tag(&row.name, &names).to_string()))
-        .collect()
 }
 
 fn body(area: Rect) -> Rect {
