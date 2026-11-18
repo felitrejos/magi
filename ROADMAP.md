@@ -29,32 +29,52 @@
 - **Follow Rex.** While Rex is in preview, magi supports only its latest
   release. Bump `REX_API` and `rexAPI` with each one.
 
-## 0.9.0
+## 1.0
 
-- **Split the install.** `magi` ships as one Go program that needs only
-  SSH. The overview ships as `magi-overview`.
-- **Never two live copies.** A move that fails leaves the session live on
-  exactly one machine, and a handoff is refused when the destination
-  already runs the session.
-- **Budgets that fit the hook.** Every step of a handoff gets a time budget
-  that fits inside the hook's time limit of 200 seconds.
-- **Remember unfinished moves.** A copy that a failed handoff couldn't stop
-  is recorded. `magi status` shows it and stops it in the same run, and so
-  does the next handoff of that session.
-- **Block typing after a move.** A session that has already moved refuses
-  new input on the machine it left.
-- **Safer pulls.** `pull` closes the old tab only after it succeeds, and
-  treats a session waiting on a prompt as busy.
-- **A limit for desktop sessions.** A desktop session that never closes
-  itself gets a time limit.
-- **tmux handoffs.** A handoff closes the tmux original and switches
-  attached tmux clients to the new window. Tab records get safer, and
-  `pull` opens a tmux window when there is no Rex.
-- **The MCP without the overview.** Machine load is read over SSH, so
-  choosing a machine works with no agents. `sessions` and `diff` are served
-  over SSH too. The live-control tools stay with the overview.
-- **Measure it.** Scripted round trips with Rex and with tmux, plus injected
-  failures, with the success rate published.
+1.0 is for a developer with two or more machines who wants one live coding
+session, Claude Code or Codex, to follow them from one machine to the next.
+The session arrives with its uncommitted work and its context, and there is
+exactly one live copy at any time. magi is not a cloud workspace.
+
+- **Keep up with Claude Code and Codex.** The core leans on their
+  undocumented session files and hooks, and that is the biggest risk to the
+  project. CI runs the handoff tests against the latest Claude Code and
+  Codex releases. `magi doctor` refuses a move when it finds a version it
+  hasn't been tested with.
+- **A guided first run.** `magi try` takes a new user from nothing to a
+  verified round trip between two machines. It checks the SSH key, that
+  Claude is signed in on the other machine and that the plugin is installed
+  there, then moves a test session there and back. A failure says exactly
+  what to fix.
+- **Hand back with SSH only.** Today, handing a session back to a laptop
+  that doesn't accept incoming SSH needs `magi-overview`. In 1.0 it works
+  with only the laptop's outgoing SSH.
+- **Recovery anyone can follow.** When a move fails because SSH drops, the
+  machine sleeps or the hook is killed, `magi status` says which copy is the
+  live one, cleans up the other and prints the exact command to continue.
+  Crash and network-drop tests run in CI, and their results are published
+  alongside the round-trip numbers.
+- **Show what gets copied.** Before a move, magi prints a short list of what
+  goes across, with files outside git, the secrets files the project listed,
+  ports and the services in the project's `.magi.toml`. Secrets show by
+  name, never by value. Defaults are conservative and SSH host key checks
+  stay on.
+- **A support matrix.** Mac to Linux and Linux to Linux are tested on every
+  release. WSL is either tested end to end or marked unsupported, in the
+  docs and in `magi init`. A table shows what works for Claude Code and for
+  Codex, since Codex has no end-of-turn hook and moves differently.
+- **Docs a stranger can use.** A five-minute tutorial that goes from one
+  machine to a second one, a troubleshooting page, a short versioning policy
+  that says what 1.x promises not to break, and a changelog.
+
+### Not in 1.0
+
+- Moving cloud or Claude Desktop sessions.
+- GitHub or pull request workflows.
+- Moving or starting sessions by itself.
+- New `magi-overview` features.
+- Native Windows.
+- New ways to delegate work.
 
 ## Decided against
 
