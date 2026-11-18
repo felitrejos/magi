@@ -1,0 +1,54 @@
+name: Compatibility
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["remote/**", ".github/workflows/compat.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  latest:
+    name: latest Claude Code and Codex on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: remote
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.x"
+          check-latest: true
+          cache-dependency-path: remote/go.sum
+      - name: Install the latest Claude Code
+        if: env.ANTHROPIC_API_KEY != ''
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install the latest Codex
+        if: env.OPENAI_API_KEY != ''
+        run: |
+          npm install -g @openai/codex
+          printenv OPENAI_API_KEY | codex login --with-api-key
+      - name: Versions
+        run: |
+          { echo "### Tested on ${{ matrix.os }}"; echo; claude --version 2>/dev/null || echo "Claude Code not installed (no ANTHROPIC_API_KEY secret)"; codex --version 2>/dev/null || echo "Codex not installed (no OPENAI_API_KEY secret)"; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: go test -tags contract -run Contract -count=1 -v ./...
