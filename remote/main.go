@@ -399,6 +399,9 @@ func stopHook(in io.Reader, out io.Writer) error {
 		res.note(writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}))
 	}
 	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir, Desktop: a.Desktop}))
+	if a.Desktop && res.RemoteControl != "" {
+		res.note(exec.Command("open", "claude://claude.ai/code/"+res.RemoteControl).Run())
+	}
 	return json.NewEncoder(out).Encode(handedOff(a, res))
 }
 
@@ -503,7 +506,7 @@ func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 	return Handoff{
 		HostName:       a.Host,
 		Note:           stillRunning(a.Note, input.BackgroundTasks),
-		Stay:           a.Stay,
+		Stay:           a.Stay || a.Desktop,
 		Host:           host,
 		SessionID:      input.SessionID,
 		TranscriptPath: input.TranscriptPath,

@@ -92,6 +92,9 @@ func TestAHandoffMovesTheSessionAndOpensItInItsOwnTab(t *testing.T) {
 	if res.ToDir != f.remote || res.NewFolder != "" {
 		t.Errorf("handed off to %s (new folder %q), want the existing clone %s", res.ToDir, res.NewFolder, f.remote)
 	}
+	if res.RemoteControl != "bridge" {
+		t.Errorf("Remote Control session = %q, want the one the new copy registered", res.RemoteControl)
+	}
 	if got, want := f.git(f.remote, "status", "--porcelain"), f.git(f.local, "status", "--porcelain"); got != want {
 		t.Errorf("server status:\n%s\nwant:\n%s", got, want)
 	}

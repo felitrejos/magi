@@ -84,13 +84,13 @@ func TestWaitForRemoteControlWaitsForTheNewSessionsBridge(t *testing.T) {
 	defer cancel()
 	r := f.remoteHost()
 	r.SetContext(ctx)
-	if err := waitForRemoteControl(r, "s1", launched); err == nil {
+	if _, err := waitForRemoteControl(r, "s1", launched); err == nil {
 		t.Fatal("an earlier run's bridge, or a new session without one, counted as up")
 	}
 
 	f.write(sessions, fresh+".json", `{"pid":`+fresh+`,"sessionId":"s1","startedAt":`+started+`,"bridgeSessionId":"cse_1"}`)
-	if err := waitForRemoteControl(f.remoteHost(), "s1", launched); err != nil {
-		t.Fatal(err)
+	if bridge, err := waitForRemoteControl(f.remoteHost(), "s1", launched); err != nil || bridge != "cse_1" {
+		t.Fatalf("bridge = %q, %v", bridge, err)
 	}
 }
 
@@ -100,7 +100,7 @@ func TestWaitForRemoteControlWorksWithNoSessionFiles(t *testing.T) {
 	defer cancel()
 	r := f.remoteHost()
 	r.SetContext(ctx)
-	err := waitForRemoteControl(r, "s1", time.Now())
+	_, err := waitForRemoteControl(r, "s1", time.Now())
 	if err == nil || !strings.Contains(err.Error(), "in time") {
 		t.Fatalf("err = %v, want a timeout rather than a script failure", err)
 	}
