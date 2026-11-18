@@ -211,44 +211,12 @@ func awaitForward(r forwardRecord, exited <-chan error) (bool, error) {
 }
 
 func forwardUp(r forwardRecord) bool {
-	if r.Rex != nil {
-		return rexForwardsActive(r)
-	}
 	for _, port := range r.Ports {
 		conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), forwardPoll)
 		if err != nil {
 			return false
 		}
 		conn.Close()
-	}
-	return true
-}
-
-func rexForwardsActive(r forwardRecord) bool {
-	out, err := exec.Command("rex", "--autostart=false", "-S", r.Rex.Server, "forward", "ls", "-s", r.Rex.Session, "--json").Output()
-	if err != nil {
-		return false
-	}
-	var listing struct {
-		Forwards []struct {
-			State     string `json:"state"`
-			Direction string `json:"direction"`
-			Listen    string `json:"listen"`
-		} `json:"forwards"`
-	}
-	if json.Unmarshal(out, &listing) != nil {
-		return false
-	}
-	active := map[string]bool{}
-	for _, f := range listing.Forwards {
-		if f.Direction == "local" && f.State == "active" {
-			active[f.Listen] = true
-		}
-	}
-	for _, port := range r.Ports {
-		if !active["127.0.0.1:"+strconv.Itoa(port)] {
-			return false
-		}
 	}
 	return true
 }

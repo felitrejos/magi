@@ -154,3 +154,39 @@ func TestHostsListsTheConfiguredMachinesInOrder(t *testing.T) {
 		t.Fatalf("hosts = %q, %v", out.String(), err)
 	}
 }
+
+func TestDoctorReadsWhetherTheMagiPluginIsInstalledAndEnabled(t *testing.T) {
+	f := newFixture(t)
+	f.config("local_roots = []\n")
+	f.tool("magi-overview", "#!/bin/sh\nexit 1\n")
+	f.tool("claude", `#!/bin/sh
+case "$1" in
+  --version) echo "2.1.325 (Claude Code)" ;;
+  auth) echo '{"loggedIn":true,"authMethod":"claude.ai"}' ;;
+  plugin) [ "$2 $3" = "list --json" ] && printf '%s' "$MAGI_TEST_PLUGINS" ;;
+esac
+`)
+	for plugins, want := range map[string]string{
+		`[{"id":"magi@magi","scope":"user","enabled":true}]`:                                       "✓ the magi plugin is installed and enabled",
+		`[{"id":"magi@magi","scope":"user","enabled":false}]`:                                      "✗ the magi plugin is installed but disabled\n      claude plugin enable magi@magi",
+		`[{"id":"notmagi@market","scope":"user","enabled":true}]`:                                  "✗ the magi plugin isn't installed",
+		`[{"id":"magi@magi","enabled":false},{"id":"magi@magi","scope":"project","enabled":true}]`: "✓ the magi plugin is installed and enabled",
+	} {
+		t.Setenv("MAGI_TEST_PLUGINS", plugins)
+		var out strings.Builder
+		doctor(nil, &out)
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("with %s the report lacks %q:\n%s", plugins, want, out.String())
+		}
+	}
+}
+
+func TestInitSuggestsAFolderReachedTwiceOnlyOnce(t *testing.T) {
+	f := newFixture(t)
+	if err := os.Symlink("developer", filepath.Join(f.home, "dev")); err != nil {
+		t.Fatal(err)
+	}
+	if got := existing(f.machine(), []string{"~/developer", "~/dev", "~/code", "~/developer"}); !slices.Equal(got, []string{"~/developer"}) {
+		t.Errorf("existing = %q", got)
+	}
+}

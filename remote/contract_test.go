@@ -130,7 +130,45 @@ func TestContractClaudeRegistersALiveSession(t *testing.T) {
 	}
 }
 
-func TestContractClaudeResumesAMovedTranscript(t *testing.T) {
+func hookSettings(t *testing.T, dir string, scripts map[string]string) (string, string) {
+	t.Helper()
+	hooks := filepath.Join(dir, "hooks")
+	if err := os.Mkdir(hooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registered := map[string]any{}
+	for event, body := range scripts {
+		path := filepath.Join(hooks, event+".sh")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+strings.ReplaceAll(body, "HOOKS", hooks)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		registered[event] = []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": path}}}}
+	}
+	settings, _ := json.Marshal(map[string]any{"hooks": registered})
+	return hooks, string(settings)
+}
+
+func pluginSessionStart(t *testing.T, command string) []any {
+	t.Helper()
+	plugin, err := os.ReadFile(filepath.Join("..", "plugin", "hooks", "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registered struct {
+		Hooks map[string][]map[string]any `json:"hooks"`
+	}
+	if err := json.Unmarshal(plugin, &registered); err != nil {
+		t.Fatal(err)
+	}
+	var groups []any
+	for _, group := range registered.Hooks["SessionStart"] {
+		group["hooks"] = []any{map[string]any{"type": "command", "command": command}}
+		groups = append(groups, group)
+	}
+	return groups
+}
+
+func TestContractClaudeResumesAMovedTranscriptAndGetsTheReturnNote(t *testing.T) {
 	from, to := contractDir(t), contractDir(t)
 	first := runClaude(t, from, "Remember the word KUMQUAT. Reply with just: ok")
 	local, err := newLocal(context.Background())
@@ -157,102 +195,58 @@ func TestContractClaudeResumesAMovedTranscript(t *testing.T) {
 	if err := os.Rename(s.Transcript, moved); err != nil {
 		t.Fatal(err)
 	}
-	second := runClaude(t, to, "--resume", first.SessionID, "What word did I ask you to remember? Reply with just the word.")
-	if !strings.Contains(strings.ToUpper(second.Result), "KUMQUAT") {
-		t.Fatalf("the resumed session didn't remember: %q", second.Result)
+	notes := t.TempDir()
+	path := returnNotePath(notes, first.SessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[magi] The secret word is TANGERINE."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var note bytes.Buffer
+	if err := passReturnNote(notes, first.SessionID, "SessionStart", &note); err != nil {
+		t.Fatal(err)
+	}
+	hooks, _ := hookSettings(t, to, map[string]string{"SessionStart": "cat > HOOKS/start.json\ncat <<'NOTE'\n" + note.String() + "NOTE\n"})
+	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{"SessionStart": pluginSessionStart(t, filepath.Join(hooks, "SessionStart.sh"))}})
+	second := runClaude(t, to, "--settings", string(settings), "--resume", first.SessionID, "What word did I ask you to remember, and what is the secret word? Reply with just the two words.")
+	reply := strings.ToUpper(second.Result)
+	if !strings.Contains(reply, "KUMQUAT") {
+		t.Errorf("the resumed session didn't remember: %q", second.Result)
+	}
+	if !strings.Contains(reply, "TANGERINE") {
+		t.Errorf("the note from the plugin's SessionStart hook didn't reach Claude: %q", second.Result)
+	}
+	var input struct {
+		SessionID string `json:"session_id"`
+		Source    string `json:"source"`
+	}
+	raw, _ := os.ReadFile(filepath.Join(hooks, "start.json"))
+	if json.Unmarshal(raw, &input) != nil || input.SessionID != first.SessionID || input.Source != "resume" {
+		t.Errorf("SessionStart input = %s, want session %s resumed", raw, first.SessionID)
 	}
 }
 
 func TestContractClaudeHooks(t *testing.T) {
 	dir := contractDir(t)
-	hooks := filepath.Join(dir, "hooks")
-	if err := os.Mkdir(hooks, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	stop := filepath.Join(hooks, "stop.sh")
-	prompt := filepath.Join(hooks, "prompt.sh")
-	write := func(path, body string) {
-		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(stop, `cat > "`+hooks+`/stop.json"
-if [ ! -e "`+hooks+`/blocked" ]; then
-  touch "`+hooks+`/blocked"
-  echo '{"decision":"block","reason":"Now reply with just the word STOPPED."}'
-fi
-`)
-	write(prompt, `cat > "`+hooks+`/prompt.json"
+	hooks, settings := hookSettings(t, dir, map[string]string{
+		"Stop": `cat >> HOOKS/stop.jsonl; echo >> HOOKS/stop.jsonl
+echo "$CLAUDE_PID" >> HOOKS/pids
+case $(grep -c . HOOKS/pids) in
+  1) echo '{"decision":"block","reason":"Now reply with just the word STOPPED."}' ;;
+  2) echo '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"Now reply with just the word CONTINUED."}}' ;;
+esac
+`,
+		"UserPromptSubmit": `cat > HOOKS/prompt.json
 echo '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"End every reply with the word GRAPEFRUIT."}}'
-`)
-	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{
-		"Stop":             []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": stop}}}},
-		"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": prompt}}}},
-	}})
-	res := runClaude(t, dir, "--settings", string(settings), "Reply with just: hi")
-	var input stopInput
-	raw, err := os.ReadFile(filepath.Join(hooks, "stop.json"))
-	if err != nil {
-		t.Fatalf("the Stop hook didn't run: %v", err)
-	}
-	if err := json.Unmarshal(raw, &input); err != nil {
-		t.Fatal(err)
-	}
-	if input.SessionID != res.SessionID || input.Cwd != dir {
-		t.Errorf("Stop hook input = %+v, want session %s in %s", input, res.SessionID, dir)
-	}
-	if _, err := os.Stat(input.TranscriptPath); err != nil {
-		t.Errorf("the Stop hook's transcript_path isn't there: %v", err)
-	}
-	if _, err := os.ReadFile(filepath.Join(hooks, "prompt.json")); err != nil {
-		t.Errorf("the UserPromptSubmit hook didn't run: %v", err)
-	}
-	if !strings.Contains(strings.ToUpper(res.Result), "STOPPED") {
-		t.Errorf("blocking the Stop hook didn't make Claude go on: %q", res.Result)
-	}
-	transcript, _ := os.ReadFile(input.TranscriptPath)
-	if !bytes.Contains(bytes.ToUpper(transcript), []byte("GRAPEFRUIT")) {
-		t.Errorf("additionalContext from the UserPromptSubmit hook didn't reach Claude")
-	}
-}
-
-func TestContractClaudeStopHookSeesItsProcessAndBackgroundTasks(t *testing.T) {
-	dir := contractDir(t)
-	hooks := filepath.Join(dir, "hooks")
-	if err := os.Mkdir(hooks, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	stop := filepath.Join(hooks, "stop.sh")
-	body := `#!/bin/sh
-cat >> "` + hooks + `/stop.jsonl"
-echo "pid=$CLAUDE_PID" >> "` + hooks + `/pids"
-if [ ! -e "` + hooks + `/fed" ]; then
-  touch "` + hooks + `/fed"
-  echo '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"Now reply with just the word CONTINUED."}}'
-fi
-`
-	if err := os.WriteFile(stop, []byte(body), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{
-		"Stop": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": stop}}}},
-	}})
-	cmd, out := startClaude(t, dir, "--settings", string(settings), "--allowedTools", "Bash(sleep:*)", "--",
+`,
+	})
+	cmd, out := startClaude(t, dir, "--settings", settings, "--allowedTools", "Bash(sleep:*)", "--",
 		"Start the shell command 'sleep 20' as a background task (run_in_background true), then without waiting reply with just: started")
-	finishClaude(t, cmd, out)
-
-	pids, err := os.ReadFile(filepath.Join(hooks, "pids"))
-	if err != nil {
-		t.Fatalf("the Stop hook didn't run: %v", err)
-	}
-	for _, pid := range strings.Fields(string(pids)) {
-		if pid != "pid="+strconv.Itoa(cmd.Process.Pid) {
-			t.Errorf("CLAUDE_PID in the Stop hook: %s, claude ran as %d", pid, cmd.Process.Pid)
-		}
-	}
+	res := finishClaude(t, cmd, out)
 	raw, err := os.ReadFile(filepath.Join(hooks, "stop.jsonl"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the Stop hook didn't run: %v", err)
 	}
 	type stopSeen struct {
 		stopInput
@@ -267,82 +261,35 @@ fi
 		}
 		stops = append(stops, s)
 	}
-	if len(stops) < 2 {
-		t.Fatalf("the Stop hook ran %d times, want the turn and the one its feedback continued:\n%s", len(stops), raw)
+	if len(stops) < 3 {
+		t.Fatalf("the Stop hook ran %d times, want the turn plus one for each way of making Claude go on:\n%s", len(stops), raw)
+	}
+	if stops[0].SessionID != res.SessionID || stops[0].Cwd != dir {
+		t.Errorf("Stop hook input = %+v, want session %s in %s", stops[0].stopInput, res.SessionID, dir)
+	}
+	if _, err := os.Stat(stops[0].TranscriptPath); err != nil {
+		t.Errorf("the Stop hook's transcript_path isn't there: %v", err)
 	}
 	if !slices.ContainsFunc(stops[0].BackgroundTasks, func(b backgroundTask) bool { return b.Type == "shell" && strings.Contains(b.Command, "sleep 20") }) {
-		t.Errorf("the first Stop hook's background_tasks don't list the running sleep: %+v", stops[0].BackgroundTasks)
+		t.Errorf("background_tasks don't list the running sleep: %+v", stops[0].BackgroundTasks)
 	}
-	if !stops[1].StopHookActive || !strings.Contains(strings.ToUpper(stops[1].LastAssistantMessage), "CONTINUED") {
-		t.Errorf("additionalContext from the Stop hook didn't make Claude go on in the same turn: %+v", stops[1])
+	if !strings.Contains(strings.ToUpper(stops[1].LastAssistantMessage), "STOPPED") {
+		t.Errorf("blocking the Stop hook didn't make Claude go on: %+v", stops[1])
 	}
-}
-
-func TestContractClaudeSessionStartTellsAResumedSession(t *testing.T) {
-	dir := contractDir(t)
-	first := runClaude(t, dir, "Reply with just: ok")
-	hooks := filepath.Join(dir, "hooks")
-	if err := os.Mkdir(hooks, 0o700); err != nil {
-		t.Fatal(err)
+	if !stops[2].StopHookActive || !strings.Contains(strings.ToUpper(stops[2].LastAssistantMessage), "CONTINUED") {
+		t.Errorf("additionalContext from the Stop hook didn't make Claude go on in the same turn: %+v", stops[2])
 	}
-	notes := t.TempDir()
-	path := returnNotePath(notes, first.SessionID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("[magi] The secret word is TANGERINE."), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var reply bytes.Buffer
-	if err := passReturnNote(notes, first.SessionID, "SessionStart", &reply); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(hooks, "start.out"), reply.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	start := filepath.Join(hooks, "start.sh")
-	if err := os.WriteFile(start, []byte(`#!/bin/sh
-cat > "`+hooks+`/start.json"
-cat "`+hooks+`/start.out"
-`), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	plugin, err := os.ReadFile(filepath.Join("..", "plugin", "hooks", "hooks.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var registered struct {
-		Hooks map[string][]struct {
-			Matcher string           `json:"matcher"`
-			Hooks   []map[string]any `json:"hooks"`
-		} `json:"hooks"`
-	}
-	if err := json.Unmarshal(plugin, &registered); err != nil {
-		t.Fatal(err)
-	}
-	sessionStart := registered.Hooks["SessionStart"]
-	for _, group := range sessionStart {
-		for _, hook := range group.Hooks {
-			hook["command"] = start
+	pids, _ := os.ReadFile(filepath.Join(hooks, "pids"))
+	for _, pid := range strings.Fields(string(pids)) {
+		if pid != strconv.Itoa(cmd.Process.Pid) {
+			t.Errorf("CLAUDE_PID in the Stop hook = %s, claude ran as %d", pid, cmd.Process.Pid)
 		}
 	}
-	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{"SessionStart": sessionStart}})
-	second := runClaude(t, dir, "--settings", string(settings), "--resume", first.SessionID, "What is the secret word? Reply with just the word.")
-	raw, err := os.ReadFile(filepath.Join(hooks, "start.json"))
-	if err != nil {
-		t.Fatalf("the plugin's SessionStart hook didn't run on resume: %v", err)
+	if _, err := os.Stat(filepath.Join(hooks, "prompt.json")); err != nil {
+		t.Errorf("the UserPromptSubmit hook didn't run: %v", err)
 	}
-	var input struct {
-		SessionID string `json:"session_id"`
-		Source    string `json:"source"`
-	}
-	if err := json.Unmarshal(raw, &input); err != nil {
-		t.Fatal(err)
-	}
-	if input.SessionID != first.SessionID || input.Source != "resume" {
-		t.Errorf("SessionStart input = %+v, want session %s resumed", input, first.SessionID)
-	}
-	if !strings.Contains(strings.ToUpper(second.Result), "TANGERINE") {
-		t.Errorf("the note from the SessionStart hook didn't reach Claude: %q", second.Result)
+	transcript, _ := os.ReadFile(stops[0].TranscriptPath)
+	if !bytes.Contains(bytes.ToUpper(transcript), []byte("GRAPEFRUIT")) {
+		t.Errorf("additionalContext from the UserPromptSubmit hook didn't reach Claude")
 	}
 }

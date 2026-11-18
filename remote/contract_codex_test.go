@@ -65,26 +65,6 @@ func codexThreadID(t *testing.T, out string) string {
 	return started.ThreadID
 }
 
-func TestContractCodexResumesAMovedSession(t *testing.T) {
-	from, to := contractDir(t), contractDir(t)
-	id := codexThreadID(t, runCodex(t, from, "Remember the word PERSIMMON. Reply with just: ok"))
-	local, err := newLocal(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := findCodexSession(local, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Cwd != from {
-		t.Fatalf("magi read the Codex session's folder as %q, want %q", s.Cwd, from)
-	}
-	answer := runCodex(t, to, "-c", `tui.resume_cwd="current"`, "resume", id, "What word did I ask you to remember? Reply with just the word.")
-	if !strings.Contains(strings.ToUpper(answer), "PERSIMMON") {
-		t.Fatalf("the resumed Codex session didn't remember:\n%s", answer)
-	}
-}
-
 func TestContractCodexResumesASessionMovedToAnotherCodexHome(t *testing.T) {
 	from, to := contractDir(t), contractDir(t)
 	id := codexThreadID(t, runCodex(t, from, "Remember the word QUINCE. Reply with just: ok"))

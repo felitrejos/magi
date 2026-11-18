@@ -278,36 +278,6 @@ func TestAnSSHForwardIsConnectedOnlyOnceEveryPortAccepts(t *testing.T) {
 	}
 }
 
-func TestARexForwardIsConnectedOnlyOnceRexSaysItIsActive(t *testing.T) {
-	path := forwardHome(t)
-	port := strconv.Itoa(freePort(t))
-	listing := filepath.Join(os.Getenv("HOME"), "forwards.json")
-	fakeTunnel(t, "rex", `case "$*" in
-  *"forward ls -s session:1 --json") cat "$HOME/forwards.json" ;;
-  *"forward new -s session:1 -L 127.0.0.1:`+port+`:localhost:`+port+`")
-`+longTunnel+` ;;
-  *) exit 2 ;;
-esac
-`)
-	state := func(s string) {
-		t.Helper()
-		body := `{"forwards":[{"session_id":"session:1","state":"` + s + `","direction":"local","listen":"127.0.0.1:` + port + `","connect":"localhost:` + port + `"}]}`
-		if err := os.WriteFile(listing, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	state("away")
-	n, _ := strconv.Atoi(port)
-	startRunner(t, path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Rex: &rexVia{Server: "homelab", Session: "session:1"}, Ports: []int{n}, State: forwardWaiting})
-	if stateFor(path, 3500*time.Millisecond, forwardConnected) {
-		t.Fatal("the forward was connected while Rex said it was away")
-	}
-	state("active")
-	if !stateFor(path, 2*time.Second, forwardConnected) {
-		t.Error("the forward never counted as connected once Rex said it was active")
-	}
-}
-
 func TestARexForwardStopsOnceItsSessionIsGone(t *testing.T) {
 	path := forwardHome(t)
 	fakeTunnel(t, "rex", `case "$*" in
