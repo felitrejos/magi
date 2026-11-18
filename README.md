@@ -17,11 +17,11 @@
 </p>
 
 <p align="center">
-  <img src="assets/subagent-ci.gif" alt="In a Claude Code session on a Mac, the user asks Claude to run CI here and, at the same time, on a machine that matches the Linux runner, and to fix whatever fails there. CI passes on the Mac. Claude proposes the homelab and the user picks it. A background Claude there runs ./ci.sh, and magi shows the Mac session's work running on the homelab. CI had failed on Linux because targets.json spelled x86_64 as x86-64, and the homelab Claude fixed it. The fix lands in the Mac's working tree, and CI passes on both machines." width="820">
+  <img src="assets/handoff.gif" alt="A Claude Code session in Rex on a Mac runs a small Python server on localhost:3000 that replies hi from felipes-macbook-pro. A pane under the session curls the Mac's localhost:3000 every second. The user types hand this off to my homelab. When the turn ends, the session moves to the homelab with the server and its uncommitted edit, and the Mac's localhost:3000 now answers hi from homelab. Asked there what it changed before the move and whether it is committed, Claude remembers the change and says it is uncommitted. Told to hand this back to the Mac and start the server there, the session returns, and the Mac's localhost:3000 says hi from felipes-macbook-pro again." width="820">
 </p>
 
 <p align="center">
-  <i>CI runs on the Mac and the Linux homelab at once, and the fix made on Linux lands back on the Mac by itself.</i>
+  <i>A session moves to the homelab and back, and the Mac's localhost:3000 follows it both ways.</i>
 </p>
 
 magi moves the Claude Code session you're in to another machine.
@@ -35,11 +35,11 @@ magi moves the Claude Code session you're in to another machine.
 ## Moving work between machines
 
 <p align="center">
-  <img src="assets/handoff.gif" alt="A Claude Code session in Rex on a Mac is asked what its project does and explains a small Python library. Told to hand this off to the homelab, magi moves it when the turn ends. The session opens in a tab on the homelab, and asked what it just said, it recaps its earlier answer." width="820">
+  <img src="assets/background-work.gif" alt="In a Claude Code session on a Mac, in a small link shortener project, the user asks for a background Claude to build a linux/amd64 Docker image on a machine that runs amd64 natively, to keep going until /health answers from the container, and meanwhile to add a /stats route on the Mac. Claude proposes the homelab and notes the weekly Claude plan is at 94%, and the user picks the homelab anyway. The Mac session writes /stats and its tests while a background Claude on the homelab writes a Dockerfile, builds the image and checks /health in the container. The overview shows both. When it finishes, the Dockerfile and .dockerignore land in the Mac's working tree by themselves, and git status shows the four uncommitted changes." width="820">
 </p>
 
 <p align="center">
-  <i>A session handed off to the homelab still remembers what it said.</i>
+  <i>The homelab builds the Docker image while the Mac session keeps working, and the new files land back on the Mac by themselves.</i>
 </p>
 
 - **Hand off.** Say "hand this off to my homelab" in a Claude Code session.
