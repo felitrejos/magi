@@ -46,7 +46,9 @@ magi moves the Claude Code session you're in to another machine.
   When the turn ends, the conversation, branch, uncommitted changes and
   listed secrets land there in a tab of its own. Say "hand this back to my
   Mac" there to return it, or without the overview run `magi pull MACHINE`.
-  `magi move` goes either way, Codex too. `magi doctor` checks both ends.
+  A session that left from Claude Desktop comes back into Desktop, in the
+  same sidebar entry, with what it did on the other machine. `magi move`
+  goes either way, Codex too. `magi doctor` checks both ends.
 - **Send work.** Claude can run a command on another machine, hand a task
   to a background Claude, or open a second session. Each runs in its own
   copy of your working tree, in a tab you can watch.

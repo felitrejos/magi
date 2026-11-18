@@ -54,10 +54,14 @@ exactly one live copy at any time. magi is not a cloud workspace.
   that doesn't accept incoming SSH needs `magi-overview`. In 1.0 it works
   with only the laptop's outgoing SSH.
 - **Claude Desktop parity.** Everything works the same from a Claude Desktop
-  session as from the CLI. Handing off from Desktop already works. Find out
-  whether Desktop can open a given session. If it can, handing back lands in
-  Desktop, and if not it lands in a terminal with Remote Control on, so it
-  shows in the Claude app.
+  session as from the CLI. Handing off from Desktop works, and so does
+  handing back into it. The session reopens in the same Desktop entry with
+  the whole conversation, and the note telling it where it now is arrives
+  with the next message. Two cases are left. One is the same hand back when
+  the Mac accepts SSH and the other machine hands the session back itself
+  instead of the Mac pulling it. The other is Desktop sessions that run in
+  a git worktree, since Desktop removes the worktree when it archives the
+  session.
 - **Recovery anyone can follow.** When a move fails because SSH drops, the
   machine sleeps or the hook is killed, `magi status` says which copy is the
   live one, cleans up the other and prints the exact command to continue.
