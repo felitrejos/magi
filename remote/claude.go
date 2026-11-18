@@ -252,6 +252,7 @@ type Prompt struct {
 	Sidecar                  string
 	Project                  string
 	Codex                    bool
+	WithMessage              bool
 }
 
 func handoffPrompt(p Prompt) string {
@@ -278,7 +279,11 @@ func handoffPrompt(p Prompt) string {
 	} else {
 		b.WriteString("Then ")
 	}
-	fmt.Fprintf(&b, "reply with one short line confirming you're on %s and wait for the next instruction.", p.To)
+	if p.WithMessage {
+		b.WriteString("answer the user's message.")
+	} else {
+		fmt.Fprintf(&b, "reply with one short line confirming you're on %s and wait for the next instruction.", p.To)
+	}
 	return b.String()
 }
 

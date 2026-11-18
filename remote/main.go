@@ -361,7 +361,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if a.Notify {
 		res.note(writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}))
 	}
-	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}))
+	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir, Desktop: a.Desktop}))
 	return json.NewEncoder(out).Encode(handedOff(a, res))
 }
 
@@ -379,7 +379,7 @@ func promptHook(in io.Reader, out io.Writer) error {
 	}
 	host, err := os.ReadFile(filepath.Join(home, ".magi", "moved", input.SessionID))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return passReturnNote(home, input.SessionID, out)
 	}
 	if err != nil {
 		return err
@@ -388,6 +388,27 @@ func promptHook(in io.Reader, out io.Writer) error {
 	return json.NewEncoder(out).Encode(map[string]string{
 		"decision": "block",
 		"reason":   fmt.Sprintf("This session moved to %s, so this copy takes no more messages. Continue it there, or bring it back here with magi pull %s.", to, to),
+	})
+}
+
+func returnNotePath(home, sessionID string) string {
+	return filepath.Join(home, ".magi", "returned", sessionID)
+}
+
+func passReturnNote(home, sessionID string, out io.Writer) error {
+	path := returnNotePath(home, sessionID)
+	note, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(map[string]any{
+		"hookSpecificOutput": map[string]string{"hookEventName": "UserPromptSubmit", "additionalContext": string(note)},
 	})
 }
 
@@ -582,6 +603,9 @@ func pullHere(hostName, sessionID string, out io.Writer, inTab bool) (pulledHere
 		}
 	}
 	message := fmt.Sprintf("Brought session %s back from %s to %s", shortID(res.Session), hostName, res.ToDir)
+	if res.InDesktop {
+		message += ", open in Claude Desktop"
+	}
 	if len(res.Notes) > 0 {
 		message += " (" + res.Noted() + ")"
 	}
@@ -589,6 +613,16 @@ func pullHere(hostName, sessionID string, out io.Writer, inTab bool) (pulledHere
 }
 
 func openPulledTab(local *Local, res *Pulled, prompt string) error {
+	if !res.Codex && leftFromDesktop(res.Session) {
+		info := res.PromptInfo
+		info.WithMessage = true
+		err := openInDesktop(res.ToDir, res.Session, handoffPrompt(info))
+		if err == nil {
+			res.InDesktop = true
+			return nil
+		}
+		res.note(fmt.Errorf("it came from Claude Desktop, but opening it there failed (%w), so it opens in a tab", err))
+	}
 	roots, err := openRoots(local)
 	if err != nil {
 		return err

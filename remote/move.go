@@ -238,7 +238,7 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	if _, err := sh(local, retireScript, "", "0", s.Transcript, m.host, "", "", s.ID, ""); err != nil && !tabGone(err) {
 		res.note(fmt.Errorf("retiring the session here failed: %w", err))
 	}
-	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir}))
+	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir, Desktop: s.Live != nil && s.Live.Entrypoint == "claude-desktop"}))
 	msg := fmt.Sprintf("Moved session %s to %s in %s. It's running %s", shortID(s.ID), m.host, res.Summary(), res.Where)
 	if res.NewFolder != "" {
 		msg += fmt.Sprintf("; %s didn't have the project yet, so it now lives at %s", m.host, res.NewFolder)
