@@ -479,18 +479,12 @@ func handedOff(a armed, res Result) map[string]string {
 	if len(res.Notes) > 0 {
 		where += ". Notes: " + res.Noted()
 	}
-	took := res.Summary()
+	closing := "This copy is closing."
 	if a.Desktop {
-		return map[string]string{
-			"decision": "block",
-			"reason": fmt.Sprintf("magi handed this session off to %s in %s. %s. "+
-				"Tell the user in one or two short lines where the session continues now, "+
-				"then archive this session with the archive_session tool and session_id \"self\" (load the tool with ToolSearch if needed). "+
-				"Make no other tool calls.", a.Host, took, where),
-		}
+		closing = "This copy stays in the sidebar and takes no more messages."
 	}
 	return map[string]string{
-		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. This copy is closing.", a.Host, took, where),
+		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. %s", a.Host, res.Summary(), where, closing),
 	}
 }
 
@@ -540,11 +534,10 @@ func stillRunning(note string, tasks []backgroundTask) string {
 }
 
 func retire(a armed, sessionID, transcriptPath string) error {
-	desktop := "0"
 	if a.Desktop {
-		desktop = "1"
+		return nil
 	}
-	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), desktop, transcriptPath, a.Host, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"), sessionID, os.Getenv("TMUX_PANE"))
+	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), transcriptPath, a.Host, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"), sessionID, os.Getenv("TMUX_PANE"))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()
 }

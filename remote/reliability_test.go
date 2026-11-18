@@ -294,7 +294,7 @@ func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sh(local, retireScript, fields[1], "0", transcript, "server", "", "", "0f0f0f0f-1111-2222-3333-555555555556", fields[0]); err != nil {
+	if _, err := sh(local, retireScript, fields[1], transcript, "server", "", "", "0f0f0f0f-1111-2222-3333-555555555556", fields[0]); err != nil {
 		t.Fatal(err)
 	}
 	if panes, _ := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}").Output(); strings.Contains(string(panes), fields[0]) {

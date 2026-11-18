@@ -198,30 +198,13 @@ func TestRetireClosesATerminalSessionAndRetiresItsTranscript(t *testing.T) {
 	}
 }
 
-func TestRetireLeavesADesktopSessionRunningUntilItIsArchived(t *testing.T) {
-	transcript := filepath.Join(t.TempDir(), "s.jsonl")
-	if err := os.WriteFile(transcript, []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	claude := startFakeClaude(t, "3")
-	if err := retire(armed{Host: "server", PID: claude.Process.Pid, Desktop: true}, "0f0f0f0f-1111-2222-3333-bbbbbbbbbbbb", transcript); err != nil {
-		t.Fatal(err)
-	}
-	if waitForFile(t, transcript+".handed-off-to-server", 2*time.Second) {
-		t.Fatal("desktop session was stopped or its transcript moved before it archived itself")
-	}
-	if !waitForFile(t, transcript+".handed-off-to-server", 4*time.Second) {
-		t.Fatal("transcript was not retired after the desktop session exited")
-	}
-}
-
-func TestHandedOffAsksDesktopSessionsToArchiveThemselves(t *testing.T) {
+func TestADesktopSessionIsToldItStaysWithoutBeingAskedToArchive(t *testing.T) {
 	desktop := handedOff(armed{Host: "server", Desktop: true}, Result{ShownOn: []string{"Laptop"}})
-	if desktop["decision"] != "block" || !strings.Contains(desktop["reason"], "archive_session") {
+	if _, blocks := desktop["decision"]; blocks || !strings.Contains(desktop["systemMessage"], "stays in the sidebar") {
 		t.Errorf("desktop output = %v", desktop)
 	}
 	terminal := handedOff(armed{Host: "server"}, Result{ShownOn: []string{"Laptop"}})
-	if _, blocks := terminal["decision"]; blocks || terminal["systemMessage"] == "" {
+	if _, blocks := terminal["decision"]; blocks || !strings.Contains(terminal["systemMessage"], "is closing") {
 		t.Errorf("terminal output = %v", terminal)
 	}
 }

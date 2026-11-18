@@ -1,22 +1,11 @@
 #!/bin/sh
-pid=$1 desktop=$2 transcript=$3 host=$4 rex_session=$5 rex_block=$6 session_id=$7 tmux_pane=$8
+pid=$1 transcript=$2 host=$3 rex_session=$4 rex_block=$5 session_id=$6 tmux_pane=$7
 if [ -n "$pid" ]; then
-  if [ "$desktop" != 1 ]; then
-    sleep 1
-    kill -TERM "$pid" 2>/dev/null
-    i=0
-    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 300 ]; do sleep 0.2; i=$((i + 1)); done
-    if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; fi
-  fi
+  sleep 1
+  kill -TERM "$pid" 2>/dev/null
   i=0
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$i" -ge 3000 ]; then
-      mkdir -p "$HOME/.magi" && printf '%s session %s moved to %s but its copy here never closed\n' "$(date)" "$session_id" "$host" >> "$HOME/.magi/retire.log"
-      exit 1
-    fi
-    sleep 0.2
-    i=$((i + 1))
-  done
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 300 ]; do sleep 0.2; i=$((i + 1)); done
+  if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; fi
 fi
 mv -- "$transcript" "$transcript.handed-off-to-$host" || exit
 record=$HOME/.magi/tabs/$session_id
@@ -28,8 +17,8 @@ if [ -f "$record" ]; then
   else
     rex window close -s "$tab_session" "$tab_window"
   fi
-elif [ "$desktop" != 1 ] && [ -n "$rex_session" ] && [ -n "$rex_block" ]; then
+elif [ -n "$rex_session" ] && [ -n "$rex_block" ]; then
   rex block close -s "$rex_session" "$rex_block"
-elif [ "$desktop" != 1 ] && [ -n "$tmux_pane" ]; then
+elif [ -n "$tmux_pane" ]; then
   tmux kill-pane -t "$tmux_pane"
 fi
