@@ -225,45 +225,35 @@ type Tmux struct {
 
 var tmuxName = strings.NewReplacer(".", "_", ":", "_").Replace
 
-func (t Tmux) session(group string) (string, error) {
-	out, err := sh(t.remote, tmuxScript, "sessions")
-	if err != nil {
-		return "", err
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if id, name, ok := strings.Cut(line, " "); ok && name == tmuxName(group) {
-			return id, nil
-		}
-	}
-	return "", nil
-}
-
 func (t Tmux) Start(group, label, dir string, command []string, focus bool) (Tab, error) {
-	session, err := t.session(group)
-	if err != nil {
-		return Tab{}, err
+	detached := "0"
+	if !focus {
+		detached = "1"
 	}
-	args := []string{"new-session", tmuxName(group), label, dir}
-	if session != "" {
-		detached := "0"
-		if !focus {
-			detached = "1"
-		}
-		args = []string{"new-window", session, label, dir, detached}
+	name, shell := tmuxName(group), shellIn(dir, command...)
+	created := false
+	out, err := sh(t.remote, tmuxScript, append([]string{"new-window", "=" + name, label, dir, detached}, shell...)...)
+	if err != nil && noTmuxSession(err) {
+		created = true
+		out, err = sh(t.remote, tmuxScript, append([]string{"new-session", name, label, dir}, shell...)...)
 	}
-	out, err := sh(t.remote, tmuxScript, append(args, shellIn(dir, command...)...)...)
 	if err != nil {
 		return Tab{}, err
 	}
 	fields := strings.Fields(string(out))
 	if len(fields) != 4 {
-		if session == "" {
-			_, killErr := sh(t.remote, tmuxScript, "kill-session", "="+tmuxName(group))
+		if created {
+			_, killErr := sh(t.remote, tmuxScript, "kill-session", "="+name)
 			return Tab{}, errors.Join(fmt.Errorf("unexpected tmux output %q", out), killErr)
 		}
 		return Tab{}, fmt.Errorf("unexpected tmux output %q", out)
 	}
-	return Tab{SessionCreated: session == "", Session: fields[0], Window: fields[1], Pane: fields[2], PanePID: fields[3]}, nil
+	return Tab{SessionCreated: created, Session: fields[0], Window: fields[1], Pane: fields[2], PanePID: fields[3]}, nil
+}
+
+func noTmuxSession(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to")
 }
 
 func (t Tmux) Split(tab Tab, anchor string, below bool, label, dir string, command []string) (string, error) {
