@@ -58,6 +58,7 @@ Used by the Claude Code plugin:
                                         with -, read a note on what was running from stdin
   magi hook stop                     the plugin's Stop hook (reads the hook JSON on stdin)
   magi hook prompt                   the plugin's prompt hook, which refuses input in a session that moved
+  magi hook start                    the plugin's SessionStart hook, which tells a session handed back what changed
   magi mcp                           the plugin's tool server, on stdin and stdout
   magi forward-run <session-id>      keeps a moved session's ports forwarded (started by a move)
 
@@ -90,6 +91,8 @@ func main() {
 		err = stopHook(os.Stdin, os.Stdout)
 	case len(args) == 2 && args[0] == "hook" && args[1] == "prompt":
 		err = promptHook(os.Stdin, os.Stdout)
+	case len(args) == 2 && args[0] == "hook" && args[1] == "start":
+		err = startHook(os.Stdin, os.Stdout)
 	case len(args) == 1 && args[0] == "init":
 		err = initConfig(os.Stdin, os.Stdout)
 	case len(args) >= 1 && args[0] == "doctor":
@@ -296,9 +299,16 @@ func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
 }
 
 type stopInput struct {
-	SessionID      string `json:"session_id"`
-	TranscriptPath string `json:"transcript_path"`
-	Cwd            string `json:"cwd"`
+	SessionID       string           `json:"session_id"`
+	TranscriptPath  string           `json:"transcript_path"`
+	Cwd             string           `json:"cwd"`
+	BackgroundTasks []backgroundTask `json:"background_tasks"`
+}
+
+type backgroundTask struct {
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Command     string `json:"command"`
 }
 
 func stopHook(in io.Reader, out io.Writer) error {
@@ -365,21 +375,26 @@ func stopHook(in io.Reader, out io.Writer) error {
 	return json.NewEncoder(out).Encode(handedOff(a, res))
 }
 
-func promptHook(in io.Reader, out io.Writer) error {
+func hookSession(in io.Reader) (home, sessionID string, err error) {
 	var input stopInput
 	if err := json.NewDecoder(in).Decode(&input); err != nil {
-		return err
+		return "", "", err
 	}
 	if !sessionIDPattern.MatchString(input.SessionID) {
-		return nil
+		return "", "", nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home, err = os.UserHomeDir()
+	return home, input.SessionID, err
+}
+
+func promptHook(in io.Reader, out io.Writer) error {
+	home, sessionID, err := hookSession(in)
+	if err != nil || sessionID == "" {
 		return err
 	}
-	host, err := os.ReadFile(filepath.Join(home, ".magi", "moved", input.SessionID))
+	host, err := os.ReadFile(filepath.Join(home, ".magi", "moved", sessionID))
 	if errors.Is(err, os.ErrNotExist) {
-		return passReturnNote(home, input.SessionID, out)
+		return passReturnNote(home, sessionID, "UserPromptSubmit", out)
 	}
 	if err != nil {
 		return err
@@ -391,11 +406,19 @@ func promptHook(in io.Reader, out io.Writer) error {
 	})
 }
 
+func startHook(in io.Reader, out io.Writer) error {
+	home, sessionID, err := hookSession(in)
+	if err != nil || sessionID == "" {
+		return err
+	}
+	return passReturnNote(home, sessionID, "SessionStart", out)
+}
+
 func returnNotePath(home, sessionID string) string {
 	return filepath.Join(home, ".magi", "returned", sessionID)
 }
 
-func passReturnNote(home, sessionID string, out io.Writer) error {
+func passReturnNote(home, sessionID, event string, out io.Writer) error {
 	path := returnNotePath(home, sessionID)
 	note, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -408,11 +431,11 @@ func passReturnNote(home, sessionID string, out io.Writer) error {
 		return err
 	}
 	return json.NewEncoder(out).Encode(map[string]any{
-		"hookSpecificOutput": map[string]string{"hookEventName": "UserPromptSubmit", "additionalContext": string(note)},
+		"hookSpecificOutput": map[string]string{"hookEventName": event, "additionalContext": string(note)},
 	})
 }
 
-func handedOff(a armed, res Result) map[string]string {
+func handedOff(a armed, res Result) map[string]any {
 	where := fmt.Sprintf("It's running %s, and with Remote Control it's in every Claude app on your account", res.Where)
 	if len(res.ShownOn) > 0 {
 		where = fmt.Sprintf("It's open in %s, and with Remote Control it's in every Claude app on your account", strings.Join(res.ShownOn, ", "))
@@ -428,15 +451,17 @@ func handedOff(a armed, res Result) map[string]string {
 	}
 	took := res.Summary()
 	if a.Desktop {
-		return map[string]string{
-			"decision": "block",
-			"reason": fmt.Sprintf("magi handed this session off to %s in %s. %s. "+
-				"Tell the user in one or two short lines where the session continues now, "+
-				"then archive this session with the archive_session tool and session_id \"self\" (load the tool with ToolSearch if needed). "+
-				"Make no other tool calls.", a.Host, took, where),
+		return map[string]any{
+			"hookSpecificOutput": map[string]string{
+				"hookEventName": "Stop",
+				"additionalContext": fmt.Sprintf("magi handed this session off to %s in %s. %s. "+
+					"Tell the user in one or two short lines where the session continues now, "+
+					"then archive this session with the archive_session tool and session_id \"self\" (load the tool with ToolSearch if needed). "+
+					"Make no other tool calls.", a.Host, took, where),
+			},
 		}
 	}
-	return map[string]string{
+	return map[string]any{
 		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. This copy is closing.", a.Host, took, where),
 	}
 }
@@ -452,7 +477,7 @@ func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 	}
 	return Handoff{
 		HostName:       a.Host,
-		Note:           a.Note,
+		Note:           stillRunning(a.Note, input.BackgroundTasks),
 		Stay:           a.Stay,
 		Host:           host,
 		SessionID:      input.SessionID,
@@ -465,6 +490,25 @@ func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 			return retire(a, input.SessionID, input.TranscriptPath)
 		},
 	}.Run(ctx)
+}
+
+func stillRunning(note string, tasks []backgroundTask) string {
+	if len(tasks) == 0 {
+		return note
+	}
+	running := make([]string, len(tasks))
+	for i, t := range tasks {
+		kind := t.Type
+		if t.Command != "" {
+			kind += " " + t.Command
+		}
+		running[i] = strings.TrimSpace(t.Description + " (" + kind + ")")
+	}
+	list := "still running when the turn ended: " + strings.Join(running, "; ")
+	if note == "" {
+		return list
+	}
+	return note + "; " + list
 }
 
 func retire(a armed, sessionID, transcriptPath string) error {

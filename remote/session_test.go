@@ -213,13 +213,32 @@ func TestRetireLeavesADesktopSessionRunningUntilItIsArchived(t *testing.T) {
 }
 
 func TestHandedOffAsksDesktopSessionsToArchiveThemselves(t *testing.T) {
-	desktop := handedOff(armed{Host: "server", Desktop: true}, Result{ShownOn: []string{"Laptop"}})
-	if desktop["decision"] != "block" || !strings.Contains(desktop["reason"], "archive_session") {
-		t.Errorf("desktop output = %v", desktop)
+	type hookOutput struct {
+		Decision           string `json:"decision"`
+		SystemMessage      string `json:"systemMessage"`
+		HookSpecificOutput struct {
+			HookEventName     string `json:"hookEventName"`
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
 	}
-	terminal := handedOff(armed{Host: "server"}, Result{ShownOn: []string{"Laptop"}})
-	if _, blocks := terminal["decision"]; blocks || terminal["systemMessage"] == "" {
-		t.Errorf("terminal output = %v", terminal)
+	printed := func(a armed) hookOutput {
+		var out hookOutput
+		data, err := json.Marshal(handedOff(a, Result{ShownOn: []string{"Laptop"}}))
+		if err == nil {
+			err = json.Unmarshal(data, &out)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	desktop := printed(armed{Host: "server", Desktop: true})
+	if desktop.Decision != "" || desktop.HookSpecificOutput.HookEventName != "Stop" || !strings.Contains(desktop.HookSpecificOutput.AdditionalContext, "archive_session") {
+		t.Errorf("desktop output = %+v, want Stop feedback asking it to archive itself, not an error", desktop)
+	}
+	terminal := printed(armed{Host: "server"})
+	if terminal.Decision != "" || terminal.HookSpecificOutput.AdditionalContext != "" || terminal.SystemMessage == "" {
+		t.Errorf("terminal output = %+v", terminal)
 	}
 }
 
