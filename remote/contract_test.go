@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +122,28 @@ func TestContractClaudeRegistersALiveSession(t *testing.T) {
 	if _, err := sh(local, sessionScript, "running", live.SessionID); exitCode(err) != 10 {
 		t.Errorf("session.sh running didn't see the live session: %v", err)
 	}
+	agents := exec.Command("claude", "agents", "--json")
+	agents.Env = cleanEnv()
+	listing, err := agents.Output()
+	if err != nil {
+		t.Fatalf("claude agents --json failed: %v", err)
+	}
+	var listed []liveSession
+	if err := json.Unmarshal(listing, &listed); err != nil {
+		t.Fatalf("claude agents --json isn't a list of sessions: %v\n%s", err, listing)
+	}
+	i := slices.IndexFunc(listed, func(s liveSession) bool { return s.SessionID == live.SessionID })
+	if i < 0 {
+		t.Fatalf("claude agents --json doesn't list the live session %s:\n%s", live.SessionID, listing)
+	}
+	if got := listed[i]; got.PID != live.PID || got.Cwd != dir || got.StartedAt != live.StartedAt {
+		t.Errorf("claude agents --json lists %+v, the registry has %+v", got, *live)
+	}
+	switch listed[i].Status {
+	case "busy", "waiting", "idle":
+	default:
+		t.Errorf("claude agents --json status = %q, magi knows busy, waiting and idle", listed[i].Status)
+	}
 	res := finishClaude(t, cmd, out)
 	if res.SessionID != live.SessionID {
 		t.Errorf("registry session %s, reply session %s", live.SessionID, res.SessionID)
@@ -209,6 +233,137 @@ echo '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalConte
 	transcript, _ := os.ReadFile(input.TranscriptPath)
 	if !bytes.Contains(bytes.ToUpper(transcript), []byte("GRAPEFRUIT")) {
 		t.Errorf("additionalContext from the UserPromptSubmit hook didn't reach Claude")
+	}
+}
+
+func TestContractClaudeStopHookSeesItsProcessAndBackgroundTasks(t *testing.T) {
+	dir := contractDir(t)
+	hooks := filepath.Join(dir, "hooks")
+	if err := os.Mkdir(hooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stop := filepath.Join(hooks, "stop.sh")
+	body := `#!/bin/sh
+cat >> "` + hooks + `/stop.jsonl"
+echo "pid=$CLAUDE_PID" >> "` + hooks + `/pids"
+if [ ! -e "` + hooks + `/fed" ]; then
+  touch "` + hooks + `/fed"
+  echo '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"Now reply with just the word CONTINUED."}}'
+fi
+`
+	if err := os.WriteFile(stop, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{
+		"Stop": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": stop}}}},
+	}})
+	cmd, out := startClaude(t, dir, "--settings", string(settings), "--allowedTools", "Bash(sleep:*)", "--",
+		"Start the shell command 'sleep 20' as a background task (run_in_background true), then without waiting reply with just: started")
+	finishClaude(t, cmd, out)
+
+	pids, err := os.ReadFile(filepath.Join(hooks, "pids"))
+	if err != nil {
+		t.Fatalf("the Stop hook didn't run: %v", err)
+	}
+	for _, pid := range strings.Fields(string(pids)) {
+		if pid != "pid="+strconv.Itoa(cmd.Process.Pid) {
+			t.Errorf("CLAUDE_PID in the Stop hook: %s, claude ran as %d", pid, cmd.Process.Pid)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(hooks, "stop.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type stopSeen struct {
+		stopInput
+		StopHookActive       bool   `json:"stop_hook_active"`
+		LastAssistantMessage string `json:"last_assistant_message"`
+	}
+	var stops []stopSeen
+	for decoder := json.NewDecoder(bytes.NewReader(raw)); decoder.More(); {
+		var s stopSeen
+		if err := decoder.Decode(&s); err != nil {
+			t.Fatal(err)
+		}
+		stops = append(stops, s)
+	}
+	if len(stops) < 2 {
+		t.Fatalf("the Stop hook ran %d times, want the turn and the one its feedback continued:\n%s", len(stops), raw)
+	}
+	if !slices.ContainsFunc(stops[0].BackgroundTasks, func(b backgroundTask) bool { return b.Type == "shell" && strings.Contains(b.Command, "sleep 20") }) {
+		t.Errorf("the first Stop hook's background_tasks don't list the running sleep: %+v", stops[0].BackgroundTasks)
+	}
+	if !stops[1].StopHookActive || !strings.Contains(strings.ToUpper(stops[1].LastAssistantMessage), "CONTINUED") {
+		t.Errorf("additionalContext from the Stop hook didn't make Claude go on in the same turn: %+v", stops[1])
+	}
+}
+
+func TestContractClaudeSessionStartTellsAResumedSession(t *testing.T) {
+	dir := contractDir(t)
+	first := runClaude(t, dir, "Reply with just: ok")
+	hooks := filepath.Join(dir, "hooks")
+	if err := os.Mkdir(hooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	notes := t.TempDir()
+	path := returnNotePath(notes, first.SessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[magi] The secret word is TANGERINE."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var reply bytes.Buffer
+	if err := passReturnNote(notes, first.SessionID, "SessionStart", &reply); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "start.out"), reply.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := filepath.Join(hooks, "start.sh")
+	if err := os.WriteFile(start, []byte(`#!/bin/sh
+cat > "`+hooks+`/start.json"
+cat "`+hooks+`/start.out"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	plugin, err := os.ReadFile(filepath.Join("..", "plugin", "hooks", "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registered struct {
+		Hooks map[string][]struct {
+			Matcher string           `json:"matcher"`
+			Hooks   []map[string]any `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(plugin, &registered); err != nil {
+		t.Fatal(err)
+	}
+	sessionStart := registered.Hooks["SessionStart"]
+	for _, group := range sessionStart {
+		for _, hook := range group.Hooks {
+			hook["command"] = start
+		}
+	}
+	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{"SessionStart": sessionStart}})
+	second := runClaude(t, dir, "--settings", string(settings), "--resume", first.SessionID, "What is the secret word? Reply with just the word.")
+	raw, err := os.ReadFile(filepath.Join(hooks, "start.json"))
+	if err != nil {
+		t.Fatalf("the plugin's SessionStart hook didn't run on resume: %v", err)
+	}
+	var input struct {
+		SessionID string `json:"session_id"`
+		Source    string `json:"source"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		t.Fatal(err)
+	}
+	if input.SessionID != first.SessionID || input.Source != "resume" {
+		t.Errorf("SessionStart input = %+v, want session %s resumed", input, first.SessionID)
+	}
+	if !strings.Contains(strings.ToUpper(second.Result), "TANGERINE") {
+		t.Errorf("the note from the SessionStart hook didn't reach Claude: %q", second.Result)
 	}
 }
 

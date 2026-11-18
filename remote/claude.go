@@ -275,7 +275,7 @@ func handoffPrompt(p Prompt) string {
 	}
 	b.WriteString(p.Project)
 	if p.Note != "" {
-		fmt.Fprintf(&b, "Before the handoff you wrote down what was still running: %q. Restart what still needs to run, then ", p.Note)
+		fmt.Fprintf(&b, "What was still running before the handoff: %q. Restart what still needs to run, then ", p.Note)
 	} else {
 		b.WriteString("Then ")
 	}
