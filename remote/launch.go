@@ -11,7 +11,7 @@ type Tab struct {
 	Session        string
 	Window         string
 	Pane           string
-	PanePID        string
+	Tag            string
 	SessionCreated bool
 }
 
@@ -230,25 +230,25 @@ func (t Tmux) Start(group, label, dir string, command []string, focus bool) (Tab
 	if !focus {
 		detached = "1"
 	}
-	name, shell := tmuxName(group), shellIn(dir, command...)
+	name, tag, shell := tmuxName(group), newSessionID(), shellIn(dir, command...)
 	created := false
-	out, err := sh(t.remote, tmuxScript, append([]string{"new-window", "=" + name, label, dir, detached}, shell...)...)
+	out, err := sh(t.remote, tmuxScript, append([]string{"new-window", "=" + name, label, dir, tag, detached}, shell...)...)
 	if err != nil && noTmuxSession(err) {
 		created = true
-		out, err = sh(t.remote, tmuxScript, append([]string{"new-session", name, label, dir}, shell...)...)
+		out, err = sh(t.remote, tmuxScript, append([]string{"new-session", name, label, dir, tag}, shell...)...)
 	}
 	if err != nil {
 		return Tab{}, err
 	}
 	fields := strings.Fields(string(out))
-	if len(fields) != 4 {
+	if len(fields) != 3 {
 		if created {
 			_, killErr := sh(t.remote, tmuxScript, "kill-session", "="+name)
 			return Tab{}, errors.Join(fmt.Errorf("unexpected tmux output %q", out), killErr)
 		}
 		return Tab{}, fmt.Errorf("unexpected tmux output %q", out)
 	}
-	return Tab{SessionCreated: created, Session: fields[0], Window: fields[1], Pane: fields[2], PanePID: fields[3]}, nil
+	return Tab{SessionCreated: created, Session: fields[0], Window: fields[1], Pane: fields[2], Tag: tag}, nil
 }
 
 func noTmuxSession(err error) bool {
@@ -289,7 +289,7 @@ func (t Tmux) Discard(tab Tab) error {
 	case tab.SessionCreated:
 		_, err = sh(t.remote, tmuxScript, "kill-session", tab.Session)
 	case tab.Window != "":
-		_, err = sh(t.remote, tmuxScript, "kill-window", tab.Window, tab.PanePID)
+		_, err = sh(t.remote, tmuxScript, "kill-window", tab.Window, tab.Tag)
 	}
 	return err
 }

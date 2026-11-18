@@ -396,13 +396,18 @@ func TestTheStopHookOnlyMovesASessionArmedFromItsOwnProcess(t *testing.T) {
 func TestRetireClosesTheTabARecordedHandoffOpened(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
-	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{session_id} #{window_id} #{pane_pid}", "sleep", "60").Output()
+	local, err := newLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids := strings.Fields(string(out))
+	tab, err := Tmux{remote: local}.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	id := "0f0f0f0f-1111-2222-3333-999999999995"
-	f.write(filepath.Join(f.home, ".magi", "tabs"), id, "tmux\n"+ids[0]+"\n"+ids[1]+"\n"+ids[2]+"\n")
+	if err := recordTab(local, id, "tmux", tab); err != nil {
+		t.Fatal(err)
+	}
 	transcript := filepath.Join(f.home, "s.jsonl")
 	f.write(f.home, "s.jsonl", "{}")
 	claude := startFakeClaude(t, "60")

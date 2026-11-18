@@ -21,10 +21,10 @@ fi
 mv -- "$transcript" "$transcript.handed-off-to-$host" || exit
 record=$HOME/.magi/tabs/$session_id
 if [ -f "$record" ]; then
-  { read -r launcher; read -r tab_session; read -r tab_window; read -r tab_pid; } < "$record"
+  { read -r launcher; read -r tab_session; read -r tab_window; read -r tab_tag; } < "$record"
   rm -f "$record"
   if [ "$launcher" = tmux ]; then
-    if tmux list-panes -t "$tab_window" -F '#{pane_pid}' 2>/dev/null | grep -qx "$tab_pid"; then tmux kill-window -t "$tab_window"; fi
+    tmux if-shell -F -t "$tab_window" "#{==:#{@magi_tab},$tab_tag}" "kill-window -t $tab_window"
   else
     rex window close -s "$tab_session" "$tab_window"
   fi

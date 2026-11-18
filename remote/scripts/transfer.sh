@@ -8,7 +8,12 @@ busybox() { tar --help 2>&1 | grep -q BusyBox; }
 case $command in
   pack)
     cd -- "$dir"
+    follow=$1
+    shift
     for e; do set -- "$@" --exclude "$e"; shift; done
+    if [ "$follow" = 1 ]; then
+      if tar --version 2>/dev/null | grep -q bsdtar; then set -- -H "$@"; else set -- -h "$@"; fi
+    fi
     if busybox; then
       tr '\0' '\n' | tar "$@" -T - -cf -
       exit 0

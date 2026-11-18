@@ -289,7 +289,10 @@ func finishGit(from, to Machine, ws Workspace, repo, mode string, send sendObjec
 			return err
 		}
 	}
-	if err := transfer(from, ws.Root, Archive{Paths: append(append([]string{}, ws.Secrets...), ws.LFS...)}, to, repo); err != nil {
+	if err := transfer(from, ws.Root, Archive{Paths: ws.Secrets, Follow: true}, to, repo); err != nil {
+		return err
+	}
+	if err := transfer(from, ws.Root, Archive{Paths: ws.LFS}, to, repo); err != nil {
 		return err
 	}
 	for _, sub := range ws.Submodules {

@@ -2,18 +2,25 @@
 set -e
 command=$1
 shift
-format='#{session_id} #{window_id} #{pane_id} #{pane_pid}'
+format='#{session_id} #{window_id} #{pane_id}'
+tag() {
+  window=${ids#* }
+  tmux set-option -w -t "${window%% *}" @magi_tab "$1"
+  echo "$ids"
+}
 case $command in
   new-session)
-    name=$1 label=$2 dir=$3
-    shift 3
-    tmux new-session -d -P -F "$format" -s "$name" -n "$label" -c "$dir" "$@"
+    name=$1 label=$2 dir=$3 tab=$4
+    shift 4
+    ids=$(tmux new-session -d -P -F "$format" -s "$name" -n "$label" -c "$dir" "$@")
+    tag "$tab"
     ;;
   new-window)
-    session=$1 label=$2 dir=$3 detached=$4
-    shift 4
+    session=$1 label=$2 dir=$3 tab=$4 detached=$5
+    shift 5
     if [ "$detached" = 1 ]; then set -- -d "$@"; fi
-    tmux new-window -P -F "$format" -t "$session:" -n "$label" -c "$dir" "$@"
+    ids=$(tmux new-window -P -F "$format" -t "$session:" -n "$label" -c "$dir" "$@")
+    tag "$tab"
     ;;
   split)
     pane=$1 direction=$2 dir=$3
@@ -31,8 +38,6 @@ case $command in
     tmux kill-session -t "$1"
     ;;
   kill-window)
-    window=$1 pid=$2
-    if [ -n "$pid" ] && ! tmux list-panes -t "$window" -F '#{pane_pid}' 2>/dev/null | grep -qx "$pid"; then exit 0; fi
-    tmux kill-window -t "$window"
+    tmux if-shell -F -t "$1" "#{==:#{@magi_tab},$2}" "kill-window -t $1"
     ;;
 esac

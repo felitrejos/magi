@@ -260,7 +260,7 @@ func startProject(m Machine, l Launcher, tab Tab, dir, status string, p *Project
 }
 
 func recordTab(m Machine, sessionID, launcher string, tab Tab) error {
-	_, err := sh(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n%s\n' "$2" "$3" "$4" "$5" > "$HOME/.magi/tabs/$1"`, sessionID, launcher, tab.Session, tab.Window, tab.PanePID)
+	_, err := sh(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n%s\n' "$2" "$3" "$4" "$5" > "$HOME/.magi/tabs/$1"`, sessionID, launcher, tab.Session, tab.Window, tab.Tag)
 	return err
 }
 
@@ -274,7 +274,7 @@ func closeRecordedTab(r *Remote, h Host, sessionID string) error {
 		return fmt.Errorf("unexpected tab record for session %s on %s", sessionID, r.Name())
 	}
 	h.Launcher = lines[0]
-	if err := newLauncher(h, r).Discard(Tab{Session: lines[1], Window: lines[2], PanePID: lines[3]}); err != nil && !tabGone(err) {
+	if err := newLauncher(h, r).Discard(Tab{Session: lines[1], Window: lines[2], Tag: lines[3]}); err != nil && !tabGone(err) {
 		return err
 	}
 	return nil

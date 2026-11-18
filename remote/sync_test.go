@@ -594,12 +594,30 @@ func TestNormalizeRemoteMatchesSshAndHttpsForms(t *testing.T) {
 	}
 }
 
-func TestSecretsAreFoundPastUnreadableFoldersAndSymlinksComeAlong(t *testing.T) {
+func (f *fixture) secretArrivedAsAFile(name, body string) {
+	f.t.Helper()
+	path := filepath.Join(f.remote, name)
+	info, err := os.Lstat(path)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		f.t.Errorf("%s on the server is %s, want a regular file with mode -rw-------", name, info.Mode())
+	}
+	if got := f.read(f.remote, name); got != body {
+		f.t.Errorf("%s on the server = %q, want %q", name, got, body)
+	}
+}
+
+func TestSecretsAreFoundPastUnreadableFoldersAndSymlinkedOnesArriveAsFiles(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads every folder")
 	}
 	f := newFixture(t)
 	f.write(f.home, "shared/.env", "SHARED=1")
+	if err := os.Chmod(filepath.Join(f.home, "shared/.env"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(filepath.Join(f.home, "shared/.env"), filepath.Join(f.local, ".env")); err != nil {
 		t.Fatal(err)
 	}
@@ -616,9 +634,23 @@ func TestSecretsAreFoundPastUnreadableFoldersAndSymlinksComeAlong(t *testing.T) 
 	if err := f.push(f.remoteHost(), ws, Placement{Root: f.remote}); err != nil {
 		t.Fatal(err)
 	}
-	if target, err := os.Readlink(filepath.Join(f.remote, ".env")); err != nil || target != filepath.Join(f.home, "shared/.env") {
-		t.Errorf(".env on the server is %q, %v; want the same symlink", target, err)
+	f.secretArrivedAsAFile(".env", "SHARED=1")
+}
+
+func TestASecretLinkedRelativelyOutsideTheCheckoutArrivesWithItsContent(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.home, "laptop/shared/.env.local", "LOCAL=1")
+	if err := os.Chmod(filepath.Join(f.home, "laptop/shared/.env.local"), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.Symlink("../../shared/.env.local", filepath.Join(f.local, ".env.local")); err != nil {
+		t.Fatal(err)
+	}
+	ws := f.workspace(f.local)
+	if err := f.push(f.remoteHost(), ws, Placement{Root: f.remote}); err != nil {
+		t.Fatal(err)
+	}
+	f.secretArrivedAsAFile(".env.local", "LOCAL=1")
 }
 
 func TestUnparkExplainsThatPlainFoldersAreNeverParked(t *testing.T) {

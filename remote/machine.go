@@ -177,6 +177,7 @@ type Archive struct {
 	Paths     []string
 	Exclude   []string
 	KeepNewer bool
+	Follow    bool
 }
 
 func transfer(from Machine, fromDir string, a Archive, to Machine, toDir string) error {
@@ -187,7 +188,11 @@ func transfer(from Machine, fromDir string, a Archive, to Machine, toDir string)
 	if err != nil {
 		return err
 	}
-	pack := from.Command(transferScript, append([]string{"pack", fromDir}, a.Exclude...)...)
+	follow := "0"
+	if a.Follow {
+		follow = "1"
+	}
+	pack := from.Command(transferScript, append([]string{"pack", fromDir, follow}, a.Exclude...)...)
 	pack.Stdin = strings.NewReader(strings.Join(a.Paths, "\x00") + "\x00")
 	pack.Stdout = write
 	var packErr bytes.Buffer

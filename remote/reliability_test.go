@@ -183,11 +183,11 @@ func TestARecordedTmuxWindowIsOnlyClosedWhileItIsStillTheSameWindow(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tab.PanePID == "" {
-		t.Fatalf("tab = %+v, want its pane's process", tab)
+	if tab.Tag == "" {
+		t.Fatalf("tab = %+v, want its tag", tab)
 	}
 	stale := tab
-	stale.SessionCreated, stale.PanePID = false, "1"
+	stale.SessionCreated, stale.Tag = false, newSessionID()
 	if err := tm.Discard(stale); err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +201,78 @@ func TestARecordedTmuxWindowIsOnlyClosedWhileItIsStillTheSameWindow(t *testing.T
 	if strings.Contains(tmuxWindows(), "api · claude") {
 		t.Error("the recorded window wasn't closed")
 	}
+}
+
+func TestARecordedTmuxWindowClosesAfterItsFirstPaneHasExited(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	local, err := newLocal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm := Tmux{remote: local}
+	tab, err := tm.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tm.Split(tab, tab.Pane, true, "pnpm dev", f.local, []string{"sleep", "60"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("tmux", "kill-pane", "-t", tab.Pane).Run(); err != nil {
+		t.Fatal(err)
+	}
+	tab.SessionCreated = false
+	if err := tm.Discard(tab); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(tmuxWindows(), "api · claude") {
+		t.Error("the window outlived its first pane's process and stayed open with the project's panes")
+	}
+}
+
+func TestRetireClosesTheRecordedTabWhenItsSessionPaneClosesFirst(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	local, err := newLocal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm := Tmux{remote: local}
+	tab, err := tm.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tm.Split(tab, tab.Pane, true, "pnpm dev", f.local, []string{"sleep", "60"}); err != nil {
+		t.Fatal(err)
+	}
+	id := "0f0f0f0f-1111-2222-3333-999999999993"
+	if err := recordTab(local, id, "tmux", tab); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", tab.Pane, "#{pane_pid}").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(f.home, "s.jsonl")
+	f.write(f.home, "s.jsonl", "{}")
+	if err := retire(armed{Host: "laptop", PID: pid}, id, transcript); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForFile(t, transcript+".handed-off-to-laptop", 10*time.Second) {
+		t.Fatal("the transcript wasn't retired")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !strings.Contains(tmuxWindows(), "api · claude") {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Error("retiring the session left its window open with the project's panes")
 }
 
 func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
