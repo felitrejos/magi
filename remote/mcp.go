@@ -66,6 +66,10 @@ type replyInput struct {
 	DespitePlan bool   `json:"despite_plan,omitempty" jsonschema:"send it even though the Claude plan is nearly used up; only when the user said to go ahead anyway"`
 }
 
+type sessionQuery struct {
+	Session string `json:"session" jsonschema:"the session: the start of its id, or at least four letters of its title or folder"`
+}
+
 type optionalTaskInput struct {
 	TaskID string `json:"task_id,omitempty" jsonschema:"the task id; leave out to list this machine's tasks"`
 }
@@ -195,6 +199,38 @@ func newMCPServer() *mcp.Server {
 			return nil, nil, fmt.Errorf("no hosts in %s; the user can add one with magi init", path)
 		}
 		return textResult(describeMachines(surveyFleet(ctx, cfg, true, true), in.Needs)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "sessions",
+		Annotations: readOnly,
+		Description: "List the Claude Code sessions running on this machine and on every machine in the user's magi config, read over SSH: each one's id, title, whether it's busy, waiting (and on what) or idle, its folder, and its Remote Control link when it has one. Read-only.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		all, err := everySession(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return textResult(describeSessions(all)), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "diff",
+		Annotations: readOnly,
+		Description: "Show a running Claude Code session's uncommitted changes (git diff against HEAD, plus new untracked files), on whichever machine it runs, read over SSH. Long diffs keep their end. Read-only.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in sessionQuery) (*mcp.CallToolResult, any, error) {
+		all, err := everySession(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		m, s, err := findAnySession(all, in.Session)
+		if err != nil {
+			return nil, nil, err
+		}
+		text, err := sessionDiff(m.Machine, s)
+		if err != nil {
+			return nil, nil, err
+		}
+		return textResult(text), nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{

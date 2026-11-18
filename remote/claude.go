@@ -59,6 +59,7 @@ type liveSession struct {
 	StartedAt       int64   `json:"startedAt"`
 	BridgeSessionID *string `json:"bridgeSessionId"`
 	Status          string  `json:"status"`
+	WaitingFor      string  `json:"waitingFor"`
 	Entrypoint      string  `json:"entrypoint"`
 	Name            string  `json:"name"`
 	ProcStart       any     `json:"procStart"`
@@ -83,6 +84,21 @@ func liveSessions(m Machine) ([]liveSession, error) {
 	for _, file := range splitNull(out) {
 		var s liveSession
 		if json.Unmarshal([]byte(file), &s) == nil {
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions, nil
+}
+
+func liveHere(m Machine) ([]liveSession, error) {
+	out, err := sh(m, sessionScript, "live")
+	if err != nil {
+		return nil, err
+	}
+	var sessions []liveSession
+	for _, file := range splitNull(out) {
+		var s liveSession
+		if json.Unmarshal([]byte(file), &s) == nil && s.SessionID != "" {
 			sessions = append(sessions, s)
 		}
 	}

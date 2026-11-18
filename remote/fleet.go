@@ -8,6 +8,7 @@ import (
 	"math"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,7 +59,19 @@ func (m fleetMachine) busy() float64 {
 	return busy
 }
 
+func (m fleetMachine) measured() bool {
+	return m.Live || m.Probed && m.Cores > 0
+}
+
 func (m fleetMachine) describe() string {
+	if m.Probed && m.Cores > 0 {
+		parts := []string{fmt.Sprintf("load %.2f on %d cores", m.Load[0], m.Cores)}
+		if m.MemoryTotal > 0 {
+			parts = append(parts, fmt.Sprintf("memory %.1f of %.1f GB", m.MemoryUsed/1e9, m.MemoryTotal/1e9))
+		}
+		parts = append(parts, fmt.Sprintf("%d Claude sessions working", m.Agents.Working))
+		return strings.Join(parts, ", ") + ", read over SSH"
+	}
 	if !m.Live {
 		probed := "so its load is unknown; its system and tools were read over SSH"
 		if m.Error == nil || *m.Error == "" {
@@ -168,12 +181,6 @@ func surveyFleet(ctx context.Context, cfg Config, probe, agents bool) fleetView 
 			m.Fleet = &fleet[i]
 			used[i] = true
 		}
-		var err error
-		if m.Budget, err = h.budget(); err != nil {
-			m.NoRoom = err.Error()
-		} else {
-			m.NoRoom = m.Budget.noRoom(now, m.Fleet, agents)
-		}
 		for _, t := range tasks {
 			if t.Host == name && t.Outcome == nil {
 				m.Tasks = append(m.Tasks, t)
@@ -195,6 +202,15 @@ func surveyFleet(ctx context.Context, cfg Config, probe, agents bool) fleetView 
 			wg.Go(func() { view.Machines[i].probe(ctx) })
 		}
 		wg.Wait()
+	}
+	for i := range view.Machines {
+		m := &view.Machines[i]
+		var err error
+		if m.Budget, err = m.Host.budget(); err != nil {
+			m.NoRoom = err.Error()
+		} else {
+			m.NoRoom = m.Budget.noRoom(now, m.Fleet, agents)
+		}
 	}
 	return view
 }
@@ -229,7 +245,25 @@ bounded() { if command -v timeout >/dev/null 2>&1; then timeout 3 "$@"; else "$@
 for t in docker podman; do
 	command -v "$t" >/dev/null 2>&1 && bounded "$t" info >/dev/null 2>&1 && printf '%s ' "$t"
 done
-echo`
+echo
+if [ "$(uname -s)" = Darwin ]; then
+	sysctl -n hw.ncpu
+	sysctl -n vm.loadavg | tr -d '{}'
+	page=$(sysctl -n hw.pagesize)
+	free=$(vm_stat | awk '/Pages (free|inactive|speculative)/ { gsub("\\.", "", $NF); n += $NF } END { print n }')
+	echo "$(sysctl -n hw.memsize) $((free * page))"
+else
+	getconf _NPROCESSORS_ONLN
+	cut -d ' ' -f 1-3 /proc/loadavg
+	awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } END { print t * 1024, a * 1024 }' /proc/meminfo
+fi
+working=0
+for f in "$HOME"/.claude/sessions/*.json; do
+	[ -f "$f" ] && grep -q '"status": *"busy"' "$f" || continue
+	pid=${f##*/}
+	kill -0 "${pid%.json}" 2>/dev/null && working=$((working + 1))
+done
+echo "$working"`
 
 func probePlatform(ctx context.Context, name string, h Host) (*fleetMachine, error) {
 	ctx, cancel := context.WithTimeout(ctx, reachWait)
@@ -257,7 +291,32 @@ func parsePlatform(name, out string) *fleetMachine {
 	if len(lines) > 2 {
 		m.Tools = strings.Fields(lines[2])
 	}
+	if len(lines) < 7 {
+		return m
+	}
+	cores, coresErr := strconv.Atoi(strings.TrimSpace(lines[3]))
+	load, loadErr := strconv.ParseFloat(firstField(lines[4]), 64)
+	memory := strings.Fields(lines[5])
+	working, workingErr := strconv.Atoi(strings.TrimSpace(lines[6]))
+	if coresErr != nil || loadErr != nil || workingErr != nil || len(memory) != 2 || cores <= 0 {
+		return m
+	}
+	total, totalErr := strconv.ParseFloat(memory[0], 64)
+	available, availableErr := strconv.ParseFloat(memory[1], 64)
+	if totalErr != nil || availableErr != nil {
+		return m
+	}
+	m.Cores, m.Load, m.MemoryTotal, m.MemoryUsed = cores, []float64{load}, total, total-available
+	m.Agents.Working = working
 	return m
+}
+
+func firstField(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 type choice struct {
@@ -279,7 +338,7 @@ func (view fleetView) candidates() (picks []choice, skipped []string) {
 			skipped = append(skipped, fmt.Sprintf("%s isn't reachable (%v)", m.Name, m.Reachable))
 		case m.NoRoom != "":
 			skipped = append(skipped, fmt.Sprintf("%s has no room: %s", m.Name, m.NoRoom))
-		case m.Fleet != nil && m.Fleet.Live:
+		case m.Fleet != nil && m.Fleet.measured():
 			why := "the first machine in your list with room (" + m.Fleet.describe() + ")"
 			if view.Here != nil && view.Here.busy() < m.Fleet.busy() {
 				why += fmt.Sprintf("; this machine is lighter right now (%s)", view.Here.describe())
@@ -311,7 +370,7 @@ func chooseHosts(ctx context.Context, requested string, agents bool) ([]choice, 
 		}
 		return []choice{{Host: requested, Why: "the machine you asked for"}}, nil, plans, nil
 	}
-	view := surveyFleet(ctx, cfg, false, agents)
+	view := surveyFleet(ctx, cfg, true, agents)
 	picks, skipped := view.candidates()
 	return picks, skipped, view.Plans, nil
 }

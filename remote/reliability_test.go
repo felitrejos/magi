@@ -259,3 +259,41 @@ func TestAPullOpensATmuxWindowWhenThereIsNoRex(t *testing.T) {
 		t.Errorf("tmux windows = %q", tmuxWindows())
 	}
 }
+
+func TestSessionsAndTheirDiffsAreReadWithoutTheOverview(t *testing.T) {
+	f := newFixture(t)
+	f.taskHost("")
+	id := "0f0f0f0f-1111-2222-3333-555555555558"
+	session := `{"pid":` + strconv.Itoa(os.Getpid()) + `,"sessionId":"` + id + `","cwd":"` + f.local + `","status":"waiting","waitingFor":"permission prompt","name":"fix login","bridgeSessionId":"session_01abc"}`
+	f.write(filepath.Join(f.home, ".claude", "sessions"), strconv.Itoa(os.Getpid())+".json", session)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), "999999.json", `{"pid":999999,"sessionId":"gone","cwd":"/nowhere","status":"busy"}`)
+	f.write(f.local, "kept.txt", "changed")
+	f.write(f.local, "brand-new.txt", "new")
+	all, err := everySession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := describeSessions(all)
+	for _, want := range []string{"0f0f0f0f  fix login  waiting (permission prompt)  " + f.local, "https://claude.ai/code/session_01abc", "server:"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("sessions lack %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "gone") {
+		t.Errorf("a session whose process ended is listed:\n%s", text)
+	}
+	if _, _, err := findAnySession(all, "fix login"); err == nil || !strings.Contains(err.Error(), "more than one") {
+		t.Errorf("the same session on both fixture machines should be ambiguous, got %v", err)
+	}
+	m, s, err := findAnySession(all[:1], "0f0f0f0f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := sessionDiff(m.Machine, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "+changed") || !strings.Contains(diff, "new file: brand-new.txt") {
+		t.Errorf("diff = %q", diff)
+	}
+}

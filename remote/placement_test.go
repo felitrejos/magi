@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func machineFor(name, os, arch string, cpu float64, tools ...string) fleetMachine {
@@ -95,5 +97,32 @@ func TestAMachineWithKnownLoadComesBeforeOneWithUnknownLoad(t *testing.T) {
 func TestAMachineReadOverSSHWithoutMagiSaysMagiDoesntReportIt(t *testing.T) {
 	if got := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\n\n").describe(); !strings.HasPrefix(got, "the overview doesn't report it, so its load is unknown") {
 		t.Fatal(got)
+	}
+}
+
+func TestAMachineWithoutTheOverviewReportsItsLoadOverSSH(t *testing.T) {
+	m := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\ndocker go\n8\n3.20 2.10 1.00\n16000000000 4000000000\n2\n")
+	if !m.measured() || m.Cores != 8 || m.Load[0] != 3.2 || m.MemoryUsed != 12e9 || m.Agents.Working != 2 {
+		t.Fatalf("parsed %+v", m)
+	}
+	if got := m.describe(); got != "load 3.20 on 8 cores, memory 12.0 of 16.0 GB, 2 Claude sessions working, read over SSH" {
+		t.Errorf("describe = %q", got)
+	}
+	if room := (Budget{MaxAgents: 2}).noRoom(time.Now(), m, true); !strings.Contains(room, "2 agents are working") {
+		t.Errorf("noRoom = %q", room)
+	}
+	if partial := parsePlatform("old", "Ubuntu\nx86_64\n\n"); partial.measured() {
+		t.Errorf("a machine with no load lines counts as measured: %+v", partial)
+	}
+	local, err := newLocal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := sh(local, platformScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if here := parsePlatform("here", string(out)); !here.measured() || here.MemoryTotal <= 0 {
+		t.Errorf("this machine's own probe = %+v from %q", here, out)
 	}
 }

@@ -375,7 +375,7 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	if len(picks) != 3 || picks[0].Host != "homelab" || picks[1].Host != "small" || picks[2].Host != "gpu" || len(skipped) != 0 {
 		t.Fatalf("picks = %+v, skipped %v", picks, skipped)
 	}
-	if !strings.Contains(picks[0].Why, "first machine in your list with room") || !picks[2].Probe || !strings.Contains(picks[2].Why, "load unknown") {
+	if !strings.Contains(picks[0].Why, "first machine in your list with room") || picks[2].Probe || !strings.Contains(picks[2].Why, "read over SSH") {
 		t.Errorf("reasons = %+v", picks)
 	}
 	if picks, _, _, err := chooseHosts(context.Background(), "gpu", true); err != nil || len(picks) != 1 || picks[0].Host != "gpu" {
@@ -400,7 +400,7 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 		"This machine (laptop): cpu 90%",
 		"- homelab (ssh homelab): reachable; budget: at most 1 working agents; NO ROOM now: 1 agents are working there",
 		"- gpu (ssh gpu): reachable; budget: no budget; ",
-		"the overview: not answering (connection refused), so its load is unknown; its system and tools were read over SSH",
+		"Claude sessions working, read over SSH",
 		"- small (ssh me@box): reachable; budget: no budget; Ubuntu cpu 5%",
 		"Suggested: small,",
 		"magi also sees stranger",
@@ -559,7 +559,7 @@ func TestTheToolServerOffersItsTools(t *testing.T) {
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
 	}
-	if got := strings.Join(names, " "); got != "cancel_task delegate machines run_elsewhere session_elsewhere task_reply task_result task_status" {
+	if got := strings.Join(names, " "); got != "cancel_task delegate diff machines run_elsewhere session_elsewhere sessions task_reply task_result task_status" {
 		t.Errorf("tools = %s", got)
 	}
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "machines"})

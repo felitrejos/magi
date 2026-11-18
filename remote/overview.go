@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"os/exec"
+	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const overviewInstructions = `
 
-When magi's overview runs on the user's machines (a magi agent on each, over Tailscale), you also see every Claude Code and Codex session on them. Use sessions to look, recent_work and diff to see what a session did, subagents and wait to follow work, and alerts for what needs the user. send_message, answer_permission, choose_option, move_session and start_session type into the user's live sessions or start new ones: say what you'll do and let the user decide first. If the overview isn't running, those tools say so; everything above still works.`
+Use sessions to see the Claude Code sessions running on the user's machines and diff to see one's uncommitted changes; both read the machines over SSH. When magi-overview is installed and its agents run (Rex and Tailscale), you also get recent_work, subagents and wait to follow a session's work, alerts for what needs the user, and send_message, answer_permission, choose_option, move_session and start_session, which type into the user's live sessions or start new ones: say what you'll do and let the user decide first. If the overview isn't running, those tools say so; everything above still works.`
 
 func addOverviewTools(ctx context.Context, server *mcp.Server) func() {
 	path, err := exec.LookPath("magi-overview")
@@ -27,7 +28,7 @@ func addOverviewTools(ctx context.Context, server *mcp.Server) func() {
 		return func() {}
 	}
 	for _, tool := range listed.Tools {
-		if tool.Name == "machines" {
+		if slices.Contains([]string{"machines", "sessions", "diff"}, tool.Name) {
 			continue
 		}
 		name := tool.Name

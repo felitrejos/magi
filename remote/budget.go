@@ -112,7 +112,7 @@ func (b Budget) noRoom(now time.Time, f *fleetMachine, agents bool) string {
 	if b.quietAt(now) {
 		return fmt.Sprintf("it's within its quiet hours (%s-%s)", clockText(b.QuietStart), clockText(b.QuietEnd))
 	}
-	if f == nil || !f.Live {
+	if f == nil || !f.measured() {
 		return ""
 	}
 	if agents && b.MaxAgents > 0 && f.Agents.Working >= b.MaxAgents {

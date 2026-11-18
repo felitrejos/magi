@@ -37,6 +37,18 @@ case $command in
       if [ -f "$f" ]; then cat "$f"; printf '\0'; fi
     done
     ;;
+  live)
+    for f in "$HOME"/.claude/sessions/*.json; do
+      [ -f "$f" ] || continue
+      pid=${f##*/}
+      if kill -0 "${pid%.json}" 2>/dev/null; then cat "$f"; printf '\0'; fi
+    done
+    ;;
+  diff)
+    cd -- "$1" || exit
+    git diff HEAD -- 2>/dev/null || git diff --
+    git ls-files --others --exclude-standard | sed 's/^/new file: /'
+    ;;
   transcript)
     if [ ! -f "$1" ]; then
       echo "the session's transcript $1 isn't there" >&2
