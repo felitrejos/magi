@@ -737,6 +737,9 @@ func TestACopyCutOffMidwayLeavesTheDestinationUntouched(t *testing.T) {
 }
 
 func TestACopyIntoAnExistingTreeWithAReadOnlyFolderLeavesNothingBehind(t *testing.T) {
+	if help, _ := exec.Command("tar", "--help").CombinedOutput(); strings.Contains(string(help), "BusyBox") {
+		t.Skip("BusyBox tar makes a read-only folder read-only before writing its files, so it can't unpack one")
+	}
 	f := newFixture(t)
 	src := filepath.Join(f.home, "developer", "notes")
 	dst := filepath.Join(f.home, "laptop", "notes")

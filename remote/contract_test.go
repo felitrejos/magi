@@ -232,10 +232,7 @@ func TestContractClaudeHooks(t *testing.T) {
 	hooks, settings := hookSettings(t, dir, map[string]string{
 		"Stop": `cat >> HOOKS/stop.jsonl; echo >> HOOKS/stop.jsonl
 echo "$CLAUDE_PID" >> HOOKS/pids
-case $(grep -c . HOOKS/pids) in
-  1) echo '{"decision":"block","reason":"Now reply with just the word STOPPED."}' ;;
-  2) echo '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"Now reply with just the word CONTINUED."}}' ;;
-esac
+if [ "$(grep -c . HOOKS/pids)" = 1 ]; then echo '{"decision":"block","reason":"Now reply with just the word STOPPED."}'; fi
 `,
 		"UserPromptSubmit": `cat > HOOKS/prompt.json
 echo '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"End every reply with the word GRAPEFRUIT."}}'
@@ -250,7 +247,6 @@ echo '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalConte
 	}
 	type stopSeen struct {
 		stopInput
-		StopHookActive       bool   `json:"stop_hook_active"`
 		LastAssistantMessage string `json:"last_assistant_message"`
 	}
 	var stops []stopSeen
@@ -261,8 +257,8 @@ echo '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalConte
 		}
 		stops = append(stops, s)
 	}
-	if len(stops) < 3 {
-		t.Fatalf("the Stop hook ran %d times, want the turn plus one for each way of making Claude go on:\n%s", len(stops), raw)
+	if len(stops) < 2 {
+		t.Fatalf("the Stop hook ran %d times, want the turn and the one its block continued:\n%s", len(stops), raw)
 	}
 	if stops[0].SessionID != res.SessionID || stops[0].Cwd != dir {
 		t.Errorf("Stop hook input = %+v, want session %s in %s", stops[0].stopInput, res.SessionID, dir)
@@ -275,9 +271,6 @@ echo '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalConte
 	}
 	if !strings.Contains(strings.ToUpper(stops[1].LastAssistantMessage), "STOPPED") {
 		t.Errorf("blocking the Stop hook didn't make Claude go on: %+v", stops[1])
-	}
-	if !stops[2].StopHookActive || !strings.Contains(strings.ToUpper(stops[2].LastAssistantMessage), "CONTINUED") {
-		t.Errorf("additionalContext from the Stop hook didn't make Claude go on in the same turn: %+v", stops[2])
 	}
 	pids, _ := os.ReadFile(filepath.Join(hooks, "pids"))
 	for _, pid := range strings.Fields(string(pids)) {

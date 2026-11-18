@@ -68,7 +68,12 @@ impl Client {
     }
 
     pub fn session(&self, query: &str) -> Result<Found, String> {
-        let agents = self.model.agents(Instant::now());
+        self.session_away_from(query, None)
+    }
+
+    pub fn session_away_from(&self, query: &str, away: Option<Endpoint>) -> Result<Found, String> {
+        let mut agents = self.model.agents(Instant::now());
+        agents.retain(|agent| Some(agent.endpoint) != away);
         let candidates: Vec<(&str, &str)> = agents
             .iter()
             .map(|agent| (agent.session.id.as_str(), agent.session.title.as_str()))

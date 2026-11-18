@@ -220,8 +220,10 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 }
 
 const (
-	fetchTries = 3
-	fetchRetry = 2 * time.Second
+	fetchTries      = 3
+	fetchRetry      = 2 * time.Second
+	fetchAnswerWait = 10 * time.Second
+	fetchErrorGrace = 500 * time.Millisecond
 )
 
 func matchMachine(names []string, wanted string) string {
@@ -279,23 +281,49 @@ func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
-		log, err := os.Create(filepath.Join(dir, "fetch-"+shortID(sessionID)+".log"))
+		logPath := filepath.Join(dir, "fetch-"+shortID(sessionID)+".log")
+		log, err := os.Create(logPath)
 		if err != nil {
 			return err
 		}
 		defer log.Close()
-		cmd := exec.Command(program, "move", shortID(sessionID), target)
+		cmd := exec.Command(program, "move", sessionID, target)
 		cmd.Stdout, cmd.Stderr = log, log
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if err := cmd.Start(); err != nil {
 			return err
 		}
-		if err := cmd.Process.Release(); err != nil {
-			return err
+		if err := awaitFetchAnswer(cmd, logPath); err != nil {
+			return fmt.Errorf("%s didn't take this session back: %w", target, err)
 		}
 		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", target)
 		return nil
 	}, nil
+}
+
+func awaitFetchAnswer(cmd *exec.Cmd, logPath string) error {
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	answeredAt := time.Time{}
+	for deadline := time.Now().Add(fetchAnswerWait); time.Now().Before(deadline); {
+		select {
+		case err := <-exited:
+			if err == nil {
+				return nil
+			}
+			text, _ := os.ReadFile(logPath)
+			return errors.New(strings.TrimSpace(string(text)))
+		case <-time.After(100 * time.Millisecond):
+		}
+		if answeredAt.IsZero() {
+			if info, err := os.Stat(logPath); err == nil && info.Size() > 0 {
+				answeredAt = time.Now()
+			}
+		} else if time.Since(answeredAt) > fetchErrorGrace {
+			return nil
+		}
+	}
+	return nil
 }
 
 type stopInput struct {
@@ -434,7 +462,7 @@ func passReturnNote(home, sessionID, event string, out io.Writer) error {
 	})
 }
 
-func handedOff(a armed, res Result) map[string]any {
+func handedOff(a armed, res Result) map[string]string {
 	where := fmt.Sprintf("It's running %s, and with Remote Control it's in every Claude app on your account", res.Where)
 	if len(res.ShownOn) > 0 {
 		where = fmt.Sprintf("It's open in %s, and with Remote Control it's in every Claude app on your account", strings.Join(res.ShownOn, ", "))
@@ -450,17 +478,15 @@ func handedOff(a armed, res Result) map[string]any {
 	}
 	took := res.Summary()
 	if a.Desktop {
-		return map[string]any{
-			"hookSpecificOutput": map[string]string{
-				"hookEventName": "Stop",
-				"additionalContext": fmt.Sprintf("magi handed this session off to %s in %s. %s. "+
-					"Tell the user in one or two short lines where the session continues now, "+
-					"then archive this session with the archive_session tool and session_id \"self\" (load the tool with ToolSearch if needed). "+
-					"Make no other tool calls.", a.Host, took, where),
-			},
+		return map[string]string{
+			"decision": "block",
+			"reason": fmt.Sprintf("magi handed this session off to %s in %s. %s. "+
+				"Tell the user in one or two short lines where the session continues now, "+
+				"then archive this session with the archive_session tool and session_id \"self\" (load the tool with ToolSearch if needed). "+
+				"Make no other tool calls.", a.Host, took, where),
 		}
 	}
-	return map[string]any{
+	return map[string]string{
 		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. This copy is closing.", a.Host, took, where),
 	}
 }

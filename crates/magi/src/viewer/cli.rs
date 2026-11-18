@@ -264,8 +264,8 @@ pub(super) fn choose(client: &mut Client, query: &str, option: u8) -> Result<Str
 }
 
 pub(super) fn move_to(client: &mut Client, query: &str, to: &str) -> Result<String, String> {
-    let found = client.session(query)?;
     let to = client.machine(to)?;
+    let found = client.session_away_from(query, client.endpoint(&to))?;
     let (endpoint, request) = client.model.move_request(
         &found.session.id,
         &found.session.title,

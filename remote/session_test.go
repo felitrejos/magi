@@ -216,32 +216,13 @@ func TestRetireLeavesADesktopSessionRunningUntilItIsArchived(t *testing.T) {
 }
 
 func TestHandedOffAsksDesktopSessionsToArchiveThemselves(t *testing.T) {
-	type hookOutput struct {
-		Decision           string `json:"decision"`
-		SystemMessage      string `json:"systemMessage"`
-		HookSpecificOutput struct {
-			HookEventName     string `json:"hookEventName"`
-			AdditionalContext string `json:"additionalContext"`
-		} `json:"hookSpecificOutput"`
+	desktop := handedOff(armed{Host: "server", Desktop: true}, Result{ShownOn: []string{"Laptop"}})
+	if desktop["decision"] != "block" || !strings.Contains(desktop["reason"], "archive_session") {
+		t.Errorf("desktop output = %v", desktop)
 	}
-	printed := func(a armed) hookOutput {
-		var out hookOutput
-		data, err := json.Marshal(handedOff(a, Result{ShownOn: []string{"Laptop"}}))
-		if err == nil {
-			err = json.Unmarshal(data, &out)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		return out
-	}
-	desktop := printed(armed{Host: "server", Desktop: true})
-	if desktop.Decision != "" || desktop.HookSpecificOutput.HookEventName != "Stop" || !strings.Contains(desktop.HookSpecificOutput.AdditionalContext, "archive_session") {
-		t.Errorf("desktop output = %+v, want Stop feedback asking it to archive itself, not an error", desktop)
-	}
-	terminal := printed(armed{Host: "server"})
-	if terminal.Decision != "" || terminal.HookSpecificOutput.AdditionalContext != "" || terminal.SystemMessage == "" {
-		t.Errorf("terminal output = %+v", terminal)
+	terminal := handedOff(armed{Host: "server"}, Result{ShownOn: []string{"Laptop"}})
+	if _, blocks := terminal["decision"]; blocks || terminal["systemMessage"] == "" {
+		t.Errorf("terminal output = %v", terminal)
 	}
 }
 
@@ -392,6 +373,29 @@ func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
 	}
 	if err := other.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Error("a process that isn't Claude was stopped")
+	}
+}
+
+func TestHandingBackSaysWhenTheOtherMachineRefuses(t *testing.T) {
+	f := newFixture(t)
+	id := newSessionID()
+	overview := func(move string) {
+		f.tool("magi-overview", `#!/bin/sh
+case $1 in
+  fleet) echo '{"machines":[{"name":"mac","live":true}]}' ;;
+  move) `+move+` ;;
+esac
+`)
+	}
+	overview(`echo "\"$2\" matches 2 sessions: New session, New session. Use more of its id" >&2; exit 1`)
+	err := arm("mac", id, "", io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "mac didn't take this session back") || !strings.Contains(err.Error(), "matches 2 sessions") {
+		t.Fatalf("err = %v, want the refusal reported", err)
+	}
+	overview(`echo "Moving it when its turn ends"; sleep 2`)
+	var out strings.Builder
+	if err := arm("mac", id, "", &out); err != nil || !strings.Contains(out.String(), "Asked mac to take this session back") {
+		t.Fatalf("err = %v, out = %q", err, out.String())
 	}
 }
 
