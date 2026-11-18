@@ -41,7 +41,7 @@ type delegateInput struct {
 	Task           string   `json:"task" jsonschema:"a self-contained brief, since the remote Claude doesn't see this conversation and can't ask questions: the goal, the relevant files and what you already know about them, constraints, how to check the work, and what done looks like"`
 	Host           string   `json:"host,omitempty" jsonschema:"the magi host the user agreed to, as listed by machines; left out, magi takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
 	Dir            string   `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
-	AllowedTools   []string `json:"allowed_tools,omitempty" jsonschema:"extra permission rules the remote Claude may use without asking, for example Bash(go test:*) or Bash(npm run lint); only what the user agreed to"`
+	AllowedTools   []string `json:"allowed_tools,omitempty" jsonschema:"extra permission rules the remote Claude may use without asking, for example Bash(go test:*) or Bash(npm run lint); only what the user agreed to. When the task revolves around one tool, grant the whole tool, such as Bash(docker:*), rather than a few of its subcommands, or the remote Claude gets stuck on the first one you didn't list"`
 	PermissionMode string   `json:"permission_mode,omitempty" jsonschema:"acceptEdits (default: read and edit files in its copy), dontAsk (only what allowed_tools and that machine's settings allow) or auto (Claude Code's auto mode, which reviews each action)"`
 	Model          string   `json:"model,omitempty" jsonschema:"model for the remote Claude, such as sonnet or opus; leave out for that machine's default"`
 	Setup          *bool    `json:"setup,omitempty" jsonschema:"run the project's approved .magi.toml setup first (default true)"`
@@ -103,13 +103,6 @@ func delegateArgs(in delegateInput) ([]string, error) {
 	if !slices.Contains(delegateModes, mode) {
 		return nil, fmt.Errorf("permission_mode %q isn't allowed; use one of %s", mode, strings.Join(delegateModes, ", "))
 	}
-	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--permission-mode", mode, "--permission-prompts", "none", "--append-system-prompt", delegateSystemPrompt}
-	if in.Model != "" {
-		if !modelPattern.MatchString(in.Model) {
-			return nil, fmt.Errorf("model %q isn't a model name", in.Model)
-		}
-		args = append(args, "--model", in.Model)
-	}
 	var allowed []string
 	for _, tool := range in.AllowedTools {
 		if tool = strings.TrimSpace(tool); tool != "" {
@@ -118,6 +111,17 @@ func delegateArgs(in delegateInput) ([]string, error) {
 			}
 			allowed = append(allowed, tool)
 		}
+	}
+	prompt := delegateSystemPrompt
+	if len(allowed) > 0 {
+		prompt += " You may run these without approval: " + strings.Join(allowed, ", ") + ". Run each as its own simple command, not chained with && or ; to anything else, since a chained command needs every part allowed. A denied command doesn't block these: keep going with them."
+	}
+	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--permission-mode", mode, "--permission-prompts", "none", "--append-system-prompt", prompt}
+	if in.Model != "" {
+		if !modelPattern.MatchString(in.Model) {
+			return nil, fmt.Errorf("model %q isn't a model name", in.Model)
+		}
+		args = append(args, "--model", in.Model)
 	}
 	if len(allowed) > 0 {
 		args = append(append(args, "--allowedTools"), allowed...)

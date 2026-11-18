@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -544,6 +545,17 @@ func TestADelegatedClaudeNeverBypassesPermissions(t *testing.T) {
 	}
 	if _, err := delegateArgs(delegateInput{AllowedTools: []string{"--dangerously-skip-permissions"}}); err == nil {
 		t.Error("a flag was accepted as an allowed tool")
+	}
+	allowed, err := delegateArgs(delegateInput{AllowedTools: []string{"Bash(docker build:*)", "Bash(curl:*)"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := allowed[slices.Index(allowed, "--append-system-prompt")+1]
+	if !strings.Contains(prompt, "You may run these without approval: Bash(docker build:*), Bash(curl:*).") || !strings.Contains(prompt, "A denied command doesn't block these") {
+		t.Errorf("the delegate isn't told what it may run:\n%s", prompt)
+	}
+	if strings.Contains(args[9], "without approval") {
+		t.Errorf("a delegate with nothing allowed is told it has rules: %s", args[9])
 	}
 }
 
