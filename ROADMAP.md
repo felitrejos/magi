@@ -5,10 +5,10 @@
 - **Move a session, send work.** The core is moving a live Claude Code or
   Codex session to another machine and back, and sending work to other
   machines that comes back by itself. That core needs only SSH.
-- **One program.** `magi` becomes a single Go program with SSH as its only
+- **One program.** `magi` is a single Go program with SSH as its only
   requirement. It never depends on the overview.
 - **The overview is a separate install.** The live view in a Rex pane, the
-  agents on every machine and Tailscale move to `magi-overview`, an optional
+  agents on every machine and Tailscale live in `magi-overview`, an optional
   install for Rex users. It keeps working but gets no new features for now.
 - **Reliable before new.** A handoff should be boring. Work on making moves
   safe and measured comes before anything else.
@@ -17,11 +17,15 @@
 - **Leave it to the tools.** What Claude Code, Codex, Rex or tmux already do
   stays there.
 - **Suggest, don't act.** magi suggests moves and machines but never moves
-  or starts anything by itself. The one exception is closing a port forward
-  left pointing at a machine its session has moved on from.
+  or starts anything by itself. It only cleans up after itself. It closes a
+  port forward left pointing at a machine its session has moved on from,
+  and `magi status` and the next handoff stop a copy that a failed handoff
+  left running.
 - **A layer for other tools.** The CLI and `magi mcp` give scripts, other
-  orchestrators and Claude itself the same actions, with or without the
-  overview.
+  orchestrators and Claude itself magi's actions. Moving sessions, sending
+  work, and reading machines, sessions and diffs need only SSH. The
+  live-control actions (messaging a session, answering its prompts,
+  following its work) need `magi-overview`.
 - **Follow Rex.** While Rex is in preview, magi supports only its latest
   release. Bump `REX_API` and `rexAPI` with each one.
 
@@ -30,11 +34,13 @@
 - **Split the install.** `magi` ships as one Go program that needs only
   SSH. The overview ships as `magi-overview`.
 - **Never two live copies.** A move that fails leaves the session live on
-  exactly one machine.
+  exactly one machine, and a handoff is refused when the destination
+  already runs the session.
 - **Budgets that fit the hook.** Every step of a handoff gets a time budget
-  that fits inside the hook's time limit.
-- **Remember unfinished moves.** `magi status` shows a move that didn't
-  finish, and the next run cleans it up.
+  that fits inside the hook's time limit of 200 seconds.
+- **Remember unfinished moves.** A copy that a failed handoff couldn't stop
+  is recorded. `magi status` shows it and stops it in the same run, and so
+  does the next handoff of that session.
 - **Block typing after a move.** A session that has already moved refuses
   new input on the machine it left.
 - **Safer pulls.** `pull` closes the old tab only after it succeeds, and

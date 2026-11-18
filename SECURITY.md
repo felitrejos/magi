@@ -1,7 +1,9 @@
 # Security
 
-magi has two layers. Moving work runs over your own SSH connection. The
-overview adds an agent on each machine that viewers reach over Tailscale.
+magi has two layers. Moving work is the `magi` program, and it runs over
+your own SSH connection. The overview is a separate, optional program,
+`magi-overview`, which adds an agent on each machine that viewers reach
+over Tailscale.
 
 ## The overview's network
 
@@ -18,15 +20,17 @@ overview adds an agent on each machine that viewers reach over Tailscale.
 
 ## The overview on each machine
 
-- The command-line client (`magi sessions`, `send`, `answer` and the rest)
-  and the overview tools of `magi mcp` connect exactly as the viewer does,
-  so they reach only the agents a viewer could, and can do only what a
-  viewer can. `magi mcp` talks only over its standard input and output, to
-  the program that started it, and marks every tool that types into a
-  session as not read-only, so MCP clients ask before using it. Its
-  `recent_work` tool, like `magi recent`, hands that program a session's or
-  subagent's messages and tool calls, which the viewer's samples never
-  carry.
+- The command-line client (`magi-overview sessions`, `send`, `answer` and
+  the rest) and the overview tools of `magi mcp` connect exactly as the
+  viewer does, so they reach only the agents a viewer could, and can do
+  only what a viewer can. `magi mcp` offers those tools only when
+  `magi-overview` is installed, by starting `magi-overview mcp-overview`
+  and passing calls to it. `magi mcp` talks only over its standard input
+  and output, to the program that started it, and marks every tool that
+  types into a session as not read-only, so MCP clients ask before using
+  it. Its `recent_work` tool, like `magi-overview recent`, hands that
+  program a session's or subagent's messages and tool calls, which the
+  viewer's samples never carry.
 - Local viewers, the status line and the new-session launcher (which the
   viewer opens in a Rex floating pane and talks to for one choice) use Unix
   sockets in `~/.local/state/magi/`, a folder only you can open. The viewer
@@ -56,25 +60,31 @@ overview adds an agent on each machine that viewers reach over Tailscale.
   at most every two minutes per branch, for that branch's pull request state,
   checks and review. It uses `gh`'s own sign-in, and does nothing if `gh`
   isn't installed.
-- Conversation text leaves the machine only when `magi recent` or `magi
-  mcp`'s `recent_work` asks for it. That is one session's or subagent's
+- Conversation text leaves the machine only when `magi-overview recent` or
+  `magi mcp`'s `recent_work` asks for it. That is one session's or subagent's
   latest messages and tool calls, or the visible screen of its Rex pane,
   sent only to a client signed in as you.
 - A viewer can ask an agent to message a session, answer its permission
   prompt or question, stop its turn, start a new session in one of that
   machine's folders with `magi open`, continue a Claude Code session in
   Rex as a copy (`claude --resume --fork-session`, which leaves the original
-  untouched), move a Claude Code or Codex session to another machine, or
-  close a port forward whose session now runs on another machine (`magi
-  forwards close`, which a viewer asks for once that's been true for a
-  minute). On its own, the agent opens a read-only tab beside a session for
-  each running subagent, running `magi follow`, which closes when the
-  subagent finishes. For 90 seconds after starting a session it also
-  watches that pane for Claude's folder-trust question, so it can be
-  answered from the overview. The agent
-  acts only on sessions it found itself, checks the machine name, and runs
-  `rex` and `magi-remote` with arguments, never through a shell, each with a time
-  limit after which it and anything it started are stopped.
+  untouched), move a Claude Code or Codex session to another machine, pull
+  one from another machine onto its own (`magi pull --json --tab`, with a
+  machine name and session id it checks first), or close a port forward
+  whose session now runs on another machine (`magi forwards close`, which
+  a viewer asks for once that's been true for a minute). The pull is how a
+  session is handed back from a machine that can't reach the other one.
+  `magi arm` there asks the overview, and the machine that can reach the
+  other does the move. To know which machines it can reach, the agent runs
+  `magi hosts`, which only prints the names in your config. On its own,
+  the agent opens a read-only tab beside a session for each running
+  subagent, running `magi-overview follow`, which closes when the subagent
+  finishes. For 90 seconds after starting a session it also watches that
+  pane for Claude's folder-trust question, so it can be answered from the
+  overview. The agent acts only on sessions it found itself, checks the
+  machine name, and runs `rex` and `magi` with arguments, never through a
+  shell, each with a time limit after which it and anything it started are
+  stopped.
 - A message goes only into the session's own Rex pane, as a bracketed paste
   through Rex's paste event, then Enter. It is at most 16,000 characters,
   keeps its lines and tabs, has every other control character removed (Rex
@@ -93,11 +103,11 @@ overview adds an agent on each machine that viewers reach over Tailscale.
   `~/.local/state/magi/popups/`, shows them in a Rex floating pane on its
   own machine (through fzf and delta, which draw only from those files),
   and the pane deletes them when it closes.
-- `magi statusline install` edits only `statusLine` in
+- `magi-overview statusline install` edits only `statusLine` in
   `~/.claude/settings.json`, writes atomically, keeps the file's permissions
   and leaves a backup with the same permissions.
-- The files magi keeps, all in `~/.local/state/magi/` and readable only by
-  you, are the alert history (`alerts.jsonl`), your last plan windows
+- The files the overview keeps, all in `~/.local/state/magi/` and readable
+  only by you, are the alert history (`alerts.jsonl`), your last plan windows
   (`plans.json`) and, while a diff is open, its `popups/`.
 
 ## Moving work
@@ -132,9 +142,29 @@ overview adds an agent on each machine that viewers reach over Tailscale.
   `acceptEdits` mode by default, with other prompts answered "no", never
   with permission checks bypassed.
 - To choose a machine that the overview doesn't report, magi reads its
-  system, architecture and installed tools over SSH (`uname`,
-  `/etc/os-release`, `command -v`, and `docker info` or `podman info`). It
-  only reads.
+  system, architecture, installed tools, cores, load average, memory and
+  the number of working Claude sessions over SSH (`uname`,
+  `/etc/os-release` or `sw_vers`, `command -v`, `docker info` or
+  `podman info`, `/proc/loadavg` and `/proc/meminfo` or `sysctl` and
+  `vm_stat`, and `~/.claude/sessions/*.json` with `kill -0` to see which
+  are still alive). It only reads.
+- The `sessions` tool of `magi mcp` reads `~/.claude/sessions/*.json` on
+  this machine and, over SSH, on each machine in your config. Its `diff`
+  tool runs `git diff HEAD` and lists untracked files in that session's
+  folder, over SSH when the session is on another machine. Both only read,
+  and what they return goes to the program that started `magi mcp`.
+- A handoff that fails or is interrupted stops the new copy and leaves the
+  session running where it was, and a handoff is refused when the session
+  already runs on the destination. If the new copy couldn't be stopped,
+  magi records it in `~/.magi/strays`. `magi status` and the next handoff
+  of that session then stop that copy on the other machine and close its
+  tab by themselves, over SSH. A recorded tmux window is closed only while
+  it still runs the same process.
+- After a session moves, the plugin's prompt hook (`magi hook prompt`)
+  refuses new input in the copy it left. It reads only the session id from
+  the hook's input and the marker in `~/.magi/moved`, and contacts nothing.
+  The Stop hook (`magi hook stop`) runs the handoff, with a time limit of
+  200 seconds.
 - A project's `.magi.toml` runs only after you approve that exact file with
   `magi allow`. Any edit needs a new approval.
 - Its `ports` are forwarded from the machine a session left. When the

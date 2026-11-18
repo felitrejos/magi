@@ -81,9 +81,9 @@ magi moves the Claude Code session you're in to another machine.
   plan nearly runs out.
 - **New sessions.** One opens on whichever machine has room. Each subagent
   gets a tab beside it that closes when it's done. Sessions run with Remote
-  Control for the Claude app, and `magi start` prints the link.
-- **Better picks.** Claude also goes by each machine's live load, and
-  holds back Claude work when your plan is nearly used up.
+  Control for the Claude app, and `magi-overview start` prints the link.
+- **Better picks.** Machine load already comes over SSH. The overview adds
+  your plan's usage and holds back Claude work when it's nearly used up.
 - **Light and private.** The agent idles at 0% CPU. Only devices signed in
   to your tailnet as you can connect.
 
@@ -93,38 +93,35 @@ magi moves the Claude Code session you're in to another machine.
 curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh
 magi init             # on each machine
 claude plugin marketplace add felitrejos/magi && claude plugin install magi@magi
-magi agent install    # for the overview, on every machine
-magi                  # for the overview, in a Rex pane
+curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh -s overview
+magi-overview agent install    # for the overview, on every machine
+magi-overview                  # for the overview, in a Rex pane
 ```
 
-This installs two programs, `magi` and `magi-remote`, and you only type
-`magi`. The plugin gives Claude the handoff skill and the MCP tools. The
-overview needs [Tailscale](https://tailscale.com) and Rex
-**0.1.0-preview.20** on every machine, and tracks Rex's latest preview.
-`magi statusline install` shows Claude Code's context use and plan windows.
+`magi` needs only SSH, and the plugin adds the handoff skill, the hooks and
+the MCP tools. The overview is a second program for Rex users. It needs
+[Tailscale](https://tailscale.com) and Rex **0.1.0-preview.20** on every
+machine, tracks Rex's latest preview and gets no new features for now.
+`magi-overview statusline install` shows context use and plan windows.
 
 ## From scripts and other tools
 
-magi's actions work from the command line, so a script, another
-orchestrator or Claude itself can use it. These need the overview.
-
 ```bash
-magi sessions --json            # every session on every machine
-magi send fix-login "now run the tests"   # queued until it's idle
-magi answer fix-login yes       # or: magi choose fix-login 2
-magi move fix-login homelab
-magi start homelab ~/developer/stampr/stampr
-magi events                     # what needs you, as JSON lines
-magi subagents                  # every running subagent and the step it's on
-magi recent fix-login           # its latest steps, one line each
-magi wait fix-login             # returns once it's done or needs you
-magi wait fix-login "find auth" # recent and wait also take a subagent
+magi-overview sessions --json   # every session on every machine
+magi-overview send fix-login "now run the tests"   # queued until it's idle
+magi-overview answer fix-login yes   # or: magi-overview choose fix-login 2
+magi-overview move fix-login homelab
+magi-overview start homelab ~/developer/stampr/stampr
+magi-overview events            # what needs you, as JSON lines
+magi-overview subagents         # every running subagent and its step
+magi-overview recent fix-login  # its latest steps, one line each
+magi-overview wait fix-login    # or a subagent: wait fix-login "find auth"
 ```
 
-`magi mcp` is one MCP server with every action. The ones that act are
-marked, so your client asks you first, and the overview's tools say so when
-the overview isn't running. The plugin adds the server to Claude Code. In
-Claude Desktop, add this to `claude_desktop_config.json`.
+`magi mcp` is one MCP server. It lists machines and sessions, shows a diff
+and sends work over SSH, and offers the overview's tools only when
+`magi-overview` is installed. Tools that act are marked, so your client
+asks first. In Claude Desktop, add this to `claude_desktop_config.json`.
 
 ```json
 { "mcpServers": { "magi": { "command": "/Users/you/.local/bin/magi", "args": ["mcp"] } } }
@@ -132,11 +129,20 @@ Claude Desktop, add this to `claude_desktop_config.json`.
 
 ## How it works
 
-Each machine runs `magi agent` in the background (launchd or a systemd user
-service). The viewer finds the agents through Tailscale and gets a small
-sample from each one every second. The agent reads the files the coding
-agents already write (`~/.claude`, `~/.codex`) and follows Rex's events.
-When you answer a session, it types your answer into the session's Rex pane.
+A handoff runs over SSH when the turn ends, and a failed one leaves the
+session running where it was. In a scripted test between a MacBook and a
+Linux machine, one session handed itself to the Linux machine and back 20
+times with Rex and 20 times with tmux. All 40 round trips worked, at a
+median of 10 to 14 seconds each way, and three injected failures (the
+destination already running the session, the hook killed partway, SSH
+dropped mid-move) each ended with exactly one live copy and the
+uncommitted work intact.
+
+For the overview, each machine runs `magi-overview agent` in the background
+(launchd or a systemd user service). The viewer finds the agents through
+Tailscale and samples each one every second. The agent reads what the
+coding agents already write (`~/.claude`, `~/.codex`), follows Rex's events
+and types your answers into the session's Rex pane.
 
 | Agent on an M4 MacBook | CPU | Memory |
 |---|---|---|

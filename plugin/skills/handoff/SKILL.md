@@ -8,7 +8,7 @@ allowed-tools: Bash(magi arm:*)
 
 magi moves this session to another machine once your turn ends. It syncs the project (for a git repository the branch, commits, staged and unstaged changes and secret files, for any other folder its files), the transcript and project memory, starts a new session there in a Rex or tmux tab with Remote Control, then closes this copy.
 
-Handing back works the same way. If this session was handed off to this machine and the user says "hand this back to my Mac", follow the same steps with the Mac as the machine. This machine doesn't need to be set up to reach it, because the Mac fetches the session when magi's overview is running.
+Handing back works the same way. If this session was handed off to this machine and the user says "hand this back to my Mac", follow the same steps with the Mac as the machine. This machine doesn't need to be set up to reach it. When it isn't, magi asks the overview to move the session, and the machine that can reach the other one does the move. That needs magi-overview installed on this machine with its agents running. Without it, tell the user to run `magi pull <this machine>` on the machine they want the session on.
 
 Nothing that is running moves, so do this in order.
 
@@ -27,7 +27,7 @@ Nothing that is running moves, so do this in order.
    NOTE
    ```
 
-3. If it says there is no such host, it lists the configured ones. Run it again with the one the user meant, or ask if none clearly matches. If it says it doesn't know the machine but lists machines the overview sees, pick the one the user meant from that list (for example "my Mac" is the Mac's machine name there) and run it again. If it lists none, the overview isn't running, so tell the user to run `magi pull` on the machine they want it on.
+3. If it says there is no such host, it lists the configured ones. Run it again with the one the user meant, or ask if none clearly matches. If it says it doesn't know the machine but lists machines the overview sees, pick the one the user meant from that list (for example "my Mac" is the Mac's machine name there) and run it again. If it lists none, magi-overview isn't installed here or its agents aren't running, so tell the user to run `magi pull <this machine>` on the machine they want it on.
 4. If it fails for any other reason, tell the user why and stop.
 5. If it succeeds, end your turn right away with one short line, for example "Handing off to homelab, it'll open there in a few seconds." Make no other tool calls, because the handoff starts when your turn ends.
 
