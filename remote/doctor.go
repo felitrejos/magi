@@ -217,7 +217,7 @@ func doctor(names []string, out io.Writer) error {
 }
 
 func doctorHost(ctx context.Context, c *checks, name string, h Host) {
-	remote, err := newRemote(ctx, h.SSH)
+	remote, err := newRemote(ctx, h)
 	if err != nil {
 		c.fail("ssh setup", err.Error())
 		return

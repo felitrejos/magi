@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -17,13 +19,19 @@ func delegatingSession(c caller, project string) (*parentSession, error) {
 	if c.PID == 0 {
 		return nil, nil
 	}
-	live, found, err := readLiveSession(c.PID)
-	if halfWritten(err) {
-		return nil, nil
-	}
-	if err != nil || !found || live.SessionID == "" {
+	local, err := newLocal(context.Background())
+	if err != nil {
 		return nil, err
 	}
+	sessions, err := liveSessions(local)
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(sessions, func(s liveSession) bool { return s.PID == c.PID })
+	if i < 0 {
+		return nil, nil
+	}
+	live := sessions[i]
 	name := strings.TrimSpace(live.Name)
 	if name == "" {
 		name = project

@@ -17,7 +17,6 @@ type machineSessions struct {
 	Codex    []codexThread
 	Err      error
 	CodexErr error
-	codex    string
 }
 
 func everySession(ctx context.Context) ([]machineSessions, error) {
@@ -25,11 +24,11 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 	if err != nil {
 		return nil, err
 	}
-	all := []machineSessions{{Name: local.Name(), Machine: local, codex: "codex"}}
+	all := []machineSessions{{Name: local.Name(), Machine: local}}
 	cfg, _, err := loadConfig()
 	if err == nil {
 		for _, name := range cfg.Order {
-			all = append(all, machineSessions{Name: name, codex: cfg.Hosts[name].Codex})
+			all = append(all, machineSessions{Name: name})
 		}
 	}
 	var wg sync.WaitGroup
@@ -39,15 +38,15 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 			if m.Machine == nil {
 				probe, cancel := context.WithTimeout(ctx, reachWait)
 				defer cancel()
-				r, err := newRemote(probe, cfg.Hosts[m.Name].SSH)
+				r, err := newRemote(probe, cfg.Hosts[m.Name])
 				if err != nil {
 					m.Err = err
 					return
 				}
 				m.Machine = r
 			}
-			if m.Sessions, m.Err = liveHere(m.Machine); m.Err == nil && m.codex != "" {
-				m.Codex, m.CodexErr = openCodexSessions(m.Machine, m.codex)
+			if m.Sessions, m.Err = liveSessions(m.Machine); m.Err == nil && m.Machine.Codex() != "" {
+				m.Codex, m.CodexErr = openCodexSessions(m.Machine)
 			}
 		})
 	}

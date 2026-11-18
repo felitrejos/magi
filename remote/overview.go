@@ -10,7 +10,7 @@ import (
 
 const overviewInstructions = `
 
-Use sessions to see the Claude Code sessions running on the user's machines and diff to see one's uncommitted changes; both read the machines over SSH. When magi-overview is installed and its agents run (Rex and Tailscale), you also get recent_work, subagents and wait to follow a session's work, alerts for what needs the user, and send_message, answer_permission, choose_option, move_session and start_session, which type into the user's live sessions or start new ones: say what you'll do and let the user decide first. If the overview isn't running, those tools say so; everything above still works.`
+Use sessions to see the Claude Code and Codex sessions running on the user's machines and diff to see one's uncommitted changes; both read the machines over SSH. When magi-overview is installed and its agents run (Rex and Tailscale), you also get recent_work, subagents and wait to follow a session's work, alerts for what needs the user, and send_message, answer_permission, choose_option, move_session and start_session, which type into the user's live sessions or start new ones: say what you'll do and let the user decide first. If the overview isn't running, those tools say so; everything above still works.`
 
 func addOverviewTools(ctx context.Context, server *mcp.Server) func() {
 	path, err := exec.LookPath("magi-overview")

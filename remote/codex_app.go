@@ -25,49 +25,52 @@ type codexThread struct {
 	Name string `json:"name"`
 }
 
-func askCodex(m Machine, program string, calls ...codexCall) ([]json.RawMessage, error) {
-	cmd := m.Command(codexScript, "app", program)
+func askCodex(m Machine, calls ...codexCall) (string, []json.RawMessage, error) {
+	cmd := m.Command(codexScript, "app", m.Codex())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	answers, err := converse(stdin, stdout, calls)
+	home, answers, err := converse(stdin, stdout, calls)
 	stdin.Close()
 	io.Copy(io.Discard, stdout)
 	if waitErr := cmd.Wait(); err == nil {
 		err = waitErr
 	}
 	if err != nil {
-		return nil, fmt.Errorf("asking Codex on %s: %w", m.Name(), &commandError{what: "codex app-server", stderr: strings.TrimSpace(stderr.String()), err: err})
+		return "", nil, fmt.Errorf("asking Codex on %s: %w", m.Name(), &commandError{what: "codex app-server", stderr: strings.TrimSpace(stderr.String()), err: err})
 	}
-	return answers, nil
+	return home, answers, nil
 }
 
-func converse(stdin io.Writer, stdout io.Reader, calls []codexCall) ([]json.RawMessage, error) {
+func converse(stdin io.Writer, stdout io.Reader, calls []codexCall) (string, []json.RawMessage, error) {
 	request := []byte(codexHello)
 	for i := range calls {
 		calls[i].ID = i + 1
 		line, err := json.Marshal(calls[i])
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
 		request = append(append(request, line...), '\n')
 	}
 	if _, err := stdin.Write(request); err != nil {
-		return nil, err
+		return "", nil, err
+	}
+	var hello struct {
+		CodexHome string `json:"codexHome"`
 	}
 	answers := make([]json.RawMessage, len(calls))
 	dec := json.NewDecoder(stdout)
-	for left := len(calls); left > 0; {
+	for left := len(calls) + 1; left > 0; {
 		var reply struct {
 			ID     int             `json:"id"`
 			Method string          `json:"method"`
@@ -78,23 +81,41 @@ func converse(stdin io.Writer, stdout io.Reader, calls []codexCall) ([]json.RawM
 		}
 		if err := dec.Decode(&reply); err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, errors.New("it stopped before it answered")
+				return "", nil, errors.New("it stopped before it answered")
 			}
-			return nil, err
+			return "", nil, err
 		}
-		if reply.Method != "" || reply.ID < 1 || reply.ID > len(calls) {
+		if reply.Method != "" || reply.ID < 0 || reply.ID > len(calls) {
 			continue
 		}
 		if reply.Error != nil {
-			return nil, fmt.Errorf("%s: %s", calls[reply.ID-1].Method, reply.Error.Message)
+			method := "initialize"
+			if reply.ID > 0 {
+				method = calls[reply.ID-1].Method
+			}
+			return "", nil, &codexRefusal{Method: method, Message: reply.Error.Message}
 		}
-		answers[reply.ID-1] = reply.Result
+		if reply.ID == 0 {
+			if err := json.Unmarshal(reply.Result, &hello); err != nil {
+				return "", nil, err
+			}
+		} else {
+			answers[reply.ID-1] = reply.Result
+		}
 		left--
 	}
-	return answers, nil
+	return hello.CodexHome, answers, nil
 }
 
-func openCodexSessions(m Machine, program string) ([]codexThread, error) {
+type codexRefusal struct {
+	Method, Message string
+}
+
+func (e *codexRefusal) Error() string {
+	return e.Method + ": " + e.Message
+}
+
+func openCodexSessions(m Machine) ([]codexThread, error) {
 	out, err := sh(m, codexScript, "opened")
 	if err != nil {
 		return nil, err
@@ -107,7 +128,7 @@ func openCodexSessions(m Machine, program string) ([]codexThread, error) {
 	for i, id := range ids {
 		calls[i] = codexCall{Method: "thread/read", Params: map[string]string{"threadId": id}}
 	}
-	answers, err := askCodex(m, program, calls...)
+	_, answers, err := askCodex(m, calls...)
 	if err != nil {
 		return nil, err
 	}

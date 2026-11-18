@@ -12,14 +12,6 @@ import (
 	"time"
 )
 
-const fakeCodexThatStarts = `#!/bin/sh
-printf '%s\n' "$@" > "$HOME/codex-args"
-while [ "$1" != resume ]; do shift; done
-f=$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name "rollout-*-$2.jsonl")
-printf '%s\n' '{"timestamp":"t","type":"event_msg","payload":{"type":"task_started"}}' '{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete"}}' >> "$f"
-sleep 60
-`
-
 const rolloutName = "2026/11/11/rollout-2026-11-11T00-28-20-"
 
 func (f *fixture) remoteCodexHome() string {
@@ -33,7 +25,7 @@ func (f *fixture) codexHost(codex bool) {
 	claude := f.tool("claude", fakeClaudeThatStarts)
 	path := ""
 	if codex {
-		path = "codex = \"" + f.tool("codex", fakeCodexThatStarts) + "\"\n"
+		path = "codex = \"" + filepath.Join(f.home, "bin", "codex") + "\"\n"
 	}
 	f.config(`local_roots = ["~/laptop"]
 
@@ -184,6 +176,12 @@ func TestMovingAnIdleCodexSessionReopensItThere(t *testing.T) {
 	if got := f.read(f.remoteCodexHome(), "config.toml"); !strings.Contains(got, "[projects.\""+f.remote+"\"]\ntrust_level = \"trusted\"") {
 		t.Errorf("Codex config on the server = %q", got)
 	}
+	if calls := f.read(f.remoteCodexHome(), "app-server-calls"); !strings.Contains(calls, `"method":"config/value/write","params":{"expectedVersion":"`) {
+		t.Errorf("the trust wasn't written through Codex with the version it read: %s", calls)
+	}
+	if calls := f.read(filepath.Join(f.home, ".codex"), "app-server-calls"); !strings.Contains(calls, `"method":"thread/read","params":{"threadId":"`+id+`"}`) {
+		t.Errorf("the session wasn't looked up through Codex: %s", calls)
+	}
 	if got, want := f.git(f.remote, "status", "--porcelain"), f.git(f.local, "status", "--porcelain"); got != want {
 		t.Errorf("server status:\n%s\nwant:\n%s", got, want)
 	}
@@ -278,7 +276,7 @@ func TestPullBringsACodexSessionBackFromTheServer(t *testing.T) {
 	id := "01a1c7ca-8144-7e23-82c1-87dc991d71d9"
 	remote := f.codexRollout(f.remoteCodexHome(), id, f.remote, longAgo, false)
 
-	res, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
+	res, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Codex: "codex", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
 	if err != nil {
 		t.Fatalf("pull failed after %s: %v", res.Summary(), err)
 	}
@@ -407,7 +405,7 @@ func TestPullIsRefusedWhileTheAppThereHasTheCodexSessionOpen(t *testing.T) {
 	remote := f.codexRollout(f.remoteCodexHome(), id, f.remote, longAgo, false)
 	f.codexAppServer(f.remoteCodexHome(), id)
 
-	_, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
+	_, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Codex: "codex", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
 	if err == nil || !strings.Contains(err.Error(), "background server on fakehost") {
 		t.Fatalf("pull = %v", err)
 	}
@@ -431,27 +429,12 @@ func TestABusyCodexTurnIsntTakenForStaleWhenPsSpeaksAnotherLanguage(t *testing.T
 	}
 }
 
-const fakeCodexAppServer = `#!/bin/sh
-[ "$1" = app-server ] || exit 1
-while read -r line; do
-  case $line in
-    *'"method":"thread/read"'*)
-      id=${line#'{"id":'}; id=${id%%,*}
-      thread=${line##*'"threadId":"'}; thread=${thread%%'"'*}
-      rollout=$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name "rollout-*-$thread.jsonl")
-      cwd=$(sed -n '1s/.*"cwd":"\([^"]*\)".*/\1/p' "$rollout")
-      printf '{"method":"thread/status/changed","params":{}}\n{"id":%s,"result":{"thread":{"id":"%s","name":null,"cwd":"%s","status":{"type":"notLoaded"}}}}\n' "$id" "$thread" "$cwd"
-      ;;
-  esac
-done
-`
-
 func TestOpenCodexSessionsAreListedOnEveryMachine(t *testing.T) {
 	f := newFixture(t)
 	t.Setenv("MAGI_TEST_REMOTE_CODEX_HOME", f.remoteCodexHome())
-	f.tool("codex", fakeCodexAppServer)
 	f.config(`[hosts.server]
 ssh = "fakehost"
+claude = "~/bin/claude"
 codex = "~/bin/codex"
 roots = ["~/developer"]
 `)
@@ -478,5 +461,24 @@ roots = ["~/developer"]
 	}
 	if strings.Contains(text, "0e0e0e0e") {
 		t.Errorf("a Codex session nothing has open is listed:\n%s", text)
+	}
+}
+
+func TestCodexTrustIsntWrittenOverAConfigThatChangedMeanwhile(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("MAGI_TEST_REMOTE_CODEX_HOME", f.remoteCodexHome())
+	f.write(filepath.Join(f.home, ".codex"), "config.toml", "[projects.\""+f.local+"\"]\ntrust_level = \"trusted\"\n")
+	f.write(f.remoteCodexHome(), "config.toml", "model = \"x\"\n")
+	codex := f.tool("codex-fake", fakeCodex)
+	f.tool("codex", `#!/bin/sh
+if [ "$CODEX_HOME" = "$MAGI_TEST_REMOTE_CODEX_HOME" ] && [ -f "$CODEX_HOME/app-server-calls" ]; then echo 'model = "y"' >> "$CODEX_HOME/config.toml"; fi
+exec `+codex+` "$@"
+`)
+	err := carryCodexTrust(f.machine(), f.remoteHost(), f.local, f.remote, f.remote)
+	if err == nil || !strings.Contains(err.Error(), "modified since last read") {
+		t.Fatalf("err = %v, want the write refused", err)
+	}
+	if got := f.read(f.remoteCodexHome(), "config.toml"); got != "model = \"x\"\nmodel = \"y\"\n" {
+		t.Errorf("Codex config on the server = %q", got)
 	}
 }

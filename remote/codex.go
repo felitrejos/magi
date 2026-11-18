@@ -3,14 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/BurntSushi/toml"
 )
 
 func codexTabLabel(name string) string {
@@ -30,14 +29,28 @@ func resumeHint(s remoteSession) string {
 
 func findCodexSession(m Machine, id string) (remoteSession, error) {
 	s := remoteSession{ID: id, Codex: true}
-	out, err := sh(m, codexScript, "find", id)
+	gone := fmt.Errorf("no session %s on %s", id, m.Name())
+	if m.Codex() == "" {
+		return s, gone
+	}
+	home, answers, err := askCodex(m, codexCall{Method: "thread/read", Params: map[string]string{"threadId": id}})
+	var refusal *codexRefusal
+	if errors.As(err, &refusal) && strings.HasPrefix(refusal.Message, "thread not loaded") {
+		return s, gone
+	}
 	if err != nil {
 		return s, err
 	}
-	sessions, rollout, _ := strings.Cut(strings.TrimRight(string(out), "\n"), "\n")
-	if rollout == "" {
-		return s, fmt.Errorf("no session %s on %s", id, m.Name())
+	var read struct {
+		Thread struct {
+			Path string `json:"path"`
+			Cwd  string `json:"cwd"`
+		} `json:"thread"`
 	}
+	if err := json.Unmarshal(answers[0], &read); err != nil {
+		return s, fmt.Errorf("unreadable Codex session %s on %s: %w", shortID(id), m.Name(), err)
+	}
+	rollout, sessions := read.Thread.Path, home+"/sessions"
 	if !strings.HasSuffix(rollout, ".jsonl") {
 		return s, fmt.Errorf("session %s on %s is a compressed Codex session (%s), and magi moves only uncompressed ones", shortID(id), m.Name(), rollout)
 	}
@@ -45,21 +58,14 @@ func findCodexSession(m Machine, id string) (remoteSession, error) {
 	if s.Rollout, ok = strings.CutPrefix(rollout, sessions+"/"); !ok {
 		return s, fmt.Errorf("session %s on %s is at %s, outside %s", shortID(id), m.Name(), rollout, sessions)
 	}
-	s.Transcript = rollout
-	out, err = sh(m, codexScript, "cwd", rollout)
-	if err != nil {
-		return s, err
-	}
-	var record struct {
-		Payload struct {
-			Cwd string `json:"cwd"`
-		} `json:"payload"`
-	}
-	if json.Unmarshal(out, &record) != nil || record.Payload.Cwd == "" {
+	if read.Thread.Cwd == "" {
 		return s, fmt.Errorf("couldn't tell which folder session %s on %s ran in", id, m.Name())
 	}
-	s.Cwd = record.Payload.Cwd
-	out, err = sh(m, codexScript, "running", id, rollout, s.Cwd)
+	s.Transcript, s.Cwd = rollout, read.Thread.Cwd
+	out, err := sh(m, codexScript, "running", id, rollout, s.Cwd)
+	if exitCode(err) == exitGone {
+		return s, gone
+	}
 	if err != nil {
 		return s, err
 	}
@@ -256,21 +262,34 @@ func stopCodexSession(m Machine, sessionID string) error {
 
 type codexConfig struct {
 	Projects map[string]struct {
-		TrustLevel string `toml:"trust_level"`
-	} `toml:"projects"`
+		TrustLevel string `json:"trust_level"`
+	} `json:"projects"`
 }
 
 func readCodexConfig(m Machine) (string, codexConfig, error) {
-	var cfg codexConfig
-	out, err := sh(m, codexScript, "config")
+	var read struct {
+		Config codexConfig `json:"config"`
+		Layers []struct {
+			Name struct {
+				Type string `json:"type"`
+			} `json:"name"`
+			Version string `json:"version"`
+		} `json:"layers"`
+	}
+	_, answers, err := askCodex(m, codexCall{Method: "config/read", Params: map[string]bool{"includeLayers": true}})
 	if err != nil {
-		return "", cfg, err
+		return "", read.Config, err
 	}
-	sum, body, _ := strings.Cut(string(out), "\n")
-	if _, err := toml.Decode(body, &cfg); err != nil {
-		return "", cfg, fmt.Errorf("read Codex's config.toml on %s: %w", m.Name(), err)
+	if err := json.Unmarshal(answers[0], &read); err != nil {
+		return "", read.Config, fmt.Errorf("unreadable Codex settings on %s: %w", m.Name(), err)
 	}
-	return sum, cfg, nil
+	version := ""
+	for _, layer := range read.Layers {
+		if layer.Name.Type == "user" {
+			version = layer.Version
+		}
+	}
+	return version, read.Config, nil
 }
 
 func (c codexConfig) trusts(dir string) bool {
@@ -292,7 +311,7 @@ func carryCodexTrust(local, remote Machine, localDir, remoteDir, remoteRoot stri
 	if !here.trusts(localDir) {
 		return nil
 	}
-	sum, there, err := readCodexConfig(remote)
+	version, there, err := readCodexConfig(remote)
 	if err != nil {
 		return err
 	}
@@ -302,8 +321,8 @@ func carryCodexTrust(local, remote Machine, localDir, remoteDir, remoteRoot stri
 	if _, ok := there.Projects[remoteRoot]; ok {
 		return fmt.Errorf("the Codex settings on %s don't trust %s, so it may ask you to trust it first", remote.Name(), remoteRoot)
 	}
-	entry := fmt.Sprintf("\n[projects.%s]\ntrust_level = \"trusted\"\n", tomlKey(remoteRoot))
-	if _, err := shIn(remote, codexScript, []byte(entry), "trust", sum); err != nil {
+	write := codexCall{Method: "config/value/write", Params: map[string]string{"keyPath": "projects." + tomlKey(remoteRoot) + ".trust_level", "value": "trusted", "mergeStrategy": "upsert", "expectedVersion": version}}
+	if _, _, err := askCodex(remote, write); err != nil {
 		return fmt.Errorf("marking %s trusted for Codex there failed, so Codex may ask you to trust it first: %v", remoteRoot, err)
 	}
 	return nil

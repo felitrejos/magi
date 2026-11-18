@@ -72,7 +72,7 @@ func cleanStray(sessionID string, s Stray) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), strayCleanup)
 	defer cancel()
-	remote, err := newRemote(ctx, host.SSH)
+	remote, err := newRemote(ctx, host)
 	if err != nil {
 		return err
 	}

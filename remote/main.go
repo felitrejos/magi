@@ -334,12 +334,11 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if err := json.Unmarshal(data, &a); err != nil {
 		return err
 	}
-	ours, err := isAncestor(a.PID)
-	if err != nil || !ours {
+	if os.Getenv("CLAUDE_PID") != strconv.Itoa(a.PID) {
 		if a.Notify {
-			err = errors.Join(err, writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: "the session that ended its turn wasn't the one armed to move"}))
+			return writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: "the session that ended its turn wasn't the one armed to move"})
 		}
-		return err
+		return nil
 	}
 	unlock, err := lockMove(input.SessionID)
 	if err == nil {

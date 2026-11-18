@@ -38,7 +38,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err := refuseHome(ws, home, local.Name()); err != nil {
 		return nil, err
 	}
-	remote, err := newRemote(ctx, host.SSH)
+	remote, err := newRemote(ctx, host)
 	if err != nil {
 		return nil, err
 	}

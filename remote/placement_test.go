@@ -114,11 +114,12 @@ func TestAMachineWithoutTheOverviewReportsItsLoadOverSSH(t *testing.T) {
 	if partial := parsePlatform("old", "Ubuntu\nx86_64\n\n"); partial.measured() {
 		t.Errorf("a machine with no load lines counts as measured: %+v", partial)
 	}
+	newFixture(t)
 	local, err := newLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := sh(local, platformScript)
+	out, err := sh(local, platformScript, local.Claude())
 	if err != nil {
 		t.Fatal(err)
 	}

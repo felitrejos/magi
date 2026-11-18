@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestAMacsAvailableMemoryIsItsFreeCachedAndPurgeablePages(t *testing.T) {
 	f.tool("sw_vers", "#!/bin/sh\necho 27.2\n")
 	f.tool("sysctl", macSysctl)
 	f.tool("vm_stat", macVMStat)
-	out, err := sh(f.machine(), platformScript)
+	out, err := sh(f.machine(), platformScript, "claude")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +57,17 @@ func TestAMacsAvailableMemoryIsItsFreeCachedAndPurgeablePages(t *testing.T) {
 	}
 	if available := m.MemoryTotal - m.MemoryUsed; m.MemoryTotal != 16<<30 || available != (12520+180728+5018)*16384 {
 		t.Errorf("total %.0f, available %.0f; want 16 GiB and the free, file-backed and purgeable pages", m.MemoryTotal, available)
+	}
+}
+
+func TestATargetRechecksMemoryTheWayTheProbeReadsIt(t *testing.T) {
+	f := newFixture(t)
+	f.tool("uname", "#!/bin/sh\necho Darwin\n")
+	f.tool("sysctl", macSysctl)
+	f.tool("vm_stat", macVMStat)
+	_, err := sh(f.machine(), taskScript, "room", filepath.Join(f.home, ".magi", "tasks", "0000aaaa"), "delegate", "0", strconv.Itoa(4<<30))
+	if err == nil || !strings.Contains(err.Error(), "3.0 GB of memory is free there, its budget needs 4.0 GB") {
+		t.Errorf("err = %v, want the probe's free memory in the probe's units", err)
 	}
 }
 

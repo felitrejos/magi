@@ -158,7 +158,7 @@ type fleetView struct {
 func reachable(ctx context.Context, h Host) error {
 	ctx, cancel := context.WithTimeout(ctx, reachWait)
 	defer cancel()
-	r, err := newRemote(ctx, h.SSH)
+	r, err := newRemote(ctx, h)
 	if err != nil {
 		return err
 	}
@@ -229,6 +229,8 @@ func (m *machineInfo) probe(ctx context.Context) {
 }
 
 const platformScript = `PATH="$PATH:$HOME/.local/bin:$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin"
+claude=$1
+case $claude in '~/'*) claude=$HOME/${claude#'~/'} ;; esac
 if [ "$(uname -s)" = Darwin ]; then
 	echo "macOS $(sw_vers -productVersion)"
 else
@@ -254,24 +256,19 @@ else
 	cut -d ' ' -f 1-3 /proc/loadavg
 	awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } END { print t * 1024, a * 1024 }' /proc/meminfo
 fi
-working=0
-for f in "$HOME"/.claude/sessions/*.json; do
-	[ -f "$f" ] && grep -q '"status": *"busy"' "$f" || continue
-	pid=${f##*/}
-	kill -0 "${pid%.json}" 2>/dev/null && working=$((working + 1))
-done
-echo "$working"`
+listed=$("$claude" agents --json) || exit
+printf '%s\n' "$listed" | awk '$1 == "\"status\":" && $2 ~ /^"busy"/ { n++ } END { print n + 0 }'`
 
 var probeMachine = probePlatform
 
 func probePlatform(ctx context.Context, name string, h Host) (*fleetMachine, error) {
 	ctx, cancel := context.WithTimeout(ctx, reachWait)
 	defer cancel()
-	r, err := newRemote(ctx, h.SSH)
+	r, err := newRemote(ctx, h)
 	if err != nil {
 		return nil, err
 	}
-	out, err := sh(r, platformScript)
+	out, err := sh(r, platformScript, r.Claude())
 	if err != nil {
 		return nil, err
 	}

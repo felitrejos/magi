@@ -104,7 +104,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	if err != nil {
 		return res, err
 	}
-	remote, err := newRemote(waitCtx, p.Host.SSH)
+	remote, err := newRemote(waitCtx, p.Host)
 	if err != nil {
 		return res, err
 	}
@@ -120,7 +120,7 @@ func (p Pull) Run() (res Pulled, err error) {
 			return err
 		}
 		if session.Codex {
-			if _, err := exec.LookPath("codex"); err != nil {
+			if local.Codex() == "" {
 				return fmt.Errorf("session %s is a Codex session, and codex isn't installed on %s", shortID(session.ID), local.Name())
 			}
 			if err := refuseOpenCodex(remote, session.ID, session.Running); err != nil {
@@ -269,7 +269,10 @@ func findSession(r Machine, id string) (remoteSession, error) {
 	return s, fmt.Errorf("couldn't tell which folder session %s on %s ran in", id, r.Name())
 }
 
-const exitBusy = 10
+const (
+	exitBusy = 10
+	exitGone = 11
+)
 
 func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
 	stop := func() error { return stopCodex(r, s) }
@@ -277,7 +280,7 @@ func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
 	case s.Live != nil:
 		pid := strconv.Itoa(s.Live.PID)
 		stop = func() error {
-			_, err := sh(r, sessionScript, "stop", pid, s.ID, s.Live.since())
+			_, err := sh(r, sessionScript, "stop", pid, s.ID, s.Live.since(), r.Claude())
 			return err
 		}
 	case len(s.Running) == 0:

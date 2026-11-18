@@ -93,56 +93,36 @@ func TestContractClaudeRegistersALiveSession(t *testing.T) {
 	}
 	var live *liveSession
 	for deadline := time.Now().Add(20 * time.Second); live == nil && time.Now().Before(deadline); time.Sleep(300 * time.Millisecond) {
-		listing, err := sh(local, sessionScript, "live")
+		sessions, err := liveSessions(local)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, record := range splitNull(listing) {
-			var s liveSession
-			if json.Unmarshal([]byte(record), &s) == nil && s.Cwd == dir && s.Status != "" {
-				live = &s
-			}
+		if i := slices.IndexFunc(sessions, func(s liveSession) bool { return s.Cwd == dir && s.Status == "busy" }); i >= 0 {
+			live = &sessions[i]
 		}
 	}
 	if live == nil {
 		cmd.Wait()
-		t.Fatalf("no live session in ~/.claude/sessions ran in %s\n%s", dir, out)
+		t.Fatalf("claude agents --json never listed a busy session in %s\n%s", dir, out)
 	}
-	if live.PID <= 0 {
-		t.Errorf("pid = %d", live.PID)
+	if live.PID <= 0 || !sessionIDPattern.MatchString(live.SessionID) || live.StartedAt <= 0 {
+		t.Errorf("claude agents --json lacks what magi reads: %+v", *live)
 	}
-	if !sessionIDPattern.MatchString(live.SessionID) || live.StartedAt <= 0 || live.since() == "" {
-		t.Errorf("the registry entry lacks what magi reads: %+v", *live)
+	if live.since() == "" {
+		t.Errorf("the registry has no procStart for pid %d: %+v", live.PID, *live)
 	}
-	switch live.Status {
-	case "busy", "waiting", "idle":
-	default:
-		t.Errorf("status = %q, magi knows busy, waiting and idle", live.Status)
+	if running, err := runningThere(local, live.SessionID); err != nil || !running {
+		t.Errorf("runningThere = %v, %v for the live session", running, err)
 	}
-	if _, err := sh(local, sessionScript, "running", live.SessionID); exitCode(err) != 10 {
-		t.Errorf("session.sh running didn't see the live session: %v", err)
+	if _, err := sh(local, sessionScript, "stop", strconv.Itoa(live.PID), live.SessionID, live.since(), local.Claude()); exitCode(err) != exitBusy {
+		t.Errorf("stopping the busy session gave %v, want it refused as busy", err)
 	}
-	agents := exec.Command("claude", "agents", "--json")
-	agents.Env = cleanEnv()
-	listing, err := agents.Output()
+	probe, err := sh(local, platformScript, local.Claude())
 	if err != nil {
-		t.Fatalf("claude agents --json failed: %v", err)
+		t.Fatal(err)
 	}
-	var listed []liveSession
-	if err := json.Unmarshal(listing, &listed); err != nil {
-		t.Fatalf("claude agents --json isn't a list of sessions: %v\n%s", err, listing)
-	}
-	i := slices.IndexFunc(listed, func(s liveSession) bool { return s.SessionID == live.SessionID })
-	if i < 0 {
-		t.Fatalf("claude agents --json doesn't list the live session %s:\n%s", live.SessionID, listing)
-	}
-	if got := listed[i]; got.PID != live.PID || got.Cwd != dir || got.StartedAt != live.StartedAt {
-		t.Errorf("claude agents --json lists %+v, the registry has %+v", got, *live)
-	}
-	switch listed[i].Status {
-	case "busy", "waiting", "idle":
-	default:
-		t.Errorf("claude agents --json status = %q, magi knows busy, waiting and idle", listed[i].Status)
+	if m := parsePlatform("here", string(probe)); m.Agents.Working < 1 {
+		t.Errorf("the probe counted %d working sessions while one was busy:\n%s", m.Agents.Working, probe)
 	}
 	res := finishClaude(t, cmd, out)
 	if res.SessionID != live.SessionID {
