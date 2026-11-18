@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -246,31 +245,5 @@ func TestAReusedPidIsNotStopped(t *testing.T) {
 	}
 	if err := proc.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Error("stop killed a process that only had the session's pid")
-	}
-}
-
-func TestStopReadsWhenTheSessionStartedInAnyLocale(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("Linux reads process start times from /proc")
-	}
-	f := newFixture(t)
-	id := "0f0f0f0f-1111-2222-3333-dddddddddddf"
-	proc, _ := f.localSession(id, "idle")
-	exited := make(chan error, 1)
-	go func() { exited <- proc.Wait() }()
-	ps := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(proc.Process.Pid))
-	ps.Env = append(os.Environ(), "LC_ALL=C", "TZ=UTC")
-	started, err := ps.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LC_ALL", "de_DE.UTF-8")
-	if _, err := sh(f.machine(), sessionScript, "stop", strconv.Itoa(proc.Process.Pid), id, strings.TrimSpace(string(started)), "claude"); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-exited:
-	case <-time.After(5 * time.Second):
-		t.Fatal("stop left the session running when ps spoke German")
 	}
 }

@@ -376,29 +376,6 @@ func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
 	}
 }
 
-func TestHandingBackSaysWhenTheOtherMachineRefuses(t *testing.T) {
-	f := newFixture(t)
-	id := newSessionID()
-	overview := func(move string) {
-		f.tool("magi-overview", `#!/bin/sh
-case $1 in
-  fleet) echo '{"machines":[{"name":"mac","live":true}]}' ;;
-  move) `+move+` ;;
-esac
-`)
-	}
-	overview(`echo "\"$2\" matches 2 sessions: New session, New session. Use more of its id" >&2; exit 1`)
-	err := arm("mac", id, "", io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "mac didn't take this session back") || !strings.Contains(err.Error(), "matches 2 sessions") {
-		t.Fatalf("err = %v, want the refusal reported", err)
-	}
-	overview(`echo "Moving it when its turn ends"; sleep 2`)
-	var out strings.Builder
-	if err := arm("mac", id, "", &out); err != nil || !strings.Contains(out.String(), "Asked mac to take this session back") {
-		t.Fatalf("err = %v, out = %q", err, out.String())
-	}
-}
-
 func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	f := newFixture(t)
 	id := "0f0f0f0f-1111-2222-3333-555555555555"

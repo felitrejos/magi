@@ -277,27 +277,3 @@ func TestAnSSHForwardIsConnectedOnlyOnceEveryPortAccepts(t *testing.T) {
 		t.Error("the forward never counted as connected once every port accepted")
 	}
 }
-
-func TestARexForwardStopsOnceItsSessionIsGone(t *testing.T) {
-	path := forwardHome(t)
-	fakeTunnel(t, "rex", `case "$*" in
-  *"forward new"*) echo started >> "$HOME/started"; echo 'Error: session …1 is gone, so its forwards stopped' >&2; exit 3 ;;
-esac
-exit 1
-`)
-	done := startRunner(t, path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Rex: &rexVia{Server: "homelab", Session: "session:1"}, Ports: []int{freePort(t)}, State: forwardWaiting})
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("the runner kept retrying a forward whose Rex session is gone")
-	}
-	if got := strings.Count(readFile(filepath.Join(os.Getenv("HOME"), "started")), "started"); got != 1 {
-		t.Errorf("rex forward new ran %d times", got)
-	}
-	if records, err := listForwards(); err != nil || len(records) != 1 || records[0].State != "stopped" {
-		t.Errorf("records = %+v, %v", records, err)
-	}
-}

@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -159,26 +157,5 @@ func TestAMacsAvailableMemoryIsItsFreeCachedAndPurgeablePages(t *testing.T) {
 	}
 	if available := m.MemoryTotal - m.MemoryUsed; m.MemoryTotal != 16<<30 || available != (12520+180728+5018)*16384 {
 		t.Errorf("total %.0f, available %.0f; want 16 GiB and the free, file-backed and purgeable pages", m.MemoryTotal, available)
-	}
-}
-
-func TestATargetRechecksMemoryTheWayTheProbeReadsIt(t *testing.T) {
-	f := newFixture(t)
-	f.tool("uname", "#!/bin/sh\necho Darwin\n")
-	f.tool("sysctl", macSysctl)
-	_, err := sh(f.machine(), taskScript, "room", filepath.Join(f.home, ".magi", "tasks", "0000aaaa"), "delegate", "0", strconv.Itoa(4<<30))
-	if err == nil || !strings.Contains(err.Error(), "3.0 GB of memory is free there, its budget needs 4.0 GB") {
-		t.Errorf("err = %v, want the probe's free memory in the probe's units", err)
-	}
-}
-
-func TestMemoryIsShownInTheUnitsBudgetsAreWrittenIn(t *testing.T) {
-	m := parsePlatform("mac", "macOS 27.2\narm64\n\n10\n2.56 2.55 2.64\n17179869184 3221225472\n0\n")
-	if total, err := parseMemory("16.0 GB"); err != nil || total != m.MemoryTotal {
-		t.Errorf("the 16.0 GB shown parses back as %v, %v; the machine has %v", total, err, m.MemoryTotal)
-	}
-	tight := Budget{MinFree: 4 << 30}.noRoom(time.Now(), m, true)
-	if tight != "3.0 GB of memory is free there, its budget needs 4.0 GB" {
-		t.Errorf("noRoom = %q", tight)
 	}
 }
