@@ -17,22 +17,39 @@ case $command in
     COPYFILE_DISABLE=1 tar --no-xattrs --no-acls "$@" --null -T - -cf -
     ;;
   unpack)
-    keep=$1
     mkdir -p -- "$dir"
-    if [ "$keep" != 1 ]; then
-      tar -xpf - -C "$dir"
-    elif ! busybox; then
-      tar --keep-newer-files -xpf - -C "$dir"
-    else
-      t=$(mktemp -d)
-      trap 'rm -rf "$t"' EXIT
-      tar -xpf - -C "$t"
-      (cd "$t" && find . ! -type d) | while IFS= read -r f; do
-        if [ ! -e "$dir/$f" ] || [ -z "$(find "$dir/$f" -prune -newer "$t/$f")" ]; then
-          mkdir -p "$(dirname "$dir/$f")"
-          mv -f "$t/$f" "$dir/$f"
-        fi
-      done
-    fi
+    dir=$(cd -- "$dir" && pwd)
+    t=$(mktemp -d "$(dirname "$dir")/.magi-XXXXXX")
+    trap 'rm -rf "$t"' EXIT
+    mkdir "$t/x"
+    tar -xpf - -C "$t/x"
+    cd "$t/x"
+    find . -depth -type d -print0 > "$t/dirs"
+    # shellcheck disable=SC2016
+    keep=$1 dir=$dir xargs -0 sh -c '
+      set -e
+      for p; do
+        [ -d "$dir/$p" ] && [ ! -L "$dir/$p" ] || continue
+        set --
+        for f in "$p"/* "$p"/.[!.]* "$p"/..?*; do
+          [ -e "$f" ] || [ -L "$f" ] || continue
+          d=$dir/$f
+          [ -e "$d" ] || [ -L "$d" ] || continue
+          if [ -d "$f" ] && [ ! -L "$f" ] && [ -d "$d" ] && [ ! -L "$d" ]; then
+            set -- "$@" "$f"
+          elif [ "$keep" = 1 ] && [ -n "$(find "$d" -prune -newer "$f")" ]; then
+            rm -rf "$f"
+          elif [ -d "$d" ] && [ ! -L "$d" ]; then
+            rmdir "$d"
+          elif [ -L "$d" ] || [ -d "$f" ]; then
+            rm -f "$d"
+          fi
+        done
+        if [ $# -gt 0 ]; then rmdir "$@"; fi
+        for g in "*" ".[!.]*" "..?*"; do
+          set -- "$p"/$g
+          if [ -e "$1" ] || [ -L "$1" ]; then mv -f "$@" "$dir/$p"; fi
+        done
+      done' sh < "$t/dirs"
     ;;
 esac

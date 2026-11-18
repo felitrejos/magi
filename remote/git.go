@@ -248,22 +248,27 @@ func seedLFS(from, to Machine, ws Workspace, repo string) error {
 	if len(ws.LFSObjects) == 0 {
 		return nil
 	}
-	out, err := shIn(to, lfsScript, []byte(strings.Join(ws.LFSObjects, "\x00")+"\x00"), repo)
+	out, err := shIn(to, lfsScript, []byte(strings.Join(ws.LFSObjects, "\x00")+"\x00"), "missing", repo)
 	if err != nil {
 		return err
 	}
 	answer := splitNull(out)
-	if len(answer) == 0 {
+	if len(answer) < 2 {
 		return nil
 	}
-	return transfer(from, ws.LFSStore, Archive{Paths: answer[1:]}, to, answer[0])
+	missing := answer[1:]
+	if err := transfer(from, ws.LFSStore, Archive{Paths: missing}, to, answer[0]); err != nil {
+		return err
+	}
+	_, err = shIn(to, lfsScript, []byte(strings.Join(missing, "\x00")+"\x00"), "verify", answer[0])
+	return err
 }
 
 type sendObjects func(ws Workspace, repo string) error
 
 func syncGit(from, to Machine, ws Workspace, repo, mode string, send sendObjects) error {
 	if err := send(ws, repo); err != nil {
-		return err
+		return errors.Join(err, dropRefs(to, repo))
 	}
 	if err := seedLFS(from, to, ws, repo); err != nil {
 		return errors.Join(err, dropRefs(to, repo))
@@ -305,7 +310,9 @@ func pushGit(local *Local, remote *Remote, ws Workspace, remoteRepo string) erro
 func sendGit(local *Local, remote *Remote, ws Workspace, remoteRepo, mode string) error {
 	return syncGit(local, remote, ws, remoteRepo, mode, func(ws Workspace, repo string) error {
 		refspecs := snapshotRefspecs(*ws.Git, func(ref, id string) string { return id + ":" + ref })
-		_, err := sh(local, `dir=$1 ssh=$2; shift 2; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git push --quiet --force --no-verify "$@"`,
+		_, err := sh(local, `dir=$1 to=$3; export GIT_SSH_COMMAND="$2"; shift 3; cd -- "$dir" || exit
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git push --quiet --force --no-verify --receive-pack='git -c receive.shallowUpdate=true receive-pack' "$to" "$1" || exit; fi
+git push --quiet --atomic --force --no-verify "$to" "$@"`,
 			append([]string{ws.Root, remote.sshCommand(), remote.host + ":" + repo}, refspecs...)...)
 		return err
 	})
@@ -322,7 +329,7 @@ func pullGit(remote *Remote, local *Local, ws Workspace, localRepo string) error
 			return err
 		}
 		refspecs := snapshotRefspecs(*ws.Git, func(ref, _ string) string { return "+" + outPrefix + baseName(ref) + ":" + ref })
-		_, fetchErr := sh(local, `dir=$1 ssh=$2; shift 2; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git fetch --quiet --no-tags "$@"`,
+		_, fetchErr := sh(local, `dir=$1 ssh=$2; shift 2; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git fetch --quiet --atomic --update-shallow --no-tags "$@"`,
 			append([]string{repo, remote.sshCommand(), remote.host + ":" + ws.Root}, refspecs...)...)
 		cleanErr := deleteRefs(remote, ws.Root, outPrefix+"handoff", outPrefix+"worktree", outPrefix+"index")
 		return errors.Join(fetchErr, cleanErr)

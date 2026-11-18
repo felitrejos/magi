@@ -45,8 +45,26 @@ for m in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
   [ ! -e "$(git rev-parse --path-format=absolute --git-path "$m")" ] || exit 9
 done
 
-itree=$(git write-tree)
 index=$(git rev-parse --path-format=absolute --git-path index)
+git ls-files -z -v | tr '\0' '\n' | sed -n 's/^\([hSs]\) /\1/p' | while IFS= read -r e; do
+  p=${e#?}
+  case $e in
+    h*) printf '%s\0' "$p" ;;
+    *) if [ -e "$p" ] || [ -L "$p" ]; then printf '%s\0' "$p"; fi ;;
+  esac
+done > "$d/hidden"
+if [ -s "$d/hidden" ]; then
+  cp "$index" "$d/shown"
+  GIT_INDEX_FILE="$d/shown" git update-index -z --no-assume-unchanged --stdin < "$d/hidden"
+  GIT_INDEX_FILE="$d/shown" git update-index -z --no-skip-worktree --stdin < "$d/hidden"
+  edited=$(GIT_INDEX_FILE="$d/shown" xargs -0 git --literal-pathspecs diff --name-only -- < "$d/hidden")
+  if [ -n "$edited" ]; then
+    printf 'these files are marked assume-unchanged or skip-worktree, so their changes would be left behind; clear the mark with git update-index --no-assume-unchanged --no-skip-worktree, or undo the changes, before handing off:\n%s\n' "$edited" >&2
+    exit 1
+  fi
+fi
+
+itree=$(git write-tree)
 if [ -f "$index" ]; then cp "$index" "$d/index"; fi
 GIT_INDEX_FILE="$d/index" git add -A
 wtree=$(GIT_INDEX_FILE="$d/index" git write-tree)

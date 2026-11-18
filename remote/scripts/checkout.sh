@@ -65,20 +65,17 @@ if [ -z "$H" ]; then
   git symbolic-ref HEAD "refs/heads/$B"
   if [ -n "$force" ]; then git clean -fdq; fi
   git read-tree --reset -u "$W"
-elif [ -z "$B" ]; then
-  git checkout --quiet ${force:+--force} --detach "$H"
-  if [ -n "$force" ]; then git clean -fdq; fi
-  git read-tree -m -u HEAD "$W"
 else
-  if git rev-parse --verify --quiet "refs/heads/$B" >/dev/null; then
+  if [ -n "$B" ] && git rev-parse --verify --quiet "refs/heads/$B" >/dev/null; then
     rc=0
     git merge-base --is-ancestor "refs/heads/$B" "$H" || rc=$?
     if [ "$rc" -eq 1 ]; then ahead; fi
     [ "$rc" -eq 0 ]
   fi
-  git checkout --quiet ${force:+--force} -B "$B" "$H"
+  git checkout --quiet ${force:+--force} --detach "$H"
   if [ -n "$force" ]; then git clean -fdq; fi
   git read-tree -m -u HEAD "$W"
+  if [ -n "$B" ]; then git checkout --quiet -B "$B"; fi
 fi
 git read-tree "$I"
 for r in refs/magi/handoff refs/magi/worktree refs/magi/index "$parked"; do
