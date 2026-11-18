@@ -93,6 +93,9 @@ func (m mover) run() error {
 		return m.fail(err)
 	}
 	defer unlock()
+	if err := cleanStrayFor(m.session); err != nil {
+		return m.fail(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	local, err := newLocal(ctx)
@@ -114,9 +117,6 @@ func (m mover) run() error {
 		if !running {
 			s.Live = nil
 		}
-	}
-	if s.Live != nil && (s.Live.Status == "busy" || s.Live.Status == "waiting") {
-		return m.whenTurnEnds(s)
 	}
 	stopped := false
 	if s.Live != nil {
@@ -234,6 +234,7 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	local.SetContext(finish)
+	res.note(markMoved(local, s.ID, m.host))
 	if _, err := sh(local, retireScript, "", "0", s.Transcript, m.host, "", "", s.ID, ""); err != nil && !tabGone(err) {
 		res.note(fmt.Errorf("retiring the session here failed: %w", err))
 	}

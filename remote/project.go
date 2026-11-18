@@ -273,12 +273,8 @@ func closeRecordedTab(r *Remote, h Host, sessionID string) error {
 	if len(lines) < 4 {
 		return fmt.Errorf("unexpected tab record for session %s on %s", sessionID, r.Name())
 	}
-	tab := Tab{Session: lines[1], Window: lines[2], PanePID: lines[3]}
-	var launcher Launcher = Rex{server: h.RexServer, remote: r}
-	if lines[0] == "tmux" {
-		launcher = Tmux{remote: r}
-	}
-	if err := launcher.Discard(tab); err != nil && !tabGone(err) {
+	h.Launcher = lines[0]
+	if err := newLauncher(h, r).Discard(Tab{Session: lines[1], Window: lines[2], PanePID: lines[3]}); err != nil && !tabGone(err) {
 		return err
 	}
 	return nil

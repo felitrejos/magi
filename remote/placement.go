@@ -132,7 +132,7 @@ func (view fleetView) places(needs needsInput) []spot {
 			}
 			how = fmt.Sprintf("in a %s container, since it's %s", tool, platform(m))
 		}
-		places = append(places, spot{name: name, native: native, how: how, busy: m.busy(), here: here, unknown: m.Probed})
+		places = append(places, spot{name: name, native: native, how: how, busy: m.busy(), here: here, unknown: !m.measured()})
 	}
 	for _, m := range view.Machines {
 		if m.Fleet == nil || m.Reachable != nil || m.NoRoom != "" {

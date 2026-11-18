@@ -259,11 +259,15 @@ func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
 	}
 }
 
-func resumeHere(dir, sessionID, name, prompt string, codex bool) error {
-	args := []string{"claude", "--resume", sessionID, "--remote-control", name, prompt}
+func resumeCommand(sessionID, name, prompt string, codex bool) []string {
 	if codex {
-		args = append([]string{"codex"}, codexResume(sessionID, prompt)...)
+		return append([]string{"codex"}, codexResume(sessionID, prompt)...)
 	}
+	return []string{"claude", "--resume", sessionID, "--remote-control", name, prompt}
+}
+
+func resumeHere(dir, sessionID, name, prompt string, codex bool) error {
+	args := resumeCommand(sessionID, name, prompt, codex)
 	program, err := exec.LookPath(args[0])
 	if err != nil {
 		return err

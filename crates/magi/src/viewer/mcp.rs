@@ -5,26 +5,19 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::client::{Answer, Client};
-use super::{alerts, cli, fleet, watch};
+use super::client::Client;
+use super::{alerts, cli, watch};
 use crate::log;
 use crate::proto::{OpenIn, Request};
 
 const PROTOCOLS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const PUMP_EVERY: Duration = Duration::from_millis(100);
 const ANSWER_WITHIN: Duration = Duration::from_secs(15);
-const SHOWN_WITHIN: Duration = Duration::from_secs(30);
 const RECENT_ITEMS: usize = 20;
 const MAX_RECENT_ITEMS: usize = 200;
 const WAIT_SECS: u64 = 300;
 const MAX_WAIT_SECS: u64 = 1800;
 const MAX_TEXT: usize = 60_000;
-const INSTRUCTIONS: &str = "magi sees every Claude Code and Codex session on the user's machines \
-(those running a magi agent on their tailnet), with each machine's load and the user's plan \
-limits. Use machines and sessions to look, recent_work and diff to see what a session did, and \
-alerts for what needs the user. Actions type into the user's live sessions: say what you'll do \
-and let the user decide before send_message, answer_permission, choose_option, \
-move_session or start_session.";
 
 pub fn run(port: u16) -> io::Result<()> {
     let mut client: Option<Client> = None;
@@ -54,7 +47,7 @@ pub fn run(port: u16) -> io::Result<()> {
             let connected = match client.take() {
                 Some(connected) => connected,
                 None => Client::connect(port).map_err(|error| {
-                    format!("magi's overview isn't reachable ({error}). It needs magi agent running on your machines and Tailscale; the tools that send work elsewhere still work without it")
+                    format!("magi's overview isn't reachable ({error}). It needs magi-overview agent running on your machines and Tailscale; the tools that send work elsewhere still work without it")
                 })?,
             };
             call(client.insert(connected), name, arguments)
@@ -88,7 +81,6 @@ fn respond(
                 "protocolVersion": version,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "magi", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": INSTRUCTIONS,
             })
         }
         "ping" => json!({}),
@@ -128,20 +120,6 @@ fn tools() -> Vec<Value> {
     let session = json!({"type": "string", "description": "The session: the start of its id, its title, or a part of its title at least four letters long"});
     vec![
         tool(
-            "machines",
-            "Each machine's CPU, memory, load and sessions, and the plan limits",
-            json!({}),
-            &[],
-            true,
-        ),
-        tool(
-            "sessions",
-            "Every Claude Code and Codex session: state, what it's doing or asking, queued message, pull request, subagents",
-            json!({}),
-            &[],
-            true,
-        ),
-        tool(
             "recent_work",
             "What a session, or one of its subagents, said and did lately: messages, replies and one line per tool call, newest last",
             json!({"session": session, "subagent": {"type": "string", "description": "A subagent's id or a unique part of its label, from subagents"}, "items": {"type": "integer", "description": "How many of the latest items, 20 by default"}}),
@@ -159,13 +137,6 @@ fn tools() -> Vec<Value> {
             "wait",
             "Wait until a session stops working (it's idle or needs the user) or one of its subagents finishes, instead of checking again and again",
             json!({"session": session, "subagent": {"type": "string", "description": "Wait for this subagent instead of the session"}, "seconds": {"type": "integer", "description": "Give up after this long, 300 by default, at most 1800"}}),
-            &["session"],
-            true,
-        ),
-        tool(
-            "diff",
-            "A session's uncommitted changes, as a diff",
-            json!({"session": session}),
             &["session"],
             true,
         ),
@@ -228,22 +199,10 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
             .ok_or_else(|| format!("{name} needs {key}"))
     };
     let pretty = |value: Value| serde_json::to_string_pretty(&value).unwrap_or_default();
-    let now = Instant::now();
     match name {
-        "machines" => {
-            let machines: Vec<Value> = client.model.rows(now).iter().map(fleet::describe).collect();
-            let plans: Vec<Value> = client
-                .model
-                .plans(now)
-                .into_iter()
-                .map(fleet::plan)
-                .collect();
-            Ok(pretty(json!({"machines": machines, "plans": plans})))
-        }
-        "sessions" => Ok(pretty(cli::listed(client))),
         "alerts" => {
             let now_secs = log::now_secs();
-            let active: Vec<Value> = alerts::conditions(&client.model, now, now_secs)
+            let active: Vec<Value> = alerts::conditions(&client.model, Instant::now(), now_secs)
                 .into_iter()
                 .map(|condition| json!({"machine": condition.machine, "text": condition.text, "severity": condition.severity}))
                 .collect();
@@ -256,7 +215,6 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
             let subagent = arguments["subagent"].as_str();
             watch::recent(client, &text("session")?, subagent, items).map(|text| clip(&text))
         }
-        "diff" => diff(client, &text("session")?),
         "subagents" => Ok(pretty(Value::Array(watch::subagents(client)))),
         "wait" => {
             let seconds = arguments["seconds"]
@@ -315,26 +273,6 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
     }
 }
 
-fn diff(client: &mut Client, query: &str) -> Result<String, String> {
-    let found = client.session(query)?;
-    let id = found.session.id.clone();
-    client.send(
-        found.endpoint,
-        &Request::Diff {
-            session: id.clone(),
-        },
-    )?;
-    let shown = client.answer(found.endpoint, SHOWN_WITHIN, |answer| match answer {
-        Answer::Shown(shown) if shown.session == id => Some(shown.diff),
-        _ => None,
-    })??;
-    if shown.trim().is_empty() {
-        Ok("No uncommitted changes".into())
-    } else {
-        Ok(clip(&shown))
-    }
-}
-
 fn clip(text: &str) -> String {
     if text.len() <= MAX_TEXT {
         return text.to_string();
@@ -352,7 +290,7 @@ mod tests {
 
     fn answer(line: &str) -> Option<Value> {
         respond(line, |name, arguments| match name {
-            "sessions" => Ok(format!("listed {arguments}")),
+            "alerts" => Ok(format!("listed {arguments}")),
             _ => Err(format!("magi has no tool {name}")),
         })
     }
@@ -379,19 +317,8 @@ mod tests {
             .filter(|tool| tool["annotations"]["readOnlyHint"] == true)
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            read_only,
-            [
-                "machines",
-                "sessions",
-                "recent_work",
-                "subagents",
-                "wait",
-                "diff",
-                "alerts"
-            ]
-        );
-        let called = answer(r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"sessions","arguments":{"x":1}}}"#).unwrap();
+        assert_eq!(read_only, ["recent_work", "subagents", "wait", "alerts"]);
+        let called = answer(r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"alerts","arguments":{"x":1}}}"#).unwrap();
         assert_eq!(called["result"]["content"][0]["text"], r#"listed {"x":1}"#);
         assert_eq!(called["result"]["isError"], false);
         let failed =

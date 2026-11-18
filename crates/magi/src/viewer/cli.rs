@@ -181,7 +181,7 @@ pub(super) fn start(
     }
     Ok(match started {
         Some(session) if session.state == SessionState::Waiting(Waiting::Trust) => format!(
-            "{said}\n{} is asking you to trust its folder: magi answer {} yes",
+            "{said}\n{} is asking you to trust its folder: magi-overview answer {} yes",
             session.title, session.id
         ),
         Some(session) => match session.remote_url() {
@@ -191,16 +191,18 @@ pub(super) fn start(
                 short_id(&session.id)
             ),
             None => format!(
-                "{said}\n{} ({}) has no Remote Control link yet; magi sessions shows it once it has",
+                "{said}\n{} ({}) has no Remote Control link yet; magi-overview sessions shows it once it has",
                 session.title,
                 short_id(&session.id)
             ),
         },
-        None => format!("{said}\nIt hasn't shown up yet; magi sessions lists it once it does"),
+        None => {
+            format!("{said}\nIt hasn't shown up yet; magi-overview sessions lists it once it does")
+        }
     })
 }
 
-pub(super) fn listed(client: &Client) -> Value {
+fn listed(client: &Client) -> Value {
     let agents = client.model.agents(Instant::now());
     Value::Array(
         agents

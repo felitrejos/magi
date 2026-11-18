@@ -346,6 +346,9 @@ mod tests {
     #[test]
     fn only_magi_status_lines_count_as_ours() {
         assert!(is_ours(
+            &json!({ "command": "'/Users/me/.local/bin/magi-overview' statusline" })
+        ));
+        assert!(is_ours(
             &json!({ "command": "'/Users/me/.local/bin/magi' statusline" })
         ));
         assert!(!is_ours(&json!({ "command": "~/.claude/statusline.sh" })));

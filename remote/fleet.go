@@ -166,7 +166,7 @@ func reachable(ctx context.Context, h Host) error {
 	return err
 }
 
-func surveyFleet(ctx context.Context, cfg Config, probe, agents bool) fleetView {
+func surveyFleet(ctx context.Context, cfg Config, agents bool) fleetView {
 	var view fleetView
 	data, err := readFleet(ctx)
 	fleet := data.Machines
@@ -196,13 +196,11 @@ func surveyFleet(ctx context.Context, cfg Config, probe, agents bool) fleetView 
 			view.Unmatched = append(view.Unmatched, fleet[i])
 		}
 	}
-	if probe {
-		var wg sync.WaitGroup
-		for i := range view.Machines {
-			wg.Go(func() { view.Machines[i].probe(ctx) })
-		}
-		wg.Wait()
+	var wg sync.WaitGroup
+	for i := range view.Machines {
+		wg.Go(func() { view.Machines[i].probe(ctx) })
 	}
+	wg.Wait()
 	for i := range view.Machines {
 		m := &view.Machines[i]
 		var err error
@@ -320,9 +318,8 @@ func firstField(line string) string {
 }
 
 type choice struct {
-	Host  string
-	Why   string
-	Probe bool
+	Host string
+	Why  string
 }
 
 func (view fleetView) candidates() (picks []choice, skipped []string) {
@@ -345,7 +342,7 @@ func (view fleetView) candidates() (picks []choice, skipped []string) {
 			}
 			picks = append(picks, choice{Host: m.Name, Why: why})
 		default:
-			picks = append(picks, choice{Host: m.Name, Why: "the first machine in your list that answers; " + unknown, Probe: true})
+			picks = append(picks, choice{Host: m.Name, Why: "the first machine in your list that answers; " + unknown})
 		}
 	}
 	return picks, skipped
@@ -370,7 +367,7 @@ func chooseHosts(ctx context.Context, requested string, agents bool) ([]choice, 
 		}
 		return []choice{{Host: requested, Why: "the machine you asked for"}}, nil, plans, nil
 	}
-	view := surveyFleet(ctx, cfg, true, agents)
+	view := surveyFleet(ctx, cfg, agents)
 	picks, skipped := view.candidates()
 	return picks, skipped, view.Plans, nil
 }

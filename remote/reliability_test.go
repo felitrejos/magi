@@ -127,7 +127,7 @@ func TestACopyLeftByAFailedHandoffIsStoppedByStatus(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost("")
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
-	if err := saveStray(id, Stray{Host: "server", Launcher: "tmux", Tab: Tab{Session: "gone", Window: "@999"}, Error: "ssh dropped"}); err != nil {
+	if err := saveStray(id, Stray{Host: "server", Tab: Tab{Session: "gone", Window: "@999"}}); err != nil {
 		t.Fatal(err)
 	}
 	var out strings.Builder

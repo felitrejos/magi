@@ -375,7 +375,7 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	if len(picks) != 3 || picks[0].Host != "homelab" || picks[1].Host != "small" || picks[2].Host != "gpu" || len(skipped) != 0 {
 		t.Fatalf("picks = %+v, skipped %v", picks, skipped)
 	}
-	if !strings.Contains(picks[0].Why, "first machine in your list with room") || picks[2].Probe || !strings.Contains(picks[2].Why, "read over SSH") {
+	if !strings.Contains(picks[0].Why, "first machine in your list with room") || !strings.Contains(picks[2].Why, "read over SSH") {
 		t.Errorf("reasons = %+v", picks)
 	}
 	if picks, _, _, err := chooseHosts(context.Background(), "gpu", true); err != nil || len(picks) != 1 || picks[0].Host != "gpu" {
@@ -395,7 +395,7 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	}
 
 	cfg, _, _ := loadConfig()
-	text := describeMachines(surveyFleet(context.Background(), cfg, true, true), needsInput{})
+	text := describeMachines(surveyFleet(context.Background(), cfg, true), needsInput{})
 	for _, want := range []string{
 		"This machine (laptop): cpu 90%",
 		"- homelab (ssh homelab): reachable; budget: at most 1 working agents; NO ROOM now: 1 agents are working there",
@@ -422,7 +422,7 @@ func TestWithoutTheOverviewMachinesAreTriedInConfigOrderAndTheReasonGiven(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if picks[0].Host != "homelab" || !picks[0].Probe || !strings.Contains(picks[0].Why, "magi-overview isn't installed") {
+	if picks[0].Host != "homelab" || !strings.Contains(picks[0].Why, "magi-overview isn't installed") {
 		t.Errorf("picks = %+v", picks)
 	}
 	f.tool("magi-overview", "#!/bin/sh\necho '{\"machines\":[]}'\n")

@@ -195,7 +195,7 @@ func outcomeState(o *Outcome) string {
 func describeMachines(view fleetView, needs needsInput) string {
 	var b strings.Builder
 	if view.FleetErr != nil {
-		fmt.Fprintf(&b, "Live load is unknown: %v. Without it, magi picks the first configured machine that answers.\n\n", view.FleetErr)
+		fmt.Fprintf(&b, "magi-overview isn't answering (%v), so load was read over SSH and the plan's usage is unknown.\n\n", view.FleetErr)
 	}
 	if plans := describePlans(view.Plans, time.Now()); plans != "" {
 		fmt.Fprintf(&b, "%s\n", plans)

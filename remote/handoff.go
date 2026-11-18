@@ -47,11 +47,9 @@ type Result struct {
 }
 
 type Stray struct {
-	Host     string `json:"host"`
-	Launcher string `json:"launcher"`
-	Tab      Tab    `json:"tab"`
-	Codex    bool   `json:"codex"`
-	Error    string `json:"error"`
+	Host  string `json:"host"`
+	Tab   Tab    `json:"tab"`
+	Codex bool   `json:"codex"`
 }
 
 func (r *Result) note(err error) {
@@ -286,7 +284,7 @@ func (r *handoffRun) undo(err error, startTimedOut bool) error {
 	if startTimedOut && !r.trustedThere() {
 		err = fmt.Errorf("%w: the new session was waiting for you to trust %s; accept that there and hand off again", err, r.remoteDir)
 	}
-	var stray []string
+	stray := false
 	if r.tab.Pane != "" {
 		stop := stopSession
 		if r.Codex {
@@ -294,15 +292,15 @@ func (r *handoffRun) undo(err error, startTimedOut bool) error {
 		}
 		if stopErr := stop(r.remote, r.SessionID); stopErr != nil {
 			err = fmt.Errorf("%w; stopping it there also failed: %v", err, stopErr)
-			stray = append(stray, stopErr.Error())
+			stray = true
 		}
 	}
 	if closeErr := r.launcher.Discard(r.tab); closeErr != nil && !tabGone(closeErr) {
 		err = fmt.Errorf("%w; removing the new tab also failed: %v", err, closeErr)
-		stray = append(stray, closeErr.Error())
+		stray = true
 	}
-	if len(stray) > 0 {
-		r.res.Stray = &Stray{Host: r.HostName, Launcher: r.Host.Launcher, Tab: r.tab, Codex: r.Codex, Error: strings.Join(stray, "; ")}
+	if stray {
+		r.res.Stray = &Stray{Host: r.HostName, Tab: r.tab, Codex: r.Codex}
 	}
 	return undoSync(err, r.remote, r.ws, r.where, r.synced)
 }

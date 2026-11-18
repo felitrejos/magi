@@ -279,16 +279,26 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
     let mut rest: Vec<String> = Vec::new();
     while let Some(arg) = parser.next()? {
         match arg {
-            Value(value)
-                if mode == Mode::Viewer && CLI_COMMANDS.iter().any(|(name, _)| value == *name) =>
-            {
-                mode = CLI_COMMANDS
-                    .iter()
-                    .find(|(name, _)| value == *name)
-                    .map(|(_, mode)| *mode)
-                    .expect("checked just above");
+            Value(value) if mode == Mode::Viewer => {
+                mode = match &*value.to_string_lossy() {
+                    "agent" => Mode::Agent,
+                    "fleet" => Mode::Fleet,
+                    "page" => Mode::Page,
+                    "launch" => Mode::Launch,
+                    "alerts" => Mode::Alerts,
+                    "follow" => Mode::Follow,
+                    "mcp-overview" => Mode::Mcp,
+                    "statusline" => Mode::StatusLine,
+                    name => CLI_COMMANDS
+                        .iter()
+                        .find(|(known, _)| *known == name)
+                        .map(|(_, mode)| *mode)
+                        .ok_or_else(|| lexopt::Error::UnexpectedArgument(value.clone()))?,
+                };
             }
-            Long("json") if matches!(mode, Mode::Sessions | Mode::Subagents) => flags.json = true,
+            Long("json") if matches!(mode, Mode::Fleet | Mode::Sessions | Mode::Subagents) => {
+                flags.json = true
+            }
             Long("codex") if mode == Mode::Start => flags.codex = true,
             Long("chat") if mode == Mode::Start => flags.chat = true,
             Long("model") if mode == Mode::Start => {
@@ -307,27 +317,16 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
                 flags.within = Some(duration(&parser.value()?.string()?)?);
             }
             Value(value) if is_cli(mode) => rest.push(value.string()?),
-            Value(value) if value == "agent" && mode == Mode::Viewer => mode = Mode::Agent,
-            Value(value) if value == "fleet" && mode == Mode::Viewer => mode = Mode::Fleet,
-            Long("json") if mode == Mode::Fleet => flags.json = true,
-            Value(value) if value == "page" && mode == Mode::Viewer => mode = Mode::Page,
-            Value(value) if value == "launch" && mode == Mode::Viewer => mode = Mode::Launch,
-            Value(value) if value == "alerts" && mode == Mode::Viewer => mode = Mode::Alerts,
-            Value(value) if value == "follow" && mode == Mode::Viewer => mode = Mode::Follow,
             Long("session") if mode == Mode::Follow => {
                 rex_session = Some(parser.value()?.string()?)
             }
             Long("block") if mode == Mode::Follow => rex_block = Some(parser.value()?.string()?),
-            Value(value) if value == "mcp-overview" && mode == Mode::Viewer => mode = Mode::Mcp,
             Long("remove") if mode == Mode::Page => remove = true,
             Long("title") if mode == Mode::Page => page.title = parser.value()?.string()?,
             Value(value)
                 if matches!(mode, Mode::Page | Mode::Launch | Mode::Follow) && file.is_none() =>
             {
                 file = Some(std::path::PathBuf::from(value))
-            }
-            Value(value) if value == "statusline" && mode == Mode::Viewer => {
-                mode = Mode::StatusLine
             }
             Value(value) if value == "install" && mode == Mode::StatusLine => {
                 mode = Mode::StatusLineInstall
@@ -360,9 +359,6 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         port,
         interval: Duration::from_millis(u64::from(interval_ms)),
     };
-    if is_cli(mode) {
-        return cli(mode, rest, flags).map(|command| Command::Cli(port, command));
-    }
     Ok(match mode {
         Mode::Viewer => Command::Viewer(viewer::Config { port }),
         Mode::Fleet => Command::Fleet(viewer::Config { port }, flags.json),
@@ -372,16 +368,16 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
         Mode::StatusLine => Command::StatusLine,
         Mode::StatusLineInstall => Command::StatusLineInstall,
         Mode::StatusLineUninstall => Command::StatusLineUninstall,
-        Mode::Launch => Command::Launch(file.ok_or("magi launch needs the viewer's socket")?),
+        Mode::Launch => Command::Launch(file.ok_or("launch needs the viewer's socket")?),
         Mode::Alerts => Command::Alerts,
         Mode::Mcp => Command::Mcp(port),
         Mode::Follow => Command::Follow(
-            file.ok_or("magi follow needs a subagent's transcript")?,
-            rex_session.ok_or("magi follow needs --session, its parent's Rex session")?,
-            rex_block.ok_or("magi follow needs --block, its parent's Rex pane")?,
+            file.ok_or("follow needs a subagent's transcript")?,
+            rex_session.ok_or("follow needs --session, its parent's Rex session")?,
+            rex_block.ok_or("follow needs --block, its parent's Rex pane")?,
         ),
         Mode::Page => {
-            let file = file.ok_or("magi page needs a file")?;
+            let file = file.ok_or("page needs a file")?;
             if page.title.is_empty() {
                 page.title = file
                     .file_name()
@@ -389,7 +385,7 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
             }
             Command::Page(file, page, remove)
         }
-        _ => unreachable!("the commands for other clients returned above"),
+        _ => Command::Cli(port, cli(mode, rest, flags)?),
     })
 }
 
@@ -405,6 +401,42 @@ mod tests {
         assert_eq!(duration("1h").unwrap(), Duration::from_secs(3600));
         assert!(duration("soon").is_err());
         assert!(duration("5d").is_err());
+    }
+
+    #[test]
+    fn the_overview_commands_parse_and_the_ones_that_were_passed_on_to_magi_do_not() {
+        fn parsed(args: &[&str]) -> Result<Command, lexopt::Error> {
+            parse(lexopt::Parser::from_args(args.iter().copied()))
+        }
+        assert!(matches!(
+            parsed(&["fleet", "--json"]),
+            Ok(Command::Fleet(_, true))
+        ));
+        assert!(matches!(
+            parsed(&["mcp-overview", "--port", "2016"]),
+            Ok(Command::Mcp(2016))
+        ));
+        assert!(matches!(
+            parsed(&["launch", "/tmp/viewer.sock"]),
+            Ok(Command::Launch(_))
+        ));
+        assert!(matches!(
+            parsed(&["follow", "t.jsonl", "--session", "s", "--block", "b"]),
+            Ok(Command::Follow(..))
+        ));
+        assert!(matches!(
+            parsed(&["page", "/tmp/notes.md"]),
+            Ok(Command::Page(_, page, false)) if page.title == "notes.md"
+        ));
+        assert!(matches!(
+            parsed(&["statusline", "install"]),
+            Ok(Command::StatusLineInstall)
+        ));
+        assert!(matches!(
+            parsed(&["agent", "install"]),
+            Ok(Command::Install(_))
+        ));
+        assert!(parsed(&["pull", "homelab"]).is_err());
     }
 
     fn cli(args: &[&str]) -> Result<viewer::Cli, String> {

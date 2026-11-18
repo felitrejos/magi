@@ -208,16 +208,11 @@ func forwardCommand(r forwardRecord) (string, []string) {
 	if r.Rex == nil {
 		return "ssh", forwardArgs(r)
 	}
-	args := []string{"--autostart=false", "-S", r.Rex.Server, "forward", "new", "-s", r.Rex.Session}
-	for _, port := range r.Ports {
-		p := strconv.Itoa(port)
-		args = append(args, "-L", "127.0.0.1:"+p+":localhost:"+p)
-	}
-	return "rex", args
+	return "rex", localForwards([]string{"--autostart=false", "-S", r.Rex.Server, "forward", "new", "-s", r.Rex.Session}, r.Ports)
 }
 
 func forwardArgs(r forwardRecord) []string {
-	args := []string{
+	args := localForwards([]string{
 		"-N",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
@@ -226,12 +221,16 @@ func forwardArgs(r forwardRecord) []string {
 		"-o", "ExitOnForwardFailure=yes",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
-	}
-	for _, port := range r.Ports {
+	}, r.Ports)
+	return append(args, "--", r.SSH)
+}
+
+func localForwards(args []string, ports []int) []string {
+	for _, port := range ports {
 		p := strconv.Itoa(port)
 		args = append(args, "-L", "127.0.0.1:"+p+":localhost:"+p)
 	}
-	return append(args, "--", r.SSH)
+	return args
 }
 
 func closeForwards(session string) error {

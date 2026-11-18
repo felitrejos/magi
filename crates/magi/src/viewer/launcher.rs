@@ -256,9 +256,8 @@ impl Launcher {
     }
 
     pub fn place(&self) -> Option<&Place> {
-        let project = self.current()?;
-        let folder = project.folders.get(self.folder()?)?;
-        self.menu.machines.get(folder.machine)
+        let folder = &self.current()?.folders[self.folder()?];
+        Some(&self.menu.machines[folder.machine])
     }
 
     pub fn pick(&self) -> Pick {
@@ -270,12 +269,12 @@ impl Launcher {
             .find(|pick| pick.model == self.model)
             .or_else(|| picks.iter().find(same))
             .cloned()
-            .unwrap_or_else(|| Pick::new(self.codex, None, "default"))
+            .expect("picks offers a default for Claude and for Codex")
     }
 
     pub fn choice(&self) -> Option<Choice> {
         let project = self.current()?;
-        let folder = project.folders.get(self.folder()?)?;
+        let folder = &project.folders[self.folder()?];
         let pick = self.pick();
         Some(Choice {
             machine: self.menu.machines[folder.machine].name.clone(),

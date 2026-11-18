@@ -152,16 +152,6 @@ func startElsewhere(ctx context.Context, host string, spec TaskSpec, despite boo
 		}
 	}
 	for _, c := range picks {
-		if c.Probe {
-			h, err := loadHost(c.Host)
-			if err == nil {
-				err = reachable(ctx, h)
-			}
-			if err != nil {
-				skipped = append(skipped, fmt.Sprintf("%s isn't reachable (%v)", c.Host, err))
-				continue
-			}
-		}
 		spec.Host = c.Host
 		s, err := startTask(ctx, spec)
 		var full *noRoomError
@@ -189,7 +179,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "machines",
 		Annotations: readOnly,
-		Description: "List the machines magi can send work to, each with its operating system, architecture and the tools it has (build toolchains, and Docker or Podman when they're running), from magi or read over SSH for a machine magi doesn't report, its live load from magi (CPU, load average, memory, and Claude or Codex agents working there; unknown for a machine magi doesn't report), whether it answers over SSH, magi tasks running on it, each host's budget and whether it has room, the Claude plan's usage, this machine's own load for comparison, and the machine magi suggests. When the work needs a platform or a tool, such as a Linux build from a Mac, pass needs: machines then ranks the places that can do it, best first: one that runs it natively, then a container on whichever machine has room, this machine included. Prefer a machine that runs it natively over a container or emulation here. Read-only. Call it before proposing where to run something, and tell the user which machine you'd pick and why.",
+		Description: "List the machines magi can send work to, each with its operating system, architecture and the tools it has (build toolchains, and Docker or Podman when they're running), its load read over SSH (cores, load average, memory and Claude sessions working there; from magi-overview, when installed, also CPU and Codex agents), whether it answers over SSH, magi tasks running on it, each host's budget and whether it has room, and the machine magi suggests. With magi-overview it also gives the Claude plan's usage and this machine's own load for comparison. When the work needs a platform or a tool, such as a Linux build from a Mac, pass needs: machines then ranks the places that can do it, best first: one that runs it natively, then a container on whichever machine has room, this machine included. Prefer a machine that runs it natively over a container or emulation here. Read-only. Call it before proposing where to run something, and tell the user which machine you'd pick and why.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in machinesInput) (*mcp.CallToolResult, any, error) {
 		cfg, path, err := loadConfig()
 		if err != nil {
@@ -198,7 +188,7 @@ func newMCPServer() *mcp.Server {
 		if len(cfg.Hosts) == 0 {
 			return nil, nil, fmt.Errorf("no hosts in %s; the user can add one with magi init", path)
 		}
-		return textResult(describeMachines(surveyFleet(ctx, cfg, true, true), in.Needs)), nil, nil
+		return textResult(describeMachines(surveyFleet(ctx, cfg, true), in.Needs)), nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{

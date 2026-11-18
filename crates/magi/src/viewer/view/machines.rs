@@ -49,7 +49,7 @@ fn status_span(row: &Row<'_>, port: u16, now: Instant, room: usize) -> Span<'sta
 fn status(row: &Row<'_>, port: u16, now: Instant) -> String {
     match &row.presence {
         Presence::Searching => "looking for its agent…".into(),
-        Presence::NoAgent => format!("no agent on port {port} · run `magi agent install`"),
+        Presence::NoAgent => format!("no agent on port {port} · run `magi-overview agent install`"),
         Presence::Agent(link) => match &link.state {
             LinkState::Lost { since, reason } => format!(
                 "lost {} ago · {reason} · retrying",

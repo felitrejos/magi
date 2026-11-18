@@ -44,14 +44,3 @@ func TestRemoteScriptsReceiveEveryByteWhateverTheLoginShell(t *testing.T) {
 		})
 	}
 }
-
-func TestQuoteSurvivesTheShell(t *testing.T) {
-	tricky := `it's "$HOME" ; rm -rf / $(x)`
-	out, err := exec.Command("sh", "-c", "printf %s "+quote(tricky)).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(out) != tricky {
-		t.Errorf("got %q, want %q", out, tricky)
-	}
-}

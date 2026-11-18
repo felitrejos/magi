@@ -25,7 +25,7 @@ const MAX_MSG_CHARS: usize = 300;
 
 pub fn follow(transcript: &Path, session: &str, block: &str) -> io::Result<()> {
     let parent = Location::here(session, block)
-        .ok_or_else(|| io::Error::other("magi follow needs the rex command"))?;
+        .ok_or_else(|| io::Error::other("magi-overview follow needs the rex command"))?;
     run(transcript, &parent)
 }
 

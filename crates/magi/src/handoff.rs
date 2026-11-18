@@ -54,7 +54,7 @@ pub fn fetch(
 }
 
 pub fn reachable() -> Vec<String> {
-    let Ok(program) = remote_program() else {
+    let Ok(program) = magi_program() else {
         return Vec::new();
     };
     bounded::output(Command::new(program).arg("hosts"), HOSTS_WITHIN)
@@ -71,7 +71,7 @@ pub fn reachable() -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn is_session_id(text: &str) -> bool {
+fn is_session_id(text: &str) -> bool {
     text.len() == 36
         && text.char_indices().all(|(i, c)| {
             if matches!(i, 8 | 13 | 18 | 23) {
@@ -88,7 +88,7 @@ fn launch(
     to: String,
     reply: impl Fn(Reply) + Send + 'static,
 ) -> Result<String, String> {
-    let remote = remote_program()?;
+    let magi = magi_program()?;
     if MOVING.swap(true, Ordering::SeqCst) {
         return Err("a move is already running on that machine".into());
     }
@@ -98,7 +98,7 @@ fn launch(
         .name("move".into())
         .spawn(move || {
             let _guard = guard;
-            run(&remote, &args, &title, &to, MOVE_LIMIT, &reply);
+            run(&magi, &args, &title, &to, MOVE_LIMIT, &reply);
         })
         .map_err(|error| format!("couldn't start the move: {error}"))?;
     Ok(started)
@@ -170,7 +170,7 @@ fn said(event: &Event, title: &str, to: &str) -> String {
 }
 
 fn run(
-    remote: &Path,
+    magi: &Path,
     args: &[String],
     title: &str,
     to: &str,
@@ -178,12 +178,12 @@ fn run(
     reply: &dyn Fn(Reply),
 ) {
     let deadline = Instant::now() + limit;
-    let mut child = match bounded::spawn(Command::new(remote).args(args)) {
+    let mut child = match bounded::spawn(Command::new(magi).args(args)) {
         Ok(child) => child,
         Err(error) => {
             return reply(Reply {
                 ok: false,
-                text: format!("couldn't run {REMOTE}: {error}"),
+                text: format!("couldn't run {MAGI}: {error}"),
             });
         }
     };
@@ -248,7 +248,7 @@ fn run(
             ok: false,
             text: format!(
                 "couldn't move {title}: {}",
-                last_line(&stderr).unwrap_or_else(|| format!("{REMOTE} exited with {status}"))
+                last_line(&stderr).unwrap_or_else(|| format!("{MAGI} exited with {status}"))
             ),
         },
         Err(error) => Reply {
@@ -258,7 +258,7 @@ fn run(
     });
 }
 
-fn last_line(output: &[u8]) -> Option<String> {
+pub fn last_line(output: &[u8]) -> Option<String> {
     String::from_utf8_lossy(output)
         .lines()
         .rev()
@@ -283,15 +283,15 @@ pub fn search_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-pub const REMOTE: &str = "magi";
+pub const MAGI: &str = "magi";
 
-pub fn remote_program() -> Result<PathBuf, String> {
+pub fn magi_program() -> Result<PathBuf, String> {
     let beside = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
     let dirs: Vec<PathBuf> = beside.into_iter().chain(search_dirs()).collect();
-    find(REMOTE, &dirs).ok_or_else(|| {
-        format!("{REMOTE} is missing on this machine, so the overview can't move work; reinstall from github.com/felitrejos/magi")
+    find(MAGI, &dirs).ok_or_else(|| {
+        format!("{MAGI} is missing on this machine, so the overview can't move work; reinstall from github.com/felitrejos/magi")
     })
 }
 
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_is_found_in_the_first_folder_that_has_it_as_a_program() {
+    fn a_program_is_found_in_the_first_folder_that_has_it() {
         let root = std::env::temp_dir().join(format!("magi-find-{}", std::process::id()));
         let (empty, plain, program) = (root.join("a"), root.join("b"), root.join("c"));
         for dir in [&empty, &plain, &program] {
@@ -339,7 +339,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn fake_remote(name: &str, script: &str) -> (PathBuf, PathBuf) {
+    fn fake_magi(name: &str, script: &str) -> (PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("magi-remote-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -365,8 +365,8 @@ mod tests {
     }
 
     #[test]
-    fn each_step_remote_reports_reaches_the_viewer_as_it_happens() {
-        let (dir, program) = fake_remote(
+    fn each_step_magi_reports_reaches_the_viewer_as_it_happens() {
+        let (dir, program) = fake_magi(
             "steps",
             r#"[ "$1 $2 $3 $4 $5" = "move --json --stay 0b7a3c1e homelab" ] || { echo "magi: wrong arguments: $*" >&2; exit 2; }
 echo '{"event":"waiting","ok":true,"session":"0b7a3c1e","host":"homelab","message":"Session 0b7a3c1e is in the middle of a turn"}'
@@ -409,8 +409,8 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
     }
 
     #[test]
-    fn a_remote_that_fails_without_saying_why_on_stdout_is_explained_from_stderr() {
-        let (dir, program) = fake_remote(
+    fn a_magi_that_fails_without_saying_why_on_stdout_is_explained_from_stderr() {
+        let (dir, program) = fake_magi(
             "fails",
             "echo 'magi: homelab has work of its own' >&2; exit 1",
         );
@@ -425,7 +425,7 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
     }
 
     #[test]
-    fn the_outcome_is_the_last_thing_remote_said() {
+    fn the_outcome_is_the_last_thing_magi_said() {
         assert_eq!(
             last_line(b"syncing\nmoved fix login to homelab\n\n"),
             Some("moved fix login to homelab".into())
@@ -438,8 +438,8 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
     }
 
     #[test]
-    fn a_remote_that_never_finishes_is_stopped_at_the_deadline_and_says_so() {
-        let (dir, program) = fake_remote(
+    fn a_magi_that_never_finishes_is_stopped_at_the_deadline_and_says_so() {
+        let (dir, program) = fake_magi(
             "hangs",
             r#"echo '{"event":"moving","ok":true,"message":"Moving"}'; sleep 30"#,
         );

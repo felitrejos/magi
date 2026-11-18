@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -33,7 +34,11 @@ func saveStray(sessionID string, s Stray) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, sessionID+".json"), data, 0o600)
+	path := filepath.Join(dir, sessionID+".json")
+	if err := os.WriteFile(path+".tmp", data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(path+".tmp", path)
 }
 
 func loadStrays() (map[string]Stray, error) {
@@ -89,13 +94,20 @@ func cleanStray(sessionID string, s Stray) error {
 }
 
 func cleanStrayFor(sessionID string) error {
-	strays, err := loadStrays()
+	dir, err := strayDir()
 	if err != nil {
 		return err
 	}
-	s, ok := strays[sessionID]
-	if !ok {
+	data, err := os.ReadFile(filepath.Join(dir, sessionID+".json"))
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var s Stray
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("the record of an earlier failed handoff of this session can't be read (%w); remove %s", err, filepath.Join(dir, sessionID+".json"))
 	}
 	if err := cleanStray(sessionID, s); err != nil {
 		return fmt.Errorf("a copy of this session left on %s by an earlier handoff couldn't be stopped: %w", s.Host, err)

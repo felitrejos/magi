@@ -70,7 +70,7 @@ pub use page::{Page, run as page};
 pub fn run(config: Config) -> io::Result<()> {
     if !rex::available() {
         return Err(io::Error::other(
-            "magi runs in a Rex pane (https://www.superlogical.com/rex). Open it there, or use `magi-overview fleet --json` for a one-off look.",
+            "magi-overview runs in a Rex pane (https://www.superlogical.com/rex). Open it there, or use `magi-overview fleet --json` for a one-off look.",
         ));
     }
     let (sender, events) = mpsc::sync_channel(EVENT_BACKLOG);
@@ -304,10 +304,6 @@ fn action(key: &Key) -> Option<Action> {
     })
 }
 
-fn wheel(model: &mut Model, up: bool, now: Instant) {
-    step(model, if up { -1 } else { 1 }, now);
-}
-
 fn open_launcher(model: &mut Model, links: &mut Links, now: Instant) {
     if links.launch.is_some() {
         return;
@@ -496,7 +492,7 @@ fn page_command(text: &str, title: &str, popups: &Path) -> io::Result<Vec<String
 
 fn magi() -> String {
     std::env::current_exe().map_or_else(
-        |_| "magi".to_string(),
+        |_| "magi-overview".to_string(),
         |path| path.to_string_lossy().into_owned(),
     )
 }
@@ -735,7 +731,7 @@ fn handle(event: Event, model: &mut Model, links: &mut Links) -> io::Result<Flow
         Event::Input(Input::Resize) => write_terminal(terminal::CELL_SIZE)?,
         Event::Input(Input::Cells { width, height }) => model.cell_size = Some((width, height)),
         Event::Input(Input::Closed) => return Ok(Flow::Quit),
-        Event::Input(Input::Wheel { up }) => wheel(model, up, now),
+        Event::Input(Input::Wheel { up }) => step(model, if up { -1 } else { 1 }, now),
         Event::Topology(topology) => {
             let mut wanted: Vec<Endpoint> = std::iter::once(Endpoint::Local)
                 .chain(

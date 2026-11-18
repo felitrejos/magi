@@ -76,22 +76,15 @@ func (s liveSession) since() string {
 }
 
 func liveSessions(m Machine) ([]liveSession, error) {
-	out, err := sh(m, sessionScript, "sessions")
-	if err != nil {
-		return nil, err
-	}
-	var sessions []liveSession
-	for _, file := range splitNull(out) {
-		var s liveSession
-		if json.Unmarshal([]byte(file), &s) == nil {
-			sessions = append(sessions, s)
-		}
-	}
-	return sessions, nil
+	return readSessions(m, "sessions")
 }
 
 func liveHere(m Machine) ([]liveSession, error) {
-	out, err := sh(m, sessionScript, "live")
+	return readSessions(m, "live")
+}
+
+func readSessions(m Machine, which string) ([]liveSession, error) {
+	out, err := sh(m, sessionScript, which)
 	if err != nil {
 		return nil, err
 	}

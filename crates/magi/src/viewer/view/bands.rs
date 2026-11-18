@@ -340,7 +340,7 @@ fn session_line(
             .collect::<Vec<_>>()
             .join(" · ")
     };
-    while shown(&details).width() > room && !details.is_empty() {
+    while shown(&details).width() > room {
         let least = details
             .iter()
             .enumerate()

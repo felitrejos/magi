@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::model::{Endpoint, LinkState, LinkUpdate, Model, Presence};
 use super::{EVENT_BACKLOG, Event, Links, alerts, handle, net, topology};
-use crate::proto::{AgentSession, Reply, Request, Shown, View};
+use crate::proto::{AgentSession, Reply, Request, View};
 
 const SETTLE_WITHIN: Duration = Duration::from_secs(3);
 const MIN_ID_PREFIX: usize = 4;
@@ -20,7 +20,6 @@ pub struct Client {
 
 pub enum Answer {
     Reply(Reply),
-    Shown(Shown),
     Read(View),
 }
 
@@ -119,7 +118,7 @@ impl Client {
     pub fn reply(&mut self, endpoint: Endpoint, within: Duration) -> Result<String, String> {
         let reply = self.answer(endpoint, within, |answer| match answer {
             Answer::Reply(reply) => Some(reply),
-            Answer::Shown(_) | Answer::Read(_) => None,
+            Answer::Read(_) => None,
         })?;
         if reply.ok {
             Ok(reply.text)
@@ -162,7 +161,6 @@ impl Client {
     fn take(&mut self, event: Event) -> io::Result<()> {
         let answer = match event {
             Event::Link(endpoint, _, LinkUpdate::Reply(reply)) => (endpoint, Answer::Reply(reply)),
-            Event::Link(endpoint, _, LinkUpdate::Shown(shown)) => (endpoint, Answer::Shown(shown)),
             Event::Link(endpoint, _, LinkUpdate::Read(read)) => (endpoint, Answer::Read(read)),
             event => return handle(event, &mut self.model, &mut self.links).map(drop),
         };
@@ -203,7 +201,9 @@ pub fn pick(candidates: &[(&str, &str)], query: &str) -> Result<usize, String> {
     }
     match found.as_slice() {
         [index] => Ok(*index),
-        [] => Err(format!("no session matches {query:?}: see magi sessions")),
+        [] => Err(format!(
+            "no session matches {query:?}: see magi-overview sessions"
+        )),
         several => Err(format!(
             "{query:?} matches {} sessions: {}. Use more of its id",
             several.len(),

@@ -26,13 +26,16 @@ const usage = `magi moves a Claude Code or Codex session to another machine, or 
 Usage:
   magi init                          set up this machine and a machine to hand off to
   magi doctor [host...]              check that everything a handoff needs is in place
-  magi pull <host> [session-id]      bring a Claude Code or Codex session back from <host>
-                                        and continue it here
+  magi pull <host> [session-id] [--tab] [--json]
+                                        bring a Claude Code or Codex session back from <host>
+                                        and continue it here, or in a new tab with --tab
   magi move <session-id> <host> [--json] [--stay]
                                         move a Claude Code or Codex session on this machine to
                                         <host>, from outside it: now if it's idle, or when its
                                         turn ends; Codex needs codex = "<path>" for <host>
-  magi status                        recent handoffs and parked checkouts
+  magi hosts                         the configured hosts, one per line
+  magi status                        recent handoffs, parked checkouts, and copies a failed
+                                        handoff left running, which it stops
   magi unpark [dir]                  stop treating a checkout as parked
   magi allow [dir]                   let the project's .magi.toml run after handoffs
   magi open <folder> [--codex] [--model <model>] [--json]
@@ -48,6 +51,7 @@ Usage:
   magi tasks cancel <id>             stop a task and remove its copy
   magi tasks clean                   collect finished tasks, drop day-idle copies and week-old tasks
   magi version
+  magi help
 
 Used by the Claude Code plugin:
   magi arm <host> <session-id> [-]   hand this session off when its turn ends;
@@ -311,11 +315,11 @@ func stopHook(in io.Reader, out io.Writer) error {
 		return err
 	}
 	unlock, err := lockMove(input.SessionID)
-	if err != nil {
-		return json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": err.Error() + ", so this handoff didn't start. Tell the user."})
+	if err == nil {
+		defer unlock()
+		err = cleanStrayFor(input.SessionID)
 	}
-	defer unlock()
-	if err := cleanStrayFor(input.SessionID); err != nil {
+	if err != nil {
 		return json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": err.Error() + ", so this handoff didn't start. Tell the user."})
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -576,19 +580,19 @@ func openPulledTab(local *Local, res *Pulled, prompt string) error {
 	if root == "" {
 		root = res.ToDir
 	}
-	agent, label, command := "claude", claudeTabLabel(res.Name), []string{"--resume", res.Session, "--remote-control", res.Name, prompt}
+	command, label := resumeCommand(res.Session, res.Name, prompt, res.Codex), claudeTabLabel(res.Name)
 	if res.Codex {
-		agent, label, command = "codex", codexTabLabel(res.Name), codexResume(res.Session, prompt)
+		label = codexTabLabel(res.Name)
 	}
-	program, err := exec.LookPath(agent)
+	program, err := exec.LookPath(command[0])
 	if err != nil {
-		return fmt.Errorf("%s isn't installed on %s", agent, local.Name())
+		return fmt.Errorf("%s isn't installed on %s", command[0], local.Name())
 	}
 	var launcher Launcher = Tmux{remote: local}
 	if _, err := exec.LookPath("rex"); err == nil {
 		launcher = Rex{remote: local}
 	}
-	tab, err := launcher.Start(localGroup(root, roots), label, res.ToDir, append([]string{program}, command...), true)
+	tab, err := launcher.Start(localGroup(root, roots), label, res.ToDir, append([]string{program}, command[1:]...), true)
 	if err != nil {
 		return err
 	}
