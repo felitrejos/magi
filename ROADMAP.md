@@ -7,9 +7,10 @@
   machines that comes back by itself. That core needs only SSH.
 - **One program.** `magi` is a single Go program with SSH as its only
   requirement. It never depends on the overview.
-- **The overview is a separate install.** The live view in a Rex pane, the
-  agents on every machine and Tailscale live in `magi-overview`, an optional
-  install for Rex users. It keeps working but gets no new features for now.
+- **A menu bar replaces the overview.** The overview's terminal view in
+  Rex, its agents on every machine and Tailscale are being replaced by a Mac
+  menu bar app built on `magi` over SSH. Until then `magi-overview` keeps
+  working and gets no new features.
 - **Reliable before new.** A handoff should be boring. Work on making moves
   safe and measured comes before anything else.
 - **tmux as good as Rex.** Everything the core does in a Rex tab it does in
@@ -23,11 +24,14 @@
   left running.
 - **A layer for other tools.** The CLI and `magi mcp` give scripts, other
   orchestrators and Claude itself magi's actions. Moving sessions, sending
-  work, and reading machines, sessions and diffs need only SSH. The
-  live-control actions (messaging a session, answering its prompts,
-  following its work) need `magi-overview`.
-- **Follow Rex.** While Rex is in preview, magi supports only its latest
-  release. Bump `REX_API` and `rexAPI` with each one.
+  work, reading machines, sessions and diffs, waiting on a session and
+  moving another session all go through `magi` over SSH. No tool types into
+  another live session. The session's own app (Desktop, the Claude app
+  through Remote Control, or its terminal) is where you answer it.
+- **Follow Rex.** Rex is optional. magi uses it when it's there, for tabs
+  and port forwards, and falls back to tmux and its own SSH tunnels. While
+  Rex is in preview, magi supports only its latest release. Bump `REX_API`
+  and `rexAPI` with each one.
 
 ## 1.0
 
@@ -49,6 +53,11 @@ exactly one live copy at any time. magi is not a cloud workspace.
 - **Hand back with SSH only.** Today, handing a session back to a laptop
   that doesn't accept incoming SSH needs `magi-overview`. In 1.0 it works
   with only the laptop's outgoing SSH.
+- **Claude Desktop parity.** Everything works the same from a Claude Desktop
+  session as from the CLI. Handing off from Desktop already works. Find out
+  whether Desktop can open a given session. If it can, handing back lands in
+  Desktop, and if not it lands in a terminal with Remote Control on, so it
+  shows in the Claude app.
 - **Recovery anyone can follow.** When a move fails because SSH drops, the
   machine sleeps or the hook is killed, `magi status` says which copy is the
   live one, cleans up the other and prints the exact command to continue.
@@ -69,12 +78,53 @@ exactly one live copy at any time. magi is not a cloud workspace.
 
 ### Not in 1.0
 
-- Moving cloud or Claude Desktop sessions.
+- Moving cloud sessions.
 - GitHub or pull request workflows.
 - Moving or starting sessions by itself.
-- New `magi-overview` features.
+- The menu bar app, which comes right after.
 - Native Windows.
 - New ways to delegate work.
+
+## After 1.0: a menu bar instead of the overview
+
+A quick glance at every machine and every session, in the Mac menu bar,
+read-only.
+
+- **Session state from hooks.** The plugin's hooks record each session's
+  state on its machine, working, waiting on you or idle, and `sessions`
+  reports it. Asking "does anything need me?" is then one `sessions` call.
+- **Two more MCP tools in Go.** `wait` waits until another session finishes,
+  such as one handed off to another machine. `move_session` moves a session
+  other than the one you're in, using `magi move`. The overview's other
+  tools are dropped. `alerts` goes because its machine and plan parts are
+  already in `machines` and its sessions part becomes the state above.
+  `recent_work` and `subagents` go, and so does `start_session`, which the
+  plugin's `session_elsewhere` covers. The three that type into a live
+  session, `send_message`, `answer_permission` and `choose_option`, go too.
+- **`magi watch`.** One SSH connection per machine, started by the Mac,
+  streams what changes there. That is machine stats, sessions and their
+  state, and the CPU and memory each session uses, counting what it started.
+  It reacts to hooks and file changes rather than polling. Idle cost is
+  measured on the Mac and on Linux against a budget of 0.5% CPU and 30 MB.
+  Only if Go misses it does the watcher move to Rust.
+- **The menu bar app.** SwiftUI, Mac only, open source. It shows each
+  machine's CPU, memory, load, disk and whether it answers. For each session
+  it shows the project, the state, how long it's been in it, and its CPU and
+  memory. It also shows where sessions moved, background tasks, and plan
+  limits, which come from an undocumented endpoint and may break. A badge
+  shows when a session is waiting on you. The only click opens a session
+  where it lives, in Desktop, its Rex tab or its tmux window. It doesn't
+  answer prompts or type into sessions. It reconnects quietly after sleep or
+  a network change and shows a machine that doesn't answer instead of hiding
+  it.
+- **Shipping it.** Not notarized. Installed from a Homebrew tap of the
+  project's own, with the README saying how to open it the first time
+  (right-click and Open, or `xattr -dr com.apple.quarantine`). Updates
+  through that tap.
+- **Delete the overview.** Once the menu bar covers what the overview did,
+  remove `magi-overview`. That means the Rust crate, its terminal view, its
+  agents and the Tailscale code, and `sh -s overview` from the installer.
+  Update the README, SECURITY.md and PRIVACY.md.
 
 ## Decided against
 
@@ -83,3 +133,8 @@ exactly one live copy at any time. magi is not a cloud workspace.
   panes already show.
 - **Attaching images from magi.** Dropping an image on the session's own Rex
   pane already uploads it to that machine.
+- **Actions in the menu bar.** Answering prompts or typing into a session
+  from the menu bar would duplicate the session's own app and need hooks
+  that wait for an answer. Opening the session is enough.
+- **Tools that type into other sessions.** Remote Control and Desktop
+  already let you answer a session yourself.
