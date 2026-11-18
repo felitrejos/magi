@@ -479,12 +479,8 @@ func handedOff(a armed, res Result) map[string]string {
 	if len(res.Notes) > 0 {
 		where += ". Notes: " + res.Noted()
 	}
-	closing := "This copy is closing."
-	if a.Desktop {
-		closing = "This copy stays in the sidebar and takes no more messages."
-	}
 	return map[string]string{
-		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. %s", a.Host, res.Summary(), where, closing),
+		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. This copy is closing.", a.Host, res.Summary(), where),
 	}
 }
 
@@ -534,9 +530,6 @@ func stillRunning(note string, tasks []backgroundTask) string {
 }
 
 func retire(a armed, sessionID, transcriptPath string) error {
-	if a.Desktop {
-		return nil
-	}
 	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), transcriptPath, a.Host, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"), sessionID, os.Getenv("TMUX_PANE"))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()

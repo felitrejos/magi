@@ -198,17 +198,6 @@ func TestRetireClosesATerminalSessionAndRetiresItsTranscript(t *testing.T) {
 	}
 }
 
-func TestADesktopSessionIsToldItStaysWithoutBeingAskedToArchive(t *testing.T) {
-	desktop := handedOff(armed{Host: "server", Desktop: true}, Result{ShownOn: []string{"Laptop"}})
-	if _, blocks := desktop["decision"]; blocks || !strings.Contains(desktop["systemMessage"], "stays in the sidebar") {
-		t.Errorf("desktop output = %v", desktop)
-	}
-	terminal := handedOff(armed{Host: "server"}, Result{ShownOn: []string{"Laptop"}})
-	if _, blocks := terminal["decision"]; blocks || !strings.Contains(terminal["systemMessage"], "is closing") {
-		t.Errorf("terminal output = %v", terminal)
-	}
-}
-
 func TestLogFindsTheLastSessionSentToAHost(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if _, err := lastHandoffTo("server"); err == nil {
