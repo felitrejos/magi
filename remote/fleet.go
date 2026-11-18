@@ -67,7 +67,7 @@ func (m fleetMachine) describe() string {
 	if m.Probed && m.Cores > 0 {
 		parts := []string{fmt.Sprintf("load %.2f on %d cores", m.Load[0], m.Cores)}
 		if m.MemoryTotal > 0 {
-			parts = append(parts, fmt.Sprintf("memory %.1f of %.1f GB", m.MemoryUsed/1e9, m.MemoryTotal/1e9))
+			parts = append(parts, "memory "+formatMemory(m.MemoryUsed)+" of "+formatMemory(m.MemoryTotal))
 		}
 		parts = append(parts, fmt.Sprintf("%d Claude sessions working", m.Agents.Working))
 		return strings.Join(parts, ", ") + ", read over SSH"
@@ -91,7 +91,7 @@ func (m fleetMachine) describe() string {
 		parts = append(parts, fmt.Sprintf("load %.2f on %d cores", m.Load[0], m.Cores))
 	}
 	if m.MemoryTotal > 0 {
-		parts = append(parts, fmt.Sprintf("memory %.1f of %.1f GB", m.MemoryUsed/1e9, m.MemoryTotal/1e9))
+		parts = append(parts, "memory "+formatMemory(m.MemoryUsed)+" of "+formatMemory(m.MemoryTotal))
 	}
 	parts = append(parts, fmt.Sprintf("agents %d working, %d waiting, %d idle", m.Agents.Working, m.Agents.Waiting, m.Agents.Idle))
 	return strings.Join(parts, ", ")
@@ -247,9 +247,8 @@ echo
 if [ "$(uname -s)" = Darwin ]; then
 	sysctl -n hw.ncpu
 	sysctl -n vm.loadavg | tr -d '{}'
-	page=$(sysctl -n hw.pagesize)
-	free=$(vm_stat | awk '/Pages (free|inactive|speculative)/ { gsub("\\.", "", $NF); n += $NF } END { print n }')
-	echo "$(sysctl -n hw.memsize) $((free * page))"
+	set -- $(sysctl -n hw.memsize hw.pagesize vm.page_free_count vm.page_pageable_external_count vm.page_purgeable_count)
+	echo "$1 $(( ($3 + $4 + $5) * $2 ))"
 else
 	getconf _NPROCESSORS_ONLN
 	cut -d ' ' -f 1-3 /proc/loadavg

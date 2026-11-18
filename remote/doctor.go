@@ -123,6 +123,30 @@ func (c *checks) login(where, statusJSON string) {
 	c.pass("logged in to claude.ai on " + where)
 }
 
+func (c *checks) plugin(listJSON string) {
+	var plugins []struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}
+	json.Unmarshal([]byte(listJSON), &plugins)
+	disabled := ""
+	for _, p := range plugins {
+		if !strings.HasPrefix(p.ID, "magi@") {
+			continue
+		}
+		if p.Enabled {
+			c.pass("the magi plugin is installed and enabled")
+			return
+		}
+		disabled = p.ID
+	}
+	if disabled != "" {
+		c.fail("the magi plugin is installed but disabled", "claude plugin enable "+disabled)
+		return
+	}
+	c.fail("the magi plugin isn't installed", "claude plugin marketplace add felitrejos/magi && claude plugin install magi@magi")
+}
+
 func doctor(names []string, out io.Writer) error {
 	c := &checks{out: out}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -151,12 +175,8 @@ func doctor(names []string, out io.Writer) error {
 		c.claudeVersion("this machine", string(v))
 		status, _ := run(ctx, "claude", "auth", "status")
 		c.login("this machine", string(status))
-		plugins, err := run(ctx, "claude", "plugin", "list")
-		if err == nil && strings.Contains(string(plugins), "magi@") {
-			c.pass("the magi plugin is installed")
-		} else {
-			c.fail("the magi plugin isn't installed", "claude plugin marketplace add felitrejos/magi && claude plugin install magi@magi")
-		}
+		plugins, _ := run(ctx, "claude", "plugin", "list", "--json")
+		c.plugin(string(plugins))
 	}
 	if fleet, err := readFleet(ctx); err != nil {
 		c.warn("the overview doesn't report machine load ("+err.Error()+")", "tasks sent to other machines go to the first configured host that answers; when the overview is installed, their load is also checked against each host's budget.")

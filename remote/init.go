@@ -44,14 +44,12 @@ func list(answer string) []string {
 }
 
 func existing(m Machine, candidates []string) []string {
-	var found []string
-	seen := map[string]bool{}
+	var found, dirs []string
 	for _, c := range candidates {
-		out, err := sh(m, `d=$HOME/$1; [ -d "$d" ] && ls -di "$d" | awk '{print $1}'`, strings.TrimPrefix(c, "~/"))
-		inode := strings.TrimSpace(string(out))
-		if err == nil && !seen[inode] {
-			seen[inode] = true
+		dir := strings.TrimPrefix(c, "~/")
+		if _, err := sh(m, `d=$HOME/$1; shift; [ -d "$d" ] || exit 1; for f; do [ "$d" -ef "$HOME/$f" ] && exit 1; done; exit 0`, append([]string{dir}, dirs...)...); err == nil {
 			found = append(found, c)
+			dirs = append(dirs, dir)
 		}
 	}
 	return found

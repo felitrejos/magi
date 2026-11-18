@@ -105,7 +105,7 @@ func TestAMachineWithoutTheOverviewReportsItsLoadOverSSH(t *testing.T) {
 	if !m.measured() || m.Cores != 8 || m.Load[0] != 3.2 || m.MemoryUsed != 12e9 || m.Agents.Working != 2 {
 		t.Fatalf("parsed %+v", m)
 	}
-	if got := m.describe(); got != "load 3.20 on 8 cores, memory 12.0 of 16.0 GB, 2 Claude sessions working, read over SSH" {
+	if got := m.describe(); got != "load 3.20 on 8 cores, memory 11.2 GB of 14.9 GB, 2 Claude sessions working, read over SSH" {
 		t.Errorf("describe = %q", got)
 	}
 	if room := (Budget{MaxAgents: 2}).noRoom(time.Now(), m, true); !strings.Contains(room, "2 agents are working") {
