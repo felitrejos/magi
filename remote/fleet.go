@@ -63,11 +63,11 @@ func (m fleetMachine) describe() string {
 		probed := "so its load is unknown; its system and tools were read over SSH"
 		if m.Error == nil || *m.Error == "" {
 			if m.Probed {
-				return "magi doesn't report it, " + probed
+				return "the overview doesn't report it, " + probed
 			}
-			return "magi: not answering (no answer)"
+			return "the overview: not answering (no answer)"
 		}
-		text := "magi: not answering (" + *m.Error + ")"
+		text := "the overview: not answering (" + *m.Error + ")"
 		if m.Probed {
 			text += ", " + probed
 		}
@@ -86,21 +86,21 @@ func (m fleetMachine) describe() string {
 
 func readFleet(ctx context.Context) (fleetData, error) {
 	var fleet fleetData
-	path, err := exec.LookPath("magi")
+	path, err := exec.LookPath("magi-overview")
 	if err != nil {
-		return fleet, errors.New("magi isn't installed here")
+		return fleet, errors.New("magi-overview isn't installed here")
 	}
 	ctx, cancel := context.WithTimeout(ctx, fleetWait)
 	defer cancel()
 	out, err := run(ctx, path, "fleet", "--json")
 	if err != nil {
-		return fleet, fmt.Errorf("magi fleet failed: %w", err)
+		return fleet, fmt.Errorf("magi-overview fleet failed: %w", err)
 	}
 	if err := json.Unmarshal(out, &fleet); err != nil {
-		return fleetData{}, fmt.Errorf("magi fleet: %w", err)
+		return fleetData{}, fmt.Errorf("magi-overview fleet: %w", err)
 	}
 	if len(fleet.Machines) == 0 {
-		return fleet, errors.New("magi fleet listed no machines")
+		return fleet, errors.New("magi-overview fleet listed no machines")
 	}
 	return fleet, nil
 }
@@ -271,7 +271,7 @@ func (view fleetView) candidates() (picks []choice, skipped []string) {
 	if view.FleetErr != nil {
 		unknown += " (" + view.FleetErr.Error() + ")"
 	} else {
-		unknown += " (magi doesn't report it)"
+		unknown += " (the overview doesn't report it)"
 	}
 	for _, m := range view.Machines {
 		switch {

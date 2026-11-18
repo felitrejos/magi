@@ -159,7 +159,7 @@ func doctor(names []string, out io.Writer) error {
 		}
 	}
 	if fleet, err := readFleet(ctx); err != nil {
-		c.warn("magi doesn't report machine load ("+err.Error()+")", "tasks sent to other machines go to the first configured host that answers; when magi fleet answers, their load is also checked against each host's budget.")
+		c.warn("the overview doesn't report machine load ("+err.Error()+")", "tasks sent to other machines go to the first configured host that answers; when the overview is installed, their load is also checked against each host's budget.")
 	} else {
 		c.pass(fmt.Sprintf("magi reports load for %d machine(s)", len(fleet.Machines)))
 	}

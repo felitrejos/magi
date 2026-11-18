@@ -228,7 +228,7 @@ func describeMachines(view fleetView, needs needsInput) string {
 				fmt.Fprintf(&b, "; %s", load)
 			}
 		} else if view.FleetErr == nil {
-			b.WriteString("; magi doesn't report it, so its load is unknown")
+			b.WriteString("; the overview doesn't report it, so its load is unknown")
 		}
 		b.WriteString("\n")
 		for _, t := range m.Tasks {

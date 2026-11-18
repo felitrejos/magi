@@ -27,47 +27,34 @@ use lexopt::prelude::*;
 const RECENT_ITEMS: usize = 20;
 const WAIT_WITHIN: Duration = Duration::from_secs(30 * 60);
 
-const USAGE: &str = "magi: your coding agents across your machines
+const USAGE: &str = "magi-overview: a live view of your coding agents and machines, in one Rex pane
 
-Moving sessions and sending work, over SSH:
-  magi init                                            set up this machine and the machines to send work to
-  magi doctor [MACHINE...]                             check that everything a move needs is in place
-  magi move SESSION MACHINE                            move a Claude Code or Codex session there, and wait
-  magi pull MACHINE [SESSION-ID]                       bring a session back from there and continue it here
-  magi open FOLDER [--codex] [--model M]               start a session here, in a Rex tab for its folder
-  magi tasks                                           work sent to other machines, and its state
-  magi tasks wait|show|cancel ID                       wait for a task, collect it, or stop it
-  magi tasks clean                                     collect finished tasks and drop old copies
-  magi status                                          recent moves and parked checkouts
-  magi forwards [close SESSION-ID]                     ports forwarded to sessions that moved
-  magi allow [DIR]                                     let a project's .magi.toml run after moves
-  magi unpark [DIR]                                    stop treating a checkout as parked
-  magi mcp                                             every action as MCP tools, for Claude Code, Claude Desktop and others
+Needs Rex and Tailscale on every machine. Moving sessions and sending work is magi itself (magi --help).
 
-The overview, with Rex and Tailscale on every machine:
-  magi [--port PORT]                                   open the viewer (press a for alerts)
-  magi agent install [--port PORT] [--interval MS]     run the agent in the background, now and at login
-  magi agent uninstall                                 stop it and remove the background service
-  magi agent [--port PORT] [--interval MS]             run the agent in this terminal
-  magi fleet [--json] [--port PORT]                    print every machine's load and agents once
-  magi sessions [--json]                               every session on every machine
-  magi send SESSION TEXT                               message a session, queued until it's idle
-  magi answer SESSION yes|no                           allow or deny what it asks to run
-  magi choose SESSION N                                pick option N of its question
-  magi start MACHINE FOLDER|--chat [--codex] [--model M]
-                                                       start a session there, in a Rex tab for its folder
-  magi events                                          what needs you, as JSON lines, as it happens
-  magi subagents [--json]                              every running subagent and the step it's on
-  magi recent SESSION [SUBAGENT] [--items N]           its latest messages and steps, one line each
-  magi wait SESSION [SUBAGENT] [--for 10m]             until it stops working, or the subagent ends
-  magi alerts                                          the alert history as a feed, by day
-  magi statusline install|uninstall                    a Claude Code status line with context % and plan limits
+Usage:
+  magi-overview [--port PORT]                                   open the viewer (press a for alerts)
+  magi-overview agent install [--port PORT] [--interval MS]     run the agent in the background, now and at login
+  magi-overview agent uninstall                                 stop it and remove the background service
+  magi-overview agent [--port PORT] [--interval MS]             run the agent in this terminal
+  magi-overview fleet [--json] [--port PORT]                    print every machine's load and agents once
+  magi-overview sessions [--json]                               every session on every machine
+  magi-overview send SESSION TEXT                               message a session, queued until it's idle
+  magi-overview answer SESSION yes|no                           allow or deny what it asks to run
+  magi-overview choose SESSION N                                pick option N of its question
+  magi-overview move SESSION MACHINE                            move it to another machine, and wait
+  magi-overview start MACHINE FOLDER|--chat [--codex] [--model M]
+                                                                start a session there, in a Rex tab for its folder
+  magi-overview events                                          what needs you, as JSON lines, as it happens
+  magi-overview subagents [--json]                              every running subagent and the step it's on
+  magi-overview recent SESSION [SUBAGENT] [--items N]           its latest messages and steps, one line each
+  magi-overview wait SESSION [SUBAGENT] [--for 10m]             until it stops working, or the subagent ends
+  magi-overview alerts                                          the alert history as a feed, by day
+  magi-overview statusline install|uninstall                    a Claude Code status line with context % and plan limits
 
   SESSION is the start of its id, its title, or at least four letters of its title.
-  move takes any session by name with the overview; without it, give the full session id.
   SUBAGENT is its id or its label, matched the same way.
-  magi --version
-  magi --help
+  magi-overview --version
+  magi-overview --help
 
 Options:
   --port PORT     agent port (default 2015)
@@ -92,60 +79,11 @@ enum Command {
     Help,
 }
 
-const REMOTE_COMMANDS: [&str; 13] = [
-    "init",
-    "doctor",
-    "pull",
-    "status",
-    "unpark",
-    "allow",
-    "open",
-    "forwards",
-    "tasks",
-    "arm",
-    "hook",
-    "forward-run",
-    "mcp",
-];
-
-fn for_remote(args: &[String]) -> bool {
-    match args.first().map(String::as_str) {
-        Some("move") => {
-            args.iter().any(|arg| arg == "--json" || arg == "--stay")
-                || args
-                    .get(1)
-                    .is_some_and(|session| handoff::is_session_id(session))
-        }
-        Some(name) => REMOTE_COMMANDS.contains(&name),
-        None => false,
-    }
-}
-
-fn run_remote(args: Vec<std::ffi::OsString>) -> ExitCode {
-    use std::os::unix::process::CommandExt;
-    match handoff::remote_program() {
-        Ok(program) => {
-            let error = std::process::Command::new(program).args(args).exec();
-            eprintln!("magi: couldn't run {}: {error}", handoff::REMOTE);
-        }
-        Err(error) => eprintln!("magi: {error}"),
-    }
-    ExitCode::FAILURE
-}
-
 fn main() -> ExitCode {
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let text: Vec<String> = args
-        .iter()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
-    if for_remote(&text) {
-        return run_remote(args);
-    }
     let command = match parse(lexopt::Parser::from_env()) {
         Ok(command) => command,
         Err(error) => {
-            eprintln!("magi: {error}\n\n{USAGE}");
+            eprintln!("magi-overview: {error}\n\n{USAGE}");
             return ExitCode::from(2);
         }
     };
@@ -167,7 +105,7 @@ fn main() -> ExitCode {
         Command::Cli(port, command) => viewer::cli(port, command),
         Command::Mcp(port) => viewer::mcp(port),
         Command::Version => {
-            println!("magi {}", env!("CARGO_PKG_VERSION"));
+            println!("magi-overview {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Command::Help => {
@@ -178,7 +116,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("magi: {error}");
+            eprintln!("magi-overview: {error}");
             ExitCode::FAILURE
         }
     }
@@ -458,31 +396,6 @@ fn parse(mut parser: lexopt::Parser) -> Result<Command, lexopt::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_ssh_commands_go_to_magi_remote_and_the_overview_ones_stay() {
-        let remote =
-            |args: &[&str]| for_remote(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>());
-        for args in [
-            &["init"][..],
-            &["tasks", "wait", "1a2b3c4d"],
-            &["hook", "stop"],
-            &["mcp"],
-            &["move", "--json", "--stay", "fix", "homelab"],
-            &["move", "0b7a3c1e-1111-4222-8333-944455556666", "homelab"],
-        ] {
-            assert!(remote(args), "{args:?}");
-        }
-        for args in [
-            &[][..],
-            &["move", "fix login", "homelab"],
-            &["mcp-overview"],
-            &["sessions", "--json"],
-            &["agent", "install"],
-        ] {
-            assert!(!remote(args), "{args:?}");
-        }
-    }
 
     #[test]
     fn a_wait_takes_seconds_minutes_or_hours() {

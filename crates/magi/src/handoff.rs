@@ -283,7 +283,7 @@ pub fn search_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-pub const REMOTE: &str = "magi-remote";
+pub const REMOTE: &str = "magi";
 
 pub fn remote_program() -> Result<PathBuf, String> {
     let beside = std::env::current_exe()
@@ -291,7 +291,7 @@ pub fn remote_program() -> Result<PathBuf, String> {
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
     let dirs: Vec<PathBuf> = beside.into_iter().chain(search_dirs()).collect();
     find(REMOTE, &dirs).ok_or_else(|| {
-        format!("{REMOTE} is missing on this machine, so magi can't move work; reinstall magi from github.com/felitrejos/magi")
+        format!("{REMOTE} is missing on this machine, so the overview can't move work; reinstall from github.com/felitrejos/magi")
     })
 }
 

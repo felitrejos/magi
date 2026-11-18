@@ -4,7 +4,14 @@ set -eu
 main() {
   repo="felitrejos/magi"
   dir="${MAGI_INSTALL_DIR:-$HOME/.local/bin}"
-  bins="magi magi-remote"
+  bins="magi"
+  agent=""
+  for unit in "$HOME/Library/LaunchAgents/magi-agent.plist" "$HOME/.config/systemd/user/magi-agent.service"; do
+    [ -e "$unit" ] && agent="$unit"
+  done
+  if [ "${1:-}" = overview ] || [ -n "$agent" ]; then
+    bins="magi magi-overview"
+  fi
 
   case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) target=aarch64-apple-darwin ;;
@@ -35,7 +42,15 @@ main() {
     install -m 755 "$work/$bin" "$dir/$bin.new"
     mv "$dir/$bin.new" "$dir/$bin"
   done
+  rm -f "$dir/magi-remote"
   echo "Installed $bins to $dir"
+
+  if [ -n "$agent" ]; then
+    "$dir/magi-overview" agent install
+    if grep -qE "/magi'? statusline\"" "$HOME/.claude/settings.json" 2>/dev/null; then
+      "$dir/magi-overview" statusline install
+    fi
+  fi
 
   case ":$PATH:" in
     *":$dir:"*) ;;
@@ -43,9 +58,11 @@ main() {
   esac
 
   printf '\nNext:\n'
-  printf '  magi init            on each machine, to move sessions and send work\n'
-  printf '  magi agent install   on every machine, for the overview\n'
-  printf '  magi                 in a Rex pane\n'
+  printf '  magi init                      on each machine, to move sessions and send work\n'
+  if [ -n "$agent" ] || [ "${1:-}" = overview ]; then
+    printf '  magi-overview agent install    on every machine, for the overview\n'
+    printf '  magi-overview                  in a Rex pane\n'
+  fi
 }
 
 main "$@"

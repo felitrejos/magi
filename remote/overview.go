@@ -12,11 +12,11 @@ const overviewInstructions = `
 When magi's overview runs on the user's machines (a magi agent on each, over Tailscale), you also see every Claude Code and Codex session on them. Use sessions to look, recent_work and diff to see what a session did, subagents and wait to follow work, and alerts for what needs the user. send_message, answer_permission, choose_option, move_session and start_session type into the user's live sessions or start new ones: say what you'll do and let the user decide first. If the overview isn't running, those tools say so; everything above still works.`
 
 func addOverviewTools(ctx context.Context, server *mcp.Server) func() {
-	path, err := exec.LookPath("magi")
+	path, err := exec.LookPath("magi-overview")
 	if err != nil {
 		return func() {}
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "magi-remote", Version: currentVersion()}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "magi", Version: currentVersion()}, nil)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(path, "mcp-overview")}, nil)
 	if err != nil {
 		return func() {}

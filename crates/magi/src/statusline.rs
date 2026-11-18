@@ -102,7 +102,7 @@ fn report(report: StatusReport) {
             io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
         )
     {
-        eprintln!("magi: {error}");
+        eprintln!("magi-overview: {error}");
     }
 }
 
@@ -167,7 +167,10 @@ pub fn uninstall() -> io::Result<()> {
 
 fn is_ours(status_line: &Value) -> bool {
     status_line["command"].as_str().is_some_and(|command| {
-        command.ends_with("/magi' statusline") || command.ends_with("/magi statusline")
+        command.ends_with("/magi-overview' statusline")
+            || command.ends_with("/magi-overview statusline")
+            || command.ends_with("/magi' statusline")
+            || command.ends_with("/magi statusline")
     })
 }
 

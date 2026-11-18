@@ -974,12 +974,12 @@ fn the_launcher_says_why_a_machine_listed_no_projects() {
         homelab,
         LinkUpdate::Reply(crate::proto::Reply {
             ok: false,
-            text: "magi-remote is missing".into(),
+            text: "magi is missing".into(),
         }),
         now,
     );
     handle_batch(std::iter::empty(), &mut model, &mut links).unwrap();
-    assert!(asked_and_failed(&model, "magi-remote is missing"));
+    assert!(asked_and_failed(&model, "magi is missing"));
 }
 
 #[test]

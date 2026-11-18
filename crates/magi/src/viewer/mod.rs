@@ -70,7 +70,7 @@ pub use page::{Page, run as page};
 pub fn run(config: Config) -> io::Result<()> {
     if !rex::available() {
         return Err(io::Error::other(
-            "magi runs in a Rex pane (https://www.superlogical.com/rex). Open it there, or use `magi fleet --json` for a one-off look.",
+            "magi runs in a Rex pane (https://www.superlogical.com/rex). Open it there, or use `magi-overview fleet --json` for a one-off look.",
         ));
     }
     let (sender, events) = mpsc::sync_channel(EVENT_BACKLOG);

@@ -55,6 +55,8 @@ Used by the Claude Code plugin:
   magi hook stop                     the plugin's Stop hook (reads the hook JSON on stdin)
   magi mcp                           the plugin's tool server, on stdin and stdout
   magi forward-run <session-id>      keeps a moved session's ports forwarded (started by a move)
+
+For a live view of every session and machine in a Rex pane, install magi-overview.
 `
 
 var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -127,6 +129,8 @@ func main() {
 		if r, err = collectTask(args[2], args[1] == "cancel"); err == nil {
 			fmt.Print(describeReport(r))
 		}
+	case len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h"):
+		fmt.Print(usage)
 	case len(args) == 1 && (args[0] == "version" || args[0] == "--version"):
 		fmt.Println("magi", currentVersion())
 	default:
@@ -222,7 +226,7 @@ func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
 		return nil, others
 	}
 	return func(out io.Writer) error {
-		program, err := exec.LookPath("magi")
+		program, err := exec.LookPath("magi-overview")
 		if err != nil {
 			return err
 		}

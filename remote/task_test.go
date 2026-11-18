@@ -367,7 +367,7 @@ launcher = "tmux"
 func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
-	f.tool("magi", fakeMagi)
+	f.tool("magi-overview", fakeMagi)
 	picks, skipped, _, err := chooseHosts(context.Background(), "", true)
 	if err != nil {
 		t.Fatal(err)
@@ -400,7 +400,7 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 		"This machine (laptop): cpu 90%",
 		"- homelab (ssh homelab): reachable; budget: at most 1 working agents; NO ROOM now: 1 agents are working there",
 		"- gpu (ssh gpu): reachable; budget: no budget; ",
-		"magi: not answering (connection refused), so its load is unknown; its system and tools were read over SSH",
+		"the overview: not answering (connection refused), so its load is unknown; its system and tools were read over SSH",
 		"- small (ssh me@box): reachable; budget: no budget; Ubuntu cpu 5%",
 		"Suggested: small,",
 		"magi also sees stranger",
@@ -414,7 +414,7 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	}
 }
 
-func TestWithoutMagiMachinesAreTriedInConfigOrderAndTheReasonGiven(t *testing.T) {
+func TestWithoutTheOverviewMachinesAreTriedInConfigOrderAndTheReasonGiven(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
 	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
@@ -422,10 +422,10 @@ func TestWithoutMagiMachinesAreTriedInConfigOrderAndTheReasonGiven(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if picks[0].Host != "homelab" || !picks[0].Probe || !strings.Contains(picks[0].Why, "magi isn't installed") {
+	if picks[0].Host != "homelab" || !picks[0].Probe || !strings.Contains(picks[0].Why, "magi-overview isn't installed") {
 		t.Errorf("picks = %+v", picks)
 	}
-	f.tool("magi", "#!/bin/sh\necho '{\"machines\":[]}'\n")
+	f.tool("magi-overview", "#!/bin/sh\necho '{\"machines\":[]}'\n")
 	if picks, _, _, err := chooseHosts(context.Background(), "", true); err != nil || !strings.Contains(picks[0].Why, "listed no machines") {
 		t.Errorf("with an empty fleet: %+v, %v", picks, err)
 	}
@@ -537,7 +537,7 @@ func TestADelegatedClaudeNeverBypassesPermissions(t *testing.T) {
 func TestTheToolServerOffersItsTools(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
-	f.tool("magi", fakeMagi)
+	f.tool("magi-overview", fakeMagi)
 	serverSide, clientSide := mcp.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := newMCPServer().Connect(ctx, serverSide, nil); err != nil {
@@ -817,7 +817,7 @@ func TestANearlyUsedPlanWarnsAndAFullOneRefusesUnlessTheUserInsists(t *testing.T
 func TestDelegateRefusesWhenMagiSaysThePlanIsNearlyUsedUp(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
-	f.tool("magi", strings.Replace(strings.Replace(fakeMagi, `{"machines":[`, `{"plans":[{"agent":"claude","windows":[{"label":"5h","used":0.95,"resets_at":0}]}],"machines":[`, 1),
+	f.tool("magi-overview", strings.Replace(strings.Replace(fakeMagi, `{"machines":[`, `{"plans":[{"agent":"claude","windows":[{"label":"5h","used":0.95,"resets_at":0}]}],"machines":[`, 1),
 		`"error":null,"future":"ignored"}`, `"error":null,"future":"ignored","sessions":[{"id":"a","agent":"claude","state":"working","cpu":2.5,"memory":1610612736},{"id":"b","agent":"codex","state":"idle","cpu":0.5,"memory":536870912}]}`, 1))
 	serverSide, clientSide := mcp.NewInMemoryTransports()
 	ctx := context.Background()
