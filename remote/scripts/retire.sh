@@ -1,5 +1,5 @@
 #!/bin/sh
-pid=$1 desktop=$2 transcript=$3 host=$4 rex_session=$5 rex_block=$6 session_id=$7
+pid=$1 desktop=$2 transcript=$3 host=$4 rex_session=$5 rex_block=$6 session_id=$7 tmux_pane=$8
 if [ -n "$pid" ]; then
   if [ "$desktop" != 1 ]; then
     sleep 1
@@ -21,9 +21,15 @@ fi
 mv -- "$transcript" "$transcript.handed-off-to-$host" || exit
 record=$HOME/.magi/tabs/$session_id
 if [ -f "$record" ]; then
-  { read -r launcher; read -r tab_session; read -r tab_window; } < "$record"
+  { read -r launcher; read -r tab_session; read -r tab_window; read -r tab_pid; } < "$record"
   rm -f "$record"
-  if [ "$launcher" = tmux ]; then tmux kill-window -t "$tab_window"; else rex window close -s "$tab_session" "$tab_window"; fi
+  if [ "$launcher" = tmux ]; then
+    if tmux list-panes -t "$tab_window" -F '#{pane_pid}' 2>/dev/null | grep -qx "$tab_pid"; then tmux kill-window -t "$tab_window"; fi
+  else
+    rex window close -s "$tab_session" "$tab_window"
+  fi
 elif [ "$desktop" != 1 ] && [ -n "$rex_session" ] && [ -n "$rex_block" ]; then
   rex block close -s "$rex_session" "$rex_block"
+elif [ "$desktop" != 1 ] && [ -n "$tmux_pane" ]; then
+  tmux kill-pane -t "$tmux_pane"
 fi

@@ -11,6 +11,7 @@ type Tab struct {
 	Session        string
 	Window         string
 	Pane           string
+	PanePID        string
 	SessionCreated bool
 }
 
@@ -219,7 +220,7 @@ func (x Rex) Where(group string) string {
 }
 
 type Tmux struct {
-	remote *Remote
+	remote Machine
 }
 
 var tmuxName = strings.NewReplacer(".", "_", ":", "_").Replace
@@ -255,10 +256,14 @@ func (t Tmux) Start(group, label, dir string, command []string, focus bool) (Tab
 		return Tab{}, err
 	}
 	fields := strings.Fields(string(out))
-	if len(fields) != 3 {
+	if len(fields) != 4 {
+		if session == "" {
+			_, killErr := sh(t.remote, tmuxScript, "kill-session", "="+tmuxName(group))
+			return Tab{}, errors.Join(fmt.Errorf("unexpected tmux output %q", out), killErr)
+		}
 		return Tab{}, fmt.Errorf("unexpected tmux output %q", out)
 	}
-	return Tab{SessionCreated: session == "", Session: fields[0], Window: fields[1], Pane: fields[2]}, nil
+	return Tab{SessionCreated: session == "", Session: fields[0], Window: fields[1], Pane: fields[2], PanePID: fields[3]}, nil
 }
 
 func (t Tmux) Split(tab Tab, anchor string, below bool, label, dir string, command []string) (string, error) {
@@ -278,8 +283,14 @@ func (t Tmux) Split(tab Tab, anchor string, below bool, label, dir string, comma
 }
 
 func (t Tmux) Show(tab Tab) ([]string, error) {
-	_, err := sh(t.remote, tmuxScript, "select", tab.Window)
-	return nil, err
+	out, err := sh(t.remote, tmuxScript, "select", tab.Window)
+	if err != nil {
+		return nil, err
+	}
+	if clients := strings.Fields(string(out)); len(clients) > 0 {
+		return []string{fmt.Sprintf("tmux on %s (%d attached)", t.remote.Name(), len(clients))}, nil
+	}
+	return nil, nil
 }
 
 func (t Tmux) Discard(tab Tab) error {
@@ -288,7 +299,7 @@ func (t Tmux) Discard(tab Tab) error {
 	case tab.SessionCreated:
 		_, err = sh(t.remote, tmuxScript, "kill-session", tab.Session)
 	case tab.Window != "":
-		_, err = sh(t.remote, tmuxScript, "kill-window", tab.Window)
+		_, err = sh(t.remote, tmuxScript, "kill-window", tab.Window, tab.PanePID)
 	}
 	return err
 }

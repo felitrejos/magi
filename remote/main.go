@@ -416,7 +416,7 @@ func retire(a armed, sessionID, transcriptPath string) error {
 	if a.Desktop {
 		desktop = "1"
 	}
-	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), desktop, transcriptPath, a.Host, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"), sessionID)
+	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), desktop, transcriptPath, a.Host, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"), sessionID, os.Getenv("TMUX_PANE"))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()
 }
@@ -563,7 +563,15 @@ func openPulledTab(local *Local, res Pulled, prompt string) error {
 	if err != nil {
 		return fmt.Errorf("%s isn't installed on %s", agent, local.Name())
 	}
-	_, err = Rex{remote: local}.Start(localGroup(root, roots), label, res.ToDir, append([]string{program}, command...), true)
+	var launcher Launcher = Tmux{remote: local}
+	if _, err := exec.LookPath("rex"); err == nil {
+		launcher = Rex{remote: local}
+	}
+	tab, err := launcher.Start(localGroup(root, roots), label, res.ToDir, append([]string{program}, command...), true)
+	if err != nil {
+		return err
+	}
+	_, err = launcher.Show(tab)
 	return err
 }
 

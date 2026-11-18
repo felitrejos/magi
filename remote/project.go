@@ -260,7 +260,7 @@ func startProject(m Machine, l Launcher, tab Tab, dir, status string, p *Project
 }
 
 func recordTab(m Machine, sessionID, launcher string, tab Tab) error {
-	_, err := sh(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n' "$2" "$3" "$4" > "$HOME/.magi/tabs/$1"`, sessionID, launcher, tab.Session, tab.Window)
+	_, err := sh(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n%s\n' "$2" "$3" "$4" "$5" > "$HOME/.magi/tabs/$1"`, sessionID, launcher, tab.Session, tab.Window, tab.PanePID)
 	return err
 }
 
@@ -269,11 +269,11 @@ func closeRecordedTab(r *Remote, h Host, sessionID string) error {
 	if err != nil || len(out) == 0 {
 		return err
 	}
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	if len(lines) != 3 {
+	lines := strings.Split(string(out), "\n")
+	if len(lines) < 4 {
 		return fmt.Errorf("unexpected tab record for session %s on %s", sessionID, r.Name())
 	}
-	tab := Tab{Session: lines[1], Window: lines[2]}
+	tab := Tab{Session: lines[1], Window: lines[2], PanePID: lines[3]}
 	var launcher Launcher = Rex{server: h.RexServer, remote: r}
 	if lines[0] == "tmux" {
 		launcher = Tmux{remote: r}

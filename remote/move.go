@@ -234,7 +234,7 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	local.SetContext(finish)
-	if _, err := sh(local, retireScript, "", "0", s.Transcript, m.host, "", "", s.ID); err != nil && !tabGone(err) {
+	if _, err := sh(local, retireScript, "", "0", s.Transcript, m.host, "", "", s.ID, ""); err != nil && !tabGone(err) {
 		res.note(fmt.Errorf("retiring the session here failed: %w", err))
 	}
 	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir}))

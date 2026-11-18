@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -167,5 +168,94 @@ func TestEveryHandoffStepFitsInsideTheHooksTimeLimit(t *testing.T) {
 	}
 	if moveHookLimit <= hookLimit {
 		t.Errorf("magi move gives up after %s, before the hook's %s", moveHookLimit, hookLimit)
+	}
+}
+
+func TestARecordedTmuxWindowIsOnlyClosedWhileItIsStillTheSameWindow(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	local, err := newLocal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm := Tmux{remote: local}
+	tab, err := tm.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tab.PanePID == "" {
+		t.Fatalf("tab = %+v, want its pane's process", tab)
+	}
+	stale := tab
+	stale.SessionCreated, stale.PanePID = false, "1"
+	if err := tm.Discard(stale); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(tmuxWindows(), "api · claude") {
+		t.Fatal("a record for another window closed this one")
+	}
+	tab.SessionCreated = false
+	if err := tm.Discard(tab); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(tmuxWindows(), "api · claude") {
+		t.Error("the recorded window wasn't closed")
+	}
+}
+
+func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "work", "sleep 60").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := exec.Command("sleep", "60")
+	if err := original.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go original.Wait()
+	fields := []string{strings.TrimSpace(string(out)), strconv.Itoa(original.Process.Pid)}
+	transcript := filepath.Join(f.home, "session.jsonl")
+	f.write(f.home, "session.jsonl", "{}\n")
+	local, err := newLocal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sh(local, retireScript, fields[1], "0", transcript, "server", "", "", "0f0f0f0f-1111-2222-3333-555555555556", fields[0]); err != nil {
+		t.Fatal(err)
+	}
+	if panes, _ := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}").Output(); strings.Contains(string(panes), fields[0]) {
+		t.Errorf("the original's pane %s is still open", fields[0])
+	}
+	if _, err := os.Stat(transcript + ".handed-off-to-server"); err != nil {
+		t.Errorf("the transcript wasn't marked as handed off: %v", err)
+	}
+}
+
+func TestAPullOpensATmuxWindowWhenThereIsNoRex(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	f.taskHost("")
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.tool("claude", "#!/bin/sh\nsleep 60\n")
+	if err := os.Symlink(tmux, filepath.Join(f.home, "bin", "tmux")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
+	local, err := newLocal(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := Pulled{Session: "0f0f0f0f-1111-2222-3333-555555555557", Name: "acme", ProjectRoot: f.local}
+	res.ToDir = f.local
+	if err := openPulledTab(local, res, "back here"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(tmuxWindows(), "acme · claude") {
+		t.Errorf("tmux windows = %q", tmuxWindows())
 	}
 }

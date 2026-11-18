@@ -2,7 +2,7 @@
 set -e
 command=$1
 shift
-format='#{session_id} #{window_id} #{pane_id}'
+format='#{session_id} #{window_id} #{pane_id} #{pane_pid}'
 case $command in
   sessions)
     tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null || :
@@ -27,11 +27,16 @@ case $command in
     ;;
   select)
     tmux select-window -t "$1"
+    tmux list-clients -F '#{client_tty}' 2>/dev/null | while read -r client; do
+      tmux switch-client -c "$client" -t "$1" && echo "$client"
+    done
     ;;
   kill-session)
     tmux kill-session -t "$1"
     ;;
   kill-window)
-    tmux kill-window -t "$1"
+    window=$1 pid=$2
+    if [ -n "$pid" ] && ! tmux list-panes -t "$window" -F '#{pane_pid}' 2>/dev/null | grep -qx "$pid"; then exit 0; fi
+    tmux kill-window -t "$window"
     ;;
 esac
