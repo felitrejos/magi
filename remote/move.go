@@ -109,18 +109,9 @@ func (m mover) run() error {
 	if s.Codex {
 		return m.codex(local, host, s)
 	}
-	if s.Live != nil {
-		running, err := isClaudeProcess(local, *s.Live)
-		if err != nil {
-			return m.fail(err)
-		}
-		if !running {
-			s.Live = nil
-		}
-	}
 	stopped := false
 	if s.Live != nil {
-		_, err := sh(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since())
+		_, err := sh(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since(), local.Claude())
 		if exitCode(err) == exitBusy {
 			return m.whenTurnEnds(s)
 		}
@@ -142,7 +133,7 @@ func (m mover) codex(local *Local, host Host, s remoteSession) error {
 	if err := refuseOpenCodex(local, s.ID, s.Running); err != nil {
 		return m.fail(err)
 	}
-	remote, err := newRemote(local.Context(), host.SSH)
+	remote, err := newRemote(local.Context(), host)
 	if err != nil {
 		return m.fail(err)
 	}
@@ -206,14 +197,6 @@ func findLocalSession(local *Local, id string) (remoteSession, error) {
 		return s, fmt.Errorf("session %s hasn't started a conversation yet, so there's nothing to move", shortID(id))
 	}
 	return s, fmt.Errorf("no Claude Code or Codex session %s on %s", id, local.Name())
-}
-
-func isClaudeProcess(m Machine, s liveSession) (bool, error) {
-	_, err := sh(m, sessionScript, "alive", strconv.Itoa(s.PID), s.since())
-	if exitCode(err) == 1 {
-		return false, nil
-	}
-	return err == nil, err
 }
 
 func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error {
@@ -318,18 +301,15 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 			return m.fail(errors.New("the Stop hook took the handoff but never reported back; check magi status"))
 		}
 		if armedStill {
-			alive, err := isClaudeProcess(local, *s.Live)
+			sessions, err := liveSessions(local)
 			if err != nil {
 				return disarm(err)
 			}
-			if !alive {
+			i := slices.IndexFunc(sessions, func(l liveSession) bool { return l.PID == s.Live.PID })
+			if i < 0 {
 				return disarm(errors.New("the session ended before its turn did, so it didn't move"))
 			}
-			live, _, err := readLiveSession(s.Live.PID)
-			if err != nil && !halfWritten(err) {
-				return disarm(err)
-			}
-			if err != nil || live.Status != "idle" {
+			if sessions[i].Status != "idle" {
 				idleSince = time.Time{}
 			} else if idleSince.IsZero() {
 				idleSince = time.Now()
@@ -354,30 +334,6 @@ func exists(path string) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
-}
-
-func readLiveSession(pid int) (liveSession, bool, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return liveSession{}, false, err
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".claude", "sessions", strconv.Itoa(pid)+".json"))
-	if errors.Is(err, os.ErrNotExist) {
-		return liveSession{}, false, nil
-	}
-	if err != nil {
-		return liveSession{}, false, err
-	}
-	var s liveSession
-	if err := json.Unmarshal(data, &s); err != nil {
-		return liveSession{}, false, err
-	}
-	return s, true, nil
-}
-
-func halfWritten(err error) bool {
-	var syntax *json.SyntaxError
-	return errors.As(err, &syntax)
 }
 
 func writeMoveResult(sessionID string, r moveReport) error {

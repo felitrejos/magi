@@ -6,8 +6,13 @@ started() {
   if [ -r "/proc/$1/stat" ]; then
     sed 's/.*) //' "/proc/$1/stat" | cut -d ' ' -f 20
   else
-    TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//'
+    LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//'
   fi
+}
+
+agents() {
+  case $1 in '~/'*) set -- "$HOME/${1#'~/'}" ;; esac
+  "$1" agents --json
 }
 
 same() {
@@ -18,12 +23,8 @@ case $command in
   running)
     id=$1
     if pgrep -f -- "[-]-resume $id" >/dev/null; then exit 10; fi
-    for f in "$HOME"/.claude/sessions/*.json; do
-      [ -f "$f" ] || continue
-      grep -q "\"sessionId\": *\"$id\"" "$f" || continue
-      pid=${f##*/}
-      if kill -0 "${pid%.json}" 2>/dev/null; then exit 10; fi
-    done
+    listed=$(agents "$2") || exit
+    case $listed in *"\"sessionId\": \"$id\""*) exit 10 ;; esac
     ;;
   moved)
     dir=$HOME/.magi/moved
@@ -32,16 +33,10 @@ case $command in
       mark) mkdir -p "$dir" && printf '%s\n' "$3" > "$dir/$2" ;;
     esac
     ;;
-  sessions)
-    for f in "$HOME"/.claude/sessions/*.json; do
-      if [ -f "$f" ]; then cat "$f"; printf '\0'; fi
-    done
-    ;;
   live)
+    agents "$1" || exit
     for f in "$HOME"/.claude/sessions/*.json; do
-      [ -f "$f" ] || continue
-      pid=${f##*/}
-      if kill -0 "${pid%.json}" 2>/dev/null; then cat "$f"; printf '\0'; fi
+      if [ -f "$f" ]; then printf '\0'; cat "$f"; fi
     done
     ;;
   diff)
@@ -74,7 +69,9 @@ case $command in
       if [ -r "/proc/$pid/cmdline" ]; then tr '\0' ' ' < "/proc/$pid/cmdline"; else ps -o args= -p "$pid"; fi
     }
     if ! kill -0 "$pid" 2>/dev/null || ! args | grep -q claude || ! same "$pid" "$since"; then exit 0; fi
-    if grep -Eq '"status": *"(busy|waiting)"' "$HOME/.claude/sessions/$pid.json" 2>/dev/null; then exit 10; fi
+    listed=$(agents "$4") || exit
+    status=$(printf '%s\n' "$listed" | awk -v pid="$pid," '$1 == "\"pid\":" { mine = $2 == pid } mine && $1 == "\"status\":" { print $2; exit }')
+    case $status in '"busy"'* | '"waiting"'*) exit 10 ;; esac
     kill -TERM "$pid"
     i=0
     while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
@@ -86,14 +83,6 @@ case $command in
       echo "another process is still running this session" >&2
       exit 1
     fi
-    ;;
-  alive)
-    pid=$1 since=$2
-    if [ -r "/proc/$pid/cmdline" ]; then args=$(tr '\0' ' ' < "/proc/$pid/cmdline"); else args=$(ps -o args= -p "$pid" 2>/dev/null); fi
-    case $args in
-      *claude*) same "$pid" "$since" && exit 0 ;;
-    esac
-    exit 1
     ;;
   kill)
     pkill -TERM -f -- "[-]-resume $1"

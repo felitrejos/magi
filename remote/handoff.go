@@ -223,7 +223,7 @@ func (r *handoffRun) inspect(ctx context.Context) error {
 	if err := refuseHome(r.ws, home, r.local.Name()); err != nil {
 		return err
 	}
-	if r.remote, err = newRemote(ctx, r.Host.SSH); err != nil {
+	if r.remote, err = newRemote(ctx, r.Host); err != nil {
 		return err
 	}
 	if r.where, err = place(r.remote, r.ws, r.Host.Roots, localGroup(r.ws.MainRoot, r.Host.LocalRoots), r.Host.Exclude); err != nil {

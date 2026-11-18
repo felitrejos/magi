@@ -70,7 +70,7 @@ func TestPullBringsTheSessionAndItsWorkBackFromTheServer(t *testing.T) {
 	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
 	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.remote+`"}`+"\n")
 
-	res, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
+	res, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Codex: "codex", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
 	if err != nil {
 		t.Fatalf("pull failed after %s: %v", res.Summary(), err)
 	}

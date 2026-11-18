@@ -57,10 +57,11 @@ working() {
 }
 
 available() {
-  if [ -r /proc/meminfo ]; then
+  if [ "$(uname -s)" = Darwin ]; then
+    set -- $(sysctl -n hw.pagesize vm.page_free_count vm.page_pageable_external_count vm.page_purgeable_count)
+    echo $((($2 + $3 + $4) * $1))
+  else
     awk '/^MemAvailable:/ {printf "%.0f\n", $2 * 1024}' /proc/meminfo
-  elif command -v vm_stat >/dev/null 2>&1; then
-    vm_stat | awk '/page size of/ {size = $8} /^Pages (free|inactive|speculative):/ {sub(/\.$/, "", $NF); pages += $NF} END {printf "%.0f\n", pages * size}'
   fi
 }
 
@@ -219,8 +220,8 @@ case $command in
     fi
     if [ "$min" -gt 0 ]; then
       free=$(available)
-      if [ -n "$free" ] && [ "$free" -lt "$min" ]; then
-        echo "$((free / 1048576)) MB of memory is free there, its budget needs $((min / 1048576)) MB" >&2
+      if [ "$free" -lt "$min" ]; then
+        awk -v free="$free" -v min="$min" 'BEGIN { printf "%.1f GB of memory is free there, its budget needs %.1f GB\n", free / 1073741824, min / 1073741824 }' >&2
         exit 11
       fi
     fi

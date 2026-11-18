@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -63,7 +64,8 @@ func TestMoveRefusesUnknownSessions(t *testing.T) {
 	f := newFixture(t)
 	f.moveHost()
 	fresh := "0f0f0f0f-1111-2222-3333-eeeeeeeeeeee"
-	f.write(filepath.Join(f.home, ".claude", "sessions"), "4242.json", `{"pid":4242,"sessionId":"`+fresh+`","status":"idle"}`)
+	pid := strconv.Itoa(startFakeClaude(t, "60").Process.Pid)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"`+fresh+`","status":"idle"}`)
 	for id, want := range map[string]string{
 		fresh:                                  "session 0f0f0f0f hasn't started a conversation yet, so there's nothing to move",
 		"0f0f0f0f-1111-2222-3333-777777777777": "no Claude Code or Codex session 0f0f0f0f-1111-2222-3333-777777777777",
@@ -190,7 +192,8 @@ func TestTheStopHookReportsAFailedMoveToTheWaitingCommand(t *testing.T) {
 	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nlauncher = \"tmux\"\n")
 	id := "0f0f0f0f-1111-2222-3333-bbbbbbbbbbbb"
 	path, _ := armedPath(id, ".json")
-	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"server","pid":`+strconv.Itoa(os.Getppid())+`,"notify":true}`)
+	t.Setenv("CLAUDE_PID", "4242")
+	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"server","pid":4242,"notify":true}`)
 	input := `{"session_id":"` + id + `","transcript_path":"/nowhere/` + id + `.jsonl","cwd":"/nowhere"}`
 	var out strings.Builder
 	if err := stopHook(strings.NewReader(input), &out); err != nil {
@@ -234,18 +237,11 @@ func TestASecondMoveOfTheSameSessionIsRefused(t *testing.T) {
 	}
 }
 
-func TestAReusedPidIsNotTakenForTheSession(t *testing.T) {
+func TestAReusedPidIsNotStopped(t *testing.T) {
 	f := newFixture(t)
 	proc, _ := f.localSession("0f0f0f0f-1111-2222-3333-dddddddddddd", "idle")
-	s := liveSession{PID: proc.Process.Pid}
-	if alive, err := isClaudeProcess(f.machine(), s); err != nil || !alive {
-		t.Fatalf("the session's own process: %v, %v", alive, err)
-	}
-	s.ProcStart = "Mon Jan  1 00:00:00 2001"
-	if alive, err := isClaudeProcess(f.machine(), s); err != nil || alive {
-		t.Errorf("a process that started at another time counted: %v, %v", alive, err)
-	}
-	if _, err := sh(f.machine(), sessionScript, "stop", strconv.Itoa(s.PID), "0f0f0f0f-1111-2222-3333-dddddddddddd", s.since()); err != nil {
+	s := liveSession{PID: proc.Process.Pid, fromRegistry: fromRegistry{ProcStart: "Mon Jan  1 00:00:00 2001"}}
+	if _, err := sh(f.machine(), sessionScript, "stop", strconv.Itoa(s.PID), "0f0f0f0f-1111-2222-3333-dddddddddddd", s.since(), "claude"); err != nil {
 		t.Fatal(err)
 	}
 	if err := proc.Process.Signal(syscall.Signal(0)); err != nil {
@@ -253,41 +249,28 @@ func TestAReusedPidIsNotTakenForTheSession(t *testing.T) {
 	}
 }
 
-func TestAHalfWrittenSessionFileKeepsTheMoveWaiting(t *testing.T) {
+func TestStopReadsWhenTheSessionStartedInAnyLocale(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Linux reads process start times from /proc")
+	}
 	f := newFixture(t)
-	f.moveHost()
-	id := "0f0f0f0f-1111-2222-3333-eeeeeeeeeeee"
-	proc, _ := f.localSession(id, "busy")
-	path, _ := armedPath(id, ".json")
-	done := make(chan string, 1)
-	go func() {
-		var out strings.Builder
-		moveCommand([]string{id, "server", "--json"}, &out)
-		done <- out.String()
-	}()
-	if !waitForFile(t, path, 5*time.Second) {
-		t.Fatalf("the session wasn't armed: %s", <-done)
+	id := "0f0f0f0f-1111-2222-3333-dddddddddddf"
+	proc, _ := f.localSession(id, "idle")
+	exited := make(chan error, 1)
+	go func() { exited <- proc.Wait() }()
+	ps := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(proc.Process.Pid))
+	ps.Env = append(os.Environ(), "LC_ALL=C", "TZ=UTC")
+	started, err := ps.Output()
+	if err != nil {
+		t.Fatal(err)
 	}
-	pid := strconv.Itoa(proc.Process.Pid)
-	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"`+id)
-	select {
-	case out := <-done:
-		t.Fatalf("move gave up on a half-written session file: %s", out)
-	case <-time.After(time.Second):
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("the session was disarmed: %v", err)
-	}
-	os.Remove(path)
-	if err := writeMoveResult(id, moveReport{Event: "moved", OK: true, Message: "Moved."}); err != nil {
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	if _, err := sh(f.machine(), sessionScript, "stop", strconv.Itoa(proc.Process.Pid), id, strings.TrimSpace(string(started)), "claude"); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case out := <-done:
-		if events := moveEvents(t, out); events[len(events)-1].Event != "moved" {
-			t.Errorf("events = %+v", events)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("move didn't report the hook's result")
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop left the session running when ps spoke German")
 	}
 }

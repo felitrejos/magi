@@ -79,6 +79,8 @@ type Machine interface {
 	Context() context.Context
 	SetContext(context.Context)
 	Command(script string, args ...string) *exec.Cmd
+	Claude() string
+	Codex() string
 }
 
 func sh(m Machine, script string, args ...string) ([]byte, error) {
@@ -98,8 +100,9 @@ func shIn(m Machine, script string, input []byte, args ...string) ([]byte, error
 }
 
 type Local struct {
-	ctx  context.Context
-	name string
+	ctx   context.Context
+	name  string
+	codex string
 }
 
 func newLocal(ctx context.Context) (*Local, error) {
@@ -107,23 +110,28 @@ func newLocal(ctx context.Context) (*Local, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Local{ctx: ctx, name: strings.TrimSuffix(name, ".local")}, nil
+	codex, _ := exec.LookPath("codex")
+	return &Local{ctx: ctx, name: strings.TrimSuffix(name, ".local"), codex: codex}, nil
 }
 
 func (l *Local) Name() string                   { return l.name }
 func (l *Local) Context() context.Context       { return l.ctx }
 func (l *Local) SetContext(ctx context.Context) { l.ctx = ctx }
+func (l *Local) Claude() string                 { return "claude" }
+func (l *Local) Codex() string                  { return l.codex }
 func (l *Local) Command(script string, args ...string) *exec.Cmd {
 	return command(l.ctx, "sh", append([]string{"-c", script, "magi"}, args...)...)
 }
 
 type Remote struct {
-	ctx  context.Context
-	host string
-	opts []string
+	ctx    context.Context
+	host   string
+	opts   []string
+	claude string
+	codex  string
 }
 
-func newRemote(ctx context.Context, host string) (*Remote, error) {
+func newRemote(ctx context.Context, h Host) (*Remote, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -133,8 +141,10 @@ func newRemote(ctx context.Context, host string) (*Remote, error) {
 		return nil, err
 	}
 	return &Remote{
-		ctx:  ctx,
-		host: host,
+		ctx:    ctx,
+		host:   h.SSH,
+		claude: h.Claude,
+		codex:  h.Codex,
 		opts: []string{
 			"-o", "BatchMode=yes",
 			"-o", "ConnectTimeout=10",
@@ -150,6 +160,8 @@ func newRemote(ctx context.Context, host string) (*Remote, error) {
 func (r *Remote) Name() string                   { return r.host }
 func (r *Remote) Context() context.Context       { return r.ctx }
 func (r *Remote) SetContext(ctx context.Context) { r.ctx = ctx }
+func (r *Remote) Claude() string                 { return r.claude }
+func (r *Remote) Codex() string                  { return r.codex }
 func (r *Remote) Command(script string, args ...string) *exec.Cmd {
 	payload := "set -- " + quoteAll(args) + "\n" + script
 	line := `sh -c 'eval "$(LC_ALL=C printf "$1")"' magi '` + printfEscape(payload) + `'`

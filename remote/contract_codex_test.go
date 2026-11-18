@@ -116,7 +116,14 @@ func TestContractCodexResumesASessionMovedToAnotherCodexHome(t *testing.T) {
 	if want := filepath.Join(there, "sessions", s.Rollout); rollout != want {
 		t.Fatalf("magi wrote the rollout to %s, want %s", rollout, want)
 	}
-	answers, err := askCodex(local, "codex", codexCall{Method: "thread/list", Params: map[string]any{"cwd": to, "sourceKinds": []string{"exec"}}})
+	moved, err := findCodexSession(local, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.Rollout != s.Rollout || moved.Cwd != to {
+		t.Errorf("magi found the moved session at %s in %s, want %s in %s", moved.Rollout, moved.Cwd, s.Rollout, to)
+	}
+	_, answers, err := askCodex(local, codexCall{Method: "thread/list", Params: map[string]any{"cwd": to, "sourceKinds": []string{"exec"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +151,7 @@ func TestContractCodexListsAnOpenSession(t *testing.T) {
 	}
 	var open *codexThread
 	for deadline := time.Now().Add(30 * time.Second); open == nil && time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
-		threads, err := openCodexSessions(local, "codex")
+		threads, err := openCodexSessions(local)
 		if err != nil {
 			cmd.Wait()
 			t.Fatal(err)
@@ -159,5 +166,48 @@ func TestContractCodexListsAnOpenSession(t *testing.T) {
 	}
 	if open.ID != id {
 		t.Errorf("listed session %s, codex ran %s", open.ID, id)
+	}
+}
+
+func TestContractCodexTrustIsWrittenOnlyOverTheVersionMagiRead(t *testing.T) {
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("codex isn't installed")
+	}
+	f := newFixture(t)
+	f.tool("codex", "#!/bin/sh\nexec "+quote(codex)+" \"$@\"\n")
+	here, there := t.TempDir(), t.TempDir()
+	t.Setenv("CODEX_HOME", here)
+	t.Setenv("MAGI_TEST_REMOTE_CODEX_HOME", there)
+	if err := os.WriteFile(filepath.Join(here, "config.toml"), []byte("[projects."+tomlKey(f.local)+"]\ntrust_level = \"trusted\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(there, "config.toml"), []byte("model = \"gpt-5\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	remote := f.remoteHost()
+	if err := carryCodexTrust(f.machine(), remote, f.local, f.remote, f.remote); err != nil {
+		t.Fatal(err)
+	}
+	version, cfg, err := readCodexConfig(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.trusts(filepath.Join(f.remote, "sub")) || version == "" {
+		t.Fatalf("Codex there doesn't trust %s (version %q): %+v", f.remote, version, cfg)
+	}
+	written, err := os.ReadFile(filepath.Join(there, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(written), "model = \"gpt-5\"\n") {
+		t.Errorf("writing the trust lost the settings already there:\n%s", written)
+	}
+	if err := os.WriteFile(filepath.Join(there, "config.toml"), append(written, "\n[projects.\"/elsewhere\"]\ntrust_level = \"untrusted\"\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := codexCall{Method: "config/value/write", Params: map[string]string{"keyPath": "projects." + tomlKey("/other") + ".trust_level", "value": "trusted", "mergeStrategy": "upsert", "expectedVersion": version}}
+	if _, _, err := askCodex(remote, stale); err == nil || !strings.Contains(err.Error(), "modified since last read") {
+		t.Errorf("a write over a version that changed gave %v, want it refused", err)
 	}
 }

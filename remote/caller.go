@@ -81,32 +81,3 @@ func bootTime() (time.Time, error) {
 	}
 	return time.Time{}, errors.New("no btime in /proc/stat")
 }
-
-func parentOf(pid int) (int, error) {
-	if runtime.GOOS != "linux" {
-		out, err := run(context.Background(), "ps", "-o", "ppid=", "-p", strconv.Itoa(pid))
-		if err != nil {
-			return 0, err
-		}
-		return strconv.Atoi(strings.TrimSpace(string(out)))
-	}
-	fields, err := procStat(pid)
-	if err != nil {
-		return 0, err
-	}
-	return strconv.Atoi(fields[1])
-}
-
-func isAncestor(pid int) (bool, error) {
-	for p := os.Getppid(); p > 1; {
-		if p == pid {
-			return true, nil
-		}
-		parent, err := parentOf(p)
-		if err != nil {
-			return false, err
-		}
-		p = parent
-	}
-	return false, nil
-}

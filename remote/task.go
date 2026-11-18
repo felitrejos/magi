@@ -225,7 +225,7 @@ func (t *Task) remote(ctx context.Context) (*Remote, Host, error) {
 	if err != nil {
 		return nil, host, err
 	}
-	r, err := newRemote(ctx, host.SSH)
+	r, err := newRemote(ctx, host)
 	return r, host, err
 }
 

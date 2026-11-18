@@ -130,7 +130,7 @@ func initConfig(in io.Reader, out io.Writer) error {
 	if h.SSH, err = p.ask("ssh destination for "+name, firstNonEmpty(h.SSH, name)); err != nil {
 		return err
 	}
-	remote, err := newRemote(ctx, h.SSH)
+	remote, err := newRemote(ctx, h)
 	if err != nil {
 		return err
 	}

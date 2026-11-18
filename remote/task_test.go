@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -998,8 +999,7 @@ func TestClosingIdleCopiesIsReportedOnlyWhenCollectingAndNotWhileAnotherMagiHold
 	}
 }
 
-const fakeParentClaude = `#!/bin/sh
-prompt=$(cat)
+const fakeParentClaude = "#!/bin/sh\n" + fakeAgents + `prompt=$(cat)
 echo "parent=$MAGI_PARENT" >> "$HOME/claude-parents"
 printf '{"type":"result","subtype":"success","num_turns":1,"result":"did: %s"}\n' "$prompt"
 `
@@ -1008,9 +1008,10 @@ func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing
 	f := newFixture(t)
 	f.taskHost("")
 	f.tool("claude", fakeParentClaude)
-	f.write(filepath.Join(f.home, ".claude", "sessions"), "41.json", `{"pid":41,"sessionId":"9fb6fe92","name":"fix login"}`)
+	sender := startFakeClaude(t, "60").Process.Pid
+	f.write(filepath.Join(f.home, ".claude", "sessions"), strconv.Itoa(sender)+".json", `{"pid":`+strconv.Itoa(sender)+`,"sessionId":"9fb6fe92","name":"fix login"}`)
 	args, _ := delegateArgs(delegateInput{})
-	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "first", Claude: args, Caller: caller{PID: 41}})
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "first", Claude: args, Caller: caller{PID: sender}})
 	if err != nil {
 		t.Fatal(err)
 	}

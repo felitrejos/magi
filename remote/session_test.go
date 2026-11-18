@@ -70,22 +70,25 @@ func TestHandoffPromptCarriesTheNoteAndSubagentTranscripts(t *testing.T) {
 	}
 }
 
-func TestWaitForRemoteControlIgnoresBrokenAndStaleSessionFiles(t *testing.T) {
+func TestWaitForRemoteControlWaitsForTheNewSessionsBridge(t *testing.T) {
 	f := newFixture(t)
 	launched := time.Now()
 	sessions := filepath.Join(f.home, ".claude", "sessions")
-	f.write(sessions, "1.json", "{not json")
-	f.write(sessions, "2.json", `{"sessionId":"s1","startedAt":1000,"bridgeSessionId":"old"}`)
+	stale := strconv.Itoa(startFakeClaude(t, "60").Process.Pid)
+	f.write(sessions, stale+".json", `{"pid":`+stale+`,"sessionId":"s1","startedAt":1000,"bridgeSessionId":"old"}`)
+	fresh := strconv.Itoa(startFakeClaude(t, "60").Process.Pid)
+	started := strconv.FormatInt(launched.UnixMilli(), 10)
+	f.write(sessions, fresh+".json", `{"pid":`+fresh+`,"sessionId":"s1","startedAt":`+started+`}`)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	r := f.remoteHost()
 	r.SetContext(ctx)
 	if err := waitForRemoteControl(r, "s1", launched); err == nil {
-		t.Fatal("a stale session file from an earlier run counted as the new session")
+		t.Fatal("an earlier run's bridge, or a new session without one, counted as up")
 	}
 
-	f.write(sessions, "3.json", `{"sessionId":"s1","startedAt":`+strconv.FormatInt(launched.UnixMilli(), 10)+`,"bridgeSessionId":"cse_1"}`)
+	f.write(sessions, fresh+".json", `{"pid":`+fresh+`,"sessionId":"s1","startedAt":`+started+`,"bridgeSessionId":"cse_1"}`)
 	if err := waitForRemoteControl(f.remoteHost(), "s1", launched); err != nil {
 		t.Fatal(err)
 	}
@@ -275,17 +278,70 @@ func TestLogFindsTheLastSessionSentToAHost(t *testing.T) {
 	}
 }
 
+func TestSessionStateComesFromClaudeAgentsAndTheLinkFromTheRegistry(t *testing.T) {
+	f := newFixture(t)
+	pid := strconv.Itoa(startFakeClaude(t, "60").Process.Pid)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"0a0a0a0a-1111-2222-3333-444444444444","cwd":"/old","status":"idle","bridgeSessionId":"cse_1","entrypoint":"cli","procStart":"Wed Nov 18 18:37:12 2026"}`)
+	f.tool("claude", `#!/bin/sh
+[ "$1 $2" = "agents --json" ] || exit 1
+cat <<'EOF'
+[
+  {
+    "pid": `+pid+`,
+    "cwd": "/srv/api",
+    "kind": "interactive",
+    "startedAt": 1795027035220,
+    "sessionId": "0a0a0a0a-1111-2222-3333-444444444444",
+    "name": "fix login",
+    "status": "busy"
+  },
+  {
+    "pid": 1,
+    "cwd": "/srv/web",
+    "kind": "interactive",
+    "startedAt": 1795027035221,
+    "sessionId": "0b0b0b0b-1111-2222-3333-444444444444",
+    "name": "deploy",
+    "status": "waiting",
+    "waitingFor": "permission"
+  }
+]
+EOF
+`)
+	all, err := everySession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := describeSessions(all)
+	for _, want := range []string{
+		"  0a0a0a0a  fix login  busy  /srv/api  https://claude.ai/code/cse_1\n",
+		"  0b0b0b0b  deploy  waiting (permission)  /srv/web\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("sessions lack %q:\n%s", want, text)
+		}
+	}
+	out, err := sh(f.machine(), platformScript, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := parsePlatform("here", string(out)); m.Agents.Working != 1 {
+		t.Errorf("the probe counted %d working sessions, want the one claude agents calls busy", m.Agents.Working)
+	}
+}
+
 func TestFindRemoteSessionPrefersTheNewestRecordAndRejectsBadIDs(t *testing.T) {
 	f := newFixture(t)
 	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	f.write(f.home, ".claude/projects/-x/"+id+".jsonl", `{"cwd":"/old"}`+"\n")
-	f.write(f.home, ".claude/sessions/1.json", `{"pid":1,"sessionId":"`+id+`","cwd":"/stale","startedAt":100}`)
-	f.write(f.home, ".claude/sessions/2.json", `{"pid":2,"sessionId":"`+id+`","cwd":"/live","startedAt":200}`)
+	older, newer := startFakeClaude(t, "60").Process.Pid, startFakeClaude(t, "60").Process.Pid
+	f.write(f.home, ".claude/sessions/"+strconv.Itoa(older)+".json", `{"pid":`+strconv.Itoa(older)+`,"sessionId":"`+id+`","cwd":"/stale","startedAt":100}`)
+	f.write(f.home, ".claude/sessions/"+strconv.Itoa(newer)+".json", `{"pid":`+strconv.Itoa(newer)+`,"sessionId":"`+id+`","cwd":"/live","startedAt":200}`)
 	s, err := findRemoteSession(f.remoteHost(), "server", id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Live == nil || s.Live.PID != 2 || s.Cwd != "/live" {
+	if s.Live == nil || s.Live.PID != newer || s.Cwd != "/live" {
 		t.Errorf("session = %+v, want the newest record", s)
 	}
 	if _, err := findRemoteSession(f.remoteHost(), "server", "*"); err == nil || !strings.Contains(err.Error(), "is not a session id") {
@@ -364,17 +420,6 @@ func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	}
 }
 
-func TestParentOfFindsThisProcesssParent(t *testing.T) {
-	child := exec.Command("sleep", "5")
-	if err := child.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { child.Process.Kill(); child.Wait() })
-	if got, err := parentOf(child.Process.Pid); err != nil || got != os.Getpid() {
-		t.Errorf("parentOf(child) = %d, %v; want %d", got, err, os.Getpid())
-	}
-}
-
 func TestTheStopHookOnlyMovesASessionArmedFromItsOwnProcess(t *testing.T) {
 	f := newFixture(t)
 	id := "0f0f0f0f-1111-2222-3333-666666666666"
@@ -385,6 +430,7 @@ func TestTheStopHookOnlyMovesASessionArmedFromItsOwnProcess(t *testing.T) {
 	}
 	path, _ := armedPath(id, ".json")
 	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"server","pid":1}`)
+	t.Setenv("CLAUDE_PID", "2")
 	if err := stopHook(strings.NewReader(input), &out); err != nil || out.Len() != 0 {
 		t.Fatalf("a session armed by another process: output %q, err %v", out.String(), err)
 	}

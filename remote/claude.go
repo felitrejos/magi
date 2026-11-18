@@ -53,15 +53,19 @@ func sessionFiles(m Machine, transcriptPath string) (sessionFileSet, error) {
 }
 
 type liveSession struct {
-	PID             int     `json:"pid"`
-	SessionID       string  `json:"sessionId"`
-	Cwd             string  `json:"cwd"`
-	StartedAt       int64   `json:"startedAt"`
+	PID        int    `json:"pid"`
+	SessionID  string `json:"sessionId"`
+	Cwd        string `json:"cwd"`
+	StartedAt  int64  `json:"startedAt"`
+	Status     string `json:"status"`
+	WaitingFor string `json:"waitingFor"`
+	Name       string `json:"name"`
+	fromRegistry
+}
+
+type fromRegistry struct {
 	BridgeSessionID *string `json:"bridgeSessionId"`
-	Status          string  `json:"status"`
-	WaitingFor      string  `json:"waitingFor"`
 	Entrypoint      string  `json:"entrypoint"`
-	Name            string  `json:"name"`
 	ProcStart       any     `json:"procStart"`
 }
 
@@ -76,24 +80,27 @@ func (s liveSession) since() string {
 }
 
 func liveSessions(m Machine) ([]liveSession, error) {
-	return readSessions(m, "sessions")
-}
-
-func liveHere(m Machine) ([]liveSession, error) {
-	return readSessions(m, "live")
-}
-
-func readSessions(m Machine, which string) ([]liveSession, error) {
-	out, err := sh(m, sessionScript, which)
+	out, err := sh(m, sessionScript, "live", m.Claude())
 	if err != nil {
 		return nil, err
 	}
+	listed, registry, _ := bytes.Cut(out, []byte{0})
 	var sessions []liveSession
-	for _, file := range splitNull(out) {
-		var s liveSession
-		if json.Unmarshal([]byte(file), &s) == nil && s.SessionID != "" {
-			sessions = append(sessions, s)
+	if err := json.Unmarshal(listed, &sessions); err != nil {
+		return nil, fmt.Errorf("unreadable claude agents --json on %s: %w", m.Name(), err)
+	}
+	entries := map[int]fromRegistry{}
+	for _, file := range splitNull(registry) {
+		var entry struct {
+			PID int `json:"pid"`
+			fromRegistry
 		}
+		if json.Unmarshal([]byte(file), &entry) == nil {
+			entries[entry.PID] = entry.fromRegistry
+		}
+	}
+	for i := range sessions {
+		sessions[i].fromRegistry = entries[sessions[i].PID]
 	}
 	return sessions, nil
 }
@@ -124,7 +131,7 @@ func waitForRemoteControl(m Machine, sessionID string, launchedAt time.Time) err
 	notBefore := launchedAt.Add(-10 * time.Second).UnixMilli()
 	for {
 		sessions, err := liveSessions(m)
-		if err != nil {
+		if err != nil && m.Context().Err() == nil {
 			return err
 		}
 		for _, s := range sessions {
@@ -141,7 +148,7 @@ func waitForRemoteControl(m Machine, sessionID string, launchedAt time.Time) err
 }
 
 func runningThere(m Machine, sessionID string) (bool, error) {
-	_, err := sh(m, sessionScript, "running", sessionID)
+	_, err := sh(m, sessionScript, "running", sessionID, m.Claude())
 	if exitCode(err) == 10 {
 		return true, nil
 	}

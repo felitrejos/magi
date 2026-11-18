@@ -73,20 +73,9 @@ busy() {
 }
 
 case $command in
-  find)
-    find "$sessions" \( -name "rollout-*-$1.jsonl" -o -name "rollout-*-$1.jsonl.zst" \) 2>/dev/null | {
-      newest=
-      while read -r f; do
-        if [ -z "$newest" ] || [ -n "$(find "$f" -prune -newer "$newest")" ]; then newest=$f; fi
-      done
-      printf '%s\n%s\n' "$sessions" "$newest"
-    }
-    ;;
-  cwd)
-    grep -E '^\{[^{]*"type":"(session_meta|turn_context)"' "$1" | tail -n 1
-    ;;
   running)
     id=$1 rollout=$2 dir=$3
+    [ -f "$rollout" ] || exit 11
     held=$(holders "$rollout")
     codexes | while read -r pid args; do
       case " $args " in
@@ -158,19 +147,5 @@ case $command in
     ;;
   size)
     wc -c < "$1"
-    ;;
-  config)
-    f=$codex_home/config.toml
-    if [ -f "$f" ]; then cksum < "$f"; cat "$f"; else echo; fi
-    ;;
-  trust)
-    f=$codex_home/config.toml
-    sum=
-    if [ -f "$f" ]; then sum=$(cksum < "$f"); fi
-    if [ "$sum" != "$1" ]; then
-      echo "it changed while magi was updating it" >&2
-      exit 3
-    fi
-    mkdir -p "$codex_home" && cat >> "$f"
     ;;
 esac
