@@ -5,7 +5,7 @@
 <h1 align="center">magi</h1>
 
 <p align="center">
-  <b>See your coding agents on all your machines, and move their work to the one that fits.</b>
+  <b>Move a live Claude Code session to another machine and back, with the conversation and your uncommitted work.</b>
 </p>
 
 <p align="center">
@@ -24,13 +24,13 @@
   <i>CI runs on the Mac and the Linux homelab at once, and the fix made on Linux lands back on the Mac by itself.</i>
 </p>
 
-magi runs Claude Code and Codex across your machines. It has two layers.
+Claude Code can already use SSH. magi moves the session you're in.
 
-- **Moving work** is the base. It hands a session off to another machine,
-  or lets Claude send work there. It needs only SSH.
-- **The overview** sits on top, in one
-  [Rex](https://www.superlogical.com/rex) pane. It shows every machine and
-  session, and suggests moving a session when its machine is busy.
+- **It follows you.** From laptop to server and back, with its history and
+  uncommitted work. Remote Control keeps it in the Claude app on your phone.
+- **Work Claude sends away comes back** to your working tree by itself.
+- **The overview** is the layer for [Rex](https://www.superlogical.com/rex)
+  users, one pane with every machine and session.
 
 ## Moving work between machines
 
@@ -44,9 +44,9 @@ magi runs Claude Code and Codex across your machines. It has two layers.
 
 - **Hand off.** Say "hand this off to my homelab" in a Claude Code session.
   When the turn ends, the conversation, branch, uncommitted changes and
-  listed secrets land there, and it carries on in a tab of its own. `magi
-  move SESSION MACHINE` does the same from outside, for Codex too. `magi
-  pull MACHINE` brings a session back, and `magi doctor` checks both ends.
+  listed secrets land there in a tab of its own. Say "hand this back to my
+  Mac" there to return it, or without the overview run `magi pull MACHINE`.
+  `magi move` goes either way, Codex too. `magi doctor` checks both ends.
 - **Send work.** Claude can run a command on another machine, hand a task
   to a background Claude, or open a second session. Each runs in its own
   copy of your working tree, in a tab you can watch.

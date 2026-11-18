@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -84,10 +85,10 @@ func main() {
 		err = initConfig(os.Stdin, os.Stdout)
 	case len(args) >= 1 && args[0] == "doctor":
 		err = doctor(args[1:], os.Stdout)
-	case len(args) == 2 && args[0] == "pull":
-		err = pullCommand(args[1], "")
-	case len(args) == 3 && args[0] == "pull":
-		err = pullCommand(args[1], args[2])
+	case len(args) >= 2 && args[0] == "pull":
+		err = pullCommand(args[1:])
+	case len(args) == 1 && args[0] == "hosts":
+		err = printHosts(os.Stdout)
 	case len(args) <= 2 && len(args) >= 1 && args[0] == "allow":
 		dir := "."
 		if len(args) == 2 {
@@ -180,6 +181,13 @@ func writeArmed(path string, a armed, flag int) error {
 
 func arm(hostName, sessionID, note string, out io.Writer) error {
 	if _, err := loadHost(hostName); err != nil {
+		fetch, others := fetchedBy(hostName, sessionID)
+		if fetch != nil {
+			return fetch(out)
+		}
+		if len(others) > 0 {
+			return fmt.Errorf("%w; magi's overview also sees %s", err, strings.Join(others, ", "))
+		}
 		return err
 	}
 	pid, err := strconv.Atoi(os.Getenv("CLAUDE_PID"))
@@ -195,6 +203,54 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
 	return nil
+}
+
+func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), fleetWait)
+	defer cancel()
+	fleet, err := readFleet(ctx)
+	if err != nil {
+		return nil, nil
+	}
+	var others []string
+	for _, m := range fleet.Machines {
+		if m.Live && !m.Here {
+			others = append(others, m.Name)
+		}
+	}
+	if !slices.Contains(others, hostName) {
+		return nil, others
+	}
+	return func(out io.Writer) error {
+		program, err := exec.LookPath("magi")
+		if err != nil {
+			return err
+		}
+		tasks, err := tasksDir()
+		if err != nil {
+			return err
+		}
+		dir := filepath.Dir(tasks)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		log, err := os.Create(filepath.Join(dir, "fetch-"+shortID(sessionID)+".log"))
+		if err != nil {
+			return err
+		}
+		defer log.Close()
+		cmd := exec.Command(program, "move", shortID(sessionID), hostName)
+		cmd.Stdout, cmd.Stderr = log, log
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		if err := cmd.Process.Release(); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", hostName)
+		return nil
+	}, nil
 }
 
 type stopInput struct {
@@ -345,28 +401,121 @@ func setUpPulledProject(p *Project, root string, out io.Writer) string {
 	return b.String()
 }
 
-func pullCommand(hostName, sessionID string) error {
-	host, err := loadHost(hostName)
+func pullCommand(args []string) error {
+	var asJSON, inTab bool
+	var rest []string
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			asJSON = true
+		case "--tab":
+			inTab = true
+		default:
+			rest = append(rest, arg)
+		}
+	}
+	if len(rest) < 1 || len(rest) > 2 {
+		return errors.New("usage: magi pull <host> [session-id] [--tab] [--json]")
+	}
+	hostName, sessionID := rest[0], ""
+	if len(rest) == 2 {
+		sessionID = rest[1]
+	}
+	out := io.Writer(os.Stdout)
+	report := func(moveReport) {}
+	if asJSON {
+		out = os.Stderr
+		encoder := json.NewEncoder(os.Stdout)
+		report = func(r moveReport) {
+			r.Session, r.Host = sessionID, hostName
+			encoder.Encode(r)
+		}
+		report(moveReport{Event: "moving", OK: true, Message: fmt.Sprintf("Bringing session %s back from %s...", shortID(sessionID), hostName)})
+	}
+	pulled, err := pullHere(hostName, sessionID, out, inTab)
 	if err != nil {
+		report(moveReport{Event: "failed", Message: err.Error()})
 		return err
 	}
-	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Out: os.Stdout}.Run()
+	report(moveReport{Event: "moved", OK: true, Message: pulled.message, ToDir: pulled.res.ToDir, Took: pulled.res.Summary(), Seconds: fmt.Sprintf("%.1f", pulled.res.Total().Seconds())})
+	if inTab {
+		return nil
+	}
+	return resumeHere(pulled.res.ToDir, pulled.res.Session, pulled.res.Name, pulled.prompt, pulled.res.Codex)
+}
+
+type pulledHere struct {
+	res     Pulled
+	prompt  string
+	message string
+}
+
+func pullHere(hostName, sessionID string, out io.Writer, inTab bool) (pulledHere, error) {
+	host, err := loadHost(hostName)
 	if err != nil {
-		return err
+		return pulledHere{}, err
+	}
+	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Out: out}.Run()
+	if err != nil {
+		return pulledHere{}, err
 	}
 	local, err := newLocal(context.Background())
 	if err != nil {
-		return err
+		return pulledHere{}, err
 	}
 	res.note(appendLog(logEntry{Time: time.Now(), Kind: "pull", Session: res.Session, From: hostName, To: local.Name(), FromDir: res.FromDir, ToDir: res.ToDir}))
 	res.note(closeForwards(res.Session))
-	fmt.Printf("Pulled the session back from %s in %s.\n", hostName, res.Summary())
+	fmt.Fprintf(out, "Pulled the session back from %s in %s.\n", hostName, res.Summary())
 	if res.NewFolder != "" {
-		fmt.Printf("This machine didn't have the project yet, so it now lives at %s.\n", res.NewFolder)
+		fmt.Fprintf(out, "This machine didn't have the project yet, so it now lives at %s.\n", res.NewFolder)
 	}
 	for _, note := range res.Notes {
-		fmt.Printf("Note: %v\n", note)
+		fmt.Fprintf(out, "Note: %v\n", note)
 	}
-	res.PromptInfo.Project = setUpPulledProject(res.Project, res.ProjectRoot, os.Stdout)
-	return resumeHere(res.ToDir, res.Session, res.Name, handoffPrompt(res.PromptInfo), res.Codex)
+	res.PromptInfo.Project = setUpPulledProject(res.Project, res.ProjectRoot, out)
+	prompt := handoffPrompt(res.PromptInfo)
+	if inTab {
+		if err := openPulledTab(local, res, prompt); err != nil {
+			return pulledHere{}, fmt.Errorf("the session is back in %s, but its tab didn't open (%w); continue it there with %s", res.ToDir, err, resumeHint(remoteSession{ID: res.Session, Codex: res.Codex}))
+		}
+	}
+	message := fmt.Sprintf("Brought session %s back from %s to %s", shortID(res.Session), hostName, res.ToDir)
+	return pulledHere{res: res, prompt: prompt, message: message}, nil
+}
+
+func openPulledTab(local *Local, res Pulled, prompt string) error {
+	roots, err := openRoots(local)
+	if err != nil {
+		return err
+	}
+	root := res.ProjectRoot
+	if root == "" {
+		root = res.ToDir
+	}
+	agent, label, command := "claude", claudeTabLabel(res.Name), []string{"--resume", res.Session, "--remote-control", res.Name, prompt}
+	if res.Codex {
+		agent, label, command = "codex", codexTabLabel(res.Name), codexResume(res.Session, prompt)
+	}
+	program, err := exec.LookPath(agent)
+	if err != nil {
+		return fmt.Errorf("%s isn't installed on %s", agent, local.Name())
+	}
+	_, err = Rex{remote: local}.Start(localGroup(root, roots), label, res.ToDir, append([]string{program}, command...), true)
+	return err
+}
+
+func printHosts(out io.Writer) error {
+	cfg, _, err := loadConfig()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, name := range cfg.Order {
+		if _, err := fmt.Fprintln(out, name); err != nil {
+			return err
+		}
+	}
+	return nil
 }

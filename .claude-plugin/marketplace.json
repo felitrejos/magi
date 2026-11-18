@@ -1,6 +1,6 @@
 {
   "name": "magi",
-  "description": "Hand a running Claude Code session off to another machine, let Claude send work to your other machines, and see every session on all of them",
+  "description": "Move a live Claude Code session to another machine and back, and have Claude send work to your other machines that comes back by itself",
   "owner": {
     "name": "felitrejos",
     "url": "https://github.com/felitrejos"
@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "magi",
-      "description": "Say \"hand this off to my homelab\" and the session continues there, have Claude send tests and tasks to another machine, and see every session from one place",
+      "description": "Say \"hand this off to my homelab\" and the session continues there with its conversation and uncommitted work, then hand it back the same way",
       "source": "./plugin",
       "version": "0.8.0",
       "category": "productivity",

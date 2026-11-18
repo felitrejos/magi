@@ -264,13 +264,16 @@ pub(super) fn choose(client: &mut Client, query: &str, option: u8) -> Result<Str
 pub(super) fn move_to(client: &mut Client, query: &str, to: &str) -> Result<String, String> {
     let found = client.session(query)?;
     let to = client.machine(to)?;
-    let request = Request::Move {
-        session: found.session.id.clone(),
-        to,
-    };
-    let first = client.ask(found.endpoint, &request, ANSWER_WITHIN)?;
+    let (endpoint, request) = client.model.move_request(
+        &found.session.id,
+        &found.session.title,
+        found.endpoint,
+        &to,
+        Instant::now(),
+    )?;
+    let first = client.ask(endpoint, &request, ANSWER_WITHIN)?;
     let _ = writeln!(io::stdout(), "{first}");
-    client.reply(found.endpoint, MOVE_WITHIN)
+    client.reply(endpoint, MOVE_WITHIN)
 }
 
 fn events(client: &mut Client) -> io::Result<()> {

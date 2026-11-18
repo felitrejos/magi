@@ -593,14 +593,21 @@ fn answer(model: &mut Model, links: &Links, allow: bool, now: Instant) {
 }
 
 fn confirm_move(model: &mut Model, links: &Links, pending: model::PendingMove, now: Instant) {
-    let request = proto::Request::Move {
-        session: pending.session.clone(),
-        to: pending.to.clone(),
+    let chosen = model.move_request(
+        &pending.session,
+        &pending.title,
+        pending.endpoint,
+        &pending.to,
+        now,
+    );
+    let (endpoint, request) = match chosen {
+        Ok(chosen) => chosen,
+        Err(reason) => return model.flash(reason, false, now),
     };
-    match links.request(pending.endpoint, &request) {
+    match links.request(endpoint, &request) {
         Ok(()) => model.follow(pending.session, pending.endpoint, pending.to, now),
         Err(error) => {
-            let reason = format!("couldn't ask {} to move it: {error}", pending.from);
+            let reason = format!("couldn't ask for the move: {error}");
             model.flash(reason, false, now);
         }
     }

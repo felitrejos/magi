@@ -112,22 +112,13 @@ fn for_remote(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
         Some("move") => {
             args.iter().any(|arg| arg == "--json" || arg == "--stay")
-                || args.get(1).is_some_and(|session| is_session_id(session))
+                || args
+                    .get(1)
+                    .is_some_and(|session| handoff::is_session_id(session))
         }
         Some(name) => REMOTE_COMMANDS.contains(&name),
         None => false,
     }
-}
-
-fn is_session_id(text: &str) -> bool {
-    text.len() == 36
-        && text.char_indices().all(|(i, c)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                c == '-'
-            } else {
-                c.is_ascii_hexdigit()
-            }
-        })
 }
 
 fn run_remote(args: Vec<std::ffi::OsString>) -> ExitCode {

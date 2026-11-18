@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 35;
+pub const PROTOCOL_VERSION: u16 = 36;
 pub const DEFAULT_PORT: u16 = 2015;
 const MAX_FRAME_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_CHARS: usize = 16_000;
@@ -373,6 +373,12 @@ pub enum Request {
     Adopt {
         session: String,
     },
+    Pull {
+        session: String,
+        title: String,
+        from: String,
+        to: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -441,6 +447,7 @@ pub struct Identity {
     pub tools: Vec<String>,
     pub cpu_model: String,
     pub core_kinds: Vec<CoreKind>,
+    pub reaches: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

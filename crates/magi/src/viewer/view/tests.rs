@@ -27,6 +27,7 @@ fn welcome(node: &str) -> LinkUpdate {
             tools: Vec::new(),
             cpu_model: "AMD Ryzen 7 5700U with Radeon Graphics".into(),
             core_kinds: Vec::new(),
+            reaches: Vec::new(),
         },
     }))
 }

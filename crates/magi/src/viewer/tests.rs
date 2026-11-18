@@ -8,6 +8,10 @@ fn key(key: Key) -> Event {
 }
 
 fn agent(model: &mut Model, endpoint: Endpoint, name: &str) {
+    agent_reaching(model, endpoint, name, &[]);
+}
+
+fn agent_reaching(model: &mut Model, endpoint: Endpoint, name: &str, reaches: &[&str]) {
     model.links.insert(endpoint, Link::connecting());
     let identity = Identity {
         hostname: name.into(),
@@ -17,6 +21,7 @@ fn agent(model: &mut Model, endpoint: Endpoint, name: &str) {
         tools: Vec::new(),
         cpu_model: String::new(),
         core_kinds: Vec::new(),
+        reaches: reaches.iter().map(|host| host.to_string()).collect(),
     };
     model.apply(
         endpoint,
@@ -41,7 +46,7 @@ fn fleet() -> (Model, Links) {
     };
     let now = Instant::now();
     let mut model = Model::new(2015, now, alerts::Alerts::in_memory(now));
-    agent(&mut model, Endpoint::Local, "mac");
+    agent_reaching(&mut model, Endpoint::Local, "mac", &["homelab", "nas"]);
     agent(
         &mut model,
         Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2)),
@@ -301,6 +306,33 @@ fn claude(id: &str, millicores: u32) -> AgentSession {
 }
 
 #[test]
+fn a_move_is_pushed_by_a_machine_that_reaches_the_target_or_else_pulled_by_the_target() {
+    let (model, _links) = fleet();
+    let now = Instant::now();
+    let homelab = Endpoint::Tailnet(Ipv4Addr::new(100, 64, 0, 2));
+    let (sent_to, request) = model
+        .move_request("s1", "run the tests", Endpoint::Local, "homelab", now)
+        .unwrap();
+    assert_eq!(sent_to, Endpoint::Local);
+    assert!(matches!(request, proto::Request::Move { to, .. } if to == "homelab"));
+    let (sent_to, request) = model
+        .move_request("s1", "run the tests", homelab, "mac", now)
+        .unwrap();
+    assert_eq!(sent_to, Endpoint::Local);
+    assert!(matches!(
+        request,
+        proto::Request::Pull { from, to, title, .. } if from == "homelab" && to == "mac" && title == "run the tests"
+    ));
+    assert_eq!(
+        model.move_request("s1", "run the tests", homelab, "nas", now),
+        Err(
+            "neither homelab nor nas is set up to reach the other; run magi init on one of them"
+                .into()
+        )
+    );
+}
+
+#[test]
 fn m_proposes_the_least_busy_other_machine_and_only_y_sends_it() {
     let (mut model, mut links) = fleet();
     let now = Instant::now();
@@ -338,7 +370,7 @@ fn m_proposes_the_least_busy_other_machine_and_only_y_sends_it() {
     assert_eq!(
         model.flashed(Instant::now()),
         Some((
-            "couldn't ask mac to move it: that machine isn't connected",
+            "couldn't ask for the move: that machine isn't connected",
             false
         ))
     );

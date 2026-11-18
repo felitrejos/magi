@@ -934,6 +934,7 @@ mod tests {
                     tools: Vec::new(),
                     cpu_model: String::new(),
                     core_kinds: Vec::new(),
+                    reaches: Vec::new(),
                 },
             })),
             later,

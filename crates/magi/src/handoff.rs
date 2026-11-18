@@ -14,6 +14,7 @@ use crate::proto::{AgentSession, Reply};
 const INSTALL_DIRS: [&str; 3] = [".local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
 
 const MOVE_LIMIT: Duration = Duration::from_secs(15 * 60);
+const HOSTS_WITHIN: Duration = Duration::from_secs(5);
 const WATCH_EVERY: Duration = Duration::from_millis(200);
 const FINAL_EVENTS: [&str; 2] = ["moved", "failed"];
 
@@ -33,18 +34,71 @@ pub fn start(
     reply: impl Fn(Reply) + Send + 'static,
 ) -> Result<String, String> {
     check(to)?;
+    let args = ["move", "--json", "--stay", &session.id, to].map(str::to_string);
+    launch(args.to_vec(), session.title.clone(), to.to_string(), reply)
+}
+
+pub fn fetch(
+    session: &str,
+    title: &str,
+    from: &str,
+    to: &str,
+    reply: impl Fn(Reply) + Send + 'static,
+) -> Result<String, String> {
+    check(from)?;
+    if !is_session_id(session) {
+        return Err(format!("{session:?} isn't a session id"));
+    }
+    let args = ["pull", "--json", "--tab", from, session].map(str::to_string);
+    launch(args.to_vec(), title.to_string(), to.to_string(), reply)
+}
+
+pub fn reachable() -> Vec<String> {
+    let Ok(program) = remote_program() else {
+        return Vec::new();
+    };
+    bounded::output(Command::new(program).arg("hosts"), HOSTS_WITHIN)
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn is_session_id(text: &str) -> bool {
+    text.len() == 36
+        && text.char_indices().all(|(i, c)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                c == '-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn launch(
+    args: Vec<String>,
+    title: String,
+    to: String,
+    reply: impl Fn(Reply) + Send + 'static,
+) -> Result<String, String> {
     let remote = remote_program()?;
     if MOVING.swap(true, Ordering::SeqCst) {
         return Err("a move is already running on that machine".into());
     }
-    let (id, title, to) = (session.id.clone(), session.title.clone(), to.to_string());
     let started = format!("Moving {title} to {to}…");
     let guard = Moving;
     thread::Builder::new()
         .name("move".into())
         .spawn(move || {
             let _guard = guard;
-            run(&remote, &id, &title, &to, MOVE_LIMIT, &reply);
+            run(&remote, &args, &title, &to, MOVE_LIMIT, &reply);
         })
         .map_err(|error| format!("couldn't start the move: {error}"))?;
     Ok(started)
@@ -115,18 +169,24 @@ fn said(event: &Event, title: &str, to: &str) -> String {
     }
 }
 
-fn run(remote: &Path, id: &str, title: &str, to: &str, limit: Duration, reply: &dyn Fn(Reply)) {
+fn run(
+    remote: &Path,
+    args: &[String],
+    title: &str,
+    to: &str,
+    limit: Duration,
+    reply: &dyn Fn(Reply),
+) {
     let deadline = Instant::now() + limit;
-    let mut child =
-        match bounded::spawn(Command::new(remote).args(["move", "--json", "--stay", id, to])) {
-            Ok(child) => child,
-            Err(error) => {
-                return reply(Reply {
-                    ok: false,
-                    text: format!("couldn't run {REMOTE}: {error}"),
-                });
-            }
-        };
+    let mut child = match bounded::spawn(Command::new(remote).args(args)) {
+        Ok(child) => child,
+        Err(error) => {
+            return reply(Reply {
+                ok: false,
+                text: format!("couldn't run {REMOTE}: {error}"),
+            });
+        }
+    };
     let stderr = bounded::drain(child.stderr.take());
     let finished = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
@@ -293,7 +353,7 @@ mod tests {
         let seen = std::sync::Mutex::new(Vec::new());
         run(
             program,
-            "0b7a3c1e",
+            &["move", "--json", "--stay", "0b7a3c1e", "homelab"].map(str::to_string),
             "fix login",
             "homelab",
             Duration::from_secs(10),
@@ -387,7 +447,7 @@ echo '{"event":"moved","ok":true,"session":"0b7a3c1e","host":"homelab","message"
         let seen = std::sync::Mutex::new(Vec::new());
         run(
             &program,
-            "id",
+            &["move".to_string()],
             "fix login",
             "homelab",
             Duration::from_millis(400),

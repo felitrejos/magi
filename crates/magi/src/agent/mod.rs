@@ -83,6 +83,7 @@ fn identity_of(info: &SystemInfo) -> Identity {
         tools: tools::available(),
         cpu_model: info.cpu_model.clone(),
         core_kinds: info.core_kinds.clone(),
+        reaches: handoff::reachable(),
     }
 }
 
@@ -668,6 +669,12 @@ fn spawn_requests(
             {
                 match request {
                     Request::Move { session, to } => move_session(&session, &to, &agent, &replies),
+                    Request::Pull {
+                        session,
+                        title,
+                        from,
+                        to,
+                    } => pull_session(&session, &title, &from, &to, &replies),
                     Request::Prompt { session, text } => {
                         type_into(&session, &agent, &replies, |found, pane| {
                             agent.queue(found, pane, &text)
@@ -796,6 +803,17 @@ fn move_session(session: &str, to: &str, agent: &Agent, replies: &SyncSender<Fra
     };
     let later = replies.clone();
     let started = handoff::start(&found, to, move |outcome| {
+        reply(&later, outcome.ok, outcome.text);
+    });
+    match started {
+        Ok(text) => reply(replies, true, text),
+        Err(text) => reply(replies, false, text),
+    }
+}
+
+fn pull_session(session: &str, title: &str, from: &str, to: &str, replies: &SyncSender<Frame>) {
+    let later = replies.clone();
+    let started = handoff::fetch(session, title, from, to, move |outcome| {
         reply(&later, outcome.ok, outcome.text);
     });
     match started {

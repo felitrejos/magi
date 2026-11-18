@@ -288,11 +288,14 @@ fn call(client: &mut Client, name: &str, arguments: &Value) -> Result<String, St
         "move_session" => {
             let found = client.session(&text("session")?)?;
             let to = client.machine(&text("machine")?)?;
-            let request = Request::Move {
-                session: found.session.id.clone(),
-                to,
-            };
-            client.ask(found.endpoint, &request, ANSWER_WITHIN)
+            let (endpoint, request) = client.model.move_request(
+                &found.session.id,
+                &found.session.title,
+                found.endpoint,
+                &to,
+                Instant::now(),
+            )?;
+            client.ask(endpoint, &request, ANSWER_WITHIN)
         }
         "start_session" => {
             let machine = text("machine")?;

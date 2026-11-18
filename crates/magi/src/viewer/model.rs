@@ -6,8 +6,8 @@ use super::alerts::Alerts;
 use super::launcher::{self, Listing, Menu, Place};
 use super::units;
 use crate::proto::{
-    self, AgentSession, CodexModel, FULL, Forward, ForwardState, Identity, Plan, Reply, Sample,
-    SessionState, Welcome,
+    self, AgentSession, CodexModel, FULL, Forward, ForwardState, Identity, Plan, Reply, Request,
+    Sample, SessionState, Welcome,
 };
 use crate::tailscale::Peer;
 
@@ -555,6 +555,49 @@ impl Model {
             .collect()
     }
 
+    pub fn move_request(
+        &self,
+        session: &str,
+        title: &str,
+        from: Endpoint,
+        to: &str,
+        now: Instant,
+    ) -> Result<(Endpoint, Request), String> {
+        let rows = self.rows(now);
+        let source = rows
+            .iter()
+            .find(|row| row.endpoint == from)
+            .ok_or("that session's machine isn't connected")?;
+        let target = rows
+            .iter()
+            .find(|row| row.name == to)
+            .ok_or_else(|| format!("{to} isn't connected"))?;
+        let reaches = |row: &Row, name: &str| {
+            row.machine()
+                .is_some_and(|machine| machine.identity.reaches.iter().any(|host| host == name))
+        };
+        if reaches(source, to) {
+            let request = Request::Move {
+                session: session.to_string(),
+                to: to.to_string(),
+            };
+            return Ok((from, request));
+        }
+        if reaches(target, &source.name) {
+            let request = Request::Pull {
+                session: session.to_string(),
+                title: title.to_string(),
+                from: source.name.clone(),
+                to: to.to_string(),
+            };
+            return Ok((target.endpoint, request));
+        }
+        Err(format!(
+            "neither {} nor {to} is set up to reach the other; run magi init on one of them",
+            source.name
+        ))
+    }
+
     pub fn rows(&self, now: Instant) -> Vec<Row<'_>> {
         let searching = now.duration_since(self.started) < SEARCH_GRACE;
         let local = self.links.get(&Endpoint::Local);
@@ -1083,6 +1126,7 @@ mod tests {
                 tools: Vec::new(),
                 cpu_model: "test".into(),
                 core_kinds: Vec::new(),
+                reaches: Vec::new(),
             },
         }))
     }
