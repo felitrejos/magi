@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestACopyCutOffMidwayLeavesTheDestinationUntouched(t *testing.T) {
@@ -207,6 +208,11 @@ func TestACorruptLFSObjectIsCaughtAndRemoved(t *testing.T) {
 	f.write(f.local, "weights.bin", "real weights")
 	f.git(f.local, "add", ".")
 	f.git(f.local, "commit", "-q", "-m", "weights")
+	hourAgo := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(f.local, "weights.bin"), hourAgo, hourAgo); err != nil {
+		t.Fatal(err)
+	}
+	f.git(f.local, "update-index", "--refresh")
 	objects := lfsObjects(t, f.local)
 	if len(objects) != 1 {
 		t.Fatalf("laptop LFS objects = %v", objects)
