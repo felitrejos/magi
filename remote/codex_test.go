@@ -367,7 +367,7 @@ func TestACodexMoveIsRefusedWhileTheOtherMachineStillHasItOpen(t *testing.T) {
 	if err := moveCommand([]string{id, "server", "--json"}, &out); err != errReported {
 		t.Fatalf("move: %v\n%s", err, out.String())
 	}
-	if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, "background server on fakehost") {
+	if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, "background server on fakehost") || !strings.Contains(events[len(events)-1].Message, "a minute after the last app showing it closes it") || strings.Contains(events[len(events)-1].Message, "daemon restart") {
 		t.Errorf("events = %+v", events)
 	}
 	if codex.exitsWithin(300 * time.Millisecond) {
@@ -428,5 +428,55 @@ func TestABusyCodexTurnIsntTakenForStaleWhenPsSpeaksAnotherLanguage(t *testing.T
 	}
 	if len(s.Running) != 1 || s.StaleTurn != "" {
 		t.Errorf("session = %+v", s)
+	}
+}
+
+const fakeCodexAppServer = `#!/bin/sh
+[ "$1" = app-server ] || exit 1
+while read -r line; do
+  case $line in
+    *'"method":"thread/read"'*)
+      id=${line#'{"id":'}; id=${id%%,*}
+      thread=${line##*'"threadId":"'}; thread=${thread%%'"'*}
+      rollout=$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name "rollout-*-$thread.jsonl")
+      cwd=$(sed -n '1s/.*"cwd":"\([^"]*\)".*/\1/p' "$rollout")
+      printf '{"method":"thread/status/changed","params":{}}\n{"id":%s,"result":{"thread":{"id":"%s","name":null,"cwd":"%s","status":{"type":"notLoaded"}}}}\n' "$id" "$thread" "$cwd"
+      ;;
+  esac
+done
+`
+
+func TestOpenCodexSessionsAreListedOnEveryMachine(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("MAGI_TEST_REMOTE_CODEX_HOME", f.remoteCodexHome())
+	f.tool("codex", fakeCodexAppServer)
+	f.config(`[hosts.server]
+ssh = "fakehost"
+codex = "~/bin/codex"
+roots = ["~/developer"]
+`)
+	here, there, closed := "0c0c0c0c-8144-7e23-82c1-87dc991d71e0", "0d0d0d0d-8144-7e23-82c1-87dc991d71e1", "0e0e0e0e-8144-7e23-82c1-87dc991d71e2"
+	f.codexRollout(filepath.Join(f.home, ".codex"), here, f.local, longAgo, false)
+	f.codexAppServer(filepath.Join(f.home, ".codex"), here)
+	f.codexRollout(f.remoteCodexHome(), there, f.remote, longAgo, false)
+	f.codexAppServer(f.remoteCodexHome(), there)
+	f.codexRollout(filepath.Join(f.home, ".codex"), closed, f.local, longAgo, false)
+	f.write(filepath.Join(f.home, ".codex", "thread-writer-locks"), closed+".lock", "")
+
+	all, err := everySession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := describeSessions(all)
+	for _, want := range []string{
+		f.machine().Name() + ":\n  0c0c0c0c  " + baseName(f.local) + "  codex  " + f.local + "\n",
+		"server:\n  0d0d0d0d  " + baseName(f.remote) + "  codex  " + f.remote + "\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("sessions lack %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "0e0e0e0e") {
+		t.Errorf("a Codex session nothing has open is listed:\n%s", text)
 	}
 }

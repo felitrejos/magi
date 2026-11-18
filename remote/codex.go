@@ -135,7 +135,7 @@ func refuseOpenCodex(m Machine, id string, stopping []int) error {
 			continue
 		}
 		if strings.Contains(args, " app-server") {
-			return fmt.Errorf("session %s is still open in the Codex background server on %s (pid %s); it lets go once it has been idle for a while, or run codex app-server daemon restart there (which interrupts other Codex work on it), then try again", shortID(id), m.Name(), pid)
+			return fmt.Errorf("session %s is still open in the Codex background server on %s (pid %s); it lets go of a session a minute after the last app showing it closes it, so close it there, wait a minute, then try again", shortID(id), m.Name(), pid)
 		}
 		return fmt.Errorf("session %s is open in Codex on %s (pid %s); quit it there, then try again", shortID(id), m.Name(), pid)
 	}
