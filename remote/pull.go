@@ -113,9 +113,6 @@ func (p Pull) Run() (res Pulled, err error) {
 	if err := st.run("stop", func() error { return stopAtTurnEnd(remote, session, p.Out) }); err != nil {
 		return res, err
 	}
-	if err := closeRecordedTab(remote, p.Host, session.ID); err != nil {
-		res.note(fmt.Errorf("closing the session's old tab on %s failed: %w", p.HostName, err))
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), pullBudget)
 	defer cancel()
@@ -166,6 +163,11 @@ func (p Pull) Run() (res Pulled, err error) {
 	res.note(settle(remote, ws, p.Host.Exclude))
 	_, err = sh(remote, `mv -- "$1" "$2"`, session.Transcript, session.Transcript+".handed-off-to-"+local.Name())
 	res.note(err)
+	res.note(markMoved(remote, session.ID, local.Name()))
+	res.note(clearMoved(local, session.ID))
+	if err := closeRecordedTab(remote, p.Host, session.ID); err != nil {
+		res.note(fmt.Errorf("closing the session's old tab on %s failed: %w", p.HostName, err))
+	}
 	project, err := approvedProject(local, where.Root)
 	res.note(err)
 	res.Project, res.ProjectRoot = project, where.Root

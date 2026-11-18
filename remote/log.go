@@ -99,6 +99,9 @@ func status(w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := reportStrays(w); err != nil {
+		return err
+	}
 	if len(entries) == 0 {
 		fmt.Fprintln(w, "No handoffs yet.")
 		return nil

@@ -15,6 +15,23 @@ same() {
 }
 
 case $command in
+  running)
+    id=$1
+    if pgrep -f -- "[-]-resume $id" >/dev/null; then exit 10; fi
+    for f in "$HOME"/.claude/sessions/*.json; do
+      [ -f "$f" ] || continue
+      grep -q "\"sessionId\": *\"$id\"" "$f" || continue
+      pid=${f##*/}
+      if kill -0 "${pid%.json}" 2>/dev/null; then exit 10; fi
+    done
+    ;;
+  moved)
+    dir=$HOME/.magi/moved
+    case $1 in
+      clear) rm -f "$dir/$2" ;;
+      mark) mkdir -p "$dir" && printf '%s\n' "$3" > "$dir/$2" ;;
+    esac
+    ;;
   sessions)
     for f in "$HOME"/.claude/sessions/*.json; do
       if [ -f "$f" ]; then cat "$f"; printf '\0'; fi
@@ -45,7 +62,7 @@ case $command in
       if [ -r "/proc/$pid/cmdline" ]; then tr '\0' ' ' < "/proc/$pid/cmdline"; else ps -o args= -p "$pid"; fi
     }
     if ! kill -0 "$pid" 2>/dev/null || ! args | grep -q claude || ! same "$pid" "$since"; then exit 0; fi
-    if grep -q '"status": *"busy"' "$HOME/.claude/sessions/$pid.json" 2>/dev/null; then exit 10; fi
+    if grep -Eq '"status": *"(busy|waiting)"' "$HOME/.claude/sessions/$pid.json" 2>/dev/null; then exit 10; fi
     kill -TERM "$pid"
     i=0
     while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done

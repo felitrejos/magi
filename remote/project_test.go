@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os/exec"
 	"path/filepath"
@@ -72,7 +73,7 @@ func TestAnUnapprovedProjectFileRunsNothing(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
 	f.write(f.local, projectFile, "setup = \"echo ran > setup.txt\"\n")
-	res, err := f.handoffWithProject("0f0f0f0f-1111-2222-3333-999999999990").Run()
+	res, err := f.handoffWithProject("0f0f0f0f-1111-2222-3333-999999999990").Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +91,7 @@ func TestServicesStartOnlyAfterSetupSucceeds(t *testing.T) {
 	f.write(f.local, projectFile, "setup = \"sleep 1 && echo ready > setup.txt\"\nservices = [\"cat setup.txt > served.tmp && mv served.tmp served.txt\"]\n")
 	f.allow(f.local)
 	id := "0f0f0f0f-1111-2222-3333-999999999991"
-	if res, err := f.handoffWithProject(id).Run(); err != nil || len(res.Notes) > 0 {
+	if res, err := f.handoffWithProject(id).Run(context.Background()); err != nil || len(res.Notes) > 0 {
 		t.Fatalf("handoff: %v, notes %q", err, res.Noted())
 	}
 	if !waitForFile(t, filepath.Join(f.remote, "served.txt"), 10*time.Second) {
@@ -114,7 +115,7 @@ func TestAFailedSetupKeepsServicesFromStarting(t *testing.T) {
 	f.write(f.local, projectFile, "setup = \"exit 3\"\nservices = [\"echo up > served.txt\"]\n")
 	f.allow(f.local)
 	id := "0f0f0f0f-1111-2222-3333-999999999992"
-	if _, err := f.handoffWithProject(id).Run(); err != nil {
+	if _, err := f.handoffWithProject(id).Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	status := filepath.Join(f.home, ".magi", "setup", id)
@@ -135,7 +136,7 @@ func TestServicesWithoutSetupStartRightAway(t *testing.T) {
 	f.isolatedTmux()
 	f.write(f.local, projectFile, "services = [\"echo up > served.txt\"]\n")
 	f.allow(f.local)
-	if _, err := f.handoffWithProject("0f0f0f0f-1111-2222-3333-999999999993").Run(); err != nil {
+	if _, err := f.handoffWithProject("0f0f0f0f-1111-2222-3333-999999999993").Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !waitForFile(t, filepath.Join(f.remote, "served.txt"), 10*time.Second) {

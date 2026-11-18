@@ -1,5 +1,5 @@
 {
-  "description": "Runs an armed magi handoff once the turn has ended",
+  "description": "Runs an armed magi handoff once the turn has ended, and refuses input in a session that has moved",
   "hooks": {
     "Stop": [
       {
@@ -7,7 +7,18 @@
           {
             "type": "command",
             "command": "magi hook stop",
-            "timeout": 150
+            "timeout": 200
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "magi hook prompt",
+            "timeout": 10
           }
         ]
       }

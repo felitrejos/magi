@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -84,7 +85,7 @@ func TestAHandoffMovesTheSessionAndOpensItInItsOwnTab(t *testing.T) {
 		SessionID:      id,
 		TranscriptPath: transcript,
 		Cwd:            f.local,
-	}.Run()
+	}.Run(context.Background())
 	if err != nil {
 		t.Fatalf("handoff failed after %s: %v", res.Summary(), err)
 	}
@@ -125,7 +126,7 @@ func TestAFailedHandoffLeavesNoTabAndARetryPicksUpFromIt(t *testing.T) {
 		TranscriptPath: transcript,
 		Cwd:            f.local,
 	}
-	_, err := h.Run()
+	_, err := h.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "transcript") || !strings.Contains(err.Error(), "trying again updates it") {
 		t.Fatalf("err = %v, want a transcript failure that says a retry updates the copy", err)
 	}
@@ -134,7 +135,7 @@ func TestAFailedHandoffLeavesNoTabAndARetryPicksUpFromIt(t *testing.T) {
 	}
 	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
 	f.write(f.local, "kept.txt", "edited while the session kept running here")
-	if _, err := h.Run(); err != nil {
+	if _, err := h.Run(context.Background()); err != nil {
 		t.Fatalf("the retry failed: %v", err)
 	}
 	if got := f.read(f.remote, "kept.txt"); got != "edited while the session kept running here" {

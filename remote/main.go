@@ -53,6 +53,7 @@ Used by the Claude Code plugin:
   magi arm <host> <session-id> [-]   hand this session off when its turn ends;
                                         with -, read a note on what was running from stdin
   magi hook stop                     the plugin's Stop hook (reads the hook JSON on stdin)
+  magi hook prompt                   the plugin's prompt hook, which refuses input in a session that moved
   magi mcp                           the plugin's tool server, on stdin and stdout
   magi forward-run <session-id>      keeps a moved session's ports forwarded (started by a move)
 
@@ -83,6 +84,8 @@ func main() {
 		}
 	case len(args) == 2 && args[0] == "hook" && args[1] == "stop":
 		err = stopHook(os.Stdin, os.Stdout)
+	case len(args) == 2 && args[0] == "hook" && args[1] == "prompt":
+		err = promptHook(os.Stdin, os.Stdout)
 	case len(args) == 1 && args[0] == "init":
 		err = initConfig(os.Stdin, os.Stdout)
 	case len(args) >= 1 && args[0] == "doctor":
@@ -293,8 +296,21 @@ func stopHook(in io.Reader, out io.Writer) error {
 		}
 		return err
 	}
+	unlock, err := lockMove(input.SessionID)
+	if err != nil {
+		return json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": err.Error() + ", so this handoff didn't start. Tell the user."})
+	}
+	defer unlock()
+	if err := cleanStrayFor(input.SessionID); err != nil {
+		return json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": err.Error() + ", so this handoff didn't start. Tell the user."})
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer stop()
 
-	res, err := handoff(a, input)
+	res, err := handoff(ctx, a, input)
+	if res.Stray != nil {
+		res.note(saveStray(input.SessionID, *res.Stray))
+	}
 	if err != nil {
 		reason := fmt.Sprintf("magi could not hand this session off to %s, so it is still running here: %v.", a.Host, err)
 		if a.Notify {
@@ -310,11 +326,34 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if a.Notify {
 		res.note(writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}))
 	}
-	if err := retire(a, input.SessionID, input.TranscriptPath); err != nil {
-		return err
-	}
 	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}))
 	return json.NewEncoder(out).Encode(handedOff(a, res))
+}
+
+func promptHook(in io.Reader, out io.Writer) error {
+	var input stopInput
+	if err := json.NewDecoder(in).Decode(&input); err != nil {
+		return err
+	}
+	if !sessionIDPattern.MatchString(input.SessionID) {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	host, err := os.ReadFile(filepath.Join(home, ".magi", "moved", input.SessionID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	to := strings.TrimSpace(string(host))
+	return json.NewEncoder(out).Encode(map[string]string{
+		"decision": "block",
+		"reason":   fmt.Sprintf("This session moved to %s, so this copy takes no more messages. Continue it there, or bring it back here with magi pull %s.", to, to),
+	})
 }
 
 func handedOff(a armed, res Result) map[string]string {
@@ -346,8 +385,12 @@ func handedOff(a armed, res Result) map[string]string {
 	}
 }
 
-func handoff(a armed, input stopInput) (Result, error) {
+func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 	host, err := loadHost(a.Host)
+	if err != nil {
+		return Result{}, err
+	}
+	local, err := newLocal(ctx)
 	if err != nil {
 		return Result{}, err
 	}
@@ -359,7 +402,13 @@ func handoff(a armed, input stopInput) (Result, error) {
 		SessionID:      input.SessionID,
 		TranscriptPath: input.TranscriptPath,
 		Cwd:            input.Cwd,
-	}.Run()
+		Retire: func() error {
+			if err := markMoved(local, input.SessionID, a.Host); err != nil {
+				return err
+			}
+			return retire(a, input.SessionID, input.TranscriptPath)
+		},
+	}.Run(ctx)
 }
 
 func retire(a armed, sessionID, transcriptPath string) error {
@@ -445,7 +494,10 @@ func pullCommand(args []string) error {
 	if inTab {
 		return nil
 	}
-	return resumeHere(pulled.res.ToDir, pulled.res.Session, pulled.res.Name, pulled.prompt, pulled.res.Codex)
+	if err := resumeHere(pulled.res.ToDir, pulled.res.Session, pulled.res.Name, pulled.prompt, pulled.res.Codex); err != nil {
+		return fmt.Errorf("the session is back in %s, but starting it failed (%w); continue it with %s", pulled.res.ToDir, err, resumeHint(remoteSession{ID: pulled.res.Session, Codex: pulled.res.Codex}))
+	}
+	return nil
 }
 
 type pulledHere struct {
@@ -458,6 +510,13 @@ func pullHere(hostName, sessionID string, out io.Writer, inTab bool) (pulledHere
 	host, err := loadHost(hostName)
 	if err != nil {
 		return pulledHere{}, err
+	}
+	if sessionIDPattern.MatchString(sessionID) {
+		unlock, err := lockMove(sessionID)
+		if err != nil {
+			return pulledHere{}, err
+		}
+		defer unlock()
 	}
 	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Out: out}.Run()
 	if err != nil {

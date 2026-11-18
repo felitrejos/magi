@@ -131,6 +131,24 @@ func waitForRemoteControl(m Machine, sessionID string, launchedAt time.Time) err
 	}
 }
 
+func runningThere(m Machine, sessionID string) (bool, error) {
+	_, err := sh(m, sessionScript, "running", sessionID)
+	if exitCode(err) == 10 {
+		return true, nil
+	}
+	return false, err
+}
+
+func markMoved(m Machine, sessionID, host string) error {
+	_, err := sh(m, sessionScript, "moved", "mark", sessionID, host)
+	return err
+}
+
+func clearMoved(m Machine, sessionID string) error {
+	_, err := sh(m, sessionScript, "moved", "clear", sessionID)
+	return err
+}
+
 func stopSession(m Machine, sessionID string) error {
 	_, err := sh(m, sessionScript, "kill", sessionID)
 	return err

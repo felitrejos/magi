@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const handoffBudget = 110 * time.Second
+const (
+	prepareBudget = 80 * time.Second
+	launchBudget  = 45 * time.Second
+)
 
 type Handoff struct {
 	HostName       string
@@ -22,6 +25,7 @@ type Handoff struct {
 	Progress       func(step string)
 	Codex          bool
 	Rollout        string
+	Retire         func() error
 }
 
 type Step struct {
@@ -39,6 +43,15 @@ type Result struct {
 	From      string
 	FromDir   string
 	ToDir     string
+	Stray     *Stray
+}
+
+type Stray struct {
+	Host     string `json:"host"`
+	Launcher string `json:"launcher"`
+	Tab      Tab    `json:"tab"`
+	Codex    bool   `json:"codex"`
+	Error    string `json:"error"`
 }
 
 func (r *Result) note(err error) {
@@ -102,6 +115,7 @@ func (s *stepper) run(name string, fn func() error) error {
 
 type handoffRun struct {
 	Handoff
+	parent      context.Context
 	st          stepper
 	res         Result
 	local       *Local
@@ -119,10 +133,10 @@ type handoffRun struct {
 	written     int
 }
 
-func (h Handoff) Run() (Result, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), handoffBudget)
+func (h Handoff) Run(parent context.Context) (Result, error) {
+	ctx, cancel := context.WithTimeout(parent, prepareBudget)
 	defer cancel()
-	r := &handoffRun{Handoff: h, st: stepper{progress: h.Progress}}
+	r := &handoffRun{Handoff: h, parent: parent, st: stepper{progress: h.Progress}}
 	err := r.run(ctx)
 	r.res.Steps = r.st.steps
 	return r.res, err
@@ -163,6 +177,9 @@ func (r *handoffRun) run(ctx context.Context) error {
 	if err := r.st.run("launch", func() error { return r.launch(sidecar) }); err != nil {
 		return r.undo(err, false)
 	}
+	start, cancelStart := context.WithTimeout(r.parent, launchBudget)
+	defer cancelStart()
+	r.remote.SetContext(start)
 	if err := r.st.run("start", func() error {
 		if r.Codex {
 			return waitForCodex(r.remote, r.rollout, r.written)
@@ -172,7 +189,28 @@ func (r *handoffRun) run(ctx context.Context) error {
 		return r.undo(err, true)
 	}
 	r.finish()
+	if err := r.parent.Err(); err != nil {
+		return r.rollback(fmt.Errorf("the handoff was interrupted: %w", err))
+	}
+	if r.Retire != nil {
+		if err := r.Retire(); err != nil {
+			return r.rollback(fmt.Errorf("closing the session here failed, so the copy on %s was stopped: %w", r.HostName, err))
+		}
+	}
 	return nil
+}
+
+func (r *handoffRun) rollback(err error) error {
+	err = r.undo(err, false)
+	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	r.local.SetContext(cleanup)
+	if r.ws.Git != nil {
+		if unparkErr := unparkRepo(r.local, r.ws.Root); unparkErr != nil {
+			err = fmt.Errorf("%w; unparking this checkout also failed: %v", err, unparkErr)
+		}
+	}
+	return err
 }
 
 func (r *handoffRun) inspect(ctx context.Context) error {
@@ -190,8 +228,20 @@ func (r *handoffRun) inspect(ctx context.Context) error {
 	if r.remote, err = newRemote(ctx, r.Host.SSH); err != nil {
 		return err
 	}
-	r.where, err = place(r.remote, r.ws, r.Host.Roots, localGroup(r.ws.MainRoot, r.Host.LocalRoots), r.Host.Exclude)
-	return err
+	if r.where, err = place(r.remote, r.ws, r.Host.Roots, localGroup(r.ws.MainRoot, r.Host.LocalRoots), r.Host.Exclude); err != nil {
+		return err
+	}
+	if r.Codex {
+		return nil
+	}
+	running, err := runningThere(r.remote, r.SessionID)
+	if err != nil {
+		return err
+	}
+	if running {
+		return fmt.Errorf("session %s is already running on %s; close it there before handing it off again", shortID(r.SessionID), r.HostName)
+	}
+	return nil
 }
 
 func (r *handoffRun) launch(sidecar string) error {
@@ -215,6 +265,7 @@ func (r *handoffRun) launch(sidecar string) error {
 	} else {
 		r.res.note(carryTrust(r.local, r.remote, r.Cwd, r.remoteDir))
 	}
+	r.res.note(clearMoved(r.remote, r.SessionID))
 	if r.tab, err = r.launcher.Start(r.where.Group, label, r.remoteDir, command, !r.Stay); err != nil {
 		return err
 	}
@@ -235,6 +286,7 @@ func (r *handoffRun) undo(err error, startTimedOut bool) error {
 	if startTimedOut && !r.trustedThere() {
 		err = fmt.Errorf("%w: the new session was waiting for you to trust %s; accept that there and hand off again", err, r.remoteDir)
 	}
+	var stray []string
 	if r.tab.Pane != "" {
 		stop := stopSession
 		if r.Codex {
@@ -242,10 +294,15 @@ func (r *handoffRun) undo(err error, startTimedOut bool) error {
 		}
 		if stopErr := stop(r.remote, r.SessionID); stopErr != nil {
 			err = fmt.Errorf("%w; stopping it there also failed: %v", err, stopErr)
+			stray = append(stray, stopErr.Error())
 		}
 	}
-	if closeErr := r.launcher.Discard(r.tab); closeErr != nil {
+	if closeErr := r.launcher.Discard(r.tab); closeErr != nil && !tabGone(closeErr) {
 		err = fmt.Errorf("%w; removing the new tab also failed: %v", err, closeErr)
+		stray = append(stray, closeErr.Error())
+	}
+	if len(stray) > 0 {
+		r.res.Stray = &Stray{Host: r.HostName, Launcher: r.Host.Launcher, Tab: r.tab, Codex: r.Codex, Error: strings.Join(stray, "; ")}
 	}
 	return undoSync(err, r.remote, r.ws, r.where, r.synced)
 }

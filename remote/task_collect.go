@@ -174,7 +174,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 
 func tabGone(err error) bool {
 	msg := err.Error()
-	return strings.Contains(msg, "target") && strings.Contains(msg, "not found") || strings.Contains(msg, "can't find window")
+	return strings.Contains(msg, "target") && strings.Contains(msg, "not found") || strings.Contains(msg, "can't find window") || strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to")
 }
 
 func fetchLog(r *Remote, t *Task) (string, error) {

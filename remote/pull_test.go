@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os/exec"
 	"path/filepath"
@@ -98,7 +99,7 @@ func TestPullingASessionBackClosesItsTabOnTheServer(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
 	id := "0f0f0f0f-1111-2222-3333-999999999994"
-	if _, err := f.handoffWithProject(id).Run(); err != nil {
+	if _, err := f.handoffWithProject(id).Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if windows, _ := exec.Command("tmux", "list-windows", "-a").Output(); len(windows) == 0 {

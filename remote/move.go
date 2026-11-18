@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const moveHookLimit = handoffBudget + 30*time.Second
+const (
+	hookLimit     = 200 * time.Second
+	moveHookLimit = hookLimit + 10*time.Second
+)
 
 var moveHookGrace = 5 * time.Second
 
@@ -218,7 +221,10 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	progress := func(step string) {
 		m.report(moveReport{Event: "step", OK: true, Step: step, Message: fmt.Sprintf("Moving session %s to %s: %s", shortID(s.ID), m.host, step)})
 	}
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Stay: m.stay, Progress: progress, Codex: s.Codex, Rollout: s.Rollout}.Run()
+	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Stay: m.stay, Progress: progress, Codex: s.Codex, Rollout: s.Rollout}.Run(context.Background())
+	if res.Stray != nil {
+		res.note(saveStray(s.ID, *res.Stray))
+	}
 	if err != nil {
 		if stopped {
 			err = fmt.Errorf("%w. The session was stopped here; to carry on here instead, run %s in %s", err, resumeHint(s), s.Cwd)

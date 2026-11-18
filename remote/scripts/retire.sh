@@ -8,7 +8,15 @@ if [ -n "$pid" ]; then
     while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 300 ]; do sleep 0.2; i=$((i + 1)); done
     if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid"; fi
   fi
-  while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+  i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$i" -ge 3000 ]; then
+      mkdir -p "$HOME/.magi" && printf '%s session %s moved to %s but its copy here never closed\n' "$(date)" "$session_id" "$host" >> "$HOME/.magi/retire.log"
+      exit 1
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
 fi
 mv -- "$transcript" "$transcript.handed-off-to-$host" || exit
 record=$HOME/.magi/tabs/$session_id
