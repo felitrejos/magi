@@ -736,6 +736,28 @@ func TestACopyCutOffMidwayLeavesTheDestinationUntouched(t *testing.T) {
 	}
 }
 
+func TestACopyIntoAnExistingTreeWithAReadOnlyFolderLeavesNothingBehind(t *testing.T) {
+	f := newFixture(t)
+	src := filepath.Join(f.home, "developer", "notes")
+	dst := filepath.Join(f.home, "laptop", "notes")
+	f.write(src, "ro/g", "new")
+	f.write(dst, "ro/g", "old")
+	f.write(dst, "other", "kept")
+	if err := os.Chmod(filepath.Join(src, "ro"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(src, "ro"), 0o755); os.Chmod(filepath.Join(dst, "ro"), 0o755) })
+	if err := transfer(f.remoteHost(), src, Archive{Paths: []string{"ro"}}, f.machine(), dst); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.read(dst, "ro/g") + f.read(dst, "other"); got != "newkept" {
+		t.Errorf("destination holds %q, want the new ro/g and the untouched other", got)
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(dst, ".magi-*")); len(leftovers) != 0 {
+		t.Errorf("the copy left %v behind", leftovers)
+	}
+}
+
 func TestHandoffRefusesEditsHiddenByAssumeUnchangedOrSkipWorktree(t *testing.T) {
 	f := newFixture(t)
 	f.git(f.local, "update-index", "--assume-unchanged", "kept.txt")

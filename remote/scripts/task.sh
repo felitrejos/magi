@@ -58,8 +58,7 @@ working() {
 
 available() {
   if [ "$(uname -s)" = Darwin ]; then
-    set -- $(sysctl -n hw.pagesize vm.page_free_count vm.page_pageable_external_count vm.page_purgeable_count)
-    echo $((($2 + $3 + $4) * $1))
+    sysctl -n hw.pagesize vm.page_free_count vm.page_pageable_external_count vm.page_purgeable_count | awk '{ v[NR] = $1 } END { printf "%.0f\n", (v[2] + v[3] + v[4]) * v[1] }'
   else
     awk '/^MemAvailable:/ {printf "%.0f\n", $2 * 1024}' /proc/meminfo
   fi
@@ -69,7 +68,7 @@ started() {
   if [ -r "/proc/$1/stat" ]; then
     sed 's/.*) //' "/proc/$1/stat" | cut -d ' ' -f 20
   else
-    ps -o lstart= -p "$1" 2>/dev/null | tr -d ' '
+    LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -d ' '
   fi
 }
 

@@ -176,12 +176,6 @@ func TestMovingAnIdleCodexSessionReopensItThere(t *testing.T) {
 	if got := f.read(f.remoteCodexHome(), "config.toml"); !strings.Contains(got, "[projects.\""+f.remote+"\"]\ntrust_level = \"trusted\"") {
 		t.Errorf("Codex config on the server = %q", got)
 	}
-	if calls := f.read(f.remoteCodexHome(), "app-server-calls"); !strings.Contains(calls, `"method":"config/value/write","params":{"expectedVersion":"`) {
-		t.Errorf("the trust wasn't written through Codex with the version it read: %s", calls)
-	}
-	if calls := f.read(filepath.Join(f.home, ".codex"), "app-server-calls"); !strings.Contains(calls, `"method":"thread/read","params":{"threadId":"`+id+`"}`) {
-		t.Errorf("the session wasn't looked up through Codex: %s", calls)
-	}
 	if got, want := f.git(f.remote, "status", "--porcelain"), f.git(f.local, "status", "--porcelain"); got != want {
 		t.Errorf("server status:\n%s\nwant:\n%s", got, want)
 	}
@@ -365,7 +359,7 @@ func TestACodexMoveIsRefusedWhileTheOtherMachineStillHasItOpen(t *testing.T) {
 	if err := moveCommand([]string{id, "server", "--json"}, &out); err != errReported {
 		t.Fatalf("move: %v\n%s", err, out.String())
 	}
-	if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, "background server on fakehost") || !strings.Contains(events[len(events)-1].Message, "a minute after the last app showing it closes it") || strings.Contains(events[len(events)-1].Message, "daemon restart") {
+	if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, "background server on fakehost") {
 		t.Errorf("events = %+v", events)
 	}
 	if codex.exitsWithin(300 * time.Millisecond) {

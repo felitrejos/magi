@@ -11,7 +11,7 @@ started() {
 }
 
 agents() {
-  case $1 in '~/'*) set -- "$HOME/${1#'~/'}" ;; esac
+  case $1 in \~/*) set -- "$HOME/${1#\~/}" ;; esac
   "$1" agents --json
 }
 

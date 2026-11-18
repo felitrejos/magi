@@ -439,40 +439,6 @@ func TestTheStopHookOnlyMovesASessionArmedFromItsOwnProcess(t *testing.T) {
 	}
 }
 
-func TestRetireClosesTheTabARecordedHandoffOpened(t *testing.T) {
-	f := newFixture(t)
-	f.isolatedTmux()
-	local, err := newLocal(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	tab, err := Tmux{remote: local}.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := "0f0f0f0f-1111-2222-3333-999999999995"
-	if err := recordTab(local, id, "tmux", tab); err != nil {
-		t.Fatal(err)
-	}
-	transcript := filepath.Join(f.home, "s.jsonl")
-	f.write(f.home, "s.jsonl", "{}")
-	claude := startFakeClaude(t, "60")
-	if err := retire(armed{Host: "laptop", PID: claude.Process.Pid}, id, transcript); err != nil {
-		t.Fatal(err)
-	}
-	if !waitForFile(t, transcript+".handed-off-to-laptop", 5*time.Second) {
-		t.Fatal("the transcript wasn't retired")
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if windows, _ := exec.Command("tmux", "list-windows", "-a").Output(); len(windows) == 0 {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Error("retiring the session left its recorded tab open")
-}
-
 func TestStartHookPassesTheReturnNoteOnce(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

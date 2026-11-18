@@ -100,7 +100,7 @@ case $command in
     done
     ;;
   app)
-    case $1 in '~/'*) set -- "$HOME/${1#'~/'}" ;; esac
+    case $1 in \~/*) set -- "$HOME/${1#\~/}" ;; esac
     exec "$1" app-server
     ;;
   open)

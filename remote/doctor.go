@@ -128,7 +128,10 @@ func (c *checks) plugin(listJSON string) {
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
 	}
-	json.Unmarshal([]byte(listJSON), &plugins)
+	if err := json.Unmarshal([]byte(listJSON), &plugins); err != nil {
+		c.warn("couldn't read claude plugin list --json: "+err.Error(), "check that the magi plugin is installed and enabled with claude plugin list")
+		return
+	}
 	disabled := ""
 	for _, p := range plugins {
 		if !strings.HasPrefix(p.ID, "magi@") {

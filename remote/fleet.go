@@ -230,7 +230,7 @@ func (m *machineInfo) probe(ctx context.Context) {
 
 const platformScript = `PATH="$PATH:$HOME/.local/bin:$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin"
 claude=$1
-case $claude in '~/'*) claude=$HOME/${claude#'~/'} ;; esac
+case $claude in \~/*) claude=$HOME/${claude#\~/} ;; esac
 if [ "$(uname -s)" = Darwin ]; then
 	echo "macOS $(sw_vers -productVersion)"
 else
@@ -249,8 +249,7 @@ echo
 if [ "$(uname -s)" = Darwin ]; then
 	sysctl -n hw.ncpu
 	sysctl -n vm.loadavg | tr -d '{}'
-	set -- $(sysctl -n hw.memsize hw.pagesize vm.page_free_count vm.page_pageable_external_count vm.page_purgeable_count)
-	echo "$1 $(( ($3 + $4 + $5) * $2 ))"
+	sysctl -n hw.memsize hw.pagesize vm.page_free_count vm.page_pageable_external_count vm.page_purgeable_count | awk '{ v[NR] = $1 } END { printf "%.0f %.0f\n", v[1], (v[3] + v[4] + v[5]) * v[2] }'
 else
 	getconf _NPROCESSORS_ONLN
 	cut -d ' ' -f 1-3 /proc/loadavg

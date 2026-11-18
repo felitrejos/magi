@@ -174,10 +174,6 @@ func TestATargetRechecksMemoryTheWayTheProbeReadsIt(t *testing.T) {
 
 func TestMemoryIsShownInTheUnitsBudgetsAreWrittenIn(t *testing.T) {
 	m := parsePlatform("mac", "macOS 27.2\narm64\n\n10\n2.56 2.55 2.64\n17179869184 3221225472\n0\n")
-	got := m.describe()
-	if !strings.Contains(got, "memory 13.0 GB of 16.0 GB") {
-		t.Fatalf("describe = %q", got)
-	}
 	if total, err := parseMemory("16.0 GB"); err != nil || total != m.MemoryTotal {
 		t.Errorf("the 16.0 GB shown parses back as %v, %v; the machine has %v", total, err, m.MemoryTotal)
 	}

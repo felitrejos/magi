@@ -72,6 +72,13 @@ else
     if [ "$rc" -eq 1 ]; then ahead; fi
     [ "$rc" -eq 0 ]
   fi
+  if [ -n "$B" ]; then
+    elsewhere=$(git worktree list --porcelain | awk -v here="$(git rev-parse --show-toplevel)" -v want="branch refs/heads/$B" '/^worktree /{w=substr($0, 10)} $0 == want && w != here {print w}')
+    if [ -n "$elsewhere" ]; then
+      echo "branch $B is checked out in $elsewhere" >&2
+      exit 7
+    fi
+  fi
   git checkout --quiet ${force:+--force} --detach "$H"
   if [ -n "$force" ]; then git clean -fdq; fi
   git read-tree -m -u HEAD "$W"

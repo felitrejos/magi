@@ -171,7 +171,7 @@ func findSecrets(m Machine, root string, patterns, exclude, submodules []string)
 	for _, s := range submodules {
 		args = append(args, "-o", "-path", "./"+s)
 	}
-	args = append(args, ")", "-prune", "-o", "(", "-type", "f", "-o", "-type", "l", ")", "(")
+	args = append(args, ")", "-prune", "-o", "(", "-type", "f", "-o", "-type", "l", "-exec", "test", "-e", "{}", ";", ")", "(")
 	for i, p := range patterns {
 		if i > 0 {
 			args = append(args, "-o")
@@ -315,7 +315,7 @@ func sendGit(local *Local, remote *Remote, ws Workspace, remoteRepo, mode string
 		refspecs := snapshotRefspecs(*ws.Git, func(ref, id string) string { return id + ":" + ref })
 		_, err := sh(local, `dir=$1 to=$3; export GIT_SSH_COMMAND="$2"; shift 3; cd -- "$dir" || exit
 if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git push --quiet --force --no-verify --receive-pack='git -c receive.shallowUpdate=true receive-pack' "$to" "$1" || exit; fi
-git push --quiet --atomic --force --no-verify "$to" "$@"`,
+git push --quiet --force --no-verify "$to" "$@"`,
 			append([]string{ws.Root, remote.sshCommand(), remote.host + ":" + repo}, refspecs...)...)
 		return err
 	})
