@@ -212,17 +212,31 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 	return nil
 }
 
+const (
+	fetchTries = 3
+	fetchRetry = 2 * time.Second
+)
+
 func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
-	ctx, cancel := context.WithTimeout(context.Background(), fleetWait)
-	defer cancel()
-	fleet, err := readFleet(ctx)
-	if err != nil {
-		return nil, nil
-	}
 	var others []string
-	for _, m := range fleet.Machines {
-		if m.Live && !m.Here {
-			others = append(others, m.Name)
+	for attempt := range fetchTries {
+		if attempt > 0 {
+			time.Sleep(fetchRetry)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), fleetWait)
+		fleet, err := readFleet(ctx)
+		cancel()
+		if err != nil {
+			continue
+		}
+		others = others[:0]
+		for _, m := range fleet.Machines {
+			if m.Live && !m.Here {
+				others = append(others, m.Name)
+			}
+		}
+		if slices.Contains(others, hostName) {
+			break
 		}
 	}
 	if !slices.Contains(others, hostName) {
@@ -538,15 +552,22 @@ func pullHere(hostName, sessionID string, out io.Writer, inTab bool) (pulledHere
 	res.PromptInfo.Project = setUpPulledProject(res.Project, res.ProjectRoot, out)
 	prompt := handoffPrompt(res.PromptInfo)
 	if inTab {
-		if err := openPulledTab(local, res, prompt); err != nil {
+		before := len(res.Notes)
+		if err := openPulledTab(local, &res, prompt); err != nil {
 			return pulledHere{}, fmt.Errorf("the session is back in %s, but its tab didn't open (%w); continue it there with %s", res.ToDir, err, resumeHint(remoteSession{ID: res.Session, Codex: res.Codex}))
+		}
+		for _, note := range res.Notes[before:] {
+			fmt.Fprintf(out, "Note: %v\n", note)
 		}
 	}
 	message := fmt.Sprintf("Brought session %s back from %s to %s", shortID(res.Session), hostName, res.ToDir)
+	if len(res.Notes) > 0 {
+		message += " (" + res.Noted() + ")"
+	}
 	return pulledHere{res: res, prompt: prompt, message: message}, nil
 }
 
-func openPulledTab(local *Local, res Pulled, prompt string) error {
+func openPulledTab(local *Local, res *Pulled, prompt string) error {
 	roots, err := openRoots(local)
 	if err != nil {
 		return err
@@ -571,8 +592,10 @@ func openPulledTab(local *Local, res Pulled, prompt string) error {
 	if err != nil {
 		return err
 	}
-	_, err = launcher.Show(tab)
-	return err
+	if _, err := launcher.Show(tab); err != nil {
+		res.note(fmt.Errorf("showing the new tab failed: %w", err))
+	}
+	return nil
 }
 
 func printHosts(out io.Writer) error {

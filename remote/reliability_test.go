@@ -252,7 +252,7 @@ func TestAPullOpensATmuxWindowWhenThereIsNoRex(t *testing.T) {
 	}
 	res := Pulled{Session: "0f0f0f0f-1111-2222-3333-555555555557", Name: "acme", ProjectRoot: f.local}
 	res.ToDir = f.local
-	if err := openPulledTab(local, res, "back here"); err != nil {
+	if err := openPulledTab(local, &res, "back here"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(tmuxWindows(), "acme · claude") {
@@ -295,5 +295,19 @@ func TestSessionsAndTheirDiffsAreReadWithoutTheOverview(t *testing.T) {
 	}
 	if !strings.Contains(diff, "+changed") || !strings.Contains(diff, "new file: brand-new.txt") {
 		t.Errorf("diff = %q", diff)
+	}
+}
+
+func TestASessionStartedInATabCanFindMagiEvenWithABarePath(t *testing.T) {
+	f := newFixture(t)
+	f.write(filepath.Join(f.home, ".local", "bin"), "magi", "#!/bin/sh\necho found\n")
+	if err := os.Chmod(filepath.Join(f.home, ".local", "bin", "magi"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(shellIn(f.local, "sh", "-c", "magi")[0], shellIn(f.local, "sh", "-c", "magi")[1:]...)
+	cmd.Env = []string{"HOME=" + f.home, "PATH=/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "found" {
+		t.Fatalf("out = %q, %v", out, err)
 	}
 }

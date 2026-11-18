@@ -31,7 +31,7 @@ func newLauncher(h Host, remote *Remote) Launcher {
 }
 
 func shellIn(dir string, command ...string) []string {
-	return append([]string{"sh", "-c", `cd -- "$1" && shift && exec "$@"`, "magi", dir}, command...)
+	return append([]string{"sh", "-c", `cd -- "$1" && shift && PATH="$HOME/.local/bin:$PATH" exec "$@"`, "magi", dir}, command...)
 }
 
 func claudeTabLabel(name string) string {
