@@ -4,13 +4,9 @@ command=$1
 shift
 format='#{session_id} #{window_id} #{pane_id} #{pane_pid}'
 case $command in
-  sessions)
-    tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null || :
-    ;;
   new-session)
     name=$1 label=$2 dir=$3
     shift 3
-    unset LC_ALL
     tmux new-session -d -P -F "$format" -s "$name" -n "$label" -c "$dir" "$@"
     ;;
   new-window)

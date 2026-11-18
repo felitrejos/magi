@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,9 +154,11 @@ func TestTheRunnerSaysWhenItsTunnelIsUpAndRetriesUntilItIsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
-	forwardSettle, forwardRetry = 150*time.Millisecond, 50*time.Millisecond
-	t.Cleanup(func() { forwardSettle, forwardRetry = 3*time.Second, 2*time.Second })
-	if err := writeForward(path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{3000}, State: forwardWaiting}); err != nil {
+	forwardRetry = 50 * time.Millisecond
+	t.Cleanup(func() { forwardRetry = 2 * time.Second })
+	listener, port := listen(t)
+	defer listener.Close()
+	if err := writeForward(path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{port}, State: forwardWaiting}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -183,5 +186,148 @@ func TestTheRunnerSaysWhenItsTunnelIsUpAndRetriesUntilItIsClosed(t *testing.T) {
 	}
 	if runnerAlive(path) {
 		t.Error("the lock is still held after the runner stopped")
+	}
+}
+
+func listen(t *testing.T) (net.Listener, int) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l, l.Addr().(*net.TCPAddr).Port
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, port := listen(t)
+	l.Close()
+	return port
+}
+
+func fakeTunnel(t *testing.T, name, body string) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+}
+
+func startRunner(t *testing.T, path string, record forwardRecord) <-chan error {
+	t.Helper()
+	if err := writeForward(path, record); err != nil {
+		t.Fatal(err)
+	}
+	forwardRetry = 50 * time.Millisecond
+	done, finished := make(chan error, 1), make(chan struct{})
+	go func() {
+		done <- runForwards(forwardSession)
+		close(finished)
+	}()
+	t.Cleanup(func() {
+		os.Remove(path)
+		if pid, err := strconv.Atoi(strings.TrimSpace(readFile(filepath.Join(os.Getenv("HOME"), "tunnel.pid")))); err == nil {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+		select {
+		case <-finished:
+			forwardRetry = 2 * time.Second
+		case <-time.After(5 * time.Second):
+			t.Error("the runner never stopped")
+		}
+	})
+	return done
+}
+
+func readFile(path string) string {
+	data, _ := os.ReadFile(path)
+	return string(data)
+}
+
+func stateFor(path string, within time.Duration, want string) bool {
+	for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if r, err := readForward(path); err == nil && r.State == want {
+			return true
+		}
+	}
+	return false
+}
+
+const longTunnel = `echo $$ > "$HOME/tunnel.pid"
+exec sleep 30
+`
+
+func TestAnSSHForwardIsConnectedOnlyOnceEveryPortAccepts(t *testing.T) {
+	path := forwardHome(t)
+	fakeTunnel(t, "ssh", longTunnel)
+	first, firstPort := listen(t)
+	defer first.Close()
+	secondPort := freePort(t)
+	startRunner(t, path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{firstPort, secondPort}, State: forwardWaiting})
+	if stateFor(path, 3500*time.Millisecond, forwardConnected) {
+		t.Fatal("the forward was connected while ssh still hadn't opened one of its ports")
+	}
+	second, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(secondPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if !stateFor(path, 2*time.Second, forwardConnected) {
+		t.Error("the forward never counted as connected once every port accepted")
+	}
+}
+
+func TestARexForwardIsConnectedOnlyOnceRexSaysItIsActive(t *testing.T) {
+	path := forwardHome(t)
+	port := strconv.Itoa(freePort(t))
+	listing := filepath.Join(os.Getenv("HOME"), "forwards.json")
+	fakeTunnel(t, "rex", `case "$*" in
+  *"forward ls -s session:1 --json") cat "$HOME/forwards.json" ;;
+  *"forward new -s session:1 -L 127.0.0.1:`+port+`:localhost:`+port+`")
+`+longTunnel+` ;;
+  *) exit 2 ;;
+esac
+`)
+	state := func(s string) {
+		t.Helper()
+		body := `{"forwards":[{"session_id":"session:1","state":"` + s + `","direction":"local","listen":"127.0.0.1:` + port + `","connect":"localhost:` + port + `"}]}`
+		if err := os.WriteFile(listing, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state("away")
+	n, _ := strconv.Atoi(port)
+	startRunner(t, path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Rex: &rexVia{Server: "homelab", Session: "session:1"}, Ports: []int{n}, State: forwardWaiting})
+	if stateFor(path, 3500*time.Millisecond, forwardConnected) {
+		t.Fatal("the forward was connected while Rex said it was away")
+	}
+	state("active")
+	if !stateFor(path, 2*time.Second, forwardConnected) {
+		t.Error("the forward never counted as connected once Rex said it was active")
+	}
+}
+
+func TestARexForwardStopsOnceItsSessionIsGone(t *testing.T) {
+	path := forwardHome(t)
+	fakeTunnel(t, "rex", `case "$*" in
+  *"forward new"*) echo started >> "$HOME/started"; echo 'Error: session …1 is gone, so its forwards stopped' >&2; exit 3 ;;
+esac
+exit 1
+`)
+	done := startRunner(t, path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Rex: &rexVia{Server: "homelab", Session: "session:1"}, Ports: []int{freePort(t)}, State: forwardWaiting})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the runner kept retrying a forward whose Rex session is gone")
+	}
+	if got := strings.Count(readFile(filepath.Join(os.Getenv("HOME"), "started")), "started"); got != 1 {
+		t.Errorf("rex forward new ran %d times", got)
+	}
+	if records, err := listForwards(); err != nil || len(records) != 1 || records[0].State != "stopped" {
+		t.Errorf("records = %+v, %v", records, err)
 	}
 }

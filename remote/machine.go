@@ -141,6 +141,8 @@ func newRemote(ctx context.Context, host string) (*Remote, error) {
 			"-o", "ControlMaster=auto",
 			"-o", "ControlPath=" + filepath.Join(sockets, "%C"),
 			"-o", "ControlPersist=60",
+			"-o", "ServerAliveInterval=15",
+			"-o", "ServerAliveCountMax=3",
 		},
 	}, nil
 }
@@ -150,7 +152,7 @@ func (r *Remote) Context() context.Context       { return r.ctx }
 func (r *Remote) SetContext(ctx context.Context) { r.ctx = ctx }
 func (r *Remote) Command(script string, args ...string) *exec.Cmd {
 	payload := "set -- " + quoteAll(args) + "\n" + script
-	line := `env LC_ALL=C sh -c 'eval "$(printf "$1")"' magi '` + printfEscape(payload) + `'`
+	line := `sh -c 'eval "$(LC_ALL=C printf "$1")"' magi '` + printfEscape(payload) + `'`
 	return command(r.ctx, "ssh", append(append([]string{}, r.opts...), r.host, "--", line)...)
 }
 

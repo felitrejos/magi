@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,10 +21,12 @@ const (
 	forwardWaiting   = "waiting"
 )
 
+const rexSessionGone = 3
+
 var (
 	forwardRetry    = 2 * time.Second
 	forwardRetryMax = 30 * time.Second
-	forwardSettle   = 3 * time.Second
+	forwardPoll     = 250 * time.Millisecond
 	forwardLockWait = time.Second
 )
 
@@ -177,22 +180,77 @@ func runForwards(session string) error {
 		if err := tunnel.Start(); err != nil {
 			return err
 		}
-		exited := make(chan struct{})
-		go func() {
-			tunnel.Wait()
-			close(exited)
-		}()
-		select {
-		case <-exited:
-		case <-time.After(forwardSettle):
+		exited := make(chan error, 1)
+		go func() { exited <- tunnel.Wait() }()
+		up, exit := awaitForward(record, exited)
+		if up {
 			setForwardState(path, forwardConnected)
-			<-exited
+			exit = <-exited
 			wait = forwardRetry
+		}
+		if record.Rex != nil && exitCode(exit) == rexSessionGone {
+			return nil
 		}
 		setForwardState(path, forwardWaiting)
 		time.Sleep(wait)
 		wait = min(wait*2, forwardRetryMax)
 	}
+}
+
+func awaitForward(r forwardRecord, exited <-chan error) (bool, error) {
+	for {
+		select {
+		case err := <-exited:
+			return false, err
+		case <-time.After(forwardPoll):
+			if forwardUp(r) {
+				return true, nil
+			}
+		}
+	}
+}
+
+func forwardUp(r forwardRecord) bool {
+	if r.Rex != nil {
+		return rexForwardsActive(r)
+	}
+	for _, port := range r.Ports {
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), forwardPoll)
+		if err != nil {
+			return false
+		}
+		conn.Close()
+	}
+	return true
+}
+
+func rexForwardsActive(r forwardRecord) bool {
+	out, err := exec.Command("rex", "--autostart=false", "-S", r.Rex.Server, "forward", "ls", "-s", r.Rex.Session, "--json").Output()
+	if err != nil {
+		return false
+	}
+	var listing struct {
+		Forwards []struct {
+			State     string `json:"state"`
+			Direction string `json:"direction"`
+			Listen    string `json:"listen"`
+		} `json:"forwards"`
+	}
+	if json.Unmarshal(out, &listing) != nil {
+		return false
+	}
+	active := map[string]bool{}
+	for _, f := range listing.Forwards {
+		if f.Direction == "local" && f.State == "active" {
+			active[f.Listen] = true
+		}
+	}
+	for _, port := range r.Ports {
+		if !active["127.0.0.1:"+strconv.Itoa(port)] {
+			return false
+		}
+	}
+	return true
 }
 
 func setForwardState(path, state string) {
