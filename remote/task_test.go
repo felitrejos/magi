@@ -364,9 +364,21 @@ roots = ["~/developer"]
 launcher = "tmux"
 `
 
+func (f *fixture) probesAs(output string) {
+	f.t.Helper()
+	saved := probeMachine
+	probeMachine = func(_ context.Context, name string, _ Host) (*fleetMachine, error) {
+		return parsePlatform(name, output), nil
+	}
+	f.t.Cleanup(func() { probeMachine = saved })
+}
+
+const quietLinux = "Ubuntu 24.04\nx86_64\ndocker\n4\n0.10 0.10 0.10\n8000000000 6000000000\n0\n"
+
 func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
+	f.probesAs(quietLinux)
 	f.tool("magi-overview", fakeMagi)
 	picks, skipped, _, err := chooseHosts(context.Background(), "", true)
 	if err != nil {
@@ -417,6 +429,7 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 func TestWithoutTheOverviewMachinesAreTriedInConfigOrderAndTheReasonGiven(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
+	f.probesAs("Ubuntu 24.04\nx86_64\n\n")
 	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
 	picks, _, _, err := chooseHosts(context.Background(), "", true)
 	if err != nil {

@@ -218,7 +218,7 @@ func (m *machineInfo) probe(ctx context.Context) {
 		m.Reachable = reachable(ctx, m.Host)
 		return
 	}
-	probed, err := probePlatform(ctx, m.Name, m.Host)
+	probed, err := probeMachine(ctx, m.Name, m.Host)
 	m.Reachable = err
 	if err == nil {
 		if m.Fleet != nil {
@@ -228,7 +228,7 @@ func (m *machineInfo) probe(ctx context.Context) {
 	}
 }
 
-const platformScript = `PATH="$PATH:$HOME/.local/bin:$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin"
+const platformScript = `PATH="$PATH:$HOME/.local/bin:$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin"
 if [ "$(uname -s)" = Darwin ]; then
 	echo "macOS $(sw_vers -productVersion)"
 else
@@ -262,6 +262,8 @@ for f in "$HOME"/.claude/sessions/*.json; do
 	kill -0 "${pid%.json}" 2>/dev/null && working=$((working + 1))
 done
 echo "$working"`
+
+var probeMachine = probePlatform
 
 func probePlatform(ctx context.Context, name string, h Host) (*fleetMachine, error) {
 	ctx, cancel := context.WithTimeout(ctx, reachWait)
