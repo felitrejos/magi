@@ -24,7 +24,7 @@
   <i>CI runs on the Mac and the Linux homelab at once, and the fix made on Linux lands back on the Mac by itself.</i>
 </p>
 
-Claude Code can already use SSH. magi moves the session you're in.
+magi moves the Claude Code session you're in to another machine.
 
 - **It follows you.** From laptop to server and back, with its history and
   uncommitted work. Remote Control keeps it in the Claude app on your phone.
