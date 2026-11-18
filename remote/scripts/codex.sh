@@ -105,6 +105,15 @@ case $command in
   turn)
     turn "$1"
     ;;
+  opened)
+    for lock in "$codex_home"/thread-writer-locks/*.lock; do
+      if [ -n "$(holders "$lock")" ]; then id=${lock##*/}; echo "${id%.lock}"; fi
+    done
+    ;;
+  app)
+    case $1 in '~/'*) set -- "$HOME/${1#'~/'}" ;; esac
+    exec "$1" app-server
+    ;;
   open)
     lock=$codex_home/thread-writer-locks/$1.lock
     if [ -f "$lock" ]; then

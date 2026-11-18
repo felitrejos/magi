@@ -14,7 +14,10 @@ type machineSessions struct {
 	Name     string
 	Machine  Machine
 	Sessions []liveSession
+	Codex    []codexThread
 	Err      error
+	CodexErr error
+	codex    string
 }
 
 func everySession(ctx context.Context) ([]machineSessions, error) {
@@ -22,11 +25,11 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 	if err != nil {
 		return nil, err
 	}
-	all := []machineSessions{{Name: local.Name(), Machine: local}}
+	all := []machineSessions{{Name: local.Name(), Machine: local, codex: "codex"}}
 	cfg, _, err := loadConfig()
 	if err == nil {
 		for _, name := range cfg.Order {
-			all = append(all, machineSessions{Name: name})
+			all = append(all, machineSessions{Name: name, codex: cfg.Hosts[name].Codex})
 		}
 	}
 	var wg sync.WaitGroup
@@ -43,7 +46,9 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 				}
 				m.Machine = r
 			}
-			m.Sessions, m.Err = liveHere(m.Machine)
+			if m.Sessions, m.Err = liveHere(m.Machine); m.Err == nil && m.codex != "" {
+				m.Codex, m.CodexErr = openCodexSessions(m.Machine, m.codex)
+			}
 		})
 	}
 	wg.Wait()
@@ -57,8 +62,8 @@ func describeSessions(all []machineSessions) string {
 			fmt.Fprintf(&b, "%s: not reachable (%v)\n", m.Name, m.Err)
 			continue
 		}
-		if len(m.Sessions) == 0 {
-			fmt.Fprintf(&b, "%s: no Claude Code sessions running\n", m.Name)
+		if len(m.Sessions) == 0 && len(m.Codex) == 0 && m.CodexErr == nil {
+			fmt.Fprintf(&b, "%s: no Claude Code or Codex sessions running\n", m.Name)
 			continue
 		}
 		fmt.Fprintf(&b, "%s:\n", m.Name)
@@ -72,6 +77,16 @@ func describeSessions(all []machineSessions) string {
 				line += "  https://claude.ai/code/" + *s.BridgeSessionID
 			}
 			fmt.Fprintln(&b, line)
+		}
+		for _, t := range m.Codex {
+			title := t.Name
+			if title == "" {
+				title = baseName(t.Cwd)
+			}
+			fmt.Fprintf(&b, "  %s  %s  codex  %s\n", shortID(t.ID), title, t.Cwd)
+		}
+		if m.CodexErr != nil {
+			fmt.Fprintf(&b, "  couldn't read its Codex sessions (%v)\n", m.CodexErr)
 		}
 	}
 	return b.String()
