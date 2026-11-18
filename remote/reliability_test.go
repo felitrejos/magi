@@ -311,3 +311,12 @@ func TestASessionStartedInATabCanFindMagiEvenWithABarePath(t *testing.T) {
 		t.Fatalf("out = %q, %v", out, err)
 	}
 }
+
+func TestHandingBackFindsTheMachineTheUserMeant(t *testing.T) {
+	machines := []string{"felipes-macbook-pro", "homelab", "nas"}
+	for wanted, want := range map[string]string{"felipes-macbook-pro": "felipes-macbook-pro", "Mac": "felipes-macbook-pro", "macbook": "felipes-macbook-pro", "a": "", "server": ""} {
+		if got := matchMachine(machines, wanted); got != want {
+			t.Errorf("matchMachine(%q) = %q, want %q", wanted, got, want)
+		}
+	}
+}

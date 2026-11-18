@@ -221,6 +221,22 @@ const (
 	fetchRetry = 2 * time.Second
 )
 
+func matchMachine(names []string, wanted string) string {
+	if slices.Contains(names, wanted) {
+		return wanted
+	}
+	var found []string
+	for _, name := range names {
+		if strings.Contains(strings.ToLower(name), strings.ToLower(wanted)) {
+			found = append(found, name)
+		}
+	}
+	if len(found) != 1 {
+		return ""
+	}
+	return found[0]
+}
+
 func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
 	var others []string
 	for attempt := range fetchTries {
@@ -239,11 +255,12 @@ func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
 				others = append(others, m.Name)
 			}
 		}
-		if slices.Contains(others, hostName) {
+		if matchMachine(others, hostName) != "" {
 			break
 		}
 	}
-	if !slices.Contains(others, hostName) {
+	target := matchMachine(others, hostName)
+	if target == "" {
 		return nil, others
 	}
 	return func(out io.Writer) error {
@@ -264,7 +281,7 @@ func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
 			return err
 		}
 		defer log.Close()
-		cmd := exec.Command(program, "move", shortID(sessionID), hostName)
+		cmd := exec.Command(program, "move", shortID(sessionID), target)
 		cmd.Stdout, cmd.Stderr = log, log
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if err := cmd.Start(); err != nil {
@@ -273,7 +290,7 @@ func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
 		if err := cmd.Process.Release(); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", hostName)
+		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", target)
 		return nil
 	}, nil
 }
