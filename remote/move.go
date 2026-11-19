@@ -109,6 +109,7 @@ func (m mover) run() error {
 	if s.Live != nil {
 		_, err := sh(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since(), local.Claude())
 		if exitCode(err) == exitBusy {
+			unlock()
 			return m.whenTurnEnds(s)
 		}
 		if err != nil {

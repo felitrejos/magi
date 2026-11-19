@@ -285,6 +285,9 @@ func stopHook(in io.Reader, out io.Writer) error {
 		err = cleanStrayFor(input.SessionID)
 	}
 	if err != nil {
+		if a.Notify {
+			err = errors.Join(err, writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: err.Error() + ", so this handoff didn't start"}))
+		}
 		return json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": err.Error() + ", so this handoff didn't start. Tell the user."})
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -475,13 +478,16 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 	if err != nil {
 		return pulledHere{}, err
 	}
-	if sessionIDPattern.MatchString(sessionID) {
-		unlock, err := lockMove(sessionID)
-		if err != nil {
+	if sessionID == "" {
+		if sessionID, err = lastHandoffTo(hostName); err != nil {
 			return pulledHere{}, err
 		}
-		defer unlock()
 	}
+	unlock, err := lockMove(sessionID)
+	if err != nil {
+		return pulledHere{}, err
+	}
+	defer unlock()
 	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Note: note, Out: out}.Run()
 	if err != nil {
 		return pulledHere{}, err

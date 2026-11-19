@@ -282,21 +282,21 @@ EOF
 	}
 }
 
-func TestFindRemoteSessionPrefersTheNewestRecordAndRejectsBadIDs(t *testing.T) {
+func TestFindSessionPrefersTheNewestRecordAndRejectsBadIDs(t *testing.T) {
 	f := newFixture(t)
 	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	f.write(f.home, ".claude/projects/-x/"+id+".jsonl", `{"cwd":"/old"}`+"\n")
 	older, newer := startFakeClaude(t, "60").Process.Pid, startFakeClaude(t, "60").Process.Pid
 	f.write(f.home, ".claude/sessions/"+strconv.Itoa(older)+".json", `{"pid":`+strconv.Itoa(older)+`,"sessionId":"`+id+`","cwd":"/stale","startedAt":100}`)
 	f.write(f.home, ".claude/sessions/"+strconv.Itoa(newer)+".json", `{"pid":`+strconv.Itoa(newer)+`,"sessionId":"`+id+`","cwd":"/live","startedAt":200}`)
-	s, err := findRemoteSession(f.remoteHost(), "server", id)
+	s, err := findSession(f.remoteHost(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s.Live == nil || s.Live.PID != newer || s.Cwd != "/live" {
 		t.Errorf("session = %+v, want the newest record", s)
 	}
-	if _, err := findRemoteSession(f.remoteHost(), "server", "*"); err == nil || !strings.Contains(err.Error(), "is not a session id") {
+	if _, err := findSession(f.remoteHost(), "*"); err == nil || !strings.Contains(err.Error(), "is not a session id") {
 		t.Errorf("err = %v, want an invalid id refusal", err)
 	}
 }

@@ -84,6 +84,9 @@ func tryCommand(args []string, in io.Reader, out io.Writer) error {
 }
 
 func tryRoundTrip(cfg Config, name string, out io.Writer) (err error) {
+	if len(cfg.LocalRoots) == 0 {
+		return errors.New("set local_roots in magi's config to the folders your projects live in here, or run magi init")
+	}
 	host, err := loadHost(name)
 	if err != nil {
 		return err

@@ -189,3 +189,20 @@ func TestWatchTakesBackASessionTheServerAsksItTo(t *testing.T) {
 		t.Errorf("transcript on the laptop = %q", got)
 	}
 }
+
+func TestPullingTheLastSessionTakesTheMoveLockToo(t *testing.T) {
+	f := newFixture(t)
+	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
+	id := "0f0f0f0f-1111-2222-3333-777777777771"
+	if err := appendLog(logEntry{Kind: "push", Session: id, To: "server"}); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockMove(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if _, err := pullHere("server", "", "", io.Discard, false); err == nil || !strings.Contains(err.Error(), "already being moved") {
+		t.Fatalf("err = %v, want the pull refused while the session is being moved", err)
+	}
+}

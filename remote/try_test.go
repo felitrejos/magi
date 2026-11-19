@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,5 +34,17 @@ func TestTryRemovesOnlyItsOwnProject(t *testing.T) {
 	}
 	if f.read(keep, "notes.txt") != "mine" {
 		t.Error("another folder was touched")
+	}
+}
+
+func TestTryNeedsAFolderForProjectsHere(t *testing.T) {
+	f := newFixture(t)
+	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
+	cfg, _, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tryRoundTrip(cfg, "server", io.Discard); err == nil || !strings.Contains(err.Error(), "local_roots") {
+		t.Fatalf("err = %v, want it to ask for local_roots", err)
 	}
 }

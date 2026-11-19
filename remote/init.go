@@ -106,7 +106,9 @@ func initConfig(in io.Reader, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		cfg.LocalRoots = list(answer)
+		if cfg.LocalRoots = list(answer); len(cfg.LocalRoots) == 0 {
+			return errors.New("magi needs at least one folder your projects live in here")
+		}
 	}
 	if len(cfg.Exclude) == 0 {
 		answer, err := p.ask("Folder names to skip when copying projects and looking for secret files", "node_modules, .venv, dist, build, target")

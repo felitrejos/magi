@@ -72,7 +72,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	var ws Workspace
 	var where Placement
 	if err := st.run("find", func() (err error) {
-		if session, err = findRemoteSession(remote, p.HostName, p.SessionID); err != nil {
+		if session, err = findSession(remote, p.SessionID); err != nil {
 			return err
 		}
 		if err := session.refuseUnsure(remote); err != nil {
@@ -181,17 +181,6 @@ func (p Pull) Run() (res Pulled, err error) {
 	res.Project, res.ProjectRoot = project, where.Root
 	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Note: p.Note, Sidecar: sidecar, Codex: session.Codex}
 	return res, nil
-}
-
-func findRemoteSession(r *Remote, hostName, id string) (remoteSession, error) {
-	if id == "" {
-		last, err := lastHandoffTo(hostName)
-		if err != nil {
-			return remoteSession{}, err
-		}
-		id = last
-	}
-	return findSession(r, id)
 }
 
 func findSession(r Machine, id string) (remoteSession, error) {

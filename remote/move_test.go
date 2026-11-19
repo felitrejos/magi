@@ -34,7 +34,7 @@ func (f *fixture) localSession(id, status string) (*exec.Cmd, string) {
 	}
 	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
 	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
-	proc := exec.Command(f.tool("claude-session", "#!/bin/sh\nsleep 60\n"), "--resume", id)
+	proc := exec.Command(f.tool("claude-session", "#!/bin/sh\nsleep 60\n"))
 	if err := proc.Start(); err != nil {
 		f.t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestMovingABusySessionWaitsForItsTurnAndReportsTheHandoff(t *testing.T) {
 	f := newFixture(t)
 	f.moveHost()
 	id := "0f0f0f0f-1111-2222-3333-999999999999"
-	proc, _ := f.localSession(id, "busy")
+	proc, transcript := f.localSession(id, "busy")
 	path, _ := armedPath(id, ".json")
 
 	done := make(chan string, 1)
@@ -137,14 +137,17 @@ func TestMovingABusySessionWaitsForItsTurnAndReportsTheHandoff(t *testing.T) {
 	if err := json.Unmarshal(data, &a); err != nil || a.Host != "server" || a.PID != proc.Process.Pid || !a.Notify {
 		t.Fatalf("armed = %+v, %v", a, err)
 	}
-	os.Remove(path)
-	if err := writeMoveResult(id, moveReport{Event: "moved", OK: true, Message: "Moved."}); err != nil {
-		t.Fatal(err)
+	pid := strconv.Itoa(proc.Process.Pid)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"only-on-the-laptop","status":"idle"}`)
+	t.Setenv("CLAUDE_PID", pid)
+	var hook strings.Builder
+	if err := stopHook(strings.NewReader(`{"session_id":"`+id+`","transcript_path":"`+transcript+`","cwd":"`+f.local+`"}`), &hook); err != nil || strings.Contains(hook.String(), "block") {
+		t.Fatalf("the Stop hook didn't hand off: %s, %v", hook.String(), err)
 	}
 	select {
 	case out := <-done:
 		events := moveEvents(t, out)
-		if got := events[0].Event + " " + events[len(events)-1].Event; got != "waiting moved" || events[1].Session != id {
+		if got := events[0].Event + " " + events[len(events)-1].Event; got != "waiting moved" || events[len(events)-1].ToDir != f.remote {
 			t.Errorf("events = %+v", events)
 		}
 	case <-time.After(10 * time.Second):
