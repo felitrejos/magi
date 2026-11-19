@@ -14,8 +14,8 @@
 - **Suggest, don't act.** magi suggests machines but never moves or starts
   anything by itself. The one exception is `magi watch`, which takes back a
   session you asked to hand back. Beyond that it only cleans up after
-  itself. `magi status` and the next handoff stop a copy that a failed
-  handoff left running.
+  itself. `magi status` and the next move of a session settle a move that
+  was cut off.
 - **A layer for other tools.** The CLI and `magi mcp` give scripts, other
   orchestrators and Claude itself magi's actions. No tool types into
   another live session. The session's own app (Desktop, the Claude app
@@ -46,11 +46,19 @@ workspace.
     it as a refusal in `magi doctor`, and nobody is told.
   - The list of failing versions is edited by hand.
   - The job depends on one server and on the accounts logged in there.
-- **Recovery anyone can follow.** When a move fails because SSH drops, the
-  machine sleeps or the hook is killed, `magi status` says which copy is the
-  live one, cleans up the other and prints the exact command to continue.
-  Crash and network-drop tests run in CI, and their results are published
-  alongside the round-trip numbers.
+- **Recovery anyone can follow.** When a move is cut off because SSH
+  drops, the machine sleeps or the hook is killed, `magi status` says which
+  copy is the live one, cleans up the other and prints the exact command to
+  continue. What exists now is a journal per move in `~/.magi/moves`,
+  written before the move changes anything and removed when it has fully
+  finished. `magi status` and the next move of that session read a journal
+  left behind and finish or undo the move. They never delete a folder, and
+  they stop nothing when they can't tell which copy is live. Tests kill the hook
+  partway and take the network down, and they run in the test suite.
+  Still open are these.
+  - The results of those tests aren't published alongside the round-trip
+    numbers.
+  - No test covers recovery of a Codex session.
 - **Show what gets copied.** Before a move, magi prints a short list of what
   goes across, with files outside git, the secrets files the project listed,
   ports and the services in the project's `.magi.toml`. Secrets show by

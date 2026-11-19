@@ -93,8 +93,8 @@ magi doctor [host...]              check that everything a handoff needs is in p
 magi pull <host> [session-id]      bring a session back from <host> and continue it here
 magi move <session-id> <host> [--json]
                                    move a session on this machine to <host>
-magi status                        recent handoffs, parked checkouts, and copies a
-                                   failed handoff left running, which it stops
+magi status                        recent handoffs, parked checkouts, and moves that
+                                   were cut off, which it settles
 magi watch                         take back sessions other machines hand back here
 magi watch install | uninstall     run magi watch in the background from login
 magi unpark [dir]                  stop treating a checkout as parked
@@ -115,6 +115,10 @@ another Codex is open in the same folder, quit it first.
 **Why does magi refuse my Claude Code version?** It only moves a session
 with versions its tests passed with. New releases are tested every night,
 so a refusal usually clears within a day without a magi update.
+
+**What if a move is cut off?** Run `magi status`. It works out which copy
+is the live one, closes the other without deleting any folder, and prints
+the command to continue. The next move of that session does the same.
 
 **Do my secrets move?** Only the gitignored files you listed, such as
 `.env`, and only to machines you configured. Logins and SSH keys never

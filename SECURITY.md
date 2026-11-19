@@ -49,11 +49,30 @@ the ports you ask it to forward, which listen on `127.0.0.1`.
 - On the receiving machine it recreates your branch and uncommitted work.
   It refuses if that checkout has work or commits of its own.
 - A handoff is refused when the session already runs on the destination.
-  One that fails or is interrupted stops the new copy and leaves the
-  session running where it was. If the new copy couldn't be stopped, magi
-  records it in `~/.magi/strays`. `magi status` and the next handoff of
-  that session then stop it over SSH and close its tmux window, but only
-  while the window still carries the tag magi gave it.
+  One that fails stops the new copy and leaves the session running where
+  it was.
+- Every move writes a journal, `~/.magi/moves/<session-id>.json`, before
+  it changes anything, and removes it as its last step. A journal whose
+  move is no longer running belongs to a move that was cut off.
+  `magi status` and the next move of that session settle it. They contact
+  the other machine over SSH for at most 15 seconds.
+- The live copy is the one that took new prompts since the move started.
+  If both did, it is the one still running. If neither did, it is the
+  copy the session was leaving, unless the move had reached its last step.
+- Recovery stops the other copy's Claude or Codex process with `TERM`. It
+  closes the tmux window the move opened, but only while the window still
+  carries the tag magi gave it, or the tmux session if the move created
+  it. It renames that copy's transcript to
+  `<transcript>.handed-off-to-<machine>`, so turns taken there are kept.
+  It stops that session's port forwards, and it updates magi's own records
+  in `~/.magi` and the parked mark in a git checkout.
+- Recovery never deletes a folder or a transcript. When the move created
+  a folder that is still there, it tells you the path and leaves it.
+- If both copies took new prompts and both or neither is running, magi
+  stops nothing and tells you where each copy is.
+- If the other machine doesn't answer, magi changes nothing there and
+  keeps the journal. It prints the journal's path, which you remove
+  yourself if that machine is gone for good.
 - The Stop hook (`magi hook stop`) runs the handoff, with a time limit of
   200 seconds. The prompt hook (`magi hook prompt`) refuses new input in
   the copy a session left. It reads the session id from the hook's input
@@ -170,7 +189,7 @@ Settings are in `~/.config/magi/config.toml`. State is in `~/.magi`.
 | `watch.lock` | Keeps a second `magi watch` from starting |
 | `moved/` | Where each session that left went |
 | `handoffs.jsonl` | Time, session id, machines and folders of each handoff |
-| `strays/` | Copies a failed handoff couldn't stop |
+| `moves/` | One journal per move in progress or cut off, kept until the move is settled |
 | `forwards/` | Forwarded ports and the process forwarding them |
 | `tabs/`, `setup/` | The tmux window of a moved session and its setup state |
 | `tasks/` | Task records and logs here, working tree copies on the other machine |
