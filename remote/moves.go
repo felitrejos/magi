@@ -181,6 +181,8 @@ func (r *recovery) giveBack(err error) error {
 func (r *recovery) live(reached bool) *sessionCopy {
 	from, to := r.from, r.to
 	switch {
+	case r.j.Step == "stop":
+		return from
 	case from.used && to.used && from.running() == to.running():
 		return nil
 	case from.used && to.used && to.running(), !from.used && to.used:
@@ -323,6 +325,11 @@ func (r *recovery) undo() (string, error) {
 	}
 	if err := to.stop(); err != nil {
 		return "", err
+	}
+	if to.procs == nil && j.Kind == "push" {
+		if err := stopSession(r.remote, j.Session, j.Codex); err != nil {
+			return "", err
+		}
 	}
 	if j.Tab != nil {
 		if err := (sh.Tmux{Machine: r.remote}).Discard(*j.Tab); err != nil && !sh.TabGone(err) {

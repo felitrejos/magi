@@ -183,7 +183,9 @@ func (p Pull) Run() (res Pulled, err error) {
 	}); err != nil {
 		return res, undo(err)
 	}
-	res.note(j.at("retire"))
+	if err := j.at("retire"); err != nil {
+		return res, undo(err)
+	}
 	res.note(appendLog(logEntry{Time: time.Now(), Kind: "pull", Session: session.ID, From: p.HostName, To: local.Name(), FromDir: session.Cwd, ToDir: localDir}))
 	res.note(closeForwards(session.ID))
 	retired := retireCopy(remote, local, local.Name(), session.ID, session.Transcript, ws, p.Host.Exclude)

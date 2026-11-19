@@ -267,3 +267,12 @@ func TestWhenBothCopiesWereUsedStatusWaitsUntilOneIsQuit(t *testing.T) {
 		t.Error("the turns taken here were dropped")
 	}
 }
+
+func TestAPullCutOffWhileWaitingForTheTurnKeepsTheSessionWhereItWas(t *testing.T) {
+	remote := &sessionCopy{name: "server", used: true}
+	here := &sessionCopy{here: true, used: true}
+	r := recovery{j: &moveJournal{Kind: "pull", Step: "stop"}, from: remote, to: here, here: here, there: remote}
+	if got := r.live(true); got != remote {
+		t.Fatalf("live = %+v, want the copy on the server, since nothing was copied yet", got)
+	}
+}
