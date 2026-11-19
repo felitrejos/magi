@@ -9,120 +9,60 @@
 </p>
 
 <p align="center">
-  <a href="#install">Install</a> ·
-  <a href="#hand-off-and-back">Hand off and back</a> ·
-  <a href="#send-work">Send work</a> ·
-  <a href="#commands">Commands</a> ·
-  <a href="#faq">FAQ</a>
-</p>
-
-<p align="center">
   <img src="assets/handoff.gif" alt="A Claude Code session on a Mac runs a small server on localhost:3000. The user types hand this off to my homelab. When the turn ends, the session moves to the homelab with the server's uncommitted edit, and the Mac's localhost:3000 now answers from the homelab. Claude there remembers the change and says it is uncommitted. Told to hand this back to the Mac, the session returns." width="820">
 </p>
 
-<p align="center">
-  <i>A session moves to the homelab and back, and the Mac's localhost:3000 follows it.</i>
-</p>
-
-magi is one program. It moves the Claude Code or Codex session you're in to
-another machine, with its conversation, branch and uncommitted work, and
-brings it back. It also lets Claude send work to your other machines and
-get the result back in your working tree. It needs SSH between your
-machines, tmux on the machine that receives work, and the Claude Code or
-Codex CLI on both.
+magi also lets Claude send work to your other machines and get the result
+back in your working tree. It is one program, and it talks to your
+machines only over your own SSH.
 
 ## Install
 
-On every machine.
+Each machine needs git 2.31 or newer, `tar`, SSH that works without a
+password prompt, and Claude Code signed in with a claude.ai account. A
+machine that receives a session needs tmux. Run this on every machine.
 
 ```bash
 curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh
 claude plugin marketplace add felitrejos/magi && claude plugin install magi@magi
 ```
 
-Then, on your laptop.
+Then run this on your laptop.
 
 ```bash
 magi try
 ```
 
-`magi try` sets up magi if it isn't set up yet, checks both machines and
-then proves a round trip. It makes a throwaway git project named
-`magi-try-` plus eight random characters in your first local root, with
-one uncommitted line. It starts a Claude session there, moves it to the
-other machine, brings it back and checks that the session still remembers
-a word and that the uncommitted line came back. Then it removes the test
-project and its transcripts on both machines, also when a step failed. It
-takes three short Claude turns on your account, two here with Haiku and
-one on the other machine. A run takes about 15 seconds. If a check fails
-it stops before the round trip and says what to fix. `magi try <host>`
-tries another machine from your config.
+`magi try` sets magi up if needed, checks both machines, then moves a
+throwaway session to the other machine and back and removes it. It takes
+about 15 seconds and three short Claude turns on your account. If a check
+fails, it stops and says what to fix. `magi init` is the setup alone, and
+you run it again to add a machine. `magi doctor` checks both ends.
 
-`magi init` is the plain setup, without the round trip. Run it on any
-other machine that reaches another one over SSH, or to add a machine. It
-asks for the other machine's SSH destination, where `claude` and your
-projects live there, and which gitignored files to bring along (`.env` by
-default). It writes `~/.config/magi/config.toml` and runs `magi doctor`.
-If Tailscale is installed it lists the machines online in your tailnet as
-suggestions. Any SSH that works without a password prompt will do.
-
-`magi doctor` checks both ends. On the other machine it now also checks
-that `magi` is on the PATH of your login shell and that the magi plugin is
-installed and enabled.
-
-If your laptop takes no incoming SSH, run this on it as well.
-
-```bash
-magi watch install
-```
-
-It keeps `magi watch` running in the background from login, so sessions on
-your other machines can be handed back to the laptop. Run it again after
-you add a machine with `magi init`.
-
-Each machine needs git 2.31 or newer, `tar` and Claude Code signed in with
-a claude.ai account. The installer puts `magi` in `~/.local/bin`. If you
-had `magi-overview`, the installer removes it and its background service.
+If your laptop takes no incoming SSH, run `magi watch install` on it as
+well, and again after you add a machine. It keeps `magi watch` running
+from login, so sessions on your other machines can be handed back to the
+laptop.
 
 ## Hand off and back
 
-- **Hand off.** Say "hand this off to my homelab" in a Claude Code session.
-  When the turn ends, magi copies the conversation, the branch, staged and
-  unstaged changes, the gitignored files you listed and Claude's project
-  memory. The session continues in a tmux window on the homelab with
-  Remote Control on, so it is also in the Claude app. magi prints the
-  command that attaches to it. The copy on your machine closes.
-- **Hand back.** Say "hand this back to my Mac" there. If the homelab can
-  reach the Mac over SSH, that is an ordinary handoff. If it can't, the
-  Mac's `magi watch` sees the request over its own SSH connection and
-  pulls the session. Until the pull, the session keeps running on the
-  homelab.
-- **Pull.** Without a watcher, run `magi pull homelab` on the Mac. It
-  waits for the session's turn to end, brings it over and continues it in
-  that terminal.
-- **From outside a session.** `magi move <session-id> <host>` moves a
-  session on this machine, Codex sessions too.
-- **Claude Desktop.** A session started in Claude Desktop moves the same
-  way. Its sidebar entry stays, and if you type into it, magi refuses the
-  message and says where the session went. The moved session shows in the
-  Desktop sidebar, on claude.ai/code and on your phone through Remote
-  Control. A hand back opens it in a tmux window on the laptop under the
-  same session id, with Remote Control on, so it stays in the Claude apps.
-- **Failures.** A handoff that fails leaves the session running where it
-  was. `magi status` lists recent handoffs and sessions waiting to be
-  taken back, and stops any copy a failed handoff left behind.
+Say "hand this off to my homelab" in a Claude Code session. When the turn
+ends, magi copies the conversation, the branch, staged and unstaged
+changes, the gitignored files you listed and Claude's project memory. The
+session continues in a tmux window on the homelab with Remote Control on,
+so it is also in the Claude app, and magi prints the command that attaches
+to it. The copy you left closes and refuses new messages.
+
+Say "hand this back to my Mac" there to return. Without `magi watch`, run
+`magi pull homelab` on the Mac instead. From outside a session,
+`magi move <session-id> <host>` moves a session on this machine, and that
+is how you move a Codex session. A handoff that fails leaves the session
+running where it was, and `magi status` shows what happened.
 
 Nothing that is running moves. A project's `.magi.toml` can name a `setup`
-command, `services` to start in panes beside the session, and `ports` to
-forward, so `localhost:3000` on the machine you left reaches the session's
-server over `ssh -L`. It runs only after you approve the file with
-`magi allow`.
-
-```toml
-setup = "pnpm install"
-services = ["pnpm dev"]
-ports = [3000]
-```
+command, `services` to start beside the session and `ports` to forward
+back, such as `ports = [3000]`. It runs only after you approve the file
+with `magi allow`.
 
 ## Send work
 
@@ -130,43 +70,18 @@ ports = [3000]
   <img src="assets/background-work.gif" alt="In a Claude Code session on a Mac, the user asks for a background Claude to build a linux/amd64 Docker image on a machine that runs amd64 natively, and meanwhile to add a /stats route on the Mac. Claude proposes the homelab and the user agrees. The Mac session writes /stats while a background Claude on the homelab writes a Dockerfile and builds the image. When it finishes, the Dockerfile and .dockerignore land in the Mac's working tree, and git status shows the uncommitted changes." width="820">
 </p>
 
-<p align="center">
-  <i>The homelab builds the Docker image while the Mac session keeps working, and the new files land back on the Mac.</i>
-</p>
+The plugin gives Claude tools to run a shell command, a background Claude
+or a new session on another machine. Claude proposes a machine and waits
+for your yes. The work runs in its own copy of your working tree, in a
+tmux window you can watch. A background Claude's changes are applied to
+your working tree and kept on the branch `magi/task-<id>`. If they clash
+with your edits, they stay on the branch.
 
-The plugin gives Claude tools to use your other machines.
-
-- **Three kinds of work.** Claude can run a shell command there, give a
-  task to a background Claude, or open a second interactive session. Each
-  runs in its own copy of your working tree under `~/.magi/tasks`, in a
-  tmux window you can watch, and never touches your checkouts there.
-- **Claude asks first.** It reads each machine over SSH (system,
-  architecture, build tools, load, memory and how many Claude sessions are
-  working), proposes one and waits for your yes.
-- **Work comes back.** Claude waits with `magi tasks wait <id>` in the
-  background. A background Claude's changes are applied to your working
-  tree and kept on the branch `magi/task-<id>`. If they clash with your
-  edits, nothing is overwritten and they stay on the branch.
-- **Limits per machine.** Under a host in `config.toml` you can set
-  `max_agents`, `min_free_memory` (such as `"4G"`) and `quiet_hours` (such
-  as `"22:00-07:00"`). magi starts nothing new on a machine past them.
-
-`magi mcp` serves the same tools to any MCP client. For Claude Desktop, add
-this to `claude_desktop_config.json`.
-
-```json
-{ "mcpServers": { "magi": { "command": "/Users/you/.local/bin/magi", "args": ["mcp"] } } }
-```
-
-| Tool | What it does |
-|---|---|
-| `machines` | Lists your machines with their system, load and room |
-| `sessions` | Lists Claude Code and Codex sessions on every machine |
-| `diff` | Shows a session's uncommitted changes |
-| `run_elsewhere` | Runs a shell command on another machine |
-| `delegate` | Gives a task to a background Claude there |
-| `session_elsewhere` | Opens a new interactive session there |
-| `task_status`, `task_result`, `task_reply`, `cancel_task` | Follow, collect, continue or stop that work |
+The tools are `machines`, `sessions`, `diff`, `run_elsewhere`, `delegate`,
+`session_elsewhere`, `task_status`, `task_result`, `task_reply` and
+`cancel_task`. `magi mcp` serves them to any MCP client. Under a host in
+`~/.config/magi/config.toml` you can set `max_agents`, `min_free_memory`
+and `quiet_hours`, and magi starts nothing new on a machine past them.
 
 ## Commands
 
@@ -178,8 +93,8 @@ magi doctor [host...]              check that everything a handoff needs is in p
 magi pull <host> [session-id]      bring a session back from <host> and continue it here
 magi move <session-id> <host> [--json]
                                    move a session on this machine to <host>
-magi status                        recent handoffs, sessions waiting to be taken back,
-                                   parked checkouts and leftover copies
+magi status                        recent handoffs, parked checkouts, and copies a
+                                   failed handoff left running, which it stops
 magi watch                         take back sessions other machines hand back here
 magi watch install | uninstall     run magi watch in the background from login
 magi unpark [dir]                  stop treating a checkout as parked
@@ -193,25 +108,16 @@ magi tasks clean                   collect finished tasks and drop old copies
 
 ## FAQ
 
-**How do I move a Codex session?** With `magi move` or `magi pull`. It
-moves when its turn ends and reopens with `codex resume`. If another Codex
-is open in the same folder, quit it first, because magi can't tell which
-session it shows. The other machine needs Codex installed, and `magi init`
-asks for its path.
+**How do I move a Codex session?** With `magi move` or `magi pull`. The
+other machine needs Codex installed, and `magi init` asks for its path. If
+another Codex is open in the same folder, quit it first.
 
-**Where is my session after a handoff?** In a tmux window on the other
-machine, and in the Claude app through Remote Control. The copy you left
-refuses new messages and tells you where the session went.
+**Why does magi refuse my Claude Code version?** It only moves a session
+with versions its tests passed with. New releases are tested every night,
+so a refusal usually clears within a day without a magi update.
 
-**What if Claude Code changes its files?** magi reads session files that
-aren't a documented format, so it only moves a session with Claude Code
-and Codex versions its tests passed with. If either machine runs a newer
-one, magi refuses the move before it copies anything and names the
-version. The tests run every night against the newest releases, so this
-usually clears within a day, without a magi update. `magi doctor` shows it
-for every machine. To get the list of tested versions, magi fetches one
-small file from this repository on GitHub, at most once an hour. That is
-the only web request it makes.
+**Do my secrets move?** Only the gitignored files you listed, such as
+`.env`, and only to machines you configured. Logins and SSH keys never
+move. [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md) list the rest.
 
-What's next is in [ROADMAP.md](ROADMAP.md). What magi reads, sends and
-changes is in [SECURITY.md](SECURITY.md). Licensed [MIT](LICENSE).
+What's next is in [ROADMAP.md](ROADMAP.md). Licensed [MIT](LICENSE).
