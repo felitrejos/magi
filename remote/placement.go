@@ -117,9 +117,6 @@ func (p spot) String() string {
 func (view fleetView) places(needs needsInput) []spot {
 	var places []spot
 	consider := func(m fleetMachine, name string, here bool) {
-		if !m.Live && !m.Probed {
-			return
-		}
 		how := ""
 		native := needs.native(m)
 		switch {

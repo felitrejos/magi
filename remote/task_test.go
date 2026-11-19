@@ -332,19 +332,6 @@ func TestAPlainFolderTaskBringsTheFolderBack(t *testing.T) {
 	}
 }
 
-const fakeMagi = `#!/bin/sh
-[ "$1 $2" = "fleet --json" ] || exit 2
-cat <<'EOF'
-{"machines":[
- {"name":"laptop","here":true,"live":true,"os":"macOS","cores":10,"cpu":0.9,"load":[9,8,7],"memory_used":1,"memory_total":2,"agents":{"working":3,"waiting":0,"idle":0},"error":null},
- {"name":"homelab","here":false,"live":true,"os":"Ubuntu","cores":12,"cpu":0.4,"load":[1,1,1],"memory_used":1,"memory_total":4,"agents":{"working":1,"waiting":0,"idle":2},"error":null,"future":"ignored"},
- {"name":"box.tail1234.ts.net","here":false,"live":true,"os":"Ubuntu","cores":4,"cpu":0.05,"load":[0.1,0,0],"memory_used":1,"memory_total":4,"agents":{"working":0,"waiting":0,"idle":0},"error":null},
- {"name":"gpu","here":false,"live":false,"cores":0,"cpu":0,"load":[],"memory_used":0,"memory_total":0,"agents":{"working":0,"waiting":0,"idle":0},"error":"connection refused"},
- {"name":"stranger","here":false,"live":true,"os":"Ubuntu","cores":4,"cpu":0.0,"load":[0,0,0],"memory_used":1,"memory_total":4,"agents":{"working":0,"waiting":0,"idle":0},"error":null}
-]}
-EOF
-`
-
 const threeHosts = `
 [hosts.homelab]
 ssh = "homelab"
@@ -364,9 +351,17 @@ roots = ["~/developer"]
 
 func (f *fixture) probesAs(output string) {
 	f.t.Helper()
+	f.probesEach(nil, output)
+}
+
+func (f *fixture) probesEach(outputs map[string]string, others string) {
+	f.t.Helper()
 	saved := probeMachine
 	probeMachine = func(_ context.Context, name string, _ Host) (*fleetMachine, error) {
-		return parsePlatform(name, output), nil
+		if out, ok := outputs[name]; ok {
+			return parsePlatform(name, out), nil
+		}
+		return parsePlatform(name, others), nil
 	}
 	f.t.Cleanup(func() { probeMachine = saved })
 }
@@ -376,44 +371,40 @@ const quietLinux = "Ubuntu 24.04\nx86_64\ndocker\n4\n0.10 0.10 0.10\n8000000000 
 func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
-	f.probesAs(quietLinux)
-	f.tool("magi-overview", fakeMagi)
-	picks, skipped, _, err := chooseHosts(context.Background(), "", true)
+	f.probesEach(map[string]string{"homelab": strings.Replace(quietLinux, "\n0\n", "\n1\n", 1)}, quietLinux)
+	picks, skipped, err := chooseHosts(context.Background(), "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(picks) != 3 || picks[0].Host != "homelab" || picks[1].Host != "small" || picks[2].Host != "gpu" || len(skipped) != 0 {
 		t.Fatalf("picks = %+v, skipped %v", picks, skipped)
 	}
-	if !strings.Contains(picks[0].Why, "first machine in your list with room") || !strings.Contains(picks[2].Why, "read over SSH") {
+	if !strings.Contains(picks[0].Why, "first machine in your list with room") {
 		t.Errorf("reasons = %+v", picks)
 	}
-	if picks, _, _, err := chooseHosts(context.Background(), "gpu", true); err != nil || len(picks) != 1 || picks[0].Host != "gpu" {
+	if picks, _, err := chooseHosts(context.Background(), "gpu", true); err != nil || len(picks) != 1 || picks[0].Host != "gpu" {
 		t.Errorf("asking for gpu gave %+v, %v", picks, err)
 	}
-	if _, _, _, err := chooseHosts(context.Background(), "nowhere", true); err == nil || !strings.Contains(err.Error(), "configured hosts: gpu, homelab, small") {
+	if _, _, err := chooseHosts(context.Background(), "nowhere", true); err == nil || !strings.Contains(err.Error(), "configured hosts: gpu, homelab, small") {
 		t.Errorf("asking for an unknown host: %v", err)
 	}
 
 	f.config(strings.Replace(threeHosts, "[hosts.homelab]\n", "[hosts.homelab]\nmax_agents = 1\n", 1))
-	picks, skipped, _, _ = chooseHosts(context.Background(), "", true)
+	picks, skipped, _ = chooseHosts(context.Background(), "", true)
 	if picks[0].Host != "small" || len(skipped) != 1 || !strings.Contains(skipped[0], "homelab has no room: 1 agents are working there, its budget is 1") {
 		t.Errorf("with homelab full: picks %+v, skipped %v", picks, skipped)
 	}
-	if picks, _, _, _ := chooseHosts(context.Background(), "", false); picks[0].Host != "homelab" {
+	if picks, _, _ := chooseHosts(context.Background(), "", false); picks[0].Host != "homelab" {
 		t.Errorf("a command isn't an agent, so homelab still has room: %+v", picks)
 	}
 
 	cfg, _, _ := loadConfig()
 	text := describeMachines(surveyFleet(context.Background(), cfg, true), needsInput{})
 	for _, want := range []string{
-		"This machine (laptop): cpu 90%",
 		"- homelab (ssh homelab): reachable; budget: at most 1 working agents; NO ROOM now: 1 agents are working there",
 		"- gpu (ssh gpu): reachable; budget: no budget; ",
-		"Claude sessions working, read over SSH",
-		"- small (ssh me@box): reachable; budget: no budget; Ubuntu cpu 5%",
+		"1 Claude sessions working",
 		"Suggested: small,",
-		"magi also sees stranger",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("machines lacks %q:\n%s", want, text)
@@ -424,21 +415,16 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	}
 }
 
-func TestWithoutTheOverviewMachinesAreTriedInConfigOrderAndTheReasonGiven(t *testing.T) {
+func TestMachinesWhoseLoadIsUnknownAreTriedInConfigOrder(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
 	f.probesAs("Ubuntu 24.04\nx86_64\n\n")
-	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
-	picks, _, _, err := chooseHosts(context.Background(), "", true)
+	picks, _, err := chooseHosts(context.Background(), "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if picks[0].Host != "homelab" || !strings.Contains(picks[0].Why, "magi-overview isn't installed") {
+	if picks[0].Host != "homelab" || !strings.Contains(picks[0].Why, "its load is unknown") {
 		t.Errorf("picks = %+v", picks)
-	}
-	f.tool("magi-overview", "#!/bin/sh\necho '{\"machines\":[]}'\n")
-	if picks, _, _, err := chooseHosts(context.Background(), "", true); err != nil || !strings.Contains(picks[0].Why, "listed no machines") {
-		t.Errorf("with an empty fleet: %+v, %v", picks, err)
 	}
 }
 
@@ -467,7 +453,7 @@ func TestBudgetsParseMemoryAndQuietHours(t *testing.T) {
 	if got := b.String(); got != "at most 2 working agents, at least 4.0 GB free memory, nothing new 22:00-07:00" {
 		t.Errorf("budget = %q", got)
 	}
-	tight := &fleetMachine{Live: true, MemoryTotal: 8 << 30, MemoryUsed: 6 << 30, Cores: 4, Load: []float64{0}}
+	tight := &fleetMachine{MemoryTotal: 8 << 30, MemoryUsed: 6 << 30, Cores: 4, Load: []float64{0}}
 	if got := b.noRoom(at("12:00"), tight, true); !strings.Contains(got, "2.0 GB of memory is free there, its budget needs 4.0 GB") {
 		t.Errorf("noRoom = %q", got)
 	}
@@ -559,7 +545,6 @@ func TestADelegatedClaudeNeverBypassesPermissions(t *testing.T) {
 func TestTheToolServerOffersItsTools(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
-	f.tool("magi-overview", fakeMagi)
 	serverSide, clientSide := mcp.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := newMCPServer().Connect(ctx, serverSide, nil); err != nil {
@@ -817,56 +802,6 @@ func TestOnlyADelegatedClaudeTakesFollowUps(t *testing.T) {
 	collectTask(d.Task.ID, true)
 }
 
-func TestANearlyUsedPlanWarnsAndAFullOneRefusesUnlessTheUserInsists(t *testing.T) {
-	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.Local)
-	reset := now.Add(90 * time.Minute).Unix()
-	plans := []plan{{Agent: "codex", Windows: []planWindow{{Label: "5h", Used: 0.99}}}, {Agent: "claude", Windows: []planWindow{{Label: "5h", Used: 0.93, ResetsAt: reset}, {Label: "weekly", Used: 0.8}}}}
-	v := checkPlan(plans, "claude", now)
-	if !strings.Contains(v.Refuse, "Claude plan's 5h window is 93% used and resets at 13:30") || !strings.Contains(v.Warn, "weekly window is 80% used") {
-		t.Errorf("verdict = %+v", v)
-	}
-	if v := checkPlan(plans[:1], "claude", now); v.Refuse != "" || v.Warn != "" {
-		t.Errorf("another agent's plan counted: %+v", v)
-	}
-	if _, err := planGate(plans, false); err == nil || !strings.Contains(err.Error(), "despite_plan") {
-		t.Errorf("gate = %v", err)
-	}
-	if text, err := planGate(plans, true); err != nil || !strings.HasPrefix(text, "Started although") {
-		t.Errorf("gate despite = %q, %v", text, err)
-	}
-}
-
-func TestDelegateRefusesWhenMagiSaysThePlanIsNearlyUsedUp(t *testing.T) {
-	f := newFixture(t)
-	f.config(threeHosts)
-	f.tool("magi-overview", strings.Replace(strings.Replace(fakeMagi, `{"machines":[`, `{"plans":[{"agent":"claude","windows":[{"label":"5h","used":0.95,"resets_at":0}]}],"machines":[`, 1),
-		`"error":null,"future":"ignored"}`, `"error":null,"future":"ignored","sessions":[{"id":"a","agent":"claude","state":"working","cpu":2.5,"memory":1610612736},{"id":"b","agent":"codex","state":"idle","cpu":0.5,"memory":536870912}]}`, 1))
-	serverSide, clientSide := mcp.NewInMemoryTransports()
-	ctx := context.Background()
-	if _, err := newMCPServer().Connect(ctx, serverSide, nil); err != nil {
-		t.Fatal(err)
-	}
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientSide, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer session.Close()
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "delegate", Arguments: map[string]any{"task": "x", "dir": f.local}})
-	if err != nil || !res.IsError || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, "5h window is 95% used") {
-		t.Fatalf("delegate = %+v, %v", res, err)
-	}
-	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "machines"})
-	if err != nil || res.IsError {
-		t.Fatalf("machines = %+v, %v", res, err)
-	}
-	text := res.Content[0].(*mcp.TextContent).Text
-	for _, want := range []string{"Claude plan (shared by all machines): 5h window is 95% used", "won't start Claude work until it resets", "its 2 agent sessions use 3.0 cores and 2.0 GB"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("machines lacks %q:\n%s", want, text)
-		}
-	}
-}
-
 func TestHostsWrittenWithDottedKeysKeepTheirPlace(t *testing.T) {
 	f := newFixture(t)
 	f.config(`[hosts]
@@ -910,16 +845,6 @@ roots = ["~/d"]
 	}
 }
 
-func TestMagiSessionsWithoutNumbersYetAreRead(t *testing.T) {
-	var data fleetData
-	if err := json.Unmarshal([]byte(`{"plans":[],"machines":[{"name":"m","sessions":[{"id":"a","agent":"claude","cpu":null,"memory":null},{"id":"b","agent":"claude","cpu":1.5,"memory":1073741824}]}]}`), &data); err != nil {
-		t.Fatal(err)
-	}
-	if got := data.Machines[0].sessionLoad(); got != "its 2 agent sessions use 1.5 cores and 1.0 GB" {
-		t.Errorf("load = %q", got)
-	}
-}
-
 func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost("")
@@ -931,7 +856,7 @@ func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { self = caller{} })
-	if _, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "sleep 0.5"}, false); err != nil {
+	if _, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "sleep 0.5"}); err != nil {
 		t.Fatal(err)
 	}
 	tasks, _ := listTasks()
@@ -978,7 +903,7 @@ func TestClosingIdleCopiesIsReportedOnlyWhenCollectingAndNotWhileAnotherMagiHold
 		t.Fatal(err)
 	}
 	defer unlock()
-	text, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "true"}, false)
+	text, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "true"})
 	if err != nil {
 		t.Fatal(err)
 	}

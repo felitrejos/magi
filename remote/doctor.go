@@ -186,11 +186,6 @@ func doctor(names []string, out io.Writer) error {
 	} else {
 		c.warn("magi watch isn't running here", "run magi watch install so a session on another machine can be handed back here")
 	}
-	if fleet, err := readFleet(ctx); err != nil {
-		c.warn("the overview doesn't report machine load ("+err.Error()+")", "tasks sent to other machines go to the first configured host that answers; when the overview is installed, their load is also checked against each host's budget.")
-	} else {
-		c.pass(fmt.Sprintf("magi reports load for %d machine(s)", len(fleet.Machines)))
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err

@@ -194,16 +194,6 @@ func outcomeState(o *Outcome) string {
 
 func describeMachines(view fleetView, needs needsInput) string {
 	var b strings.Builder
-	if view.FleetErr != nil {
-		fmt.Fprintf(&b, "magi-overview isn't answering (%v), so load was read over SSH and the plan's usage is unknown.\n\n", view.FleetErr)
-	}
-	if plans := describePlans(view.Plans, time.Now()); plans != "" {
-		fmt.Fprintf(&b, "%s\n", plans)
-		if v := checkPlan(view.Plans, "claude", time.Now()); v.Refuse != "" {
-			b.WriteString("delegate, session_elsewhere and task_reply won't start Claude work until it resets, unless the user says to go ahead anyway.\n")
-		}
-		b.WriteString("\n")
-	}
 	if view.Here != nil {
 		fmt.Fprintf(&b, "This machine (%s): %s\n\n", view.Here.Name, view.Here.describe())
 	}
@@ -224,11 +214,6 @@ func describeMachines(view fleetView, needs needsInput) string {
 			if len(m.Fleet.Tools) > 0 {
 				fmt.Fprintf(&b, "; has %s", strings.Join(m.Fleet.Tools, ", "))
 			}
-			if load := m.Fleet.sessionLoad(); load != "" {
-				fmt.Fprintf(&b, "; %s", load)
-			}
-		} else if view.FleetErr == nil {
-			b.WriteString("; the overview doesn't report it, so its load is unknown")
 		}
 		b.WriteString("\n")
 		for _, t := range m.Tasks {
@@ -241,13 +226,6 @@ func describeMachines(view fleetView, needs needsInput) string {
 		fmt.Fprintf(&b, "\nSuggested: %s, %s.\n", picks[0].Host, picks[0].Why)
 	} else {
 		b.WriteString("\nNo machine has room right now.\n")
-	}
-	if len(view.Unmatched) > 0 {
-		var names []string
-		for _, m := range view.Unmatched {
-			names = append(names, m.Name)
-		}
-		fmt.Fprintf(&b, "\nmagi also sees %s, which isn't in the config; add it there to send work to it.\n", strings.Join(names, ", "))
 	}
 	return b.String()
 }

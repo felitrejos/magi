@@ -8,7 +8,7 @@ import (
 )
 
 func machineFor(name, os, arch string, cpu float64, tools ...string) fleetMachine {
-	return fleetMachine{Name: name, Live: true, OS: os, Arch: arch, CPU: cpu, Cores: 8, Tools: tools}
+	return fleetMachine{Name: name, OS: os, Arch: arch, Load: []float64{cpu * 8}, Cores: 8, Tools: tools}
 }
 
 func TestALinuxBuildGoesToTheLinuxMachineBeforeAContainerOnTheMac(t *testing.T) {
@@ -94,18 +94,18 @@ func TestAMachineWithKnownLoadComesBeforeOneWithUnknownLoad(t *testing.T) {
 	}
 }
 
-func TestAMachineReadOverSSHWithoutMagiSaysMagiDoesntReportIt(t *testing.T) {
-	if got := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\n\n").describe(); !strings.HasPrefix(got, "the overview doesn't report it, so its load is unknown") {
+func TestAMachineWhoseLoadCantBeReadSaysSo(t *testing.T) {
+	if got := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\n\n").describe(); got != "its system and tools were read over SSH, but not its load" {
 		t.Fatal(got)
 	}
 }
 
-func TestAMachineWithoutTheOverviewReportsItsLoadOverSSH(t *testing.T) {
+func TestAMachineReportsItsLoadOverSSH(t *testing.T) {
 	m := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\ndocker go\n8\n3.20 2.10 1.00\n16000000000 4000000000\n2\n")
-	if !m.measured() || m.Cores != 8 || m.Load[0] != 3.2 || m.MemoryUsed != 12e9 || m.Agents.Working != 2 {
+	if !m.measured() || m.Cores != 8 || m.Load[0] != 3.2 || m.MemoryUsed != 12e9 || m.Working != 2 {
 		t.Fatalf("parsed %+v", m)
 	}
-	if got := m.describe(); got != "load 3.20 on 8 cores, memory 11.2 GB of 14.9 GB, 2 Claude sessions working, read over SSH" {
+	if got := m.describe(); got != "load 3.20 on 8 cores, memory 11.2 GB of 14.9 GB, 2 Claude sessions working" {
 		t.Errorf("describe = %q", got)
 	}
 	if room := (Budget{MaxAgents: 2}).noRoom(time.Now(), m, true); !strings.Contains(room, "2 agents are working") {

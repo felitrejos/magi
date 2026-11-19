@@ -4,14 +4,6 @@ set -eu
 main() {
   repo="felitrejos/magi"
   dir="${MAGI_INSTALL_DIR:-$HOME/.local/bin}"
-  bins="magi"
-  agent=""
-  for unit in "$HOME/Library/LaunchAgents/magi-agent.plist" "$HOME/.config/systemd/user/magi-agent.service"; do
-    [ -e "$unit" ] && agent="$unit"
-  done
-  if [ "${1:-}" = overview ] || [ -n "$agent" ]; then
-    bins="magi magi-overview"
-  fi
 
   case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) target=aarch64-apple-darwin ;;
@@ -38,19 +30,11 @@ main() {
 
   tar -xzf "$work/$archive" -C "$work"
   mkdir -p "$dir"
-  for bin in $bins; do
-    install -m 755 "$work/$bin" "$dir/$bin.new"
-    mv "$dir/$bin.new" "$dir/$bin"
-  done
-  rm -f "$dir/magi-remote"
-  echo "Installed $bins to $dir"
+  install -m 755 "$work/magi" "$dir/magi.new"
+  mv "$dir/magi.new" "$dir/magi"
+  echo "Installed magi to $dir"
 
-  if [ -n "$agent" ]; then
-    "$dir/magi-overview" agent install
-    if grep -qE "/magi'? statusline\"" "$HOME/.claude/settings.json" 2>/dev/null; then
-      "$dir/magi-overview" statusline install
-    fi
-  fi
+  remove_overview
 
   case ":$PATH:" in
     *":$dir:"*) ;;
@@ -58,10 +42,27 @@ main() {
   esac
 
   printf '\nNext:\n'
-  printf '  magi init                      on each machine, to move sessions and send work\n'
-  if [ -n "$agent" ] || [ "${1:-}" = overview ]; then
-    printf '  magi-overview agent install    on every machine, for the overview\n'
-    printf '  magi-overview                  in a Rex pane\n'
+  printf '  magi init              on each machine, to move sessions and send work\n'
+  printf '  magi watch install     on your laptop, so sessions can be handed back to it\n'
+}
+
+remove_overview() {
+  plist="$HOME/Library/LaunchAgents/magi-agent.plist"
+  unit="$HOME/.config/systemd/user/magi-agent.service"
+  if [ -e "$plist" ]; then
+    launchctl bootout "gui/$(id -u)/magi-agent" 2>/dev/null || :
+    rm -f "$plist"
+    echo "Removed the magi-overview service"
+  fi
+  if [ -e "$unit" ]; then
+    systemctl --user disable --now magi-agent.service 2>/dev/null || :
+    rm -f "$unit"
+    systemctl --user daemon-reload 2>/dev/null || :
+    echo "Removed the magi-overview service"
+  fi
+  rm -f "$dir/magi-overview" "$dir/magi-remote"
+  if grep -q 'magi-overview.* statusline' "$HOME/.claude/settings.json" 2>/dev/null; then
+    echo "Your Claude Code status line still runs magi-overview, which is gone: remove the statusLine entry from ~/.claude/settings.json"
   fi
 }
 

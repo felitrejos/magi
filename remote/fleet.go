@@ -2,139 +2,48 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"math"
-	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-const (
-	fleetWait = 6 * time.Second
-	reachWait = 8 * time.Second
-)
+const reachWait = 8 * time.Second
 
 type fleetMachine struct {
-	Name        string    `json:"name"`
-	Here        bool      `json:"here"`
-	Live        bool      `json:"live"`
-	OS          string    `json:"os"`
-	Arch        string    `json:"arch"`
-	Tools       []string  `json:"tools"`
-	Cores       int       `json:"cores"`
-	CPU         float64   `json:"cpu"`
-	Load        []float64 `json:"load"`
-	MemoryUsed  float64   `json:"memory_used"`
-	MemoryTotal float64   `json:"memory_total"`
-	Agents      struct {
-		Working int `json:"working"`
-		Waiting int `json:"waiting"`
-		Idle    int `json:"idle"`
-	} `json:"agents"`
-	Error    *string        `json:"error"`
-	Sessions []agentSession `json:"sessions"`
-	Probed   bool           `json:"-"`
-}
-
-type agentSession struct {
-	CPU    float64 `json:"cpu"`
-	Memory float64 `json:"memory"`
-}
-
-type fleetData struct {
-	Machines []fleetMachine `json:"machines"`
-	Plans    []plan         `json:"plans"`
+	Name        string
+	OS          string
+	Arch        string
+	Tools       []string
+	Cores       int
+	Load        []float64
+	MemoryUsed  float64
+	MemoryTotal float64
+	Working     int
 }
 
 func (m fleetMachine) busy() float64 {
-	busy := m.CPU
-	if len(m.Load) > 0 && m.Cores > 0 {
-		busy = math.Max(busy, m.Load[0]/float64(m.Cores))
+	if len(m.Load) == 0 || m.Cores == 0 {
+		return 0
 	}
-	return busy
+	return m.Load[0] / float64(m.Cores)
 }
 
 func (m fleetMachine) measured() bool {
-	return m.Live || m.Probed && m.Cores > 0
+	return m.Cores > 0
 }
 
 func (m fleetMachine) describe() string {
-	if m.Probed && m.Cores > 0 {
-		parts := []string{fmt.Sprintf("load %.2f on %d cores", m.Load[0], m.Cores)}
-		if m.MemoryTotal > 0 {
-			parts = append(parts, "memory "+formatMemory(m.MemoryUsed)+" of "+formatMemory(m.MemoryTotal))
-		}
-		parts = append(parts, fmt.Sprintf("%d Claude sessions working", m.Agents.Working))
-		return strings.Join(parts, ", ") + ", read over SSH"
+	if !m.measured() {
+		return "its system and tools were read over SSH, but not its load"
 	}
-	if !m.Live {
-		probed := "so its load is unknown; its system and tools were read over SSH"
-		if m.Error == nil || *m.Error == "" {
-			if m.Probed {
-				return "the overview doesn't report it, " + probed
-			}
-			return "the overview: not answering (no answer)"
-		}
-		text := "the overview: not answering (" + *m.Error + ")"
-		if m.Probed {
-			text += ", " + probed
-		}
-		return text
-	}
-	parts := []string{fmt.Sprintf("cpu %.0f%%", m.CPU*100)}
-	if len(m.Load) > 0 {
-		parts = append(parts, fmt.Sprintf("load %.2f on %d cores", m.Load[0], m.Cores))
-	}
+	parts := []string{fmt.Sprintf("load %.2f on %d cores", m.Load[0], m.Cores)}
 	if m.MemoryTotal > 0 {
 		parts = append(parts, "memory "+formatMemory(m.MemoryUsed)+" of "+formatMemory(m.MemoryTotal))
 	}
-	parts = append(parts, fmt.Sprintf("agents %d working, %d waiting, %d idle", m.Agents.Working, m.Agents.Waiting, m.Agents.Idle))
+	parts = append(parts, fmt.Sprintf("%d Claude sessions working", m.Working))
 	return strings.Join(parts, ", ")
-}
-
-func readFleet(ctx context.Context) (fleetData, error) {
-	var fleet fleetData
-	path, err := exec.LookPath("magi-overview")
-	if err != nil {
-		return fleet, errors.New("magi-overview isn't installed here")
-	}
-	ctx, cancel := context.WithTimeout(ctx, fleetWait)
-	defer cancel()
-	out, err := run(ctx, path, "fleet", "--json")
-	if err != nil {
-		return fleet, fmt.Errorf("magi-overview fleet failed: %w", err)
-	}
-	if err := json.Unmarshal(out, &fleet); err != nil {
-		return fleetData{}, fmt.Errorf("magi-overview fleet: %w", err)
-	}
-	if len(fleet.Machines) == 0 {
-		return fleet, errors.New("magi-overview fleet listed no machines")
-	}
-	return fleet, nil
-}
-
-func hostAliases(name string, h Host) []string {
-	ssh := h.SSH
-	if _, after, ok := strings.Cut(ssh, "@"); ok {
-		ssh = after
-	}
-	ssh, _, _ = strings.Cut(ssh, ":")
-	short, _, _ := strings.Cut(ssh, ".")
-	return []string{strings.ToLower(name), strings.ToLower(h.SSH), strings.ToLower(ssh), strings.ToLower(short)}
-}
-
-func fleetIndex(name string, h Host, fleet []fleetMachine) int {
-	aliases := hostAliases(name, h)
-	return slices.IndexFunc(fleet, func(m fleetMachine) bool {
-		machine := strings.ToLower(m.Name)
-		short, _, _ := strings.Cut(machine, ".")
-		return !m.Here && (slices.Contains(aliases, machine) || slices.Contains(aliases, short))
-	})
 }
 
 type machineInfo struct {
@@ -148,39 +57,16 @@ type machineInfo struct {
 }
 
 type fleetView struct {
-	Machines  []machineInfo
-	Here      *fleetMachine
-	Unmatched []fleetMachine
-	FleetErr  error
-	Plans     []plan
-}
-
-func reachable(ctx context.Context, h Host) error {
-	ctx, cancel := context.WithTimeout(ctx, reachWait)
-	defer cancel()
-	r, err := newRemote(ctx, h)
-	if err != nil {
-		return err
-	}
-	_, err = sh(r, "true")
-	return err
+	Machines []machineInfo
+	Here     *fleetMachine
 }
 
 func surveyFleet(ctx context.Context, cfg Config, agents bool) fleetView {
 	var view fleetView
-	data, err := readFleet(ctx)
-	fleet := data.Machines
-	view.FleetErr, view.Plans = err, data.Plans
-	used := map[int]bool{}
 	tasks, _ := listTasks()
 	now := time.Now()
 	for _, name := range cfg.Order {
-		h := cfg.Hosts[name]
-		m := machineInfo{Name: name, Host: h}
-		if i := fleetIndex(name, h, fleet); i >= 0 {
-			m.Fleet = &fleet[i]
-			used[i] = true
-		}
+		m := machineInfo{Name: name, Host: cfg.Hosts[name]}
 		for _, t := range tasks {
 			if t.Host == name && t.Outcome == nil {
 				m.Tasks = append(m.Tasks, t)
@@ -188,18 +74,14 @@ func surveyFleet(ctx context.Context, cfg Config, agents bool) fleetView {
 		}
 		view.Machines = append(view.Machines, m)
 	}
-	for i := range fleet {
-		switch {
-		case fleet[i].Here:
-			view.Here = &fleet[i]
-		case !used[i]:
-			view.Unmatched = append(view.Unmatched, fleet[i])
-		}
-	}
 	var wg sync.WaitGroup
 	for i := range view.Machines {
-		wg.Go(func() { view.Machines[i].probe(ctx) })
+		wg.Go(func() {
+			m := &view.Machines[i]
+			m.Fleet, m.Reachable = probeMachine(ctx, m.Name, m.Host)
+		})
 	}
+	wg.Go(func() { view.Here = probeHere(ctx) })
 	wg.Wait()
 	for i := range view.Machines {
 		m := &view.Machines[i]
@@ -213,19 +95,16 @@ func surveyFleet(ctx context.Context, cfg Config, agents bool) fleetView {
 	return view
 }
 
-func (m *machineInfo) probe(ctx context.Context) {
-	if m.Fleet != nil && m.Fleet.Live {
-		m.Reachable = reachable(ctx, m.Host)
-		return
+func probeHere(ctx context.Context) *fleetMachine {
+	local, err := newLocal(ctx)
+	if err != nil {
+		return nil
 	}
-	probed, err := probeMachine(ctx, m.Name, m.Host)
-	m.Reachable = err
-	if err == nil {
-		if m.Fleet != nil {
-			probed.Error = m.Fleet.Error
-		}
-		m.Fleet = probed
+	out, err := sh(local, platformScript, local.Claude())
+	if err != nil {
+		return nil
 	}
+	return parsePlatform(local.Name(), string(out))
 }
 
 const platformScript = `PATH="$PATH:$HOME/.local/bin:$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin"
@@ -276,7 +155,7 @@ func probePlatform(ctx context.Context, name string, h Host) (*fleetMachine, err
 
 func parsePlatform(name, out string) *fleetMachine {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	m := &fleetMachine{Name: name, Probed: true}
+	m := &fleetMachine{Name: name}
 	if len(lines) > 0 {
 		m.OS = strings.TrimSpace(lines[0])
 	}
@@ -302,7 +181,7 @@ func parsePlatform(name, out string) *fleetMachine {
 		return m
 	}
 	m.Cores, m.Load, m.MemoryTotal, m.MemoryUsed = cores, []float64{load}, total, total-available
-	m.Agents.Working = working
+	m.Working = working
 	return m
 }
 
@@ -320,12 +199,6 @@ type choice struct {
 }
 
 func (view fleetView) candidates() (picks []choice, skipped []string) {
-	unknown := "load unknown"
-	if view.FleetErr != nil {
-		unknown += " (" + view.FleetErr.Error() + ")"
-	} else {
-		unknown += " (the overview doesn't report it)"
-	}
 	for _, m := range view.Machines {
 		switch {
 		case m.Reachable != nil:
@@ -339,44 +212,27 @@ func (view fleetView) candidates() (picks []choice, skipped []string) {
 			}
 			picks = append(picks, choice{Host: m.Name, Why: why})
 		default:
-			picks = append(picks, choice{Host: m.Name, Why: "the first machine in your list that answers; " + unknown})
+			picks = append(picks, choice{Host: m.Name, Why: "the first machine in your list that answers; its load is unknown"})
 		}
 	}
 	return picks, skipped
 }
 
-func chooseHosts(ctx context.Context, requested string, agents bool) ([]choice, []string, []plan, error) {
+func chooseHosts(ctx context.Context, requested string, agents bool) ([]choice, []string, error) {
 	cfg, path, err := loadConfig()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	if len(cfg.Hosts) == 0 {
-		return nil, nil, nil, fmt.Errorf("no hosts in %s; run magi init", path)
+		return nil, nil, fmt.Errorf("no hosts in %s; run magi init", path)
 	}
 	if requested != "" {
 		if _, err := loadHost(requested); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
-		var plans []plan
-		if agents {
-			data, _ := readFleet(ctx)
-			plans = data.Plans
-		}
-		return []choice{{Host: requested, Why: "the machine you asked for"}}, nil, plans, nil
+		return []choice{{Host: requested, Why: "the machine you asked for"}}, nil, nil
 	}
 	view := surveyFleet(ctx, cfg, agents)
 	picks, skipped := view.candidates()
-	return picks, skipped, view.Plans, nil
-}
-
-func (m fleetMachine) sessionLoad() string {
-	if len(m.Sessions) == 0 {
-		return ""
-	}
-	var cpu, memory float64
-	for _, s := range m.Sessions {
-		cpu += s.CPU
-		memory += s.Memory
-	}
-	return fmt.Sprintf("its %d agent sessions use %.1f cores and %s", len(m.Sessions), cpu, formatMemory(memory))
+	return picks, skipped, nil
 }

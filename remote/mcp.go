@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -45,15 +44,13 @@ type delegateInput struct {
 	PermissionMode string   `json:"permission_mode,omitempty" jsonschema:"acceptEdits (default: read and edit files in its copy), dontAsk (only what allowed_tools and that machine's settings allow) or auto (Claude Code's auto mode, which reviews each action)"`
 	Model          string   `json:"model,omitempty" jsonschema:"model for the remote Claude, such as sonnet or opus; leave out for that machine's default"`
 	Setup          *bool    `json:"setup,omitempty" jsonschema:"run the project's approved .magi.toml setup first (default true)"`
-	DespitePlan    bool     `json:"despite_plan,omitempty" jsonschema:"start it even though the Claude plan is nearly used up; only when the user said to go ahead anyway"`
 	KeepBranch     bool     `json:"keep_branch,omitempty" jsonschema:"leave its changes only on the branch magi/task-<id> instead of applying them to this working tree; when the user wants to review them first"`
 }
 
 type sessionInput struct {
-	Host        string `json:"host,omitempty" jsonschema:"the magi host the user agreed to, as listed by machines; left out, magi takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
-	Dir         string `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
-	Prompt      string `json:"prompt,omitempty" jsonschema:"an optional first message for the new session"`
-	DespitePlan bool   `json:"despite_plan,omitempty" jsonschema:"open it even though the Claude plan is nearly used up; only when the user said to go ahead anyway"`
+	Host   string `json:"host,omitempty" jsonschema:"the magi host the user agreed to, as listed by machines; left out, magi takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
+	Dir    string `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
+	Prompt string `json:"prompt,omitempty" jsonschema:"an optional first message for the new session"`
 }
 
 type taskInput struct {
@@ -61,9 +58,8 @@ type taskInput struct {
 }
 
 type replyInput struct {
-	TaskID      string `json:"task_id" jsonschema:"the id of a delegate task"`
-	Message     string `json:"message" jsonschema:"the follow-up for the remote Claude, which remembers the task and what it did so far"`
-	DespitePlan bool   `json:"despite_plan,omitempty" jsonschema:"send it even though the Claude plan is nearly used up; only when the user said to go ahead anyway"`
+	TaskID  string `json:"task_id" jsonschema:"the id of a delegate task"`
+	Message string `json:"message" jsonschema:"the follow-up for the remote Claude, which remembers the task and what it did so far"`
 }
 
 type sessionQuery struct {
@@ -129,31 +125,11 @@ func delegateArgs(in delegateInput) ([]string, error) {
 	return args, nil
 }
 
-func planGate(plans []plan, despite bool) (string, error) {
-	v := checkPlan(plans, "claude", time.Now())
-	switch {
-	case v.Refuse != "" && !despite:
-		return "", fmt.Errorf("not started: %s", v.Refuse)
-	case v.Refuse != "":
-		return fmt.Sprintf("Started although %s, as the user asked.\n", strings.SplitN(v.Refuse, ";", 2)[0]), nil
-	case v.Warn != "":
-		return fmt.Sprintf("Heads-up: %s.\n", v.Warn), nil
-	}
-	return "", nil
-}
-
-func startElsewhere(ctx context.Context, host string, spec TaskSpec, despite bool) (string, error) {
+func startElsewhere(ctx context.Context, host string, spec TaskSpec) (string, error) {
 	spec.Caller = self
-	agents := spec.Kind != kindRun
-	picks, skipped, plans, err := chooseHosts(ctx, host, agents)
+	picks, skipped, err := chooseHosts(ctx, host, spec.Kind != kindRun)
 	if err != nil {
 		return "", err
-	}
-	var heads string
-	if agents {
-		if heads, err = planGate(plans, despite); err != nil {
-			return "", err
-		}
 	}
 	for _, c := range picks {
 		spec.Host = c.Host
@@ -170,20 +146,20 @@ func startElsewhere(ctx context.Context, host string, spec TaskSpec, despite boo
 		if len(skipped) > 0 {
 			why += "; skipped " + strings.Join(skipped, "; ")
 		}
-		return heads + describeStarted(s, why), nil
+		return describeStarted(s, why), nil
 	}
 	return "", fmt.Errorf("no machine has room for it: %s", strings.Join(skipped, "; "))
 }
 
 func newMCPServer() *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "magi", Title: "magi", Version: currentVersion()}, &mcp.ServerOptions{Instructions: serverInstructions + overviewInstructions})
+	server := mcp.NewServer(&mcp.Implementation{Name: "magi", Title: "magi", Version: currentVersion()}, &mcp.ServerOptions{Instructions: serverInstructions})
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
 	no := false
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "machines",
 		Annotations: readOnly,
-		Description: "List the machines magi can send work to, each with its operating system, architecture and the tools it has (build toolchains, and Docker or Podman when they're running), its load read over SSH (cores, load average, memory and Claude sessions working there; from magi-overview, when installed, also CPU and Codex agents), whether it answers over SSH, magi tasks running on it, each host's budget and whether it has room, and the machine magi suggests. With magi-overview it also gives the Claude plan's usage and this machine's own load for comparison. When the work needs a platform or a tool, such as a Linux build from a Mac, pass needs: machines then ranks the places that can do it, best first: one that runs it natively, then a container on whichever machine has room, this machine included. Prefer a machine that runs it natively over a container or emulation here. Read-only. Call it before proposing where to run something, and tell the user which machine you'd pick and why.",
+		Description: "List the machines magi can send work to, each with its operating system, architecture and the tools it has (build toolchains, and Docker or Podman when they're running), its load read over SSH (cores, load average, memory and Claude sessions working there), whether it answers over SSH, magi tasks running on it, each host's budget and whether it has room, the machine magi suggests, and this machine's own load for comparison. When the work needs a platform or a tool, such as a Linux build from a Mac, pass needs: machines then ranks the places that can do it, best first: one that runs it natively, then a container on whichever machine has room, this machine included. Prefer a machine that runs it natively over a container or emulation here. Read-only. Call it before proposing where to run something, and tell the user which machine you'd pick and why.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in machinesInput) (*mcp.CallToolResult, any, error) {
 		cfg, path, err := loadConfig()
 		if err != nil {
@@ -239,7 +215,7 @@ func newMCPServer() *mcp.Server {
 		if err != nil {
 			return nil, nil, err
 		}
-		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindRun, Dir: dir, Command: in.Command, Setup: setupWanted(in.Setup)}, false)
+		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindRun, Dir: dir, Command: in.Command, Setup: setupWanted(in.Setup)})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -249,7 +225,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "delegate",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Give a self-contained task to a background Claude on another machine: a subagent that runs elsewhere, in its own copy of this project's working tree. It copies the working tree first, usually in seconds, then returns a task id. When it's done, task_result returns its final message, and applies its file changes to this working tree, keeping them on the branch magi/task-<id> too; with keep_branch they're only put on that branch. It runs headless (claude -p) in acceptEdits mode by default: it reads and edits files in its copy, and anything else that would ask for permission, such as shell commands or network access, is denied unless allowed_tools or that machine's own settings allow it. It never runs with permission checks bypassed. It isn't started when the user's Claude plan window is 90% used or more, since every machine shares that plan. It can't ask you questions, so put everything it needs in task. Before calling: call machines, then tell the user the machine you propose, what the task is, and any allowed_tools you want to grant, and wait for their OK.",
+		Description: "Give a self-contained task to a background Claude on another machine: a subagent that runs elsewhere, in its own copy of this project's working tree. It copies the working tree first, usually in seconds, then returns a task id. When it's done, task_result returns its final message, and applies its file changes to this working tree, keeping them on the branch magi/task-<id> too; with keep_branch they're only put on that branch. It runs headless (claude -p) in acceptEdits mode by default: it reads and edits files in its copy, and anything else that would ask for permission, such as shell commands or network access, is denied unless allowed_tools or that machine's own settings allow it. It never runs with permission checks bypassed. It can't ask you questions, so put everything it needs in task. Before calling: call machines, then tell the user the machine you propose, what the task is, and any allowed_tools you want to grant, and wait for their OK.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in delegateInput) (*mcp.CallToolResult, any, error) {
 		if strings.TrimSpace(in.Task) == "" {
 			return nil, nil, fmt.Errorf("task is empty")
@@ -262,7 +238,7 @@ func newMCPServer() *mcp.Server {
 		if err != nil {
 			return nil, nil, err
 		}
-		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindDelegate, Dir: dir, Prompt: in.Task, Claude: args, Setup: setupWanted(in.Setup), Keep: in.KeepBranch}, in.DespitePlan)
+		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindDelegate, Dir: dir, Prompt: in.Task, Claude: args, Setup: setupWanted(in.Setup), Keep: in.KeepBranch})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -272,13 +248,13 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "session_elsewhere",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Open a new interactive Claude session for this project on another machine, in its own copy of this project's working tree, in a tmux window, with Remote Control so it's also in every Claude app on their account. For when the user wants to work on something in parallel on a lighter machine. This session keeps running. It isn't opened when the user's Claude plan window is 90% used or more, since every machine shares that plan. Only with the user's clear yes: first call machines, then say which machine and what the new session will start with, and wait. When the user quits that session, task_result brings its changes back as a branch.",
+		Description: "Open a new interactive Claude session for this project on another machine, in its own copy of this project's working tree, in a tmux window, with Remote Control so it's also in every Claude app on their account. For when the user wants to work on something in parallel on a lighter machine. This session keeps running. Only with the user's clear yes: first call machines, then say which machine and what the new session will start with, and wait. When the user quits that session, task_result brings its changes back as a branch.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in sessionInput) (*mcp.CallToolResult, any, error) {
 		dir, err := projectDir(in.Dir)
 		if err != nil {
 			return nil, nil, err
 		}
-		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindSession, Dir: dir, Prompt: in.Prompt}, in.DespitePlan)
+		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindSession, Dir: dir, Prompt: in.Prompt})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -319,18 +295,13 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "task_reply",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; run magi tasks wait <task id> as a background shell command to be told when the turn is done, then collect it with task_result, which returns its new message and applies that turn's changes the same way. It isn't sent when the user's Claude plan window is 90% used or more, or when that machine's budget has no room. Tell the user what you're asking it before you send it.",
+		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; run magi tasks wait <task id> as a background shell command to be told when the turn is done, then collect it with task_result, which returns its new message and applies that turn's changes the same way. It isn't sent when that machine's budget has no room. Tell the user what you're asking it before you send it.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in replyInput) (*mcp.CallToolResult, any, error) {
-		data, _ := readFleet(ctx)
-		heads, err := planGate(data.Plans, in.DespitePlan)
-		if err != nil {
-			return nil, nil, err
-		}
 		s, err := replyTask(ctx, in.TaskID, in.Message)
 		if err != nil {
 			return nil, nil, err
 		}
-		return textResult(heads + fmt.Sprintf("Sent the follow-up to task %s on %s as turn %d; it runs %s, tab %q. To be told when it's done, run `magi tasks wait %s` as a background shell command; then collect it with task_result.\n", s.Task.ID, s.Task.Host, s.Task.Turn, s.Task.Where, s.Task.tabLabel(), s.Task.ID)), nil, nil
+		return textResult(fmt.Sprintf("Sent the follow-up to task %s on %s as turn %d; it runs %s, tab %q. To be told when it's done, run `magi tasks wait %s` as a background shell command; then collect it with task_result.\n", s.Task.ID, s.Task.Host, s.Task.Turn, s.Task.Where, s.Task.tabLabel(), s.Task.ID)), nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -352,6 +323,5 @@ func serveMCP(ctx context.Context) error {
 		return err
 	}
 	server := newMCPServer()
-	defer addOverviewTools(ctx, server)()
 	return server.Run(ctx, &mcp.StdioTransport{})
 }

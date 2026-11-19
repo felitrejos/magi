@@ -121,8 +121,8 @@ func TestContractClaudeRegistersALiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := parsePlatform("here", string(probe)); m.Agents.Working < 1 {
-		t.Errorf("the probe counted %d working sessions while one was busy:\n%s", m.Agents.Working, probe)
+	if m := parsePlatform("here", string(probe)); m.Working < 1 {
+		t.Errorf("the probe counted %d working sessions while one was busy:\n%s", m.Working, probe)
 	}
 	res := finishClaude(t, cmd, out)
 	if res.SessionID != live.SessionID {

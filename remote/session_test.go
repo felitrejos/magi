@@ -277,8 +277,8 @@ EOF
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := parsePlatform("here", string(out)); m.Agents.Working != 1 {
-		t.Errorf("the probe counted %d working sessions, want the one claude agents calls busy", m.Agents.Working)
+	if m := parsePlatform("here", string(out)); m.Working != 1 {
+		t.Errorf("the probe counted %d working sessions, want the one claude agents calls busy", m.Working)
 	}
 }
 

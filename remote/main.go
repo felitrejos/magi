@@ -26,14 +26,12 @@ const usage = `magi moves a Claude Code or Codex session to another machine, or 
 Usage:
   magi init                          set up this machine and a machine to hand off to
   magi doctor [host...]              check that everything a handoff needs is in place
-  magi pull <host> [session-id] [--tab] [--json]
-                                        bring a Claude Code or Codex session back from <host>
-                                        and continue it here, or in a new tab with --tab
-  magi move <session-id> <host> [--json] [--stay]
+  magi pull <host> [session-id]      bring a Claude Code or Codex session back from <host>
+                                        and continue it here
+  magi move <session-id> <host> [--json]
                                         move a Claude Code or Codex session on this machine to
                                         <host>, from outside it: now if it's idle, or when its
                                         turn ends; Codex needs codex = "<path>" for <host>
-  magi hosts                         the configured hosts, one per line
   magi status                        recent handoffs, parked checkouts, and copies a failed
                                         handoff left running, which it stops
   magi watch                         take back sessions other machines hand back here, over SSH
@@ -58,8 +56,6 @@ Used by the Claude Code plugin:
   magi hook start                    the plugin's SessionStart hook, which tells a session handed back what changed
   magi mcp                           the plugin's tool server, on stdin and stdout
   magi forward-run <session-id>      keeps a moved session's ports forwarded (started by a move)
-
-For a live view of every session and machine in a Rex pane, install magi-overview.
 `
 
 var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -70,7 +66,6 @@ type armed struct {
 	Desktop bool   `json:"desktop"`
 	Note    string `json:"note"`
 	Notify  bool   `json:"notify,omitempty"`
-	Stay    bool   `json:"stay,omitempty"`
 }
 
 func main() {
@@ -102,8 +97,6 @@ func main() {
 		err = doctor(args[1:], os.Stdout)
 	case len(args) >= 2 && args[0] == "pull":
 		err = pullCommand(args[1:])
-	case len(args) == 1 && args[0] == "hosts":
-		err = printHosts(os.Stdout)
 	case len(args) <= 2 && len(args) >= 1 && args[0] == "allow":
 		dir := "."
 		if len(args) == 2 {
@@ -411,7 +404,7 @@ func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 	return Handoff{
 		HostName:       a.Host,
 		Note:           stillRunning(a.Note, input.BackgroundTasks),
-		Stay:           a.Stay || a.Desktop,
+		Stay:           a.Desktop,
 		Host:           host,
 		SessionID:      input.SessionID,
 		TranscriptPath: input.TranscriptPath,
@@ -484,44 +477,16 @@ func setUpPulledProject(p *Project, root string, out io.Writer) string {
 }
 
 func pullCommand(args []string) error {
-	var asJSON, inTab bool
-	var rest []string
-	for _, arg := range args {
-		switch arg {
-		case "--json":
-			asJSON = true
-		case "--tab":
-			inTab = true
-		default:
-			rest = append(rest, arg)
-		}
+	if len(args) < 1 || len(args) > 2 {
+		return errors.New("usage: magi pull <host> [session-id]")
 	}
-	if len(rest) < 1 || len(rest) > 2 {
-		return errors.New("usage: magi pull <host> [session-id] [--tab] [--json]")
+	hostName, sessionID := args[0], ""
+	if len(args) == 2 {
+		sessionID = args[1]
 	}
-	hostName, sessionID := rest[0], ""
-	if len(rest) == 2 {
-		sessionID = rest[1]
-	}
-	out := io.Writer(os.Stdout)
-	report := func(moveReport) {}
-	if asJSON {
-		out = os.Stderr
-		encoder := json.NewEncoder(os.Stdout)
-		report = func(r moveReport) {
-			r.Session, r.Host = sessionID, hostName
-			encoder.Encode(r)
-		}
-		report(moveReport{Event: "moving", OK: true, Message: fmt.Sprintf("Bringing session %s back from %s...", shortID(sessionID), hostName)})
-	}
-	pulled, err := pullHere(hostName, sessionID, "", out, inTab)
+	pulled, err := pullHere(hostName, sessionID, "", os.Stdout, false)
 	if err != nil {
-		report(moveReport{Event: "failed", Message: err.Error()})
 		return err
-	}
-	report(moveReport{Event: "moved", OK: true, Message: pulled.message, ToDir: pulled.res.ToDir, Took: pulled.res.Summary(), Seconds: fmt.Sprintf("%.1f", pulled.res.Total().Seconds())})
-	if inTab {
-		return nil
 	}
 	if err := resumeHere(pulled.res.ToDir, pulled.res.Session, pulled.res.Name, pulled.prompt, pulled.res.Codex); err != nil {
 		return fmt.Errorf("the session is back in %s, but starting it failed (%w); continue it with %s", pulled.res.ToDir, err, resumeHint(remoteSession{ID: pulled.res.Session, Codex: pulled.res.Codex}))
@@ -619,22 +584,6 @@ func openPulledTab(local *Local, res *Pulled, prompt string) error {
 	}
 	if _, err := launcher.Show(tab); err != nil {
 		res.note(fmt.Errorf("showing the new tab failed: %w", err))
-	}
-	return nil
-}
-
-func printHosts(out io.Writer) error {
-	cfg, _, err := loadConfig()
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, name := range cfg.Order {
-		if _, err := fmt.Fprintln(out, name); err != nil {
-			return err
-		}
 	}
 	return nil
 }

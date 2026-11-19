@@ -40,7 +40,6 @@ type mover struct {
 	session string
 	host    string
 	json    bool
-	stay    bool
 	out     io.Writer
 }
 
@@ -64,17 +63,14 @@ func moveCommand(args []string, out io.Writer) error {
 	m := mover{out: out}
 	var rest []string
 	for _, a := range args {
-		switch a {
-		case "--json":
+		if a == "--json" {
 			m.json = true
-		case "--stay":
-			m.stay = true
-		default:
+		} else {
 			rest = append(rest, a)
 		}
 	}
 	if len(rest) != 2 {
-		return m.fail(errors.New("usage: magi move <session-id> <host> [--json] [--stay]"))
+		return m.fail(errors.New("usage: magi move <session-id> <host> [--json]"))
 	}
 	m.session, m.host = rest[0], rest[1]
 	return m.run()
@@ -204,7 +200,7 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	progress := func(step string) {
 		m.report(moveReport{Event: "step", OK: true, Step: step, Message: fmt.Sprintf("Moving session %s to %s: %s", shortID(s.ID), m.host, step)})
 	}
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Stay: m.stay, Progress: progress, Codex: s.Codex, Rollout: s.Rollout}.Run(context.Background())
+	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Codex: s.Codex, Rollout: s.Rollout}.Run(context.Background())
 	if res.Stray != nil {
 		res.note(saveStray(s.ID, *res.Stray))
 	}
@@ -248,7 +244,7 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 	if err := os.Remove(result); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return m.fail(err)
 	}
-	err = writeArmed(path, armed{Host: m.host, PID: s.Live.PID, Desktop: s.Live.Entrypoint == "claude-desktop", Notify: true, Stay: m.stay}, os.O_EXCL)
+	err = writeArmed(path, armed{Host: m.host, PID: s.Live.PID, Desktop: s.Live.Entrypoint == "claude-desktop", Notify: true}, os.O_EXCL)
 	if errors.Is(err, os.ErrExist) {
 		return m.fail(errors.New("the session is already armed to move when its turn ends"))
 	}

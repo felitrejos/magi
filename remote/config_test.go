@@ -141,15 +141,3 @@ func TestDoctorChecksTheServer(t *testing.T) {
 		}
 	}
 }
-
-func TestHostsListsTheConfiguredMachinesInOrder(t *testing.T) {
-	f := newFixture(t)
-	var out strings.Builder
-	if err := printHosts(&out); err != nil || out.String() != "" {
-		t.Fatalf("with no config = %q, %v", out.String(), err)
-	}
-	f.config("local_roots = [\"~/laptop\"]\n\n[hosts.server]\nssh = \"fakehost\"\nroots = [\"~/developer\"]\n\n[hosts.nas]\nssh = \"nas\"\nroots = [\"~/code\"]\n")
-	if err := printHosts(&out); err != nil || out.String() != "server\nnas\n" {
-		t.Fatalf("hosts = %q, %v", out.String(), err)
-	}
-}

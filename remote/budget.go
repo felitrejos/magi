@@ -115,8 +115,8 @@ func (b Budget) noRoom(now time.Time, f *fleetMachine, agents bool) string {
 	if f == nil || !f.measured() {
 		return ""
 	}
-	if agents && b.MaxAgents > 0 && f.Agents.Working >= b.MaxAgents {
-		return fmt.Sprintf("%d agents are working there, its budget is %d", f.Agents.Working, b.MaxAgents)
+	if agents && b.MaxAgents > 0 && f.Working >= b.MaxAgents {
+		return fmt.Sprintf("%d agents are working there, its budget is %d", f.Working, b.MaxAgents)
 	}
 	if free := f.MemoryTotal - f.MemoryUsed; b.MinFree > 0 && f.MemoryTotal > 0 && free < b.MinFree {
 		return fmt.Sprintf("%s of memory is free there, its budget needs %s", formatMemory(free), formatMemory(b.MinFree))
