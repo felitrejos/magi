@@ -294,6 +294,13 @@ func (f *fixture) tool(name, body string) string {
 	return path
 }
 
+func (f *fixture) magiOnLoginPath() {
+	f.t.Helper()
+	f.tool("magi", "#!/bin/sh\n")
+	f.t.Setenv("SHELL", "/bin/sh")
+	f.write(f.home, ".profile", "PATH=\"$HOME/bin:$PATH\"\n")
+}
+
 func (f *fixture) config(body string) {
 	f.t.Helper()
 	f.write(filepath.Join(f.home, ".config", "magi"), "config.toml", body)

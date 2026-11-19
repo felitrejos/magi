@@ -134,6 +134,7 @@ func TestTheSameRootListedTwiceCountsOnce(t *testing.T) {
 
 func TestInitWritesTheConfigAndKeepsAnswersWhenRunAgain(t *testing.T) {
 	f := newFixture(t)
+	f.magiOnLoginPath()
 	f.tool("tailscale", "#!/bin/sh\nexit 1\n")
 	claude := f.tool("claude", fakeClaudeCLI)
 	codex := f.tool("codex", fakeCodex)
@@ -163,7 +164,7 @@ func TestInitWritesTheConfigAndKeepsAnswersWhenRunAgain(t *testing.T) {
 func TestDoctorChecksTheServer(t *testing.T) {
 	f := newFixture(t)
 	claude := f.tool("claude", fakeClaudeCLI)
-	f.tool("magi", "#!/bin/sh\n")
+	f.magiOnLoginPath()
 	var out strings.Builder
 	c := &checks{out: &out}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
