@@ -1,9 +1,10 @@
 # Security
 
 magi is one program, `magi`, that you run on your own machines. It talks
-to your other machines only through your own `ssh`. It runs no server and
-opens no network listener, except the ports you ask it to forward, which
-listen on `127.0.0.1`.
+to your other machines only through your own `ssh`. Its one other
+connection is an HTTPS download of the tested versions list from GitHub,
+described below. It runs no server and opens no network listener, except
+the ports you ask it to forward, which listen on `127.0.0.1`.
 
 ## What runs where
 
@@ -115,6 +116,36 @@ listen on `127.0.0.1`.
   tool runs `git diff HEAD` and lists untracked files in a session's
   folder. Both only read.
 
+## Tested versions
+
+- `remote/tested.json` in this repository holds, for Claude Code and for
+  Codex, the oldest version magi supports, the newest version its contract
+  tests passed with, and a list of versions known to fail.
+- magi downloads that file from
+  `https://raw.githubusercontent.com/felitrejos/magi/main/remote/tested.json`
+  and keeps it in `~/.magi/tested.json`. It downloads again when that copy
+  is more than an hour old, and only for a hand off, a pull or
+  `magi doctor`. The request has a 5 second limit. A file magi can't parse
+  is thrown away. If the download fails, magi uses the copy it has, and
+  with no copy the list built into the program.
+- Before a hand off or a pull copies anything, magi runs `claude --version`
+  on both machines, or `codex --version` for a Codex session. It refuses
+  when either version is older than the oldest supported, on the failing
+  list, or newer than the newest tested. `magi doctor` fails on the same
+  versions.
+- The list only widens or narrows which versions magi allows. Someone who
+  could change it on GitHub, or the copy in `~/.magi`, could block your
+  moves or let an untested version through. It can do nothing else. magi
+  runs nothing from it and sends nothing because of it.
+- A nightly job on the author's Linux server keeps the list current. It
+  is a systemd user timer that runs as an ordinary user. It downloads the
+  newest Claude Code and Codex from their official release sources into a
+  folder of its own and checks each download against its published
+  SHA-256. It runs the contract tests with them. When they pass, it raises
+  the newest tested version in the file and pushes that commit to `main`.
+  It never writes the failing list and never touches the `claude` or
+  `codex` installed on that server.
+
 ## Project files and ports
 
 - A project's `.magi.toml` runs only after you approve that exact file with
@@ -143,6 +174,7 @@ Settings are in `~/.config/magi/config.toml`. State is in `~/.magi`.
 | `allowed` | Hashes of the `.magi.toml` files you approved |
 | `folders` | Folders magi copied here for projects that aren't git repositories, with a fingerprint of each |
 | `ssh/` | SSH control sockets |
+| `tested.json` | The downloaded list of Claude Code and Codex versions magi was tested with |
 
 Outside those, magi writes the project and session files it moves, the
 trust entry in `~/.claude.json` and the watcher's service file and log.

@@ -185,8 +185,14 @@ machine, and in the Claude app through Remote Control. The copy you left
 refuses new messages and tells you where the session went.
 
 **What if Claude Code changes its files?** magi reads session files that
-aren't a documented format. `magi doctor` tells you when a machine runs a
-Claude Code version newer than the ones magi was tested with.
+aren't a documented format, so it only moves a session with Claude Code
+and Codex versions its tests passed with. If either machine runs a newer
+one, magi refuses the move before it copies anything and names the
+version. The tests run every night against the newest releases, so this
+usually clears within a day, without a magi update. `magi doctor` shows it
+for every machine. To get the list of tested versions, magi fetches one
+small file from this repository on GitHub, at most once an hour. That is
+the only web request it makes.
 
 What's next is in [ROADMAP.md](ROADMAP.md). What magi reads, sends and
 changes is in [SECURITY.md](SECURITY.md). Licensed [MIT](LICENSE).

@@ -8,9 +8,10 @@ crash reports.
 
 ## What magi copies, and where
 
-`magi` connects only to machines you configured yourself, over SSH, with
-your own SSH keys and config. The Claude Code plugin only runs `magi`, so
-the same goes for it.
+`magi` connects to machines you configured yourself, over SSH, with your
+own SSH keys and config. Besides that it makes one web request, described
+under "The tested versions list" below. The Claude Code plugin only runs
+`magi`, so the same goes for it.
 
 To move a session or send work, magi copies these to the machine you chose.
 
@@ -38,6 +39,21 @@ ids, machine names and folder paths, and the output of tasks you sent to
 other machines. If you run `magi watch` as a service, it also writes a log
 on the laptop. None of it leaves your machines.
 [SECURITY.md](SECURITY.md) lists every file.
+
+## The tested versions list
+
+magi only moves a session with Claude Code and Codex versions its tests
+passed with. The list of those versions is a file in magi's repository on
+GitHub. magi fetches it with one HTTPS request to
+`raw.githubusercontent.com` and keeps a copy in `~/.magi/tested.json`.
+
+- It asks only when you move a session or run `magi doctor`, and only if
+  its copy is more than an hour old.
+- The request is a plain download. It sends nothing about you, your
+  machines or your sessions. GitHub sees what any HTTP request carries,
+  which is your IP address and a user agent.
+- If the request fails, magi uses the copy it has. With no copy it uses
+  the list built into the program.
 
 ## Installing
 

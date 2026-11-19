@@ -56,7 +56,8 @@ for tool in claude codex; do
   version=$claude_version pattern=^TestContractClaude
   if [ "$tool" = codex ]; then version=$codex_version pattern=^TestContractCodex; fi
   log=$base/logs/$(date +%F)-$tool-$version.log
-  if (cd "$repo/remote" && PATH="$bin:$go_root/bin:$PATH" DISABLE_AUTOUPDATER=1 go test -count=1 -tags contract -run "$pattern" ./...) > "$log" 2>&1; then
+  if (cd "$repo/remote" && PATH="$bin:$go_root/bin:$PATH" DISABLE_AUTOUPDATER=1 go test -count=1 -tags contract -run "$pattern" -v ./...) > "$log" 2>&1 &&
+    grep -q -- '--- PASS' "$log" && ! grep -q -- '--- SKIP' "$log"; then
     echo "$tool $version passed"
     if newer "$version" "$(jq -r ".$tool.max" "$tested")"; then
       jq --arg v "$version" ".$tool.max = \$v" "$tested" > "$tested.new"

@@ -26,13 +26,26 @@
 1.0 is for a developer with two or more machines who wants one live coding
 session, Claude Code or Codex, to follow them from one machine to the next.
 The session arrives with its uncommitted work and its context, and there is
-exactly one live copy at any time. magi is not a cloud workspace.
+exactly one live copy at any time. A read-only menu bar app on the Mac
+shows every machine and every session at a glance. magi is not a cloud
+workspace.
 
 - **Keep up with Claude Code and Codex.** The core leans on their
   undocumented session files and hooks, and that is the biggest risk to the
-  project. CI runs the handoff tests against the latest Claude Code and
-  Codex releases. `magi doctor` refuses a move when it finds a version it
-  hasn't been tested with.
+  project. What exists now is a list of tested versions,
+  `remote/tested.json`, with the oldest supported version, the newest one
+  the contract tests passed with and a list of versions that fail. A
+  nightly job on a Linux server tests the newest releases and raises the
+  newest tested version when they pass. A hand off, a pull and
+  `magi doctor` refuse a version outside the list, and pick up a new list
+  within an hour without a magi update. Still open are these.
+  - Nothing runs the contract tests on macOS. The list comes from the
+    Linux nightly only, so a version can be marked tested without a pass
+    on a Mac.
+  - A failed night shows only in that server's journal and logs. Users see
+    it as a refusal in `magi doctor`, and nobody is told.
+  - The list of failing versions is edited by hand.
+  - The job depends on one server and on the accounts logged in there.
 - **A guided first run.** `magi try` takes a new user from nothing to a
   verified round trip between two machines. It checks the SSH key, that
   Claude is signed in on the other machine and that the plugin is installed
@@ -55,21 +68,6 @@ exactly one live copy at any time. magi is not a cloud workspace.
 - **Docs a stranger can use.** A five-minute tutorial that goes from one
   machine to a second one, a troubleshooting page, a short versioning policy
   that says what 1.x promises not to break, and a changelog.
-
-### Not in 1.0
-
-- Moving cloud sessions.
-- GitHub or pull request workflows.
-- Moving or starting sessions by itself.
-- The menu bar app, which comes right after.
-- Native Windows.
-- New ways to delegate work.
-
-## After 1.0: a menu bar
-
-A quick glance at every machine and every session, in the Mac menu bar,
-read-only.
-
 - **Session state from hooks.** The plugin's hooks record each session's
   state on its machine, working, waiting on you or idle, and `sessions`
   reports it. Asking "does anything need me?" is then one `sessions` call.
@@ -90,10 +88,18 @@ read-only.
   where it lives, in Desktop or its tmux window. It doesn't answer prompts
   or type into sessions. It reconnects quietly after sleep or a network
   change and shows a machine that doesn't answer instead of hiding it.
-- **Shipping it.** Not notarized. Installed from a Homebrew tap of the
+- **Shipping the menu bar app.** Not notarized. Installed from a Homebrew tap of the
   project's own, with the README saying how to open it the first time
   (right-click and Open, or `xattr -dr com.apple.quarantine`). Updates
   through that tap.
+
+### Not in 1.0
+
+- Moving cloud sessions.
+- GitHub or pull request workflows.
+- Moving or starting sessions by itself.
+- Native Windows.
+- New ways to delegate work.
 
 ## Decided against
 
