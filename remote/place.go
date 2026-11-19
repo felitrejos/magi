@@ -181,8 +181,6 @@ func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
 
 var errFolderAppeared = errors.New("the folder appeared meanwhile; move it away or hand off again")
 
-const exitExists = 7
-
 func claimNewFolder(m Machine, dir string) error {
 	_, err := folder(m, "claim", dir)
 	if exitCode(err) == exitExists {
@@ -195,7 +193,11 @@ func createClone(m Machine, dir, origin string) error {
 	if err := claimNewFolder(m, dir); err != nil {
 		return err
 	}
-	if _, err := sh(m, `git init --quiet "$1" && if [ -n "$2" ]; then git -C "$1" remote add origin "$2"; fi`, dir, origin); err != nil {
+	return initRepo(m, dir, origin)
+}
+
+func initRepo(m Machine, dir, origin string) error {
+	if _, err := sh(m, `mkdir -p -- "$(dirname -- "$1")" && git init --quiet "$1" && if [ -n "$2" ]; then git -C "$1" remote add origin "$2"; fi`, dir, origin); err != nil {
 		return err
 	}
 	if origin != "" {

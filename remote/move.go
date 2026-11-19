@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -167,27 +166,16 @@ func (m mover) codex(local *Local, host Host, s remoteSession) error {
 }
 
 func lockMove(sessionID string) (func(), error) {
-	path, err := armedPath(sessionID, ".lock")
+	path, err := sessionPath("armed", sessionID, ".lock")
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("session %s is already being moved", shortID(sessionID))
-	}
-	return func() { f.Close() }, nil
+	return lockFile(path, fmt.Errorf("session %s is already being moved", shortID(sessionID)))
 }
 
 func findLocalSession(local *Local, id string) (remoteSession, error) {
 	s, err := findSession(local, id)
-	if err == nil || !strings.HasPrefix(err.Error(), "no session ") {
+	if !errors.Is(err, errNoSession) {
 		return s, err
 	}
 	if live, _ := liveSessions(local); slices.ContainsFunc(live, func(l liveSession) bool { return l.SessionID == id }) {
@@ -219,26 +207,34 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 		res.note(fmt.Errorf("retiring the session here failed: %w", err))
 	}
 	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir}))
-	msg := fmt.Sprintf("Moved session %s to %s in %s. It's running %s", shortID(s.ID), m.host, res.Summary(), res.Where)
-	if res.NewFolder != "" {
-		msg += fmt.Sprintf("; %s didn't have the project yet, so it now lives at %s", m.host, res.NewFolder)
-	}
-	if forwarded := res.Forwarded(); forwarded != "" {
-		msg += "; " + forwarded
-	}
-	if len(res.Notes) > 0 {
-		msg += fmt.Sprintf(" (%s)", res.Noted())
-	}
-	m.report(moveReport{Event: "moved", OK: true, Message: msg + ".", ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports})
+	m.report(movedReport(s.ID, m.host, res))
 	return nil
 }
 
+func movedReport(sessionID, host string, res Result) moveReport {
+	where := "running " + res.Where
+	if len(res.ShownOn) > 0 {
+		where = "open in " + strings.Join(res.ShownOn, ", ")
+	}
+	msg := fmt.Sprintf("Moved session %s to %s in %s. It's %s", shortID(sessionID), host, res.Summary(), where)
+	if res.NewFolder != "" {
+		msg += fmt.Sprintf(". %s didn't have the project yet, so it now lives at %s", host, res.NewFolder)
+	}
+	if forwarded := res.Forwarded(); forwarded != "" {
+		msg += ". " + forwarded
+	}
+	if len(res.Notes) > 0 {
+		msg += ". Notes: " + res.Noted()
+	}
+	return moveReport{Event: "moved", OK: true, Message: msg + ".", ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}
+}
+
 func (m mover) whenTurnEnds(s remoteSession) error {
-	path, err := armedPath(s.ID, ".json")
+	path, err := sessionPath("armed", s.ID, ".json")
 	if err != nil {
 		return m.fail(err)
 	}
-	result, err := armedPath(s.ID, ".result.json")
+	result, err := sessionPath("armed", s.ID, ".result.json")
 	if err != nil {
 		return m.fail(err)
 	}
@@ -334,17 +330,9 @@ func exists(path string) (bool, error) {
 }
 
 func writeMoveResult(sessionID string, r moveReport) error {
-	path, err := armedPath(sessionID, ".result.json")
+	path, err := sessionPath("armed", sessionID, ".result.json")
 	if err != nil {
 		return err
 	}
-	data, err := json.Marshal(r)
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeJSON(path, r)
 }

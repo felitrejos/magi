@@ -121,7 +121,7 @@ func TestMovingABusySessionWaitsForItsTurnAndReportsTheHandoff(t *testing.T) {
 	f.moveHost()
 	id := "0f0f0f0f-1111-2222-3333-999999999999"
 	proc, transcript := f.localSession(id, "busy")
-	path, _ := armedPath(id, ".json")
+	path, _ := sessionPath("armed", id, ".json")
 
 	done := make(chan string, 1)
 	go func() {
@@ -168,7 +168,7 @@ func TestMoveSaysWhenTheStopHookNeverRuns(t *testing.T) {
 		moveCommand([]string{id, "server", "--json"}, &out)
 		done <- out.String()
 	}()
-	path, _ := armedPath(id, ".json")
+	path, _ := sessionPath("armed", id, ".json")
 	if !waitForFile(t, path, 5*time.Second) {
 		t.Fatal("the session wasn't armed")
 	}
@@ -192,7 +192,7 @@ func TestTheStopHookReportsAFailedMoveToTheWaitingCommand(t *testing.T) {
 	f := newFixture(t)
 	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
 	id := "0f0f0f0f-1111-2222-3333-bbbbbbbbbbbb"
-	path, _ := armedPath(id, ".json")
+	path, _ := sessionPath("armed", id, ".json")
 	t.Setenv("CLAUDE_PID", "4242")
 	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"server","pid":4242,"notify":true}`)
 	input := `{"session_id":"` + id + `","transcript_path":"/nowhere/` + id + `.jsonl","cwd":"/nowhere"}`
@@ -200,7 +200,7 @@ func TestTheStopHookReportsAFailedMoveToTheWaitingCommand(t *testing.T) {
 	if err := stopHook(strings.NewReader(input), &out); err != nil {
 		t.Fatal(err)
 	}
-	result, _ := armedPath(id, ".result.json")
+	result, _ := sessionPath("armed", id, ".result.json")
 	data, err := os.ReadFile(result)
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +226,7 @@ func TestASecondMoveOfTheSameSessionIsRefused(t *testing.T) {
 		t.Errorf("events = %+v", events)
 	}
 	unlock()
-	path, _ := armedPath(id, ".json")
+	path, _ := sessionPath("armed", id, ".json")
 	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"other","pid":1}`)
 	out.Reset()
 	moveCommand([]string{id, "server", "--json"}, &out)

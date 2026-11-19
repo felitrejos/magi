@@ -12,14 +12,6 @@ import (
 	"time"
 )
 
-func codexTabLabel(name string) string {
-	return name + " · codex"
-}
-
-func codexResume(sessionID, prompt string) []string {
-	return []string{"-c", "check_for_update_on_startup=false", "-c", `tui.resume_cwd="current"`, "resume", sessionID, prompt}
-}
-
 func resumeHint(s remoteSession) string {
 	if s.Codex {
 		return "codex resume " + s.ID
@@ -27,9 +19,11 @@ func resumeHint(s remoteSession) string {
 	return "claude --resume " + s.ID
 }
 
+var errNoSession = errors.New("no session")
+
 func findCodexSession(m Machine, id string) (remoteSession, error) {
 	s := remoteSession{ID: id, Codex: true}
-	gone := fmt.Errorf("no session %s on %s", id, m.Name())
+	gone := fmt.Errorf("%w %s on %s", errNoSession, id, m.Name())
 	if m.Codex() == "" {
 		return s, gone
 	}
@@ -253,11 +247,6 @@ func waitForCodex(m Machine, rollout string, written int) error {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-}
-
-func stopCodexSession(m Machine, sessionID string) error {
-	_, err := sh(m, codexScript, "kill", sessionID)
-	return err
 }
 
 type codexConfig struct {

@@ -74,8 +74,6 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		Turn:     1,
 		Keep:     spec.Keep,
 		State:    "starting",
-		Caller:   spec.Caller.PID,
-		CallerAt: spec.Caller.Started,
 	}
 	t.Checkout = t.Dir + "/checkout/" + ws.Name
 	t.RunDir = filepath.Join(t.Checkout, ws.Subdir)
@@ -202,8 +200,6 @@ func taskTabLabel(name, kind, id string) string {
 	return fmt.Sprintf("%s · %s %s", name, kind, id)
 }
 
-const exitNoRoom = 11
-
 func checkRoom(remote *Remote, host Host, t *Task, action string) error {
 	b, _ := host.budget()
 	if reason := b.noRoom(time.Now(), nil, false); reason != "" {
@@ -236,17 +232,12 @@ func copyProject(local *Local, remote *Remote, ws Workspace, host Host, clone, c
 		}
 		return transfer(local, ws.Root, Archive{Paths: []string{"."}, Exclude: host.Exclude}, remote, checkout)
 	}
-	if clone != "" {
-		if _, err := sh(remote, `mkdir -p -- "$(dirname -- "$2")" && git clone --quiet --no-checkout -- "$1" "$2" && cd -- "$2" && git remote remove origin && if [ -n "$3" ]; then git remote add origin "$3"; fi`, clone, checkout, ws.Git.Origin); err != nil {
+	if clone == "" {
+		if err := initRepo(remote, checkout, ws.Git.Origin); err != nil {
 			return err
 		}
-	} else {
-		if _, err := sh(remote, `mkdir -p -- "$(dirname -- "$1")" && git init --quiet "$1" && if [ -n "$2" ]; then git -C "$1" remote add origin "$2"; fi`, checkout, ws.Git.Origin); err != nil {
-			return err
-		}
-		if ws.Git.Origin != "" {
-			prefetchOrigin(remote, checkout)
-		}
+	} else if _, err := sh(remote, `mkdir -p -- "$(dirname -- "$2")" && git clone --quiet --no-checkout -- "$1" "$2" && cd -- "$2" && git remote remove origin && if [ -n "$3" ]; then git remote add origin "$3"; fi`, clone, checkout, ws.Git.Origin); err != nil {
+		return err
 	}
 	if err := sendGit(local, remote, ws, checkout, "copy"); err != nil {
 		return err

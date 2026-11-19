@@ -19,24 +19,6 @@ var tryProject = regexp.MustCompile(`^magi-try-[0-9a-f]{8}$`)
 
 var tryWords = []string{"HERON", "OTTER", "BADGER", "KESTREL", "MARMOT", "IBIS"}
 
-const trySetupScript = `set -e
-mkdir -p "$1"
-cd "$1"
-git init -q
-printf 'base\n' > notes.txt
-git add notes.txt
-git -c user.name="magi try" -c user.email=try@magi.invalid commit -q -m base
-printf 'uncommitted line\n' >> notes.txt`
-
-const tryCleanupScript = `project=$1 id=$2
-shift 2
-for root; do
-  case $root in "~/"*) root=$HOME/${root#"~/"} ;; esac
-  rm -rf -- "$root/$project"
-done
-rm -rf -- "$HOME/.claude/projects/"*"$project"
-[ -z "$id" ] || rm -f -- "$HOME/.magi/moved/$id"`
-
 type claudeReply struct {
 	SessionID string `json:"session_id"`
 	Result    string `json:"result"`
@@ -105,7 +87,7 @@ func tryRoundTrip(cfg Config, name string, out io.Writer) (err error) {
 	fmt.Fprintf(out, "\nTrying a round trip to %s with a throwaway session in %s. It takes three short Claude turns on your account.\n\n", name, dir)
 	var id string
 	defer func() { err = errors.Join(err, tryCleanup(local, cfg.LocalRoots, host, project, id)) }()
-	if _, err := sh(local, trySetupScript, dir); err != nil {
+	if _, err := sh(local, tryScript, "setup", dir); err != nil {
 		return fmt.Errorf("creating the test project failed: %w", err)
 	}
 	started, err := tryClaude(dir, "Remember the word "+word+". Reply with just: ok")
@@ -160,10 +142,10 @@ func tryCleanup(local *Local, localRoots []string, host Host, project, sessionID
 		if sessionID != "" {
 			errs = append(errs, closeRecordedTab(remote, sessionID))
 		}
-		_, err := sh(remote, tryCleanupScript, append([]string{project, sessionID}, host.Roots...)...)
+		_, err := sh(remote, tryScript, append([]string{"cleanup", project, sessionID}, host.Roots...)...)
 		errs = append(errs, err)
 	}
-	_, err := sh(local, tryCleanupScript, append([]string{project, sessionID}, localRoots...)...)
+	_, err := sh(local, tryScript, append([]string{"cleanup", project, sessionID}, localRoots...)...)
 	if err := errors.Join(append(errs, err)...); err != nil {
 		return fmt.Errorf("removing the test project %s failed: %w", project, err)
 	}

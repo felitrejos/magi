@@ -148,7 +148,7 @@ func waitForRemoteControl(m Machine, sessionID string, launchedAt time.Time) err
 
 func runningThere(m Machine, sessionID string) (bool, error) {
 	_, err := sh(m, sessionScript, "running", sessionID, m.Claude())
-	if exitCode(err) == 10 {
+	if exitCode(err) == exitBusy {
 		return true, nil
 	}
 	return false, err
@@ -164,8 +164,12 @@ func clearMoved(m Machine, sessionID string) error {
 	return err
 }
 
-func stopSession(m Machine, sessionID string) error {
-	_, err := sh(m, sessionScript, "kill", sessionID)
+func stopSession(m Machine, sessionID string, codex bool) error {
+	script := sessionScript
+	if codex {
+		script = codexScript
+	}
+	_, err := sh(m, script, "kill", sessionID)
 	return err
 }
 
@@ -191,17 +195,6 @@ func isTrusted(m Machine, dir string) (bool, error) {
 		}
 	}
 }
-
-const trustScript = `umask 077
-f="$HOME/.claude.json"
-t="$f.magi-$$"
-cat > "$t" || exit 1
-if [ "$(cksum < "$f")" != "$1" ]; then
-	rm -f "$t"
-	echo "it changed while magi was updating it" >&2
-	exit 3
-fi
-mv "$t" "$f"`
 
 func carryTrust(local, remote Machine, localDir, remoteDir string) error {
 	trustedHere, err := isTrusted(local, localDir)

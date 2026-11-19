@@ -126,7 +126,7 @@ func delegateArgs(in delegateInput) ([]string, error) {
 }
 
 func startElsewhere(ctx context.Context, host string, spec TaskSpec) (string, error) {
-	spec.Caller = self
+	spec.Caller = callerPID
 	picks, skipped, err := chooseHosts(ctx, host, spec.Kind != kindRun)
 	if err != nil {
 		return "", err
@@ -317,11 +317,9 @@ func newMCPServer() *mcp.Server {
 	return server
 }
 
+var callerPID int
+
 func serveMCP(ctx context.Context) error {
-	var err error
-	if self, err = callerOf(ctx, os.Getppid()); err != nil {
-		return err
-	}
-	server := newMCPServer()
-	return server.Run(ctx, &mcp.StdioTransport{})
+	callerPID = os.Getppid()
+	return newMCPServer().Run(ctx, &mcp.StdioTransport{})
 }

@@ -38,25 +38,6 @@ type forwardRecord struct {
 	Started time.Time `json:"started"`
 }
 
-func forwardsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".magi", "forwards"), nil
-}
-
-func forwardPath(session string) (string, error) {
-	if !sessionIDPattern.MatchString(session) {
-		return "", fmt.Errorf("%q is not a Claude session id", session)
-	}
-	dir, err := forwardsDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, session+".json"), nil
-}
-
 func lockPath(recordPath string) string {
 	return strings.TrimSuffix(recordPath, ".json") + ".lock"
 }
@@ -68,18 +49,6 @@ func readForward(path string) (forwardRecord, error) {
 		return r, err
 	}
 	return r, json.Unmarshal(data, &r)
-}
-
-func writeForward(path string, r forwardRecord) error {
-	data, err := json.Marshal(r)
-	if err != nil {
-		return err
-	}
-	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }
 
 func runnerAlive(recordPath string) bool {
@@ -99,11 +68,8 @@ func startForwards(session, host, ssh string, ports []int) error {
 	if err := closeForwards(session); err != nil {
 		return err
 	}
-	path, err := forwardPath(session)
+	path, err := sessionPath("forwards", session, ".json")
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	self, err := os.Executable()
@@ -111,7 +77,7 @@ func startForwards(session, host, ssh string, ports []int) error {
 		return err
 	}
 	record := forwardRecord{Session: session, Host: host, SSH: ssh, Ports: ports, State: forwardWaiting, Started: time.Now()}
-	if err := writeForward(path, record); err != nil {
+	if err := writeJSON(path, record); err != nil {
 		return err
 	}
 	cmd := exec.Command(self, "forward-run", session)
@@ -120,44 +86,36 @@ func startForwards(session, host, ssh string, ports []int) error {
 		return errors.Join(err, os.Remove(path))
 	}
 	record.PID = cmd.Process.Pid
-	if err := writeForward(path, record); err != nil {
+	if err := writeJSON(path, record); err != nil {
 		return errors.Join(err, syscall.Kill(-record.PID, syscall.SIGTERM), os.Remove(path))
 	}
 	return cmd.Process.Release()
 }
 
-func holdLock(recordPath string) (*os.File, error) {
-	f, err := os.OpenFile(lockPath(recordPath), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
+func holdLock(recordPath string) (func(), error) {
 	deadline := time.Now().Add(forwardLockWait)
 	for {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return f, nil
-		}
+		unlock, err := lockFile(lockPath(recordPath), syscall.EWOULDBLOCK)
 		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
-			f.Close()
-			return nil, err
+			return unlock, err
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 }
 
 func runForwards(session string) error {
-	path, err := forwardPath(session)
+	path, err := sessionPath("forwards", session, ".json")
 	if err != nil {
 		return err
 	}
-	lock, err := holdLock(path)
+	unlock, err := holdLock(path)
 	if errors.Is(err, syscall.EWOULDBLOCK) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer unlock()
 	wait := forwardRetry
 	for {
 		record, err := readForward(path)
@@ -214,7 +172,7 @@ func setForwardState(path, state string) {
 		return
 	}
 	record.State = state
-	writeForward(path, record)
+	writeJSON(path, record)
 }
 
 func forwardArgs(r forwardRecord) []string {
@@ -240,7 +198,7 @@ func localForwards(args []string, ports []int) []string {
 }
 
 func closeForwards(session string) error {
-	path, err := forwardPath(session)
+	path, err := sessionPath("forwards", session, ".json")
 	if err != nil {
 		return err
 	}
@@ -264,7 +222,7 @@ func closeForwards(session string) error {
 }
 
 func listForwards() ([]forwardRecord, error) {
-	dir, err := forwardsDir()
+	dir, err := magiDir("forwards")
 	if err != nil {
 		return nil, err
 	}
@@ -305,15 +263,6 @@ func resolveForward(prefix string) (string, error) {
 		return "", fmt.Errorf("%q matches %d sessions; give more of the id", prefix, len(found))
 	}
 }
-
-const closeForwardsScript = `[ -f "$HOME/.magi/forwards/$1.json" ] || exit 0
-for c in "$HOME/.local/bin/magi" "$(command -v magi 2>/dev/null)"; do
-	if [ -n "$c" ] && [ -x "$c" ]; then
-		exec "$c" forwards close "$1"
-	fi
-done
-echo "magi isn't installed there to stop it" >&2
-exit 1`
 
 func closeForwardsOn(m Machine, session string) error {
 	if _, err := sh(m, closeForwardsScript, session); err != nil {

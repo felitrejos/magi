@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -28,42 +27,12 @@ type wanted struct {
 	Note string `json:"note"`
 }
 
-func magiDir(sub string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".magi", sub), nil
-}
-
-func wantedPath(sessionID string) (string, error) {
-	if !sessionIDPattern.MatchString(sessionID) {
-		return "", fmt.Errorf("%q is not a Claude session id", sessionID)
-	}
-	dir, err := magiDir("wanted")
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, sessionID+".json"), nil
-}
-
 func writeWanted(sessionID string, w wanted) error {
-	path, err := wantedPath(sessionID)
+	path, err := sessionPath("wanted", sessionID, ".json")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	data, err := json.Marshal(w)
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeJSON(path, w)
 }
 
 func watchers() ([]string, error) {
@@ -89,7 +58,7 @@ func watchers() ([]string, error) {
 }
 
 func waitForPull(input stopInput, out io.Writer) error {
-	path, err := wantedPath(input.SessionID)
+	path, err := sessionPath("wanted", input.SessionID, ".json")
 	if err != nil {
 		return err
 	}
@@ -139,21 +108,15 @@ func reportWanted(w io.Writer) error {
 }
 
 func watch() error {
-	lockPath, err := magiDir("watch.lock")
+	path, err := magiDir("watch.lock")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
-		return err
-	}
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	unlock, err := lockFile(path, errors.New("magi watch is already running on this machine"))
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return errors.New("magi watch is already running on this machine")
-	}
+	defer unlock()
 	cfg, _, err := loadConfig()
 	if err != nil {
 		return err

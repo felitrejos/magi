@@ -14,8 +14,8 @@ type parentSession struct {
 	Name string
 }
 
-func delegatingSession(c caller, project string) (*parentSession, error) {
-	if c.PID == 0 {
+func delegatingSession(pid int, project string) (*parentSession, error) {
+	if pid == 0 {
 		return nil, nil
 	}
 	local, err := newLocal(context.Background())
@@ -26,7 +26,7 @@ func delegatingSession(c caller, project string) (*parentSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	i := slices.IndexFunc(sessions, func(s liveSession) bool { return s.PID == c.PID })
+	i := slices.IndexFunc(sessions, func(s liveSession) bool { return s.PID == pid })
 	if i < 0 {
 		return nil, nil
 	}

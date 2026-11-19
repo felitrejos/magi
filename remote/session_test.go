@@ -127,7 +127,7 @@ func TestStopSessionStopsTheSessionWithoutKillingItself(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- fake.Wait() }()
-	if err := stopSession(f.remoteHost(), sessionID); err != nil {
+	if err := stopSession(f.remoteHost(), sessionID, false); err != nil {
 		t.Fatalf("stopSession failed: %v", err)
 	}
 	select {
@@ -312,7 +312,7 @@ func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
 	if err := arm("mac", id, "dev server on :3000", io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	path, _ := wantedPath(id)
+	path, _ := sessionPath("wanted", id, ".json")
 	var w wanted
 	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &w); err != nil || w.To != "Felipes-MacBook-Pro" || w.PID != 4242 || w.Note != "dev server on :3000" {
 		t.Errorf("wanted = %+v, %v", w, err)
@@ -354,7 +354,7 @@ func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	if err := arm("server", id, "dev server on :3000", io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	path, _ := armedPath(id, ".json")
+	path, _ := sessionPath("armed", id, ".json")
 	var a armed
 	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &a); err != nil || a.Host != "server" || a.PID != 4242 || a.Note != "dev server on :3000" {
 		t.Errorf("armed = %+v, %v", a, err)
@@ -369,7 +369,7 @@ func TestTheStopHookOnlyMovesASessionArmedFromItsOwnProcess(t *testing.T) {
 	if err := stopHook(strings.NewReader(input), &out); err != nil || out.Len() != 0 {
 		t.Fatalf("an unarmed session: output %q, err %v", out.String(), err)
 	}
-	path, _ := armedPath(id, ".json")
+	path, _ := sessionPath("armed", id, ".json")
 	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"server","pid":1}`)
 	t.Setenv("CLAUDE_PID", "2")
 	if err := stopHook(strings.NewReader(input), &out); err != nil || out.Len() != 0 {

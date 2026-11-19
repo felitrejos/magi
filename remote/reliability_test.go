@@ -186,7 +186,7 @@ func TestARecordedTmuxWindowIsOnlyClosedWhileItIsStillTheSameWindow(t *testing.T
 func TestARecordedTmuxWindowClosesAfterItsFirstPaneHasExited(t *testing.T) {
 	f := newFixture(t)
 	tm, tab := f.claudeTabHere()
-	if _, err := tm.Split(tab, tab.Pane, true, "pnpm dev", f.local, []string{"sleep", "60"}); err != nil {
+	if _, err := tm.Split(tab.Pane, true, f.local, []string{"sleep", "60"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := exec.Command("tmux", "kill-pane", "-t", tab.Pane).Run(); err != nil {
@@ -204,7 +204,7 @@ func TestARecordedTmuxWindowClosesAfterItsFirstPaneHasExited(t *testing.T) {
 func TestRetireClosesTheRecordedTabWhenItsSessionPaneClosesFirst(t *testing.T) {
 	f := newFixture(t)
 	tm, tab := f.claudeTabHere()
-	if _, err := tm.Split(tab, tab.Pane, true, "pnpm dev", f.local, []string{"sleep", "60"}); err != nil {
+	if _, err := tm.Split(tab.Pane, true, f.local, []string{"sleep", "60"}); err != nil {
 		t.Fatal(err)
 	}
 	id := "0f0f0f0f-1111-2222-3333-999999999993"

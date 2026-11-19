@@ -96,11 +96,7 @@ func (p Pull) Run() (res Pulled, err error) {
 		if err != nil {
 			return err
 		}
-		program := p.Host.Claude
-		if session.Codex {
-			program = p.Host.Codex
-		}
-		if err := refuseUntested(session.Codex, local, remote, expandHome(program, remoteHome)); err != nil {
+		if err := refuseUntested(session.Codex, local, remote, expandHome(p.Host.program(session.Codex), remoteHome)); err != nil {
 			return err
 		}
 		if err := refuseHome(ws, remoteHome, p.HostName); err != nil {
@@ -224,11 +220,6 @@ func findSession(r Machine, id string) (remoteSession, error) {
 	return s, fmt.Errorf("couldn't tell which folder session %s on %s ran in", id, r.Name())
 }
 
-const (
-	exitBusy = 10
-	exitGone = 11
-)
-
 func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
 	stop := func() error { return stopCodex(r, s) }
 	switch {
@@ -261,7 +252,7 @@ func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
 
 func resumeCommand(sessionID, name, prompt string, codex bool) []string {
 	if codex {
-		return append([]string{"codex"}, codexResume(sessionID, prompt)...)
+		return []string{"codex", "-c", "check_for_update_on_startup=false", "-c", `tui.resume_cwd="current"`, "resume", sessionID, prompt}
 	}
 	return []string{"claude", "--resume", sessionID, "--remote-control", name, prompt}
 }

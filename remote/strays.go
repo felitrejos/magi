@@ -14,35 +14,16 @@ import (
 
 const strayCleanup = 20 * time.Second
 
-func strayDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".magi", "strays"), nil
-}
-
 func saveStray(sessionID string, s Stray) error {
-	dir, err := strayDir()
+	path, err := sessionPath("strays", sessionID, ".json")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	data, err := json.Marshal(s)
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(dir, sessionID+".json")
-	if err := os.WriteFile(path+".tmp", data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(path+".tmp", path)
+	return writeJSON(path, s)
 }
 
 func loadStrays() (map[string]Stray, error) {
-	dir, err := strayDir()
+	dir, err := magiDir("strays")
 	if err != nil {
 		return nil, err
 	}
@@ -76,29 +57,25 @@ func cleanStray(sessionID string, s Stray) error {
 	if err != nil {
 		return err
 	}
-	stop := stopSession
-	if s.Codex {
-		stop = stopCodexSession
-	}
-	if err := stop(remote, sessionID); err != nil {
+	if err := stopSession(remote, sessionID, s.Codex); err != nil {
 		return err
 	}
 	if err := (Tmux{remote: remote}).Discard(s.Tab); err != nil && !tabGone(err) {
 		return err
 	}
-	dir, err := strayDir()
+	path, err := sessionPath("strays", sessionID, ".json")
 	if err != nil {
 		return err
 	}
-	return os.Remove(filepath.Join(dir, sessionID+".json"))
+	return os.Remove(path)
 }
 
 func cleanStrayFor(sessionID string) error {
-	dir, err := strayDir()
+	path, err := sessionPath("strays", sessionID, ".json")
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(filepath.Join(dir, sessionID+".json"))
+	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -107,7 +84,7 @@ func cleanStrayFor(sessionID string) error {
 	}
 	var s Stray
 	if err := json.Unmarshal(data, &s); err != nil {
-		return fmt.Errorf("the record of an earlier failed handoff of this session can't be read (%w); remove %s", err, filepath.Join(dir, sessionID+".json"))
+		return fmt.Errorf("the record of an earlier failed handoff of this session can't be read (%w); remove %s", err, path)
 	}
 	if err := cleanStray(sessionID, s); err != nil {
 		return fmt.Errorf("a copy of this session left on %s by an earlier handoff couldn't be stopped: %w", s.Host, err)

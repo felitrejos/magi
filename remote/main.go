@@ -160,15 +160,62 @@ func currentVersion() string {
 	return version
 }
 
-func armedPath(sessionID, suffix string) (string, error) {
-	if !sessionIDPattern.MatchString(sessionID) {
-		return "", fmt.Errorf("%q is not a Claude session id", sessionID)
-	}
+func magiDir(sub string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".magi", "armed", sessionID+suffix), nil
+	return filepath.Join(home, ".magi", sub), nil
+}
+
+func sessionPath(sub, sessionID, suffix string) (string, error) {
+	if !sessionIDPattern.MatchString(sessionID) {
+		return "", fmt.Errorf("%q is not a Claude session id", sessionID)
+	}
+	dir, err := magiDir(sub)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, sessionID+suffix), nil
+}
+
+func writeAtomic(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, err = f.Write(data)
+	if err := errors.Join(err, f.Close()); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+func writeJSON(path string, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return writeAtomic(path, data)
+}
+
+func lockFile(path string, busy error) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, busy
+	}
+	return func() { f.Close() }, nil
 }
 
 func writeArmed(path string, a armed, flag int) error {
@@ -210,7 +257,7 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", watcher)
 		return nil
 	}
-	path, err := armedPath(sessionID, ".json")
+	path, err := sessionPath("armed", sessionID, ".json")
 	if err != nil {
 		return err
 	}
@@ -255,7 +302,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if err := json.NewDecoder(in).Decode(&input); err != nil {
 		return err
 	}
-	path, err := armedPath(input.SessionID, ".json")
+	path, err := sessionPath("armed", input.SessionID, ".json")
 	if err != nil {
 		return err
 	}
@@ -309,31 +356,28 @@ func stopHook(in io.Reader, out io.Writer) error {
 			"reason":   reason + " Tell the user what failed in plain words.",
 		})
 	}
-	if a.Notify {
-		res.note(writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}))
-	}
 	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}))
-	return json.NewEncoder(out).Encode(handedOff(a, res))
-}
-
-func hookSession(in io.Reader) (home, sessionID string, err error) {
-	var input stopInput
-	if err := json.NewDecoder(in).Decode(&input); err != nil {
-		return "", "", err
+	if a.Notify {
+		res.note(writeMoveResult(input.SessionID, movedReport(input.SessionID, a.Host, res)))
 	}
-	if !sessionIDPattern.MatchString(input.SessionID) {
-		return "", "", nil
-	}
-	home, err = os.UserHomeDir()
-	return home, input.SessionID, err
+	return json.NewEncoder(out).Encode(map[string]string{
+		"systemMessage": movedReport(input.SessionID, a.Host, res).Message + " With Remote Control it's in every Claude app on your account. This copy is closing.",
+	})
 }
 
 func promptHook(in io.Reader, out io.Writer) error {
-	home, sessionID, err := hookSession(in)
-	if err != nil || sessionID == "" {
+	var input stopInput
+	if err := json.NewDecoder(in).Decode(&input); err != nil {
 		return err
 	}
-	host, err := os.ReadFile(filepath.Join(home, ".magi", "moved", sessionID))
+	if !sessionIDPattern.MatchString(input.SessionID) {
+		return nil
+	}
+	path, err := sessionPath("moved", input.SessionID, "")
+	if err != nil {
+		return err
+	}
+	host, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -345,25 +389,6 @@ func promptHook(in io.Reader, out io.Writer) error {
 		"decision": "block",
 		"reason":   fmt.Sprintf("This session moved to %s, so this copy takes no more messages. Continue it there, or bring it back here with magi pull %s.", to, to),
 	})
-}
-
-func handedOff(a armed, res Result) map[string]string {
-	where := fmt.Sprintf("It's running %s, and with Remote Control it's in every Claude app on your account", res.Where)
-	if len(res.ShownOn) > 0 {
-		where = fmt.Sprintf("It's open in %s, and with Remote Control it's in every Claude app on your account", strings.Join(res.ShownOn, ", "))
-	}
-	if res.NewFolder != "" {
-		where += fmt.Sprintf(". %s didn't have this project yet, so it now lives at %s", a.Host, res.NewFolder)
-	}
-	if forwarded := res.Forwarded(); forwarded != "" {
-		where += ". " + forwarded
-	}
-	if len(res.Notes) > 0 {
-		where += ". Notes: " + res.Noted()
-	}
-	return map[string]string{
-		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. This copy is closing.", a.Host, res.Summary(), where),
-	}
 }
 
 func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
@@ -532,16 +557,14 @@ func openPulledTab(local *Local, res *Pulled, prompt string) error {
 	if root == "" {
 		root = res.ToDir
 	}
-	command, label := resumeCommand(res.Session, res.Name, prompt, res.Codex), claudeTabLabel(res.Name)
-	if res.Codex {
-		label = codexTabLabel(res.Name)
-	}
+	command := resumeCommand(res.Session, res.Name, prompt, res.Codex)
 	program, err := exec.LookPath(command[0])
 	if err != nil {
 		return fmt.Errorf("%s isn't installed on %s", command[0], local.Name())
 	}
+	command[0] = program
 	launcher := Tmux{remote: local}
-	tab, err := launcher.Start(localGroup(root, cfg.LocalRoots), label, res.ToDir, append([]string{program}, command[1:]...), true)
+	tab, err := launcher.Start(localGroup(root, cfg.LocalRoots), tabLabel(res.Name, res.Codex), res.ToDir, command, true)
 	if err != nil {
 		return err
 	}

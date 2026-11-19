@@ -764,17 +764,9 @@ func TestOnlyADelegatedClaudeTakesFollowUps(t *testing.T) {
 	collectTask(d.Task.ID, true)
 }
 
-func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
+func TestATaskKeepsItsStateCurrent(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
-	started, err := processStart(context.Background(), os.Getpid())
-	if err != nil || time.Since(started) < 0 || time.Since(started) > 10*time.Minute {
-		t.Fatalf("this process started %v (%v)", started, err)
-	}
-	if self, err = callerOf(context.Background(), os.Getpid()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { self = caller{} })
 	if _, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "sleep 0.5"}); err != nil {
 		t.Fatal(err)
 	}
@@ -782,11 +774,11 @@ func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
 	id := tasks[0].ID
 	record := func() map[string]any {
 		var m map[string]any
-		dir, _ := tasksDir()
+		dir, _ := magiDir("tasks")
 		json.Unmarshal([]byte(f.read(dir, id+".json")), &m)
 		return m
 	}
-	if m := record(); m["caller_pid"] != float64(os.Getpid()) || m["caller_started"] != float64(started.Unix()) || m["state"] != "running" {
+	if m := record(); m["state"] != "running" {
 		t.Errorf("record = %v", m)
 	}
 	f.waitForTask(id)
@@ -796,13 +788,6 @@ func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
 	collectTask(id, false)
 	if m := record(); m["state"] != "collected" {
 		t.Errorf("after collecting, state = %v", m["state"])
-	}
-	s, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "true"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Task.Caller != 0 || s.Task.CallerAt != 0 {
-		t.Errorf("a task started without the tool server has a caller: %+v", s.Task)
 	}
 }
 
@@ -840,7 +825,7 @@ func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing
 	sender := startFakeClaude(t, "60").Process.Pid
 	f.write(filepath.Join(f.home, ".claude", "sessions"), strconv.Itoa(sender)+".json", `{"pid":`+strconv.Itoa(sender)+`,"sessionId":"9fb6fe92","name":"fix login"}`)
 	args, _ := delegateArgs(delegateInput{})
-	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "first", Claude: args, Caller: caller{PID: sender}})
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "first", Claude: args, Caller: sender})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -927,7 +912,7 @@ func TestRemovingACopyThatCantBeFullyDeletedSaysSo(t *testing.T) {
 
 func TestForgettingATaskRemovesEveryTurnsLog(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	dir, err := tasksDir()
+	dir, err := magiDir("tasks")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -228,11 +228,7 @@ func (r *handoffRun) inspect(ctx context.Context) error {
 	if r.where, err = place(r.remote, r.ws, r.Host.Roots, localGroup(r.ws.MainRoot, r.Host.LocalRoots), r.Host.Exclude); err != nil {
 		return err
 	}
-	program := r.Host.Claude
-	if r.Codex {
-		program = r.Host.Codex
-	}
-	if err := refuseUntested(r.Codex, r.local, r.remote, expandHome(program, r.where.Home)); err != nil {
+	if err := refuseUntested(r.Codex, r.local, r.remote, expandHome(r.Host.program(r.Codex), r.where.Home)); err != nil {
 		return err
 	}
 	if r.Codex {
@@ -262,15 +258,15 @@ func (r *handoffRun) launch(sidecar string) error {
 	}
 	name := baseName(r.where.Root)
 	prompt := handoffPrompt(Prompt{From: r.local.Name(), To: r.HostName, OldDir: r.Cwd, NewDir: r.remoteDir, Git: r.ws.Git != nil, Note: r.Note, Sidecar: sidecar, Project: projectNote, Codex: r.Codex})
-	label, command := claudeTabLabel(name), []string{expandHome(r.Host.Claude, r.where.Home), "--resume", r.SessionID, "--remote-control", name, prompt}
+	command := resumeCommand(r.SessionID, name, prompt, r.Codex)
+	command[0] = expandHome(r.Host.program(r.Codex), r.where.Home)
 	if r.Codex {
 		r.res.note(carryCodexTrust(r.local, r.remote, r.Cwd, r.remoteDir, r.where.Root))
-		label, command = codexTabLabel(name), append([]string{expandHome(r.Host.Codex, r.where.Home)}, codexResume(r.SessionID, prompt)...)
 	} else {
 		r.res.note(carryTrust(r.local, r.remote, r.Cwd, r.remoteDir))
 	}
 	r.res.note(clearMoved(r.remote, r.SessionID))
-	if r.tab, err = r.launcher.Start(r.where.Group, label, r.remoteDir, command, true); err != nil {
+	if r.tab, err = r.launcher.Start(r.where.Group, tabLabel(name, r.Codex), r.remoteDir, command, true); err != nil {
 		return err
 	}
 	var showErr error
@@ -290,11 +286,7 @@ func (r *handoffRun) undo(err error, startTimedOut bool) error {
 	}
 	stray := false
 	if r.tab.Pane != "" {
-		stop := stopSession
-		if r.Codex {
-			stop = stopCodexSession
-		}
-		if stopErr := stop(r.remote, r.SessionID); stopErr != nil {
+		if stopErr := stopSession(r.remote, r.SessionID, r.Codex); stopErr != nil {
 			err = fmt.Errorf("%w; stopping it there also failed: %v", err, stopErr)
 			stray = true
 		}

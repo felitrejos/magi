@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
 	"maps"
 	"os"
@@ -42,6 +42,13 @@ func configPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".config", "magi", "config.toml"), nil
+}
+
+func (h Host) program(codex bool) string {
+	if codex {
+		return h.Codex
+	}
+	return h.Claude
 }
 
 func loadHost(name string) (Host, error) {
@@ -134,29 +141,20 @@ func tomlKey(name string) string {
 }
 
 func writeConfig(path string, cfg Config) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), "config-*.toml")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	enc := toml.NewEncoder(f)
-	err = enc.Encode(struct {
+	var b bytes.Buffer
+	enc := toml.NewEncoder(&b)
+	err := enc.Encode(struct {
 		LocalRoots []string `toml:"local_roots"`
 		Exclude    []string `toml:"exclude"`
 	}{cfg.LocalRoots, cfg.Exclude})
 	for _, name := range cfg.Order {
 		if err == nil {
-			_, err = fmt.Fprintf(f, "\n[hosts.%s]\n", tomlKey(name))
-		}
-		if err == nil {
+			fmt.Fprintf(&b, "\n[hosts.%s]\n", tomlKey(name))
 			err = enc.Encode(cfg.Hosts[name])
 		}
 	}
-	if err := errors.Join(err, f.Close()); err != nil {
+	if err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), path)
+	return writeAtomic(path, b.Bytes())
 }

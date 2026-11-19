@@ -43,11 +43,6 @@ const (
 	outPrefix   = "refs/magi/out/"
 )
 
-const (
-	exitConflicts  = 8
-	exitInProgress = 9
-)
-
 func readWorkspace(m Machine, cwd string, secretPatterns, exclude []string) (Workspace, error) {
 	return inspect(m, cwd, secretPatterns, exclude, true)
 }

@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -57,8 +56,6 @@ type Task struct {
 	Tip      string    `json:"tip,omitempty"`
 	Keep     bool      `json:"keep_branch,omitempty"`
 	State    string    `json:"state"`
-	Caller   int       `json:"caller_pid,omitempty"`
-	CallerAt int64     `json:"caller_started,omitempty"`
 }
 
 type Outcome struct {
@@ -88,15 +85,7 @@ type TaskSpec struct {
 	Setup   bool
 	Claude  []string
 	Keep    bool
-	Caller  caller
-}
-
-func tasksDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".magi", "tasks"), nil
+	Caller  int
 }
 
 func newTaskID() string {
@@ -108,34 +97,22 @@ func newTaskID() string {
 }
 
 func (t *Task) save() error {
-	dir, err := tasksDir()
+	dir, err := magiDir("tasks")
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, ".task-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	_, err = f.Write(data)
-	if err := errors.Join(err, f.Close()); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), filepath.Join(dir, t.ID+".json"))
+	return writeAtomic(filepath.Join(dir, t.ID+".json"), data)
 }
 
 func loadTask(id string) (*Task, error) {
 	if !taskIDPattern.MatchString(id) {
 		return nil, fmt.Errorf("%q isn't a task id; task ids are 8 hex characters", id)
 	}
-	dir, err := tasksDir()
+	dir, err := magiDir("tasks")
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +131,7 @@ func loadTask(id string) (*Task, error) {
 }
 
 func listTasks() ([]*Task, error) {
-	dir, err := tasksDir()
+	dir, err := magiDir("tasks")
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +174,7 @@ func (t *Task) branch() string {
 }
 
 func (t *Task) forget() error {
-	dir, err := tasksDir()
+	dir, err := magiDir("tasks")
 	if err != nil {
 		return err
 	}
@@ -255,17 +232,9 @@ func (t *Task) noteState(state string) error {
 var errTaskBusy = errors.New("being collected by another magi right now; try again in a moment")
 
 func lockTask(id string) (func(), error) {
-	dir, err := tasksDir()
+	dir, err := magiDir("tasks")
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, id+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("task %s is %w", id, errTaskBusy)
-	}
-	return func() { f.Close() }, nil
+	return lockFile(filepath.Join(dir, id+".lock"), fmt.Errorf("task %s is %w", id, errTaskBusy))
 }

@@ -31,7 +31,7 @@ func TestForwardArgsBindOnlyThisMachineAndUseTheirOwnConnection(t *testing.T) {
 func forwardHome(t *testing.T) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	path, err := forwardPath(forwardSession)
+	path, err := sessionPath("forwards", forwardSession, ".json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,12 +58,12 @@ func TestClosingAForwardStopsItsRunnerAndEverythingItStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { syscall.Kill(-runner.Process.Pid, syscall.SIGKILL) })
-	lock, err := holdLock(path)
+	unlock, err := holdLock(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
-	if err := writeForward(path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{3000}, PID: runner.Process.Pid}); err != nil {
+	defer unlock()
+	if err := writeJSON(path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{3000}, PID: runner.Process.Pid}); err != nil {
 		t.Fatal(err)
 	}
 	var child int
@@ -96,7 +96,7 @@ func TestARecordFromADeadRunnerNeverSignalsWhateverReusedItsPID(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { stranger.Process.Kill() })
-	if err := writeForward(path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{3000}, PID: stranger.Process.Pid, State: forwardConnected}); err != nil {
+	if err := writeJSON(path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{3000}, PID: stranger.Process.Pid, State: forwardConnected}); err != nil {
 		t.Fatal(err)
 	}
 	records, err := listForwards()
@@ -174,7 +174,7 @@ func fakeTunnel(t *testing.T, name, body string) {
 
 func startRunner(t *testing.T, path string, record forwardRecord) <-chan error {
 	t.Helper()
-	if err := writeForward(path, record); err != nil {
+	if err := writeJSON(path, record); err != nil {
 		t.Fatal(err)
 	}
 	forwardRetry = 50 * time.Millisecond

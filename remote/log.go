@@ -24,16 +24,8 @@ type logEntry struct {
 	ToDir   string    `json:"to_dir"`
 }
 
-func logPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".magi", "handoffs.jsonl"), nil
-}
-
 func appendLog(e logEntry) error {
-	path, err := logPath()
+	path, err := magiDir("handoffs.jsonl")
 	if err != nil {
 		return err
 	}
@@ -48,7 +40,7 @@ func appendLog(e logEntry) error {
 }
 
 func readLog() ([]logEntry, error) {
-	path, err := logPath()
+	path, err := magiDir("handoffs.jsonl")
 	if err != nil {
 		return nil, err
 	}

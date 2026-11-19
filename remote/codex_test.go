@@ -312,7 +312,7 @@ func TestACodexHandoffOpensItsOwnCodexTab(t *testing.T) {
 	if !strings.Contains(string(windows), "acme api · codex") {
 		t.Errorf("tmux windows = %q", windows)
 	}
-	if err := stopCodexSession(f.remoteHost(), id); err != nil {
+	if err := stopSession(f.remoteHost(), id, true); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)

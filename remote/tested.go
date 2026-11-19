@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"time"
@@ -57,13 +56,7 @@ func loadTested() (testedVersions, error) {
 	}
 	if info, err := os.Stat(path); testedURL != "" && (err != nil || time.Since(info.ModTime()) > testedFresh) {
 		if data, err := fetchTested(); err == nil {
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				return testedVersions{}, err
-			}
-			if err := os.WriteFile(path+".tmp", data, 0o600); err != nil {
-				return testedVersions{}, err
-			}
-			if err := os.Rename(path+".tmp", path); err != nil {
+			if err := writeAtomic(path, data); err != nil {
 				return testedVersions{}, err
 			}
 		}

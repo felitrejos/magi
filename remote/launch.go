@@ -18,7 +18,10 @@ func shellIn(dir string, command ...string) []string {
 	return append([]string{"sh", "-c", `cd -- "$1" && shift && PATH="$HOME/.local/bin:$PATH" exec "$@"`, "magi", dir}, command...)
 }
 
-func claudeTabLabel(name string) string {
+func tabLabel(name string, codex bool) string {
+	if codex {
+		return name + " · codex"
+	}
 	return name + " · claude"
 }
 
@@ -59,7 +62,11 @@ func noTmuxSession(err error) bool {
 	return strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to")
 }
 
-func (t Tmux) Split(tab Tab, anchor string, below bool, label, dir string, command []string) (string, error) {
+func tabGone(err error) bool {
+	return noTmuxSession(err) || strings.Contains(err.Error(), "can't find window")
+}
+
+func (t Tmux) Split(anchor string, below bool, dir string, command []string) (string, error) {
 	direction := "right"
 	if below {
 		direction = "below"

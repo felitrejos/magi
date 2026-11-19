@@ -66,6 +66,15 @@ func output(cmd *exec.Cmd, what string) ([]byte, error) {
 	return out, nil
 }
 
+const (
+	exitExists     = 7
+	exitConflicts  = 8
+	exitInProgress = 9
+	exitBusy       = 10
+	exitGone       = 11
+	exitNoRoom     = 11
+)
+
 func exitCode(err error) int {
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
@@ -132,11 +141,10 @@ type Remote struct {
 }
 
 func newRemote(ctx context.Context, h Host) (*Remote, error) {
-	home, err := os.UserHomeDir()
+	sockets, err := magiDir("ssh")
 	if err != nil {
 		return nil, err
 	}
-	sockets := filepath.Join(home, ".magi", "ssh")
 	if err := os.MkdirAll(sockets, 0o700); err != nil {
 		return nil, err
 	}

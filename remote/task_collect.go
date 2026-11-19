@@ -172,13 +172,8 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	return &taskReport{Task: t, State: taskState{State: "collected", Exit: o.Exit, Tail: o.Tail}}, nil
 }
 
-func tabGone(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "can't find window") || strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to")
-}
-
 func fetchLog(r *Remote, t *Task) (string, error) {
-	dir, err := tasksDir()
+	dir, err := magiDir("tasks")
 	if err != nil {
 		return "", err
 	}
@@ -231,7 +226,7 @@ func finalMessage(logPath string) string {
 
 func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error {
 	if !t.Git {
-		dir, err := tasksDir()
+		dir, err := magiDir("tasks")
 		if err != nil {
 			return err
 		}

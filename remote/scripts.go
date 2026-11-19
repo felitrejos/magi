@@ -23,8 +23,10 @@ var (
 	hostsScript string
 	//go:embed scripts/transfer.sh
 	transferScript string
+	//go:embed scripts/started.sh
+	startedScript string
 	//go:embed scripts/session.sh
-	sessionScript string
+	sessionBody string
 	//go:embed scripts/memory.sh
 	memoryScript string
 	//go:embed scripts/tmux.sh
@@ -34,9 +36,20 @@ var (
 	//go:embed scripts/project.sh
 	projectScript string
 	//go:embed scripts/task.sh
-	taskScript string
+	taskBody string
 	//go:embed scripts/codex.sh
 	codexScript string
 	//go:embed scripts/watch.sh
 	watchScript string
+	//go:embed scripts/platform.sh
+	platformScript string
+	//go:embed scripts/trust.sh
+	trustScript string
+	//go:embed scripts/forwards.sh
+	closeForwardsScript string
+	//go:embed scripts/try.sh
+	tryScript string
+
+	sessionScript = startedScript + sessionBody
+	taskScript    = startedScript + taskBody
 )

@@ -104,16 +104,8 @@ func approvedProject(local *Local, root string) (*Project, error) {
 	return p, nil
 }
 
-func approvalsPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".magi", "allowed"), nil
-}
-
 func readApprovals() (map[string]string, error) {
-	path, err := approvalsPath()
+	path, err := magiDir("allowed")
 	if err != nil {
 		return nil, err
 	}
@@ -136,27 +128,15 @@ func readApprovals() (map[string]string, error) {
 }
 
 func writeApprovals(approvals map[string]string) error {
-	path, err := approvalsPath()
+	path, err := magiDir("allowed")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), "allowed-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
+	var b strings.Builder
 	for file, hash := range approvals {
-		if _, err = fmt.Fprintf(f, "%s\t%s\n", hash, file); err != nil {
-			break
-		}
+		fmt.Fprintf(&b, "%s\t%s\n", hash, file)
 	}
-	if err := errors.Join(err, f.Close()); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return writeAtomic(path, []byte(b.String()))
 }
 
 func allowProject(dir string, in io.Reader, out io.Writer) error {
@@ -236,13 +216,13 @@ func startProject(m Machine, l Tmux, tab Tab, dir, status string, p *Project) er
 	defer cancel()
 	m.SetContext(ctx)
 	defer m.SetContext(parent)
-	type pane struct{ role, label, command string }
+	type pane struct{ role, command string }
 	var panes []pane
 	if p.Setup != "" {
-		panes = append(panes, pane{"setup", "setup", p.Setup})
+		panes = append(panes, pane{"setup", p.Setup})
 	}
 	for _, s := range p.Services {
-		panes = append(panes, pane{"service", s, s})
+		panes = append(panes, pane{"service", s})
 	}
 	marker := ""
 	if p.Setup != "" {
@@ -250,7 +230,7 @@ func startProject(m Machine, l Tmux, tab Tab, dir, status string, p *Project) er
 	}
 	anchor, below := tab.Pane, true
 	for _, pn := range panes {
-		id, err := l.Split(tab, anchor, below, pn.label, dir, shellIn(dir, "sh", "-c", projectScript, "magi", pn.role, marker, pn.command))
+		id, err := l.Split(anchor, below, dir, shellIn(dir, "sh", "-c", projectScript, "magi", pn.role, marker, pn.command))
 		if err != nil {
 			return fmt.Errorf("the project's panes didn't open: %w", err)
 		}
