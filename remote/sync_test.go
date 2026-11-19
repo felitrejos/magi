@@ -294,6 +294,27 @@ func TestReadWorkspaceHandlesACheckoutWithoutAnIndex(t *testing.T) {
 	}
 }
 
+func TestASameSizeEditMadeInTheSameSecondAsTheIndexIsInTheSnapshot(t *testing.T) {
+	f := newFixture(t)
+	f.git(f.local, "config", "core.trustctime", "false")
+	edited, index := filepath.Join(f.local, "edited.txt"), filepath.Join(f.local, ".git", "index")
+	then := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(edited, then, then); err != nil {
+		t.Fatal(err)
+	}
+	f.git(f.local, "update-index", "--refresh")
+	f.write(f.local, "edited.txt", "v2")
+	for _, path := range []string{edited, index} {
+		if err := os.Chtimes(path, then, then); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws := f.workspace(f.local)
+	if got := f.git(f.local, "show", ws.Git.Worktree+":edited.txt"); got != "v2" || ws.Changed != 1 {
+		t.Errorf("snapshot has %q and %d changed files, want the edit", got, ws.Changed)
+	}
+}
+
 func TestHandoffRefusesADivergedBranchWithoutRunningItsName(t *testing.T) {
 	f := newFixture(t)
 	branch := `x";touch${IFS}PWNED;"y`

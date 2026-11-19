@@ -20,9 +20,12 @@ the ports you ask it to forward, which listen on `127.0.0.1`.
 ## SSH
 
 - Every connection is `ssh` to a destination from your config, with
-  `BatchMode=yes`, so it never asks for a password. magi passes no host key
-  options, so your SSH config and `known_hosts` decide which hosts are
-  trusted.
+  `BatchMode=yes`, so it never asks for a password. magi never sets
+  `StrictHostKeyChecking` or `UserKnownHostsFile`, so your SSH config and
+  `known_hosts` decide which hosts are trusted.
+- Because nothing can prompt, a host whose key isn't in your `known_hosts`
+  fails to connect instead of asking you to accept it. That holds unless
+  your own SSH config accepts new keys.
 - Connections to one machine share a control socket in `~/.magi/ssh`,
   which closes 60 seconds after its last use.
 - Git objects travel with `git push` and `git fetch` over that connection.
@@ -35,9 +38,53 @@ the ports you ask it to forward, which listen on `127.0.0.1`.
 - magi copies the branch, commits, staged and unstaged changes, the
   transcript and Claude's project memory. Anything pasted into the chat
   moves with the transcript.
-- Only gitignored files matching the `secrets` patterns in your config are
-  copied, disk to disk. magi doesn't print their contents. Logins, SSH keys
-  and credential stores never move.
+- Of the files git ignores, only those matching the `secrets` patterns in
+  your config are copied, disk to disk. magi doesn't print their contents.
+  Logins, SSH keys and credential stores never move.
+- Files git doesn't track yet and doesn't ignore travel with the uncommitted
+  work, in submodules too. That holds even when a name is in `exclude`.
+  `exclude` only applies to folders that aren't git repositories and to the
+  search for secret files.
+- A folder that isn't a git repository is copied whole, without the names
+  in `exclude`. Files in it that match `secrets` go as part of the folder.
+
+### What magi shows before a move
+
+Before a move copies anything, magi prints a block headed "What goes to"
+and the machine's name. It lists these.
+
+- The branch or detached HEAD, its commits and the number of changed
+  files, submodules included.
+- Files git doesn't track yet, by name. It names at most five, then says
+  how many more there are.
+- Secret files, by name only and with the same limit. magi never prints
+  what is in them.
+- The number of files that go through Git LFS.
+- For a folder that isn't a git repository, its file count and size
+  without the names in `exclude`, and those names.
+- What the project's `.magi.toml` holds, as whether it has a `setup`
+  command, its `services` and its `ports`. An unapproved file is marked
+  "not allowed yet, run magi allow".
+- The conversation and, for Claude Code, its project memory.
+- A last line on what doesn't go. That is anything running and, in a git
+  repository, anything git ignores apart from the secret files.
+
+Where you see it depends on how the move starts.
+
+- `magi arm`, which the handoff skill runs, prints it after "Armed". It
+  describes the session's own folder, and Claude passes it on to you. The
+  move then starts when the turn ends.
+- `magi move` prints it after it has inspected the project and before it
+  copies anything. With `--json` it is one `copy` event.
+- `magi pull` and `magi watch` print what comes back, read on the other
+  machine. They leave out the `.magi.toml` line.
+- A session that is in the middle of a turn when you run `magi move` hands
+  off from the Stop hook, and no block is printed.
+- A hand back asked of a machine that runs `magi watch` prints nothing
+  where you asked. The block goes to that machine's watcher log.
+
+The block is a notice. magi doesn't wait for an answer before it copies.
+If the block can't be built, magi says so and the move goes on.
 - If you trust a project's folder in Claude Code on this machine, magi
   marks its copy on the other machine as trusted in `~/.claude.json` there,
   so the moved session starts without asking. It replaces that file only
@@ -102,9 +149,10 @@ the ports you ask it to forward, which listen on `127.0.0.1`.
   runs as you, never as root, starts at login and restarts if it stops.
   The service file holds the path of `magi` and a copy of your `PATH`.
   `magi watch uninstall` stops it and removes the file.
-- The log holds machine names, short session ids, folder paths, errors and
-  the output of a project's `setup` command. magi writes no conversation
-  text to it.
+- The log holds machine names, short session ids, folder paths, errors,
+  the output of a project's `setup` command and the block of what comes
+  back, with its branch and file names. magi writes no conversation text
+  to it.
 
 ## Sending work
 

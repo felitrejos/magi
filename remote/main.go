@@ -180,7 +180,8 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 	if err != nil {
 		return errors.New("CLAUDE_PID is not set; run arm from inside the Claude Code session being handed off")
 	}
-	if _, err := loadHost(hostName); err != nil {
+	host, err := loadHost(hostName)
+	if err != nil {
 		watching, watchErr := watchers()
 		if watchErr != nil {
 			return errors.Join(err, watchErr)
@@ -206,6 +207,11 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
+	block, err := describeHere(hostName, host, sessionID)
+	if err != nil {
+		block = fmt.Sprintf("Note: what goes to %s couldn't be read (%v).", hostName, err)
+	}
+	fmt.Fprintln(out, block)
 	return nil
 }
 

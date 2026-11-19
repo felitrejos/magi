@@ -59,11 +59,21 @@ workspace.
   - The results of those tests aren't published alongside the round-trip
     numbers.
   - No test covers recovery of a Codex session.
-- **Show what gets copied.** Before a move, magi prints a short list of what
-  goes across, with files outside git, the secrets files the project listed,
-  ports and the services in the project's `.magi.toml`. Secrets show by
-  name, never by value. Defaults are conservative and SSH host key checks
-  stay on.
+- **Show what gets copied.** Before a move, magi prints a short list of
+  what goes across. What exists now is that list for `magi arm`,
+  `magi move`, `magi pull` and `magi watch`. It has the branch and its
+  changed files, files git doesn't track yet, the secret files by name and
+  never by value, and the setup, services and ports in the project's
+  `.magi.toml`. magi never turns SSH host key checks off. Still open are
+  these.
+  - A busy session moved with `magi move` hands off from the Stop hook and
+    prints no list.
+  - The defaults for `exclude` and `secrets` are only suggestions in
+    `magi init`. A config written by hand gets none, and nothing applies
+    them when a move runs.
+  - Files git doesn't track and doesn't ignore travel even when their
+    names are in `exclude`. The list shows them, and nothing leaves them
+    out.
 - **A support matrix.** Mac to Linux and Linux to Linux are tested on every
   release. WSL is either tested end to end or marked unsupported, in the
   docs and in `magi init`. A table shows what works for Claude Code and for

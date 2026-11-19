@@ -352,8 +352,10 @@ func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	if err := arm("server", "not-an-id", "", io.Discard); err == nil {
 		t.Error("arm accepted a malformed session id")
 	}
-	if err := arm("server", id, "dev server on :3000", io.Discard); err != nil {
-		t.Fatal(err)
+	f.localSession(id, "busy")
+	var out strings.Builder
+	if err := arm("server", id, "dev server on :3000", &out); err != nil || !strings.Contains(out.String(), "What goes to server:\n  branch main") {
+		t.Fatalf("arm: %q, %v", out.String(), err)
 	}
 	path, _ := store.SessionPath("armed", id, ".json")
 	var a armed

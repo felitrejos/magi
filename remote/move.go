@@ -205,7 +205,8 @@ func (m mover) now(local *sh.Local, host Host, s remoteSession, stopped bool) er
 		}
 		return 0, err
 	}
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Codex: s.Codex, Rollout: s.Rollout, Retire: retire}.Run(context.Background())
+	show := func(block string) { m.report(moveReport{Event: "copy", OK: true, Message: block}) }
+	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Show: show, Codex: s.Codex, Rollout: s.Rollout, Retire: retire}.Run(context.Background())
 	if err != nil {
 		if stopped {
 			err = fmt.Errorf("%w. The session was stopped here; to carry on here instead, run %s in %s", err, resumeHint(s), s.Cwd)

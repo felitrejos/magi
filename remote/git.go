@@ -20,6 +20,8 @@ type Workspace struct {
 	Subdir     string
 	Git        *GitState
 	Secrets    []string
+	Untracked  []string `json:"-"`
+	Changed    int
 	LFS        []string
 	LFSStore   string
 	LFSObjects []string
@@ -93,7 +95,11 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 			g.Index = value
 		case "lfsstore":
 			ws.LFSStore = value
-		case "attrs", "lfsobjects":
+		case "changed":
+			if ws.Changed, err = strconv.Atoi(value); err != nil {
+				return Workspace{}, fmt.Errorf("unexpected changed count from %s", m.Name())
+			}
+		case "attrs", "untracked", "lfsobjects":
 			n, err := strconv.Atoi(value)
 			if err != nil || i+2+n > len(fields) {
 				return Workspace{}, fmt.Errorf("unexpected %s list from %s", key, m.Name())
@@ -107,6 +113,8 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 						ws.LFS = append(ws.LFS, items[j])
 					}
 				}
+			case "untracked":
+				ws.Untracked = items
 			case "lfsobjects":
 				ws.LFSObjects = items
 			}

@@ -29,7 +29,7 @@ fi
 tree_now() {
   t=$(mktemp -d)
   index=$(git rev-parse --path-format=absolute --git-path index)
-  if [ -f "$index" ]; then cp "$index" "$t/index"; fi
+  if [ -f "$index" ]; then cp -p "$index" "$t/index"; fi
   GIT_INDEX_FILE="$t/index" git add -A >/dev/null
   GIT_INDEX_FILE="$t/index" git write-tree
   rm -rf "$t"

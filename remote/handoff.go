@@ -25,6 +25,7 @@ type Handoff struct {
 	Cwd            string
 	Note           string
 	Progress       func(step string)
+	Show           func(block string)
 	Codex          bool
 	Rollout        string
 	Retire         func() (int, error)
@@ -153,6 +154,13 @@ func (r *handoffRun) run(ctx context.Context) error {
 	project, err := approvedProject(r.local, r.ws.Root)
 	r.project = project
 	r.res.note(err)
+	if r.Show != nil {
+		if block, err := describeCopy(r.local, r.HostName, r.Host, r.ws, true, r.Codex); err != nil {
+			r.res.note(err)
+		} else {
+			r.Show(block)
+		}
+	}
 	r.remoteDir = filepath.Join(r.where.Root, r.ws.Subdir)
 	r.res.NewFolder, r.res.From, r.res.FromDir, r.res.ToDir = r.where.NewFolder, r.local.Name(), r.Cwd, r.remoteDir
 	r.launcher = sh.Tmux{Machine: r.remote}

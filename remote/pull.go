@@ -148,6 +148,11 @@ func (p Pull) Run() (res Pulled, err error) {
 	}); err != nil {
 		return res, stopped(errors.Join(err, forgetMove(session.ID)))
 	}
+	if block, err := describeCopy(remote, local.Name(), p.Host, ws, false, session.Codex); err != nil {
+		res.note(err)
+	} else {
+		fmt.Fprintln(p.Out, block)
+	}
 	if err := j.at("sync"); err != nil {
 		return res, stopped(errors.Join(err, forgetMove(session.ID)))
 	}

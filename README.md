@@ -48,8 +48,9 @@ laptop.
 
 Say "hand this off to my homelab" in a Claude Code session. When the turn
 ends, magi copies the conversation, the branch, staged and unstaged
-changes, the gitignored files you listed and Claude's project memory. The
-session continues in a tmux window on the homelab with Remote Control on,
+changes, the gitignored files you listed and Claude's project memory.
+Before it copies anything, magi shows what goes across, with secret files
+by name only. The session continues in a tmux window on the homelab with Remote Control on,
 so it is also in the Claude app, and magi prints the command that attaches
 to it. The copy you left closes and refuses new messages.
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -102,6 +103,11 @@ func TestMovingAnIdleSessionStopsItAndHandsItOff(t *testing.T) {
 	}
 	if last := events[len(events)-1]; !last.OK || last.ToDir != f.remote || last.Session != id || last.Host != "server" {
 		t.Errorf("result = %+v", last)
+	}
+	if !slices.ContainsFunc(events, func(e moveReport) bool {
+		return e.Event == "copy" && strings.HasPrefix(e.Message, "What goes to server:")
+	}) {
+		t.Errorf("no block on what goes in %+v", events)
 	}
 	select {
 	case <-exited:

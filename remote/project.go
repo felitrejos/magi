@@ -92,18 +92,26 @@ func readProject(root string) (*Project, error) {
 }
 
 func approvedProject(local *sh.Local, root string) (*Project, error) {
-	p, err := readProject(root)
+	p, approved, err := readApproved(root)
 	if p == nil || err != nil {
 		return nil, err
 	}
-	approvals, err := readApprovals()
-	if err != nil {
-		return nil, err
-	}
-	if approvals[p.Path] != p.Hash {
+	if !approved {
 		return nil, fmt.Errorf("%s isn't approved on %s, so it didn't run; check it and run magi allow in %s", p.Path, local.Name(), filepath.Dir(p.Path))
 	}
 	return p, nil
+}
+
+func readApproved(root string) (*Project, bool, error) {
+	p, err := readProject(root)
+	if p == nil || err != nil {
+		return nil, false, err
+	}
+	approvals, err := readApprovals()
+	if err != nil {
+		return nil, false, err
+	}
+	return p, approvals[p.Path] == p.Hash, nil
 }
 
 func readApprovals() (map[string]string, error) {
