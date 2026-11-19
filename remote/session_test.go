@@ -454,11 +454,11 @@ func TestStartHookPassesTheReturnNoteOnce(t *testing.T) {
 		t.Fatalf("hook output = %s", out.String())
 	}
 	out.Reset()
-	if err := promptHook(strings.NewReader(input), &out); err != nil {
+	if err := startHook(strings.NewReader(input), &out); err != nil {
 		t.Fatal(err)
 	}
 	if out.Len() != 0 {
-		t.Fatalf("the prompt hook passed the note again after the session start: %s", out.String())
+		t.Fatalf("the note was passed twice: %s", out.String())
 	}
 }
 

@@ -40,8 +40,8 @@ exactly one live copy at any time. magi is not a cloud workspace.
   what to fix.
 - **Claude Desktop parity.** Everything works the same from a Claude Desktop
   session as from the CLI. Handing off from Desktop works, and so does
-  handing back into it when `magi watch` takes the session back. The note
-  telling it where it now is arrives with the next message. Three cases
+  handing back into it when `magi watch` takes the session back, with the
+  note telling it where it now is delivered as it reopens. Three cases
   are left. One is the hand back when the Mac accepts SSH and the other
   machine hands the session back itself. Another is `magi pull` typed in a
   terminal, which continues the session in that terminal. The last is

@@ -204,7 +204,7 @@ func TestContractClaudeResumesAMovedTranscriptAndGetsTheReturnNote(t *testing.T)
 		t.Fatal(err)
 	}
 	var note bytes.Buffer
-	if err := passReturnNote(notes, first.SessionID, "SessionStart", &note); err != nil {
+	if err := passReturnNote(notes, first.SessionID, &note); err != nil {
 		t.Fatal(err)
 	}
 	hooks, _ := hookSettings(t, to, map[string]string{"SessionStart": "cat > HOOKS/start.json\ncat <<'NOTE'\n" + note.String() + "NOTE\n"})
@@ -234,9 +234,7 @@ func TestContractClaudeHooks(t *testing.T) {
 echo "$CLAUDE_PID" >> HOOKS/pids
 if [ "$(grep -c . HOOKS/pids)" = 1 ]; then echo '{"decision":"block","reason":"Now reply with just the word STOPPED."}'; fi
 `,
-		"UserPromptSubmit": `cat > HOOKS/prompt.json
-echo '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"End every reply with the word GRAPEFRUIT."}}'
-`,
+		"UserPromptSubmit": "cat > HOOKS/prompt.json\n",
 	})
 	cmd, out := startClaude(t, dir, "--settings", settings, "--allowedTools", "Bash(sleep:*)", "--",
 		"Start the shell command 'sleep 20' as a background task (run_in_background true), then without waiting reply with just: started")
@@ -280,9 +278,5 @@ echo '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalConte
 	}
 	if _, err := os.Stat(filepath.Join(hooks, "prompt.json")); err != nil {
 		t.Errorf("the UserPromptSubmit hook didn't run: %v", err)
-	}
-	transcript, _ := os.ReadFile(stops[0].TranscriptPath)
-	if !bytes.Contains(bytes.ToUpper(transcript), []byte("GRAPEFRUIT")) {
-		t.Errorf("additionalContext from the UserPromptSubmit hook didn't reach Claude")
 	}
 }

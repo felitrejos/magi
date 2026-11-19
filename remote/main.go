@@ -336,7 +336,7 @@ func promptHook(in io.Reader, out io.Writer) error {
 	}
 	host, err := os.ReadFile(filepath.Join(home, ".magi", "moved", sessionID))
 	if errors.Is(err, os.ErrNotExist) {
-		return passReturnNote(home, sessionID, "UserPromptSubmit", out)
+		return nil
 	}
 	if err != nil {
 		return err
@@ -353,14 +353,14 @@ func startHook(in io.Reader, out io.Writer) error {
 	if err != nil || sessionID == "" {
 		return err
 	}
-	return passReturnNote(home, sessionID, "SessionStart", out)
+	return passReturnNote(home, sessionID, out)
 }
 
 func returnNotePath(home, sessionID string) string {
 	return filepath.Join(home, ".magi", "returned", sessionID)
 }
 
-func passReturnNote(home, sessionID, event string, out io.Writer) error {
+func passReturnNote(home, sessionID string, out io.Writer) error {
 	path := returnNotePath(home, sessionID)
 	note, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -373,7 +373,7 @@ func passReturnNote(home, sessionID, event string, out io.Writer) error {
 		return err
 	}
 	return json.NewEncoder(out).Encode(map[string]any{
-		"hookSpecificOutput": map[string]string{"hookEventName": event, "additionalContext": string(note)},
+		"hookSpecificOutput": map[string]string{"hookEventName": "SessionStart", "additionalContext": string(note)},
 	})
 }
 

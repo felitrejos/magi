@@ -411,43 +411,6 @@ func TestLeftFromDesktopReadsTheLatestPush(t *testing.T) {
 	}
 }
 
-func TestPromptHookPassesTheReturnNoteOnce(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	id := "11111111-2222-3333-4444-555555555555"
-	path := returnNotePath(home, id)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("[magi] back on the Mac"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	input := `{"session_id":"` + id + `"}`
-	var out strings.Builder
-	if err := promptHook(strings.NewReader(input), &out); err != nil {
-		t.Fatal(err)
-	}
-	var got struct {
-		HookSpecificOutput struct {
-			HookEventName     string `json:"hookEventName"`
-			AdditionalContext string `json:"additionalContext"`
-		} `json:"hookSpecificOutput"`
-	}
-	if err := json.Unmarshal([]byte(out.String()), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.HookSpecificOutput.HookEventName != "UserPromptSubmit" || got.HookSpecificOutput.AdditionalContext != "[magi] back on the Mac" {
-		t.Fatalf("hook output = %s", out.String())
-	}
-	out.Reset()
-	if err := promptHook(strings.NewReader(input), &out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("the note was passed twice: %s", out.String())
-	}
-}
-
 func TestATmuxGroupNamedOutsideASCIIKeepsItsTabsInOneSession(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
