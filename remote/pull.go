@@ -120,8 +120,7 @@ func (p Pull) Run() (res Pulled, err error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), pullBudget)
 	defer cancel()
-	local.SetContext(ctx)
-	remote.SetContext(ctx)
+	local, remote = local.With(ctx).(*Local), remote.With(ctx).(*Remote)
 	stopped := func(err error) error {
 		return fmt.Errorf("%w. The session is stopped on %s; to carry on there instead, run %s in %s on %s", err, p.HostName, resumeHint(session), session.Cwd, p.HostName)
 	}
@@ -138,8 +137,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	undo := func(err error) error {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		local.SetContext(cleanup)
-		return stopped(undoSync(err, local, ws, where, synced))
+		return stopped(undoSync(err, local.With(cleanup), ws, where, synced))
 	}
 
 	if err := st.run("sync", func() error {

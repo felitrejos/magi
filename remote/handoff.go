@@ -176,12 +176,12 @@ func (r *handoffRun) run(ctx context.Context) error {
 	}
 	start, cancelStart := context.WithTimeout(r.parent, launchBudget)
 	defer cancelStart()
-	r.remote.SetContext(start)
+	remote := r.remote.With(start)
 	if err := r.st.run("start", func() error {
 		if r.Codex {
-			return waitForCodex(r.remote, r.rollout, r.written)
+			return waitForCodex(remote, r.rollout, r.written)
 		}
-		return waitForRemoteControl(r.remote, r.SessionID, r.launchedAt)
+		return waitForRemoteControl(remote, r.SessionID, r.launchedAt)
 	}); err != nil {
 		return r.undo(err, true)
 	}
@@ -201,9 +201,8 @@ func (r *handoffRun) rollback(err error) error {
 	err = r.undo(err, false)
 	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	r.local.SetContext(cleanup)
 	if r.ws.Git != nil {
-		if unparkErr := unparkRepo(r.local, r.ws.Root); unparkErr != nil {
+		if unparkErr := unparkRepo(r.local.With(cleanup), r.ws.Root); unparkErr != nil {
 			err = fmt.Errorf("%w; unparking this checkout also failed: %v", err, unparkErr)
 		}
 	}
@@ -280,7 +279,8 @@ func (r *handoffRun) launch(sidecar string) error {
 func (r *handoffRun) undo(err error, startTimedOut bool) error {
 	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	r.remote.SetContext(cleanup)
+	r.remote = r.remote.With(cleanup).(*Remote)
+	r.launcher.remote = r.remote
 	if startTimedOut && !r.trustedThere() {
 		err = fmt.Errorf("%w: the new session was waiting for you to trust %s; accept that there and hand off again", err, r.remoteDir)
 	}
@@ -313,17 +313,16 @@ func (r *handoffRun) trustedThere() bool {
 func (r *handoffRun) finish() {
 	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	r.local.SetContext(finish)
-	r.remote.SetContext(finish)
-	if err := settle(r.local, r.ws, r.Host.Exclude); err != nil {
+	local, remote := r.local.With(finish), r.remote.With(finish)
+	if err := settle(local, r.ws, r.Host.Exclude); err != nil {
 		r.res.note(fmt.Errorf("marking this checkout as handed off failed, so handing the session back here will need a clean checkout: %w", err))
 	}
-	if err := recordTab(r.remote, r.SessionID, r.tab); err != nil {
+	if err := recordTab(remote, r.SessionID, r.tab); err != nil {
 		r.res.note(fmt.Errorf("recording the new tab failed: %w", err))
 	}
-	r.res.note(closeForwardsOn(r.remote, r.SessionID))
+	r.res.note(closeForwardsOn(remote, r.SessionID))
 	if r.project != nil {
-		if err := r.st.run("panes", func() error { return startProject(r.remote, r.launcher, r.tab, r.where.Root, r.setupStatus, r.project) }); err != nil {
+		if err := r.st.run("panes", func() error { return startProject(r.launcher, r.tab, r.where.Root, r.setupStatus, r.project) }); err != nil {
 			r.res.note(errors.Unwrap(err))
 		}
 		if len(r.project.Ports) > 0 {

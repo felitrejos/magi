@@ -66,9 +66,7 @@ func TestWaitForRemoteControlWaitsForTheNewSessionsBridge(t *testing.T) {
 	waitBriefly := func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 		defer cancel()
-		r := f.remoteHost()
-		r.SetContext(ctx)
-		return waitForRemoteControl(r, "s1", launched)
+		return waitForRemoteControl(f.remoteHost().With(ctx), "s1", launched)
 	}
 	if err := waitBriefly(); err == nil || !strings.Contains(err.Error(), "in time") {
 		t.Fatalf("with no session files: err = %v, want a timeout rather than a script failure", err)

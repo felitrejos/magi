@@ -209,12 +209,9 @@ func initRepo(m Machine, dir, origin string) error {
 const prefetchLimit = 30 * time.Second
 
 func prefetchOrigin(m Machine, dir string) {
-	parent := m.Context()
-	ctx, cancel := context.WithTimeout(parent, prefetchLimit)
+	ctx, cancel := context.WithTimeout(m.Context(), prefetchLimit)
 	defer cancel()
-	m.SetContext(ctx)
-	defer m.SetContext(parent)
-	sh(m, `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10' git -C "$1" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch --quiet origin`, dir)
+	sh(m.With(ctx), `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10' git -C "$1" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch --quiet origin`, dir)
 }
 
 func removeFolder(m Machine, dir string) error {

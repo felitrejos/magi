@@ -103,8 +103,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	removeCopy := func(err error) error {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		remote.SetContext(cleanup)
-		if _, rmErr := sh(remote, taskScript, "remove", t.Dir); rmErr != nil {
+		if _, rmErr := sh(remote.With(cleanup), taskScript, "remove", t.Dir); rmErr != nil {
 			return fmt.Errorf("%w; removing the task's copy at %s on %s also failed: %v", err, t.Dir, spec.Host, rmErr)
 		}
 		return errors.Join(err, t.forget())
@@ -168,8 +167,8 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err := t.save(); err != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		remote.SetContext(cleanup)
-		_, cancelErr := sh(remote, taskScript, "cancel", t.Dir)
+		launcher.remote = remote.With(cleanup)
+		_, cancelErr := sh(launcher.remote, taskScript, "cancel", t.Dir)
 		return nil, removeCopy(errors.Join(err, cancelErr, launcher.Discard(tab)))
 	}
 	return res, nil

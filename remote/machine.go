@@ -86,7 +86,7 @@ func exitCode(err error) int {
 type Machine interface {
 	Name() string
 	Context() context.Context
-	SetContext(context.Context)
+	With(context.Context) Machine
 	Command(script string, args ...string) *exec.Cmd
 	Claude() string
 	Codex() string
@@ -123,11 +123,15 @@ func newLocal(ctx context.Context) (*Local, error) {
 	return &Local{ctx: ctx, name: strings.TrimSuffix(name, ".local"), codex: codex}, nil
 }
 
-func (l *Local) Name() string                   { return l.name }
-func (l *Local) Context() context.Context       { return l.ctx }
-func (l *Local) SetContext(ctx context.Context) { l.ctx = ctx }
-func (l *Local) Claude() string                 { return "claude" }
-func (l *Local) Codex() string                  { return l.codex }
+func (l *Local) Name() string             { return l.name }
+func (l *Local) Context() context.Context { return l.ctx }
+func (l *Local) Claude() string           { return "claude" }
+func (l *Local) Codex() string            { return l.codex }
+func (l *Local) With(ctx context.Context) Machine {
+	c := *l
+	c.ctx = ctx
+	return &c
+}
 func (l *Local) Command(script string, args ...string) *exec.Cmd {
 	return command(l.ctx, "sh", append([]string{"-c", script, "magi"}, args...)...)
 }
@@ -165,11 +169,15 @@ func newRemote(ctx context.Context, h Host) (*Remote, error) {
 	}, nil
 }
 
-func (r *Remote) Name() string                   { return r.host }
-func (r *Remote) Context() context.Context       { return r.ctx }
-func (r *Remote) SetContext(ctx context.Context) { r.ctx = ctx }
-func (r *Remote) Claude() string                 { return r.claude }
-func (r *Remote) Codex() string                  { return r.codex }
+func (r *Remote) Name() string             { return r.host }
+func (r *Remote) Context() context.Context { return r.ctx }
+func (r *Remote) Claude() string           { return r.claude }
+func (r *Remote) Codex() string            { return r.codex }
+func (r *Remote) With(ctx context.Context) Machine {
+	c := *r
+	c.ctx = ctx
+	return &c
+}
 func (r *Remote) Command(script string, args ...string) *exec.Cmd {
 	payload := "set -- " + quoteAll(args) + "\n" + script
 	line := `sh -c 'eval "$(LC_ALL=C printf "$1")"' magi '` + printfEscape(payload) + `'`

@@ -210,12 +210,10 @@ func projectPrompt(p *Project, status string) string {
 	return b.String()
 }
 
-func startProject(m Machine, l Tmux, tab Tab, dir, status string, p *Project) error {
-	parent := m.Context()
+func startProject(l Tmux, tab Tab, dir, status string, p *Project) error {
 	ctx, cancel := context.WithTimeout(context.Background(), projectPanesLimit)
 	defer cancel()
-	m.SetContext(ctx)
-	defer m.SetContext(parent)
+	l.remote = l.remote.With(ctx)
 	type pane struct{ role, command string }
 	var panes []pane
 	if p.Setup != "" {

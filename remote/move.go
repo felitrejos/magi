@@ -139,7 +139,7 @@ func (m mover) codex(local *Local, host Host, s remoteSession) error {
 	if len(s.Running) == 0 {
 		return m.now(local, host, s, false)
 	}
-	local.SetContext(context.Background())
+	local = local.With(context.Background()).(*Local)
 	interrupted := make(chan os.Signal, 1)
 	signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(interrupted)
@@ -201,9 +201,9 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	}
 	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	local.SetContext(finish)
-	res.note(markMoved(local, s.ID, m.host))
-	if _, err := sh(local, retireScript, "", s.Transcript, m.host, s.ID, ""); err != nil && !tabGone(err) {
+	here := local.With(finish)
+	res.note(markMoved(here, s.ID, m.host))
+	if _, err := sh(here, retireScript, "", s.Transcript, m.host, s.ID, ""); err != nil && !tabGone(err) {
 		res.note(fmt.Errorf("retiring the session here failed: %w", err))
 	}
 	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir}))
