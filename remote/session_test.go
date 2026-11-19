@@ -348,6 +348,37 @@ func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
 	}
 }
 
+func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
+	f := newFixture(t)
+	id := "0f0f0f0f-1111-2222-3333-555555555556"
+	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
+	t.Setenv("CLAUDE_PID", "4242")
+	heartbeat := filepath.Join(f.home, ".magi", "watchers", "Felipes-MacBook-Pro")
+	f.write(filepath.Dir(heartbeat), filepath.Base(heartbeat), "")
+	if err := arm("mac", id, "dev server on :3000", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := wantedPath(id)
+	var w wanted
+	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &w); err != nil || w.To != "Felipes-MacBook-Pro" || w.PID != 4242 || w.Note != "dev server on :3000" {
+		t.Errorf("wanted = %+v, %v", w, err)
+	}
+	var out strings.Builder
+	if err := stopHook(strings.NewReader(`{"session_id":"`+id+`","background_tasks":[{"type":"shell","command":"npm run dev"}]}`), &out); err != nil || !strings.Contains(out.String(), "Waiting for Felipes-MacBook-Pro") {
+		t.Fatalf("stop hook: %q, %v", out.String(), err)
+	}
+	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &w); err != nil || !strings.Contains(w.Note, "npm run dev") {
+		t.Errorf("after the turn the request is %+v, %v; want it kept with what was still running", w, err)
+	}
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(heartbeat, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := arm("mac", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "magi pull") {
+		t.Errorf("arm with only a stale watcher gave %v", err)
+	}
+}
+
 func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	f := newFixture(t)
 	id := "0f0f0f0f-1111-2222-3333-555555555555"

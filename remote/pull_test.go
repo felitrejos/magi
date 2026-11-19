@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"io"
+	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPullBringsWorkDoneOnTheServerBackToTheParkedLaptop(t *testing.T) {
@@ -129,5 +132,74 @@ func TestPullRunsTheSetupHereAndTellsClaude(t *testing.T) {
 	}
 	if note := setUpPulledProject(&Project{Setup: "exit 4"}, dir, io.Discard); !strings.Contains(note, "failed here") {
 		t.Errorf("a failed setup gave note %q", note)
+	}
+}
+
+func TestWatchTakesBackASessionTheServerAsksItTo(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nsecrets = [\".env\"]\nlauncher = \"tmux\"\n")
+	tmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(tmux, filepath.Join(f.home, "bin", "tmux")); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"git", "git-lfs"} {
+		if path, err := exec.LookPath(tool); err == nil {
+			if err := os.Symlink(path, filepath.Join(f.home, "bin", tool)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
+	out := f.workspace(f.local)
+	if err := f.push(f.remoteHost(), out, Placement{Root: f.remote}); err != nil {
+		t.Fatal(err)
+	}
+	if err := park(f.machine(), out.Root, out); err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.remote, "edited.txt", "finished on the server")
+	id := "0f0f0f0f-1111-2222-3333-999999999999"
+	stale := "0f0f0f0f-1111-2222-3333-999999999998"
+	slug, _ := projectSlug(f.remote)
+	f.write(filepath.Join(f.home, ".claude", "projects", slug), id+".jsonl", `{"cwd":"`+f.remote+`"}`+"\n")
+	me := f.machine().Name()
+	if err := writeWanted(id, wanted{To: me, PID: os.Getpid(), Note: "dev server on :3000"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWanted(stale, wanted{To: me, PID: 999999}); err != nil {
+		t.Fatal(err)
+	}
+	host, err := loadHost("server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logged strings.Builder
+	go followRequests(ctx, "server", host, me, log.New(&logged, "", 0))
+	t.Cleanup(func() { t.Log(logged.String()) })
+	wantedFile, _ := wantedPath(id)
+	staleFile, _ := wantedPath(stale)
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		if _, err := os.Stat(wantedFile); os.IsNotExist(err) {
+			break
+		}
+	}
+	if _, err := os.Stat(wantedFile); !os.IsNotExist(err) {
+		t.Fatal("the request was never taken")
+	}
+	if got := f.read(f.local, "edited.txt"); got != "finished on the server" {
+		t.Errorf("edited.txt on the laptop = %q", got)
+	}
+	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
+		t.Error("a request whose session is gone was kept")
+	}
+	localSlug, _ := projectSlug(f.local)
+	if got := f.read(filepath.Join(f.home, ".claude", "projects", localSlug), id+".jsonl"); !strings.Contains(got, f.remote) {
+		t.Errorf("transcript on the laptop = %q", got)
 	}
 }

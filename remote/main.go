@@ -36,6 +36,8 @@ Usage:
   magi hosts                         the configured hosts, one per line
   magi status                        recent handoffs, parked checkouts, and copies a failed
                                         handoff left running, which it stops
+  magi watch                         take back sessions other machines hand back here, over SSH
+  magi watch install | uninstall     run magi watch in the background, starting at login
   magi unpark [dir]                  stop treating a checkout as parked
   magi allow [dir]                   let the project's .magi.toml run after handoffs
   magi open <folder> [--codex] [--model <model>] [--json]
@@ -87,6 +89,12 @@ func main() {
 		if note, err = io.ReadAll(os.Stdin); err == nil {
 			err = arm(args[1], args[2], strings.TrimSpace(string(note)), os.Stdout)
 		}
+	case len(args) == 1 && args[0] == "watch":
+		err = watch()
+	case len(args) == 2 && args[0] == "watch" && args[1] == "install":
+		err = installWatch(os.Stdout)
+	case len(args) == 2 && args[0] == "watch" && args[1] == "uninstall":
+		err = uninstallWatch(os.Stdout)
 	case len(args) == 2 && args[0] == "hook" && args[1] == "stop":
 		err = stopHook(os.Stdin, os.Stdout)
 	case len(args) == 2 && args[0] == "hook" && args[1] == "prompt":
@@ -194,37 +202,35 @@ func writeArmed(path string, a armed, flag int) error {
 }
 
 func arm(hostName, sessionID, note string, out io.Writer) error {
-	if _, err := loadHost(hostName); err != nil {
-		fetch, others := fetchedBy(hostName, sessionID)
-		if fetch != nil {
-			return fetch(out)
-		}
-		if len(others) > 0 {
-			return fmt.Errorf("%w; magi's overview also sees %s", err, strings.Join(others, ", "))
-		}
-		return err
-	}
 	pid, err := strconv.Atoi(os.Getenv("CLAUDE_PID"))
 	if err != nil {
 		return errors.New("CLAUDE_PID is not set; run arm from inside the Claude Code session being handed off")
+	}
+	desktop := os.Getenv("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop"
+	if _, err := loadHost(hostName); err != nil {
+		watcher, watchErr := watchingMachine(hostName)
+		if watchErr != nil {
+			return errors.Join(err, watchErr)
+		}
+		if watcher == "" {
+			return fmt.Errorf("%w, and no machine called %q runs magi watch for this one, so bring the session back from there with magi pull", err, hostName)
+		}
+		if err := writeWanted(sessionID, wanted{To: watcher, PID: pid, Desktop: desktop, Note: note}); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", watcher)
+		return nil
 	}
 	path, err := armedPath(sessionID, ".json")
 	if err != nil {
 		return err
 	}
-	if err := writeArmed(path, armed{Host: hostName, PID: pid, Desktop: os.Getenv("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop", Note: note}, os.O_TRUNC); err != nil {
+	if err := writeArmed(path, armed{Host: hostName, PID: pid, Desktop: desktop, Note: note}, os.O_TRUNC); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
 	return nil
 }
-
-const (
-	fetchTries      = 3
-	fetchRetry      = 2 * time.Second
-	fetchAnswerWait = 10 * time.Second
-	fetchErrorGrace = 500 * time.Millisecond
-)
 
 func matchMachine(names []string, wanted string) string {
 	if slices.Contains(names, wanted) {
@@ -240,90 +246,6 @@ func matchMachine(names []string, wanted string) string {
 		return ""
 	}
 	return found[0]
-}
-
-func fetchedBy(hostName, sessionID string) (func(io.Writer) error, []string) {
-	var others []string
-	for attempt := range fetchTries {
-		if attempt > 0 {
-			time.Sleep(fetchRetry)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), fleetWait)
-		fleet, err := readFleet(ctx)
-		cancel()
-		if err != nil {
-			continue
-		}
-		others = others[:0]
-		for _, m := range fleet.Machines {
-			if m.Live && !m.Here {
-				others = append(others, m.Name)
-			}
-		}
-		if matchMachine(others, hostName) != "" {
-			break
-		}
-	}
-	target := matchMachine(others, hostName)
-	if target == "" {
-		return nil, others
-	}
-	return func(out io.Writer) error {
-		program, err := exec.LookPath("magi-overview")
-		if err != nil {
-			return err
-		}
-		tasks, err := tasksDir()
-		if err != nil {
-			return err
-		}
-		dir := filepath.Dir(tasks)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-		logPath := filepath.Join(dir, "fetch-"+shortID(sessionID)+".log")
-		log, err := os.Create(logPath)
-		if err != nil {
-			return err
-		}
-		defer log.Close()
-		cmd := exec.Command(program, "move", sessionID, target)
-		cmd.Stdout, cmd.Stderr = log, log
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-		if err := awaitFetchAnswer(cmd, logPath); err != nil {
-			return fmt.Errorf("%s didn't take this session back: %w", target, err)
-		}
-		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", target)
-		return nil
-	}, nil
-}
-
-func awaitFetchAnswer(cmd *exec.Cmd, logPath string) error {
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	answeredAt := time.Time{}
-	for deadline := time.Now().Add(fetchAnswerWait); time.Now().Before(deadline); {
-		select {
-		case err := <-exited:
-			if err == nil {
-				return nil
-			}
-			text, _ := os.ReadFile(logPath)
-			return errors.New(strings.TrimSpace(string(text)))
-		case <-time.After(100 * time.Millisecond):
-		}
-		if answeredAt.IsZero() {
-			if info, err := os.Stat(logPath); err == nil && info.Size() > 0 {
-				answeredAt = time.Now()
-			}
-		} else if time.Since(answeredAt) > fetchErrorGrace {
-			return nil
-		}
-	}
-	return nil
 }
 
 type stopInput struct {
@@ -350,7 +272,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return waitForPull(input, out)
 	}
 	if err != nil {
 		return err
@@ -599,7 +521,7 @@ func pullCommand(args []string) error {
 		}
 		report(moveReport{Event: "moving", OK: true, Message: fmt.Sprintf("Bringing session %s back from %s...", shortID(sessionID), hostName)})
 	}
-	pulled, err := pullHere(hostName, sessionID, out, inTab)
+	pulled, err := pullHere(hostName, sessionID, "", out, inTab)
 	if err != nil {
 		report(moveReport{Event: "failed", Message: err.Error()})
 		return err
@@ -620,7 +542,7 @@ type pulledHere struct {
 	message string
 }
 
-func pullHere(hostName, sessionID string, out io.Writer, inTab bool) (pulledHere, error) {
+func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pulledHere, error) {
 	host, err := loadHost(hostName)
 	if err != nil {
 		return pulledHere{}, err
@@ -632,7 +554,7 @@ func pullHere(hostName, sessionID string, out io.Writer, inTab bool) (pulledHere
 		}
 		defer unlock()
 	}
-	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Out: out}.Run()
+	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Note: note, Out: out}.Run()
 	if err != nil {
 		return pulledHere{}, err
 	}

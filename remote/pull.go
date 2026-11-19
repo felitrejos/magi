@@ -28,6 +28,7 @@ type Pull struct {
 	HostName  string
 	Host      Host
 	SessionID string
+	Note      string
 	Out       io.Writer
 }
 
@@ -213,7 +214,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	project, err := approvedProject(local, where.Root)
 	res.note(err)
 	res.Project, res.ProjectRoot = project, where.Root
-	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Sidecar: sidecar, Codex: session.Codex}
+	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Note: p.Note, Sidecar: sidecar, Codex: session.Codex}
 	return res, nil
 }
 

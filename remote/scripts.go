@@ -37,4 +37,6 @@ var (
 	taskScript string
 	//go:embed scripts/codex.sh
 	codexScript string
+	//go:embed scripts/watch.sh
+	watchScript string
 )
