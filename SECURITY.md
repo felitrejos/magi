@@ -182,7 +182,9 @@ If the block can't be built, magi says so and the move goes on.
   without SSH.
 - The `sessions` tool reads `claude agents --json` and
   `~/.claude/sessions/*.json` on this machine and on each machine in your
-  config, and Codex's session files where Codex is configured. The `diff`
+  config, and Codex's session files where Codex is configured. Whether a
+  Codex session is busy or idle comes from the last turn event in its
+  rollout file, one of those session files. The `diff`
   tool runs `git diff HEAD` and lists untracked files in a session's
   folder. Both only read.
 

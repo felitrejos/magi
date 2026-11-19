@@ -25,6 +25,8 @@ type codexThread struct {
 	ID   string `json:"id"`
 	Cwd  string `json:"cwd"`
 	Name string `json:"name"`
+	Path string `json:"path"`
+	Busy bool
 }
 
 func askCodex(m sh.Machine, calls ...codexCall) (string, []json.RawMessage, error) {
@@ -142,6 +144,11 @@ func openCodexSessions(m sh.Machine) ([]codexThread, error) {
 		if err := json.Unmarshal(answer, &read); err != nil {
 			return nil, fmt.Errorf("unreadable Codex session %s on %s: %w", ids[i], m.Name(), err)
 		}
+		turn, err := openTurn(m, read.Thread.Path)
+		if err != nil {
+			return nil, err
+		}
+		read.Thread.Busy = turn != ""
 		threads[i] = read.Thread
 	}
 	return threads, nil

@@ -92,6 +92,7 @@ case $command in
     done
     ;;
   turn)
+    [ -f "$1" ] || exit 11
     turn "$1"
     ;;
   opened)

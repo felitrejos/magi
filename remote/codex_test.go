@@ -434,7 +434,7 @@ roots = ["~/developer"]
 	here, there, closed := "0c0c0c0c-8144-7e23-82c1-87dc991d71e0", "0d0d0d0d-8144-7e23-82c1-87dc991d71e1", "0e0e0e0e-8144-7e23-82c1-87dc991d71e2"
 	f.codexRollout(filepath.Join(f.home, ".codex"), here, f.local, longAgo, false)
 	f.codexAppServer(filepath.Join(f.home, ".codex"), here)
-	f.codexRollout(f.remoteCodexHome(), there, f.remote, longAgo, false)
+	f.codexRollout(f.remoteCodexHome(), there, f.remote, longAgo, true)
 	f.codexAppServer(f.remoteCodexHome(), there)
 	f.codexRollout(filepath.Join(f.home, ".codex"), closed, f.local, longAgo, false)
 	f.write(filepath.Join(f.home, ".codex", "thread-writer-locks"), closed+".lock", "")
@@ -445,8 +445,8 @@ roots = ["~/developer"]
 	}
 	text := describeSessions(all)
 	for _, want := range []string{
-		f.machine().Name() + ":\n  0c0c0c0c  " + baseName(f.local) + "  codex  " + f.local + "\n",
-		"server:\n  0d0d0d0d  " + baseName(f.remote) + "  codex  " + f.remote + "\n",
+		f.machine().Name() + ":\n  0c0c0c0c  " + baseName(f.local) + "  codex idle  " + f.local + "\n",
+		"server:\n  0d0d0d0d  " + baseName(f.remote) + "  codex busy  " + f.remote + "\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("sessions lack %q:\n%s", want, text)

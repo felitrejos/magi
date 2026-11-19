@@ -174,7 +174,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "sessions",
 		Annotations: readOnly,
-		Description: "List the Claude Code and Codex sessions running on this machine and on every machine in the user's magi config, read over SSH: each one's id, title and folder, and for Claude Code also whether it's busy, waiting (and on what) or idle, and its Remote Control link when it has one. Read-only.",
+		Description: "List the Claude Code and Codex sessions running on this machine and on every machine in the user's magi config, read over SSH. The first line says which sessions are waiting on the user, so this one call answers \"does anything need me?\". Then each session's id, title, state and folder: busy, waiting (and on what) or idle for Claude Code, busy or idle for Codex, from its session file (a Codex approval wait isn't visible from outside Codex, and a Codex turn that was killed midway can still read as busy), and its Remote Control link when it has one. Read-only.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		all, err := everySession(ctx)
 		if err != nil {

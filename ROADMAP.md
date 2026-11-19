@@ -81,9 +81,18 @@ workspace.
 - **Docs a stranger can use.** A five-minute tutorial that goes from one
   machine to a second one, a troubleshooting page, a short versioning policy
   that says what 1.x promises not to break, and a changelog.
-- **Session state from hooks.** The plugin's hooks record each session's
-  state on its machine, working, waiting on you or idle, and `sessions`
-  reports it. Asking "does anything need me?" is then one `sessions` call.
+- **Session state.** `sessions` says what each session is doing, and
+  asking "does anything need me?" is one call. What exists now is a first
+  line in `sessions` that names every Claude Code session waiting on you
+  across your machines, and any machine it couldn't check. Claude Code's
+  state, busy, waiting or idle, comes from Claude Code itself through
+  `claude agents --json`, so magi adds no hooks for it. Codex shows busy
+  or idle, read from the last turn event in the session's rollout file.
+  Still open are these.
+  - A Codex session waiting on an approval doesn't show as waiting. The
+    Codex window keeps its sessions in its own background server, and the
+    `codex app-server` magi starts to ask can't see into it.
+  - A Codex turn that was killed midway can still read as busy.
 - **Two more MCP tools.** `wait` waits until another session finishes,
   such as one handed off to another machine. `move_session` moves a session
   other than the one you're in, using `magi move`.
@@ -91,13 +100,15 @@ workspace.
   back. Over the same SSH connection per machine it will also stream what
   changes there. That is machine stats, sessions and their state, and the
   CPU and memory each session uses, counting what it started. It reacts to
-  hooks and file changes rather than polling. Idle cost is measured on the
+  file changes rather than polling, and reads state the way `sessions`
+  does. Idle cost is measured on the
   Mac and on Linux against a budget of 0.5% CPU and 30 MB.
 - **The menu bar app.** SwiftUI, Mac only, open source. It shows each
   machine's CPU, memory, load, disk and whether it answers. For each session
   it shows the project, the state, how long it's been in it, and its CPU and
   memory. It also shows where sessions moved and background tasks. A badge
-  shows when a session is waiting on you. The only click opens a session
+  shows when a Claude Code session is waiting on you. A Codex approval
+  wait shows only once `sessions` can see it. The only click opens a session
   where it lives, in Desktop or its tmux window. It doesn't answer prompts
   or type into sessions. It reconnects quietly after sleep or a network
   change and shows a machine that doesn't answer instead of hiding it.

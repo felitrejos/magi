@@ -59,6 +59,34 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 
 func describeSessions(all []machineSessions) string {
 	var b strings.Builder
+	var waiting, unchecked []string
+	for _, m := range all {
+		if m.Err != nil || m.CodexErr != nil {
+			unchecked = append(unchecked, m.Name)
+		}
+		for _, s := range m.Sessions {
+			if s.Status != "waiting" {
+				continue
+			}
+			on := sessionTitle(s) + " (" + store.ShortID(s.SessionID) + ") on " + m.Name
+			if s.WaitingFor != "" {
+				on += " (" + s.WaitingFor + ")"
+			}
+			waiting = append(waiting, on)
+		}
+	}
+	switch {
+	case len(waiting) > 0:
+		fmt.Fprintf(&b, "Waiting on you: %s.", strings.Join(waiting, ", "))
+	case len(unchecked) == 0:
+		fmt.Fprint(&b, "Nothing is waiting on you.")
+	default:
+		fmt.Fprint(&b, "Nothing that magi could check is waiting on you.")
+	}
+	if len(unchecked) > 0 {
+		fmt.Fprintf(&b, " Not checked: %s.", strings.Join(unchecked, ", "))
+	}
+	fmt.Fprintln(&b)
 	for _, m := range all {
 		if m.Err != nil {
 			fmt.Fprintf(&b, "%s: not reachable (%v)\n", m.Name, m.Err)
@@ -85,7 +113,11 @@ func describeSessions(all []machineSessions) string {
 			if title == "" {
 				title = baseName(t.Cwd)
 			}
-			fmt.Fprintf(&b, "  %s  %s  codex  %s\n", store.ShortID(t.ID), title, t.Cwd)
+			state := "codex idle"
+			if t.Busy {
+				state = "codex busy"
+			}
+			fmt.Fprintf(&b, "  %s  %s  %s  %s\n", store.ShortID(t.ID), title, state, t.Cwd)
 		}
 		if m.CodexErr != nil {
 			fmt.Fprintf(&b, "  couldn't read its Codex sessions (%v)\n", m.CodexErr)

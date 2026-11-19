@@ -93,8 +93,11 @@ func codexRunning(m sh.Machine, id, rollout, dir string) (running []int, unsure 
 	return running, unsure, nil
 }
 
-func staleTurn(m sh.Machine, s remoteSession) (string, error) {
-	out, err := sh.Run(m, codexScript, "turn", s.Transcript)
+func openTurn(m sh.Machine, rollout string) (string, error) {
+	out, err := sh.Run(m, codexScript, "turn", rollout)
+	if sh.ExitCode(err) == sh.ExitGone {
+		return "", fmt.Errorf("the Codex session file %q on %s is gone", rollout, m.Name())
+	}
 	if err != nil || len(bytes.TrimSpace(out)) == 0 {
 		return "", err
 	}
@@ -105,20 +108,28 @@ func staleTurn(m sh.Machine, s remoteSession) (string, error) {
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(out, &event); err != nil {
-		return "", fmt.Errorf("unreadable turn in %s on %s: %w", s.Transcript, m.Name(), err)
+		return "", fmt.Errorf("unreadable turn in %s on %s: %w", rollout, m.Name(), err)
 	}
 	if event.Payload.Type != "task_started" {
 		return "", nil
 	}
-	began, err := time.Parse(time.RFC3339Nano, event.Timestamp)
+	return event.Timestamp, nil
+}
+
+func staleTurn(m sh.Machine, s remoteSession) (string, error) {
+	timestamp, err := openTurn(m, s.Transcript)
+	if err != nil || timestamp == "" {
+		return "", err
+	}
+	began, err := time.Parse(time.RFC3339Nano, timestamp)
 	if err != nil {
-		return "", fmt.Errorf("unreadable turn time %q in %s on %s: %w", event.Timestamp, s.Transcript, m.Name(), err)
+		return "", fmt.Errorf("unreadable turn time %q in %s on %s: %w", timestamp, s.Transcript, m.Name(), err)
 	}
 	args := []string{"started"}
 	for _, pid := range s.Running {
 		args = append(args, strconv.Itoa(pid))
 	}
-	out, err = sh.Run(m, codexScript, args...)
+	out, err := sh.Run(m, codexScript, args...)
 	if err != nil {
 		return "", err
 	}
@@ -132,7 +143,7 @@ func staleTurn(m sh.Machine, s remoteSession) (string, error) {
 			return "", nil
 		}
 	}
-	return event.Timestamp, nil
+	return timestamp, nil
 }
 
 func refuseOpenCodex(m sh.Machine, id string, stopping []int) error {

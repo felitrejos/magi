@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -224,6 +225,7 @@ EOF
 	for _, want := range []string{
 		"  0a0a0a0a  fix login  busy  /srv/api  https://claude.ai/code/cse_1\n",
 		"  0b0b0b0b  deploy  waiting (permission)  /srv/web\n",
+		"Waiting on you: deploy (0b0b0b0b) on " + f.machine().Name() + " (permission).\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("sessions lack %q:\n%s", want, text)
@@ -408,5 +410,12 @@ func TestHandoffPromptCarriesTheNoteWhatWasStillRunningAndSubagentTranscripts(t 
 	}
 	if got := stillRunning("", nil); got != "" {
 		t.Errorf("with nothing running the note is %q", got)
+	}
+}
+
+func TestNothingWaitingSaysWhichMachinesWentUnchecked(t *testing.T) {
+	text := describeSessions([]machineSessions{{Name: "laptop"}, {Name: "nas", Err: errors.New("timed out")}})
+	if want := "Nothing that magi could check is waiting on you. Not checked: nas.\n"; !strings.HasPrefix(text, want) {
+		t.Fatalf("sessions start %q, want %q", text, want)
 	}
 }
