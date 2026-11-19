@@ -33,17 +33,16 @@ type Step struct {
 }
 
 type Result struct {
-	Steps         []Step
-	ShownOn       []string
-	Where         string
-	RemoteControl string
-	Notes         []error
-	Ports         []int
-	NewFolder     string
-	From          string
-	FromDir       string
-	ToDir         string
-	Stray         *Stray
+	Steps     []Step
+	ShownOn   []string
+	Where     string
+	Notes     []error
+	Ports     []int
+	NewFolder string
+	From      string
+	FromDir   string
+	ToDir     string
+	Stray     *Stray
 }
 
 type Stray struct {
@@ -182,9 +181,7 @@ func (r *handoffRun) run(ctx context.Context) error {
 		if r.Codex {
 			return waitForCodex(r.remote, r.rollout, r.written)
 		}
-		bridge, err := waitForRemoteControl(r.remote, r.SessionID, r.launchedAt)
-		r.res.RemoteControl = bridge
-		return err
+		return waitForRemoteControl(r.remote, r.SessionID, r.launchedAt)
 	}); err != nil {
 		return r.undo(err, true)
 	}
