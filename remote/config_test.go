@@ -130,13 +130,32 @@ func TestInitWritesTheConfigAndKeepsAnswersWhenRunAgain(t *testing.T) {
 func TestDoctorChecksTheServer(t *testing.T) {
 	f := newFixture(t)
 	claude := f.tool("claude", fakeClaudeCLI)
+	f.tool("magi", "#!/bin/sh\n")
 	var out strings.Builder
 	c := &checks{out: &out}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	doctorHost(ctx, c, testedVersions{Claude: testedRange{Min: "2.1.300", Max: "2.1.327"}}, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer", "~/missing"}})
 	report := out.String()
-	for _, want := range []string{"✓ ssh fakehost works", "✓ git 2.", "✓ Claude Code 2.1.325 on server", "✓ logged in to claude.ai on server", "✓ root ~/developer exists", "✗ root ~/missing exists"} {
+	for _, want := range []string{"✓ ssh fakehost works", "✓ git 2.", "✓ Claude Code 2.1.325 on server", "✓ logged in to claude.ai on server", "✓ magi is on PATH on server", "✓ the magi plugin is installed and enabled on server", "✓ root ~/developer exists", "✗ root ~/missing exists"} {
+		if !strings.Contains(report, want) {
+			t.Errorf("doctor report lacks %q:\n%s", want, report)
+		}
+	}
+}
+
+func TestDoctorSaysWhatTheServerIsMissing(t *testing.T) {
+	f := newFixture(t)
+	claude := f.tool("claude", fakeClaudeCLI)
+	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
+	t.Setenv("MAGI_FAKE_PLUGINS", `[{"id":"magi@magi","enabled":false}]`)
+	var out strings.Builder
+	c := &checks{out: &out}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	doctorHost(ctx, c, testedVersions{Claude: testedRange{Min: "2.1.300", Max: "2.1.327"}}, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}})
+	report := out.String()
+	for _, want := range []string{"✗ magi isn't on PATH on server", "install.sh | sh", "✗ the magi plugin is installed but disabled on server", "claude plugin enable magi@magi"} {
 		if !strings.Contains(report, want) {
 			t.Errorf("doctor report lacks %q:\n%s", want, report)
 		}

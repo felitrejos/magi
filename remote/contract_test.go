@@ -34,30 +34,13 @@ func contractDir(t *testing.T) string {
 	return dir
 }
 
-func cleanEnv() []string {
-	var env []string
-	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "CLAUDE_CODE_") || strings.HasPrefix(kv, "CLAUDECODE=") {
-			continue
-		}
-		env = append(env, kv)
-	}
-	return env
-}
-
-type claudeResult struct {
-	SessionID string `json:"session_id"`
-	Result    string `json:"result"`
-	IsError   bool   `json:"is_error"`
-}
-
 func startClaude(t *testing.T, dir string, args ...string) (*exec.Cmd, *bytes.Buffer) {
 	t.Helper()
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude isn't installed")
 	}
 	cmd := exec.Command("claude", append([]string{"-p", "--model", "haiku", "--output-format", "json"}, args...)...)
-	cmd.Dir, cmd.Env = dir, cleanEnv()
+	cmd.Dir, cmd.Env = dir, claudeEnv()
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {
@@ -66,19 +49,19 @@ func startClaude(t *testing.T, dir string, args ...string) (*exec.Cmd, *bytes.Bu
 	return cmd, &out
 }
 
-func finishClaude(t *testing.T, cmd *exec.Cmd, out *bytes.Buffer) claudeResult {
+func finishClaude(t *testing.T, cmd *exec.Cmd, out *bytes.Buffer) claudeReply {
 	t.Helper()
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("claude failed: %v\n%s", err, out)
 	}
-	var res claudeResult
+	var res claudeReply
 	if err := json.Unmarshal(out.Bytes(), &res); err != nil || res.IsError || res.SessionID == "" {
 		t.Fatalf("claude's reply isn't usable: %v\n%s", err, out)
 	}
 	return res
 }
 
-func runClaude(t *testing.T, dir string, args ...string) claudeResult {
+func runClaude(t *testing.T, dir string, args ...string) claudeReply {
 	t.Helper()
 	cmd, out := startClaude(t, dir, args...)
 	return finishClaude(t, cmd, out)

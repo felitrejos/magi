@@ -40,18 +40,35 @@ curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.s
 claude plugin marketplace add felitrejos/magi && claude plugin install magi@magi
 ```
 
-Then, on each machine that reaches another one over SSH.
+Then, on your laptop.
 
 ```bash
-magi init
+magi try
 ```
 
-`magi init` asks for the other machine's SSH destination, where `claude`
-and your projects live there, and which gitignored files to bring along
-(`.env` by default). It writes `~/.config/magi/config.toml` and runs
-`magi doctor`, which checks both ends. If Tailscale is installed it lists
-the machines online in your tailnet as suggestions. Any SSH that works
-without a password prompt will do.
+`magi try` sets up magi if it isn't set up yet, checks both machines and
+then proves a round trip. It makes a throwaway git project named
+`magi-try-` plus eight random characters in your first local root, with
+one uncommitted line. It starts a Claude session there, moves it to the
+other machine, brings it back and checks that the session still remembers
+a word and that the uncommitted line came back. Then it removes the test
+project and its transcripts on both machines, also when a step failed. It
+takes three short Claude turns on your account, two here with Haiku and
+one on the other machine. A run takes about 15 seconds. If a check fails
+it stops before the round trip and says what to fix. `magi try <host>`
+tries another machine from your config.
+
+`magi init` is the plain setup, without the round trip. Run it on any
+other machine that reaches another one over SSH, or to add a machine. It
+asks for the other machine's SSH destination, where `claude` and your
+projects live there, and which gitignored files to bring along (`.env` by
+default). It writes `~/.config/magi/config.toml` and runs `magi doctor`.
+If Tailscale is installed it lists the machines online in your tailnet as
+suggestions. Any SSH that works without a password prompt will do.
+
+`magi doctor` checks both ends. On the other machine it now also checks
+that `magi` is on the PATH of your login shell and that the magi plugin is
+installed and enabled.
 
 If your laptop takes no incoming SSH, run this on it as well.
 
@@ -155,6 +172,8 @@ this to `claude_desktop_config.json`.
 
 ```text
 magi init                          set up this machine and a machine to hand off to
+magi try [host]                    set up if needed, check everything, then move a
+                                   throwaway session to <host> and back
 magi doctor [host...]              check that everything a handoff needs is in place
 magi pull <host> [session-id]      bring a session back from <host> and continue it here
 magi move <session-id> <host> [--json]

@@ -42,7 +42,7 @@ main() {
   esac
 
   printf '\nNext:\n'
-  printf '  magi init              on each machine, to move sessions and send work\n'
+  printf '  magi try               on your laptop, to set up and prove a round trip\n'
   printf '  magi watch install     on your laptop, so sessions can be handed back to it\n'
 }
 

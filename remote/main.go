@@ -25,6 +25,8 @@ const usage = `magi moves a Claude Code or Codex session to another machine, or 
 
 Usage:
   magi init                          set up this machine and a machine to hand off to
+  magi try [host]                    set up if needed, check everything, then move a throwaway
+                                        session to <host> and back to prove it works
   magi doctor [host...]              check that everything a handoff needs is in place
   magi pull <host> [session-id]      bring a Claude Code or Codex session back from <host>
                                         and continue it here
@@ -87,6 +89,8 @@ func main() {
 		err = stopHook(os.Stdin, os.Stdout)
 	case len(args) == 2 && args[0] == "hook" && args[1] == "prompt":
 		err = promptHook(os.Stdin, os.Stdout)
+	case len(args) >= 1 && args[0] == "try":
+		err = tryCommand(args[1:], os.Stdin, os.Stdout)
 	case len(args) == 1 && args[0] == "init":
 		err = initConfig(os.Stdin, os.Stdout)
 	case len(args) >= 1 && args[0] == "doctor":

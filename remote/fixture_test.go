@@ -278,7 +278,7 @@ const fakeClaudeCLI = `#!/bin/sh
 case "$1" in
   --version) echo "2.1.325 (Claude Code)" ;;
   auth) echo '{"loggedIn":true,"authMethod":"claude.ai"}' ;;
-  plugin) echo "magi@magi" ;;
+  plugin) if [ -n "$MAGI_FAKE_PLUGINS" ]; then echo "$MAGI_FAKE_PLUGINS"; else echo '[{"id":"magi@magi","enabled":true}]'; fi ;;
 esac
 `
 

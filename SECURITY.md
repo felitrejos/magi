@@ -43,6 +43,9 @@ the ports you ask it to forward, which listen on `127.0.0.1`.
   so the moved session starts without asking. It replaces that file only
   if nothing changed it meanwhile. A folder you haven't trusted here is
   never trusted there.
+- `magi try` creates a `magi-try-*` folder in your first local root and
+  in the host's root, with its transcripts, and removes them on both
+  machines when it ends. It makes three Claude turns on your account.
 - On the receiving machine it recreates your branch and uncommitted work.
   It refuses if that checkout has work or commits of its own.
 - A handoff is refused when the session already runs on the destination.

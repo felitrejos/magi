@@ -46,11 +46,6 @@ workspace.
     it as a refusal in `magi doctor`, and nobody is told.
   - The list of failing versions is edited by hand.
   - The job depends on one server and on the accounts logged in there.
-- **A guided first run.** `magi try` takes a new user from nothing to a
-  verified round trip between two machines. It checks the SSH key, that
-  Claude is signed in on the other machine and that the plugin is installed
-  there, then moves a test session there and back. A failure says exactly
-  what to fix.
 - **Recovery anyone can follow.** When a move fails because SSH drops, the
   machine sleeps or the hook is killed, `magi status` says which copy is the
   live one, cleans up the other and prints the exact command to continue.

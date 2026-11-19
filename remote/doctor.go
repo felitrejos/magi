@@ -113,13 +113,19 @@ func (c *checks) login(where, statusJSON string) {
 	c.pass("logged in to claude.ai on " + where)
 }
 
-func (c *checks) plugin(listJSON string) {
+func (c *checks) plugin(where, listJSON string) {
+	run := func(command string) string {
+		if where == "this machine" {
+			return command
+		}
+		return "on " + where + ", run " + command
+	}
 	var plugins []struct {
 		ID      string `json:"id"`
 		Enabled bool   `json:"enabled"`
 	}
 	if err := json.Unmarshal([]byte(listJSON), &plugins); err != nil {
-		c.warn("couldn't read claude plugin list --json: "+err.Error(), "check that the magi plugin is installed and enabled with claude plugin list")
+		c.warn("couldn't read claude plugin list --json on "+where+": "+err.Error(), run("claude plugin list")+" to check that the magi plugin is installed and enabled")
 		return
 	}
 	disabled := ""
@@ -128,16 +134,16 @@ func (c *checks) plugin(listJSON string) {
 			continue
 		}
 		if p.Enabled {
-			c.pass("the magi plugin is installed and enabled")
+			c.pass("the magi plugin is installed and enabled on " + where)
 			return
 		}
 		disabled = p.ID
 	}
 	if disabled != "" {
-		c.fail("the magi plugin is installed but disabled", "claude plugin enable "+disabled)
+		c.fail("the magi plugin is installed but disabled on "+where, run("claude plugin enable "+disabled))
 		return
 	}
-	c.fail("the magi plugin isn't installed", "claude plugin marketplace add felitrejos/magi && claude plugin install magi@magi")
+	c.fail("the magi plugin isn't installed on "+where, run("claude plugin marketplace add felitrejos/magi && claude plugin install magi@magi"))
 }
 
 func doctor(names []string, out io.Writer) error {
@@ -173,7 +179,7 @@ func doctor(names []string, out io.Writer) error {
 		status, _ := run(ctx, "claude", "auth", "status")
 		c.login("this machine", string(status))
 		plugins, _ := run(ctx, "claude", "plugin", "list", "--json")
-		c.plugin(string(plugins))
+		c.plugin("this machine", string(plugins))
 	}
 	if v, err := run(ctx, "codex", "--version"); err == nil {
 		c.tested(versions.Codex, "Codex", "this machine", string(v))
@@ -244,6 +250,13 @@ func doctorHost(ctx context.Context, c *checks, versions testedVersions, name st
 		c.tested(versions.Claude, "Claude Code", name, string(v))
 		status, _ := sh(remote, `"$1" auth status`, claude)
 		c.login(name, string(status))
+		plugins, _ := sh(remote, `"$1" plugin list --json`, claude)
+		c.plugin(name, string(plugins))
+	}
+	if _, err := sh(remote, `"${SHELL:-sh}" -lc 'command -v magi' >/dev/null`); err != nil {
+		c.fail("magi isn't on PATH on "+name, "the plugin's hooks run it there; install it on "+name+" with curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh")
+	} else {
+		c.pass("magi is on PATH on " + name)
 	}
 	if h.Codex != "" {
 		if v, err := sh(remote, `"$1" --version`, expandHome(h.Codex, home)); c.check(err, "codex at "+h.Codex+" on "+name, "fix the codex path for "+name) {
