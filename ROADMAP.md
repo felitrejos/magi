@@ -39,14 +39,14 @@ exactly one live copy at any time. magi is not a cloud workspace.
   there, then moves a test session there and back. A failure says exactly
   what to fix.
 - **Claude Desktop parity.** Everything works the same from a Claude Desktop
-  session as from the CLI. Handing off from Desktop works, and so does
-  handing back into it when `magi watch` takes the session back, with the
-  note telling it where it now is delivered as it reopens. Three cases
-  are left. One is the hand back when the Mac accepts SSH and the other
-  machine hands the session back itself. Another is `magi pull` typed in a
-  terminal, which continues the session in that terminal. The last is
-  Desktop sessions that run in a git worktree, since Desktop removes the
-  worktree when it archives the session.
+  session as from the CLI. Four cases are left. One is the hand back when
+  the Mac accepts SSH and the other machine hands the session back itself.
+  Another is `magi pull` typed in a terminal, which continues the session
+  in that terminal. The third is Desktop sessions that run in a git
+  worktree, since Desktop removes the worktree when it archives the
+  session. The last is the Remote Control view right after a handoff from
+  Desktop, which can open before its history has synced and stay empty
+  until you reload it.
 - **Recovery anyone can follow.** When a move fails because SSH drops, the
   machine sleeps or the hook is killed, `magi status` says which copy is the
   live one, cleans up the other and prints the exact command to continue.

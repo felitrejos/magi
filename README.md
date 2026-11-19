@@ -87,8 +87,32 @@ had `magi-overview`, the installer removes it and its background service.
   session on this machine, Codex sessions too.
 - **Claude Desktop.** A session handed off from Desktop stays in Desktop
   through Remote Control. When `magi watch` takes it back on a Mac, it
-  reopens in Desktop. Any other session it takes back opens in a tmux
-  window on the laptop.
+  reopens in Desktop as a new sidebar entry with the whole conversation.
+  Desktop reuses the entry that owns a session id and shows the messages
+  it cached before the handoff, so magi copies the transcript under a new
+  id and the session continues under that id. The old transcript stays on
+  disk. Any other session it takes back opens in a tmux window on the
+  laptop.
+
+  After a handoff from Desktop, magi stops the process of the copy you
+  left. To have that copy archive itself instead, add this line at the top
+  of `~/.config/magi/config.toml`, above the hosts.
+
+  ```toml
+  archive_left_behind = true
+  ```
+
+  Then allow the archive tool in `~/.claude/settings.json`. Without the
+  rule, auto mode blocks the archive. magi never edits that file, and
+  `magi doctor` warns you when the rule is missing.
+
+  ```json
+  {
+    "permissions": {
+      "allow": ["mcp__ccd_session_mgmt__archive_session"]
+    }
+  }
+  ```
 - **Failures.** A handoff that fails leaves the session running where it
   was. `magi status` lists recent handoffs and sessions waiting to be
   taken back, and stops any copy a failed handoff left behind.
