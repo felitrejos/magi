@@ -8,8 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -152,20 +150,6 @@ func (c *checks) plugin(listJSON string) {
 	c.fail("the magi plugin isn't installed", "claude plugin marketplace add felitrejos/magi && claude plugin install magi@magi")
 }
 
-func allowsArchive(settings []byte) bool {
-	var s struct {
-		Permissions struct {
-			Allow []string `json:"allow"`
-		} `json:"permissions"`
-	}
-	if json.Unmarshal(settings, &s) != nil {
-		return false
-	}
-	return slices.ContainsFunc(s.Permissions.Allow, func(rule string) bool {
-		return rule == "mcp__ccd_session_mgmt__archive_session" || rule == "mcp__ccd_session_mgmt"
-	})
-}
-
 func doctor(names []string, out io.Writer) error {
 	c := &checks{out: out}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -210,14 +194,6 @@ func doctor(names []string, out io.Writer) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
-	}
-	if cfg.ArchiveLeftBehind {
-		settings, _ := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
-		if allowsArchive(settings) {
-			c.pass("Claude Desktop copies left behind can archive themselves")
-		} else {
-			c.warn("archive_left_behind is on, but auto mode will block the archive", `add "mcp__ccd_session_mgmt__archive_session" to permissions.allow in ~/.claude/settings.json`)
-		}
 	}
 	for _, root := range cfg.LocalRoots {
 		_, err := os.Stat(expandHome(root, home))

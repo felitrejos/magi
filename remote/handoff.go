@@ -21,7 +21,6 @@ type Handoff struct {
 	TranscriptPath string
 	Cwd            string
 	Note           string
-	Stay           bool
 	Progress       func(step string)
 	Codex          bool
 	Rollout        string
@@ -267,14 +266,12 @@ func (r *handoffRun) launch(sidecar string) error {
 		r.res.note(carryTrust(r.local, r.remote, r.Cwd, r.remoteDir))
 	}
 	r.res.note(clearMoved(r.remote, r.SessionID))
-	if r.tab, err = r.launcher.Start(r.where.Group, label, r.remoteDir, command, !r.Stay); err != nil {
+	if r.tab, err = r.launcher.Start(r.where.Group, label, r.remoteDir, command, true); err != nil {
 		return err
 	}
-	if !r.Stay {
-		var showErr error
-		if r.res.ShownOn, showErr = r.launcher.Show(r.tab); showErr != nil {
-			r.res.note(fmt.Errorf("showing the new tab failed: %w", showErr))
-		}
+	var showErr error
+	if r.res.ShownOn, showErr = r.launcher.Show(r.tab); showErr != nil {
+		r.res.note(fmt.Errorf("showing the new tab failed: %w", showErr))
 	}
 	r.res.Where = r.launcher.Where(r.where.Group)
 	return nil

@@ -134,7 +134,7 @@ func TestMovingABusySessionWaitsForItsTurnAndReportsTheHandoff(t *testing.T) {
 	}
 	var a armed
 	data, _ := os.ReadFile(path)
-	if err := json.Unmarshal(data, &a); err != nil || a.Host != "server" || a.PID != proc.Process.Pid || !a.Notify || a.Desktop {
+	if err := json.Unmarshal(data, &a); err != nil || a.Host != "server" || a.PID != proc.Process.Pid || !a.Notify {
 		t.Fatalf("armed = %+v, %v", a, err)
 	}
 	os.Remove(path)

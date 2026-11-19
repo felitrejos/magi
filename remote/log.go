@@ -22,20 +22,6 @@ type logEntry struct {
 	To      string    `json:"to"`
 	FromDir string    `json:"from_dir"`
 	ToDir   string    `json:"to_dir"`
-	Desktop bool      `json:"desktop,omitempty"`
-}
-
-func leftFromDesktop(sessionID string) bool {
-	entries, err := readLog()
-	if err != nil {
-		return false
-	}
-	for _, e := range slices.Backward(entries) {
-		if e.Session == sessionID && e.Kind == "push" {
-			return e.Desktop
-		}
-	}
-	return false
 }
 
 func logPath() (string, error) {

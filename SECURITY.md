@@ -13,7 +13,7 @@ listen on `127.0.0.1`.
 - **The other machine** runs short shell scripts that magi sends over SSH,
   and the session or task itself in a tmux window. If the plugin is
   installed there, Claude Code runs the same hooks on it.
-- **The plugin** adds the handoff skill, three hooks and the MCP server.
+- **The plugin** adds the handoff skill, two hooks and the MCP server.
   All of them only run `magi`.
 
 ## SSH
@@ -54,28 +54,6 @@ listen on `127.0.0.1`.
   200 seconds. The prompt hook (`magi hook prompt`) refuses new input in
   the copy a session left. It reads the session id from the hook's input
   and the marker in `~/.magi/moved`, and contacts nothing.
-- A session handed off from Claude Desktop is opened in Desktop through
-  its Remote Control link (`claude://claude.ai/code/<id>`). When it is
-  taken back by `magi watch` on a Mac, magi copies the returning
-  transcript in `~/.claude/projects/<project>/` to a new session id,
-  rewrites every `"sessionId"` in the copy and copies the session's
-  sidecar folder beside it. It then runs
-  `claude --desktop --resume <new id>` and leaves a note in
-  `~/.magi/returned` that the hooks pass to the session once and delete.
-  The transcript under the old id stays on disk, so each hand back into
-  Desktop leaves a second transcript file with the same conversation.
-- With `archive_left_behind = true` in `config.toml`, magi doesn't stop
-  the process of the copy a handoff from Claude Desktop left. The Stop
-  hook asks that Claude to tell you where the session continues and to
-  archive itself with the `archive_session` tool and session id `self`.
-  The marker in `~/.magi/moved` is still written, so the copy refuses new
-  input either way.
-- The archive needs `"mcp__ccd_session_mgmt__archive_session"` in
-  `permissions.allow` in `~/.claude/settings.json`. That rule lets any
-  Claude session on the machine archive Desktop sessions in auto mode
-  without asking you. magi only asks the copy it just moved, and only to
-  archive itself. magi never edits that file. `magi doctor` reads it when
-  the setting is on and warns if the rule is missing.
 
 ## The watcher
 
@@ -89,8 +67,7 @@ listen on `127.0.0.1`.
   machine. `magi arm` writes it there when you ask a session to go back to
   a machine that isn't in that machine's config but has refreshed its
   watcher file in the last 15 seconds. It holds the laptop's name, the
-  session's process id, whether it came from Claude Desktop and the note
-  on what was running.
+  session's process id and the note on what was running.
 - The laptop then pulls the session over its own connection, the same way
   `magi pull` does, and removes the request. A request can only make the
   laptop pull a session from the machine the request is on.
@@ -158,7 +135,6 @@ Settings are in `~/.config/magi/config.toml`. State is in `~/.magi`.
 | `watchers/` | One file per laptop watching this machine |
 | `watch.lock` | Keeps a second `magi watch` from starting |
 | `moved/` | Where each session that left went |
-| `returned/` | A note for a session reopened in Claude Desktop |
 | `handoffs.jsonl` | Time, session id, machines and folders of each handoff |
 | `strays/` | Copies a failed handoff couldn't stop |
 | `forwards/` | Forwarded ports and the process forwarding them |

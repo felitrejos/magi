@@ -425,43 +425,6 @@ func TestTheStopHookOnlyMovesASessionArmedFromItsOwnProcess(t *testing.T) {
 	}
 }
 
-func TestStartHookPassesTheReturnNoteOnce(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	id := "11111111-2222-3333-4444-666666666666"
-	path := returnNotePath(home, id)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("[magi] back on the Mac"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	input := `{"session_id":"` + id + `","source":"resume"}`
-	var out strings.Builder
-	if err := startHook(strings.NewReader(input), &out); err != nil {
-		t.Fatal(err)
-	}
-	var got struct {
-		HookSpecificOutput struct {
-			HookEventName     string `json:"hookEventName"`
-			AdditionalContext string `json:"additionalContext"`
-		} `json:"hookSpecificOutput"`
-	}
-	if err := json.Unmarshal([]byte(out.String()), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.HookSpecificOutput.HookEventName != "SessionStart" || got.HookSpecificOutput.AdditionalContext != "[magi] back on the Mac" {
-		t.Fatalf("hook output = %s", out.String())
-	}
-	out.Reset()
-	if err := startHook(strings.NewReader(input), &out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Len() != 0 {
-		t.Fatalf("the note was passed twice: %s", out.String())
-	}
-}
-
 func TestTheHandoffNoteListsWhatWasStillRunning(t *testing.T) {
 	var input stopInput
 	stop := `{"session_id":"s","background_tasks":[
@@ -481,30 +444,5 @@ func TestTheHandoffNoteListsWhatWasStillRunning(t *testing.T) {
 	}
 	if got := stillRunning("", nil); got != "" {
 		t.Errorf("with nothing running the note is %q", got)
-	}
-}
-
-func TestADesktopCopyIsAskedToArchiveItselfOnlyWhenTheUserChoseThat(t *testing.T) {
-	a := armed{Host: "homelab", Desktop: true}
-	res := Result{Where: "in a tmux window on homelab"}
-	reply := handedOff(a, res, true)
-	if reply["decision"] != "block" || !strings.Contains(reply["reason"], `archive_session`) || !strings.Contains(reply["reason"], `"self"`) || !strings.Contains(reply["reason"], "archive_left_behind") {
-		t.Errorf("with archive_left_behind the reply is %v", reply)
-	}
-	if reply := handedOff(a, res, false); reply["decision"] != "" || !strings.Contains(reply["systemMessage"], "Handed off to homelab") {
-		t.Errorf("without it the reply is %v", reply)
-	}
-}
-
-func TestTheArchiveRuleIsFoundInClaudeSettings(t *testing.T) {
-	for settings, want := range map[string]bool{
-		`{"permissions":{"allow":["mcp__ccd_session_mgmt__archive_session"]}}`: true,
-		`{"permissions":{"allow":["Bash(ls:*)","mcp__ccd_session_mgmt"]}}`:     true,
-		`{"permissions":{"allow":["mcp__ccd_session_mgmt__list_sessions"]}}`:   false,
-		`{"statusLine":{}}`: false,
-	} {
-		if got := allowsArchive([]byte(settings)); got != want {
-			t.Errorf("allowsArchive(%s) = %v, want %v", settings, got, want)
-		}
 	}
 }

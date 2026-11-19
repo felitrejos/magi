@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -386,32 +385,6 @@ func TestHandingBackFindsTheMachineTheUserMeant(t *testing.T) {
 	}
 }
 
-func TestLeftFromDesktopReadsTheLatestPush(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	id := "11111111-2222-3333-4444-555555555555"
-	if leftFromDesktop(id) {
-		t.Fatal("a session with no log entries left from Desktop")
-	}
-	for _, e := range []logEntry{
-		{Kind: "push", Session: id, Desktop: true},
-		{Kind: "pull", Session: id},
-		{Kind: "push", Session: "other", Desktop: false},
-	} {
-		if err := appendLog(e); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !leftFromDesktop(id) {
-		t.Fatal("the last push was from Desktop, but it wasn't seen")
-	}
-	if err := appendLog(logEntry{Kind: "push", Session: id}); err != nil {
-		t.Fatal(err)
-	}
-	if leftFromDesktop(id) {
-		t.Fatal("a later push from a terminal still counted as Desktop")
-	}
-}
-
 func TestATmuxGroupNamedOutsideASCIIKeepsItsTabsInOneSession(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
@@ -427,43 +400,5 @@ func TestATmuxGroupNamedOutsideASCIIKeepsItsTabsInOneSession(t *testing.T) {
 	}
 	if !first.SessionCreated || second.SessionCreated || second.Session != first.Session {
 		t.Errorf("first = %+v, second = %+v, want the second tab in the first one's session", first, second)
-	}
-}
-
-func TestAHandBackIntoDesktopOpensAForkSoDesktopShowsItFresh(t *testing.T) {
-	if _, err := exec.LookPath("script"); err != nil || runtime.GOOS != "darwin" {
-		t.Skip("Desktop hand back runs on macOS only")
-	}
-	f := newFixture(t)
-	f.config("local_roots = [\"~/laptop\"]\n")
-	id := "11111111-2222-3333-4444-777777777777"
-	slug, _ := projectSlug(f.local)
-	project := filepath.Join(f.home, ".claude", "projects", slug)
-	f.write(project, id+".jsonl", `{"type":"user","sessionId":"`+id+`"}`+"\n"+`{"type":"assistant","sessionId":"`+id+`"}`+"\n")
-	f.write(filepath.Join(project, id, "subagents"), "agent-a.jsonl", "{}\n")
-	if err := appendLog(logEntry{Kind: "push", Session: id, Desktop: true}); err != nil {
-		t.Fatal(err)
-	}
-	args := filepath.Join(f.home, "claude-args")
-	f.tool("claude", "#!/bin/sh\necho \"$@\" > "+args+"\necho \"Opening session $3 in Claude Desktop\"\n")
-	res := Pulled{Session: id, ToDir: f.local}
-	if err := openPulledTab(f.machine(), &res, "back on the Mac"); err != nil {
-		t.Fatal(err)
-	}
-	if !res.InDesktop || res.Session == id || !sessionIDPattern.MatchString(res.Session) {
-		t.Fatalf("pulled = %+v, want it open in Desktop under a new session id", res)
-	}
-	if got := strings.TrimSpace(f.read(f.home, "claude-args")); got != "--desktop --resume "+res.Session {
-		t.Errorf("claude ran with %q", got)
-	}
-	fork := f.read(project, res.Session+".jsonl")
-	if strings.Contains(fork, id) || strings.Count(fork, `"sessionId":"`+res.Session+`"`) != 2 {
-		t.Errorf("the fork still names the old session or lost lines: %s", fork)
-	}
-	if f.read(filepath.Join(project, res.Session, "subagents"), "agent-a.jsonl") != "{}\n" {
-		t.Error("the fork's subagent transcripts are missing")
-	}
-	if _, err := os.Stat(returnNotePath(f.home, res.Session)); err != nil {
-		t.Errorf("no return note for the fork: %v", err)
 	}
 }

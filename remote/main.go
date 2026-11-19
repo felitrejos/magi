@@ -53,7 +53,6 @@ Used by the Claude Code plugin:
                                         with -, read a note on what was running from stdin
   magi hook stop                     the plugin's Stop hook (reads the hook JSON on stdin)
   magi hook prompt                   the plugin's prompt hook, which refuses input in a session that moved
-  magi hook start                    the plugin's SessionStart hook, which tells a session handed back what changed
   magi mcp                           the plugin's tool server, on stdin and stdout
   magi forward-run <session-id>      keeps a moved session's ports forwarded (started by a move)
 `
@@ -61,11 +60,10 @@ Used by the Claude Code plugin:
 var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type armed struct {
-	Host    string `json:"host"`
-	PID     int    `json:"pid"`
-	Desktop bool   `json:"desktop"`
-	Note    string `json:"note"`
-	Notify  bool   `json:"notify,omitempty"`
+	Host   string `json:"host"`
+	PID    int    `json:"pid"`
+	Note   string `json:"note"`
+	Notify bool   `json:"notify,omitempty"`
 }
 
 func main() {
@@ -89,8 +87,6 @@ func main() {
 		err = stopHook(os.Stdin, os.Stdout)
 	case len(args) == 2 && args[0] == "hook" && args[1] == "prompt":
 		err = promptHook(os.Stdin, os.Stdout)
-	case len(args) == 2 && args[0] == "hook" && args[1] == "start":
-		err = startHook(os.Stdin, os.Stdout)
 	case len(args) == 1 && args[0] == "init":
 		err = initConfig(os.Stdin, os.Stdout)
 	case len(args) >= 1 && args[0] == "doctor":
@@ -192,7 +188,6 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 	if err != nil {
 		return errors.New("CLAUDE_PID is not set; run arm from inside the Claude Code session being handed off")
 	}
-	desktop := os.Getenv("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop"
 	if _, err := loadHost(hostName); err != nil {
 		watching, watchErr := watchers()
 		if watchErr != nil {
@@ -205,7 +200,7 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 		if watcher == "" {
 			return fmt.Errorf("%w, and no machine called %q runs magi watch for this one, so bring the session back from there with magi pull", err, hostName)
 		}
-		if err := writeWanted(sessionID, wanted{To: watcher, PID: pid, Desktop: desktop, Note: note}); err != nil {
+		if err := writeWanted(sessionID, wanted{To: watcher, PID: pid, Note: note}); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", watcher)
@@ -215,7 +210,7 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := writeArmed(path, armed{Host: hostName, PID: pid, Desktop: desktop, Note: note}, os.O_TRUNC); err != nil {
+	if err := writeArmed(path, armed{Host: hostName, PID: pid, Note: note}, os.O_TRUNC); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
@@ -291,9 +286,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
 
-	cfg, _, err := loadConfig()
-	archive := err == nil && a.Desktop && cfg.ArchiveLeftBehind
-	res, err := handoff(ctx, a, input, archive)
+	res, err := handoff(ctx, a, input)
 	if res.Stray != nil {
 		res.note(saveStray(input.SessionID, *res.Stray))
 	}
@@ -312,11 +305,8 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if a.Notify {
 		res.note(writeMoveResult(input.SessionID, moveReport{Event: "moved", OK: true, Message: fmt.Sprintf("Moved session %s to %s in %s. It's running %s.", shortID(input.SessionID), a.Host, res.Summary(), res.Where), ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}))
 	}
-	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir, Desktop: a.Desktop}))
-	if a.Desktop && res.RemoteControl != "" {
-		res.note(exec.Command("open", "claude://claude.ai/code/"+res.RemoteControl).Run())
-	}
-	return json.NewEncoder(out).Encode(handedOff(a, res, archive))
+	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}))
+	return json.NewEncoder(out).Encode(handedOff(a, res))
 }
 
 func hookSession(in io.Reader) (home, sessionID string, err error) {
@@ -350,36 +340,7 @@ func promptHook(in io.Reader, out io.Writer) error {
 	})
 }
 
-func startHook(in io.Reader, out io.Writer) error {
-	home, sessionID, err := hookSession(in)
-	if err != nil || sessionID == "" {
-		return err
-	}
-	return passReturnNote(home, sessionID, out)
-}
-
-func returnNotePath(home, sessionID string) string {
-	return filepath.Join(home, ".magi", "returned", sessionID)
-}
-
-func passReturnNote(home, sessionID string, out io.Writer) error {
-	path := returnNotePath(home, sessionID)
-	note, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil {
-		return err
-	}
-	return json.NewEncoder(out).Encode(map[string]any{
-		"hookSpecificOutput": map[string]string{"hookEventName": "SessionStart", "additionalContext": string(note)},
-	})
-}
-
-func handedOff(a armed, res Result, archive bool) map[string]string {
+func handedOff(a armed, res Result) map[string]string {
 	where := fmt.Sprintf("It's running %s, and with Remote Control it's in every Claude app on your account", res.Where)
 	if len(res.ShownOn) > 0 {
 		where = fmt.Sprintf("It's open in %s, and with Remote Control it's in every Claude app on your account", strings.Join(res.ShownOn, ", "))
@@ -393,21 +354,12 @@ func handedOff(a armed, res Result, archive bool) map[string]string {
 	if len(res.Notes) > 0 {
 		where += ". Notes: " + res.Noted()
 	}
-	if archive {
-		return map[string]string{
-			"decision": "block",
-			"reason": fmt.Sprintf("magi handed this session off to %s in %s. %s. "+
-				"The user set archive_left_behind = true in magi's config, which asks for the copy left behind to be archived after every handoff from Claude Desktop. "+
-				"Tell the user in one short line where the session continues now, then archive this session with the archive_session tool and session_id \"self\" (load it with ToolSearch if needed). "+
-				"Make no other tool calls.", a.Host, res.Summary(), where),
-		}
-	}
 	return map[string]string{
 		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. This copy is closing.", a.Host, res.Summary(), where),
 	}
 }
 
-func handoff(ctx context.Context, a armed, input stopInput, archive bool) (Result, error) {
+func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 	host, err := loadHost(a.Host)
 	if err != nil {
 		return Result{}, err
@@ -419,13 +371,12 @@ func handoff(ctx context.Context, a armed, input stopInput, archive bool) (Resul
 	return Handoff{
 		HostName:       a.Host,
 		Note:           stillRunning(a.Note, input.BackgroundTasks),
-		Stay:           a.Desktop,
 		Host:           host,
 		SessionID:      input.SessionID,
 		TranscriptPath: input.TranscriptPath,
 		Cwd:            input.Cwd,
 		Retire: func() error {
-			if err := markMoved(local, input.SessionID, a.Host); err != nil || archive {
+			if err := markMoved(local, input.SessionID, a.Host); err != nil {
 				return err
 			}
 			return retire(a, input.SessionID, input.TranscriptPath)
@@ -556,9 +507,6 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 		}
 	}
 	message := fmt.Sprintf("Brought session %s back from %s to %s", shortID(res.Session), hostName, res.ToDir)
-	if res.InDesktop {
-		message += ", open in Claude Desktop"
-	}
 	if len(res.Notes) > 0 {
 		message += " (" + res.Noted() + ")"
 	}
@@ -566,19 +514,6 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 }
 
 func openPulledTab(local *Local, res *Pulled, prompt string) error {
-	if !res.Codex && leftFromDesktop(res.Session) {
-		info := res.PromptInfo
-		info.WithMessage = true
-		fork, err := forkTranscript(res.ToDir, res.Session)
-		if err == nil {
-			err = openInDesktop(res.ToDir, fork, handoffPrompt(info))
-		}
-		if err == nil {
-			res.Session, res.InDesktop = fork, true
-			return nil
-		}
-		res.note(fmt.Errorf("it came from Claude Desktop, but opening it there failed (%w), so it opens in a tab", err))
-	}
 	cfg, _, err := loadConfig()
 	if err != nil {
 		return err

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,8 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,72 +37,7 @@ type Pulled struct {
 	Project     *Project
 	ProjectRoot string
 	Codex       bool
-	InDesktop   bool
 }
-
-func forkTranscript(dir, sessionID string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	slug, err := projectSlug(dir)
-	if err != nil {
-		return "", err
-	}
-	project := filepath.Join(home, ".claude", "projects", slug)
-	data, err := os.ReadFile(filepath.Join(project, sessionID+".jsonl"))
-	if err != nil {
-		return "", err
-	}
-	id := newSessionID()
-	data = bytes.ReplaceAll(data, []byte(`"sessionId":"`+sessionID+`"`), []byte(`"sessionId":"`+id+`"`))
-	if err := os.WriteFile(filepath.Join(project, id+".jsonl"), data, 0o600); err != nil {
-		return "", err
-	}
-	sidecar := filepath.Join(project, sessionID)
-	if _, err := os.Stat(sidecar); errors.Is(err, os.ErrNotExist) {
-		return id, nil
-	}
-	return id, os.CopyFS(filepath.Join(project, id), os.DirFS(sidecar))
-}
-
-func openInDesktop(dir, sessionID, note string) error {
-	if runtime.GOOS != "darwin" {
-		return errors.New("Claude Desktop hand back works on macOS only")
-	}
-	program, err := exec.LookPath("claude")
-	if err != nil {
-		return err
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	notePath := returnNotePath(home, sessionID)
-	if err := os.MkdirAll(filepath.Dir(notePath), 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(notePath, []byte(note), 0o600); err != nil {
-		return err
-	}
-	cmd := exec.Command("script", "-q", "/dev/null", program, "--desktop", "--resume", sessionID)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err == nil && bytes.Contains(out, []byte("Opening session")) {
-		return nil
-	}
-	os.Remove(notePath)
-	text := strings.TrimSpace(ansi.ReplaceAllString(string(out), ""))
-	if err == nil {
-		err = errors.New("claude --desktop didn't open it")
-	}
-	if text != "" {
-		return fmt.Errorf("%w: %s", err, text)
-	}
-	return err
-}
-
-var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|[\x00-\x08\x0e-\x1f]`)
 
 type remoteSession struct {
 	ID         string

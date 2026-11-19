@@ -38,15 +38,6 @@ exactly one live copy at any time. magi is not a cloud workspace.
   Claude is signed in on the other machine and that the plugin is installed
   there, then moves a test session there and back. A failure says exactly
   what to fix.
-- **Claude Desktop parity.** Everything works the same from a Claude Desktop
-  session as from the CLI. Four cases are left. One is the hand back when
-  the Mac accepts SSH and the other machine hands the session back itself.
-  Another is `magi pull` typed in a terminal, which continues the session
-  in that terminal. The third is Desktop sessions that run in a git
-  worktree, since Desktop removes the worktree when it archives the
-  session. The last is the Remote Control view right after a handoff from
-  Desktop, which can open before its history has synced and stay empty
-  until you reload it.
 - **Recovery anyone can follow.** When a move fails because SSH drops, the
   machine sleeps or the hook is killed, `magi status` says which copy is the
   live one, cleans up the other and prints the exact command to continue.
@@ -111,3 +102,10 @@ read-only.
   that wait for an answer. Opening the session is enough.
 - **Tools that type into other sessions.** Remote Control and Desktop
   already let you answer a session yourself.
+- **Claude Desktop handling of its own.** magi used to jump Desktop to the
+  moved session, reopen a hand back in Desktop and archive the copy left
+  behind. All three relied on undocumented Desktop behaviour, so they were
+  dropped. A Desktop session now moves like any other and shows in Desktop
+  through Remote Control. This is worth revisiting only if Desktop
+  documents a way to open a session by id with a ready signal,
+  `claude --desktop --fork-session`, or archiving from the CLI.

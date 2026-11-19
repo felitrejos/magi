@@ -23,10 +23,9 @@ const (
 )
 
 type wanted struct {
-	To      string `json:"to"`
-	PID     int    `json:"pid"`
-	Desktop bool   `json:"desktop"`
-	Note    string `json:"note"`
+	To   string `json:"to"`
+	PID  int    `json:"pid"`
+	Note string `json:"note"`
 }
 
 func magiDir(sub string) (string, error) {

@@ -65,7 +65,6 @@ type liveSession struct {
 
 type fromRegistry struct {
 	BridgeSessionID *string `json:"bridgeSessionId"`
-	Entrypoint      string  `json:"entrypoint"`
 	ProcStart       any     `json:"procStart"`
 }
 
@@ -259,7 +258,6 @@ type Prompt struct {
 	Sidecar                  string
 	Project                  string
 	Codex                    bool
-	WithMessage              bool
 }
 
 func handoffPrompt(p Prompt) string {
@@ -286,11 +284,7 @@ func handoffPrompt(p Prompt) string {
 	} else {
 		b.WriteString("Then ")
 	}
-	if p.WithMessage {
-		b.WriteString("answer the user's message.")
-	} else {
-		fmt.Fprintf(&b, "reply with one short line confirming you're on %s and wait for the next instruction.", p.To)
-	}
+	fmt.Fprintf(&b, "reply with one short line confirming you're on %s and wait for the next instruction.", p.To)
 	return b.String()
 }
 

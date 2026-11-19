@@ -148,27 +148,7 @@ func hookSettings(t *testing.T, dir string, scripts map[string]string) (string, 
 	return hooks, string(settings)
 }
 
-func pluginSessionStart(t *testing.T, command string) []any {
-	t.Helper()
-	plugin, err := os.ReadFile(filepath.Join("..", "plugin", "hooks", "hooks.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var registered struct {
-		Hooks map[string][]map[string]any `json:"hooks"`
-	}
-	if err := json.Unmarshal(plugin, &registered); err != nil {
-		t.Fatal(err)
-	}
-	var groups []any
-	for _, group := range registered.Hooks["SessionStart"] {
-		group["hooks"] = []any{map[string]any{"type": "command", "command": command}}
-		groups = append(groups, group)
-	}
-	return groups
-}
-
-func TestContractClaudeResumesAMovedTranscriptAndGetsTheReturnNote(t *testing.T) {
+func TestContractClaudeResumesAMovedTranscript(t *testing.T) {
 	from, to := contractDir(t), contractDir(t)
 	first := runClaude(t, from, "Remember the word KUMQUAT. Reply with just: ok")
 	local, err := newLocal(context.Background())
@@ -195,35 +175,9 @@ func TestContractClaudeResumesAMovedTranscriptAndGetsTheReturnNote(t *testing.T)
 	if err := os.Rename(s.Transcript, moved); err != nil {
 		t.Fatal(err)
 	}
-	notes := t.TempDir()
-	path := returnNotePath(notes, first.SessionID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("[magi] The secret word is TANGERINE."), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var note bytes.Buffer
-	if err := passReturnNote(notes, first.SessionID, &note); err != nil {
-		t.Fatal(err)
-	}
-	hooks, _ := hookSettings(t, to, map[string]string{"SessionStart": "cat > HOOKS/start.json\ncat <<'NOTE'\n" + note.String() + "NOTE\n"})
-	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{"SessionStart": pluginSessionStart(t, filepath.Join(hooks, "SessionStart.sh"))}})
-	second := runClaude(t, to, "--settings", string(settings), "--resume", first.SessionID, "What word did I ask you to remember, and what is the secret word? Reply with just the two words.")
-	reply := strings.ToUpper(second.Result)
-	if !strings.Contains(reply, "KUMQUAT") {
+	second := runClaude(t, to, "--resume", first.SessionID, "What word did I ask you to remember? Reply with just the word.")
+	if !strings.Contains(strings.ToUpper(second.Result), "KUMQUAT") {
 		t.Errorf("the resumed session didn't remember: %q", second.Result)
-	}
-	if !strings.Contains(reply, "TANGERINE") {
-		t.Errorf("the note from the plugin's SessionStart hook didn't reach Claude: %q", second.Result)
-	}
-	var input struct {
-		SessionID string `json:"session_id"`
-		Source    string `json:"source"`
-	}
-	raw, _ := os.ReadFile(filepath.Join(hooks, "start.json"))
-	if json.Unmarshal(raw, &input) != nil || input.SessionID != first.SessionID || input.Source != "resume" {
-		t.Errorf("SessionStart input = %s, want session %s resumed", raw, first.SessionID)
 	}
 }
 
