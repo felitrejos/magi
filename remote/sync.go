@@ -54,32 +54,11 @@ func settle(source sh.Machine, ws Workspace, exclude []string) error {
 	return registerFolder(source, ws.Root, exclude)
 }
 
-func undoSync(err error, target sh.Machine, ws Workspace, where Placement, synced bool) error {
-	switch {
-	case errors.Is(err, errFolderAppeared):
-		return err
-	case where.NewFolder != "":
-		if rmErr := removeFolder(target, where.NewFolder); rmErr != nil {
-			return fmt.Errorf("%w; removing the new folder %s also failed: %v", err, where.NewFolder, rmErr)
-		}
-		return fmt.Errorf("%w (magi removed the folder it had just created at %s)", err, where.NewFolder)
-	case synced && ws.Git != nil:
-		if parkErr := park(target, where.Root, ws); parkErr != nil {
-			return fmt.Errorf("%w; %s on %s has this session's work now, and marking it as handed off failed: %v", err, where.Root, target.Name(), parkErr)
-		}
-		return fmt.Errorf("%w (%s on %s has this session's work now; trying again updates it)", err, where.Root, target.Name())
-	case synced:
-		return fmt.Errorf("%w (%s on %s has this session's files now; trying again updates it)", err, where.Root, target.Name())
-	}
-	return err
-}
-
 func moveTranscript(from sh.Machine, transcriptPath string, ws Workspace, to sh.Machine, where Placement, toDir string) (sidecar string, err error) {
-	slug, err := projectSlug(toDir)
+	toProject, err := claudeProject(where.Home, toDir)
 	if err != nil {
 		return "", err
 	}
-	toProject := where.Home + "/.claude/projects/" + slug
 	set, err := sessionFiles(from, transcriptPath)
 	if err != nil {
 		return "", err
@@ -94,13 +73,13 @@ func moveTranscript(from sh.Machine, transcriptPath string, ws Workspace, to sh.
 	if err != nil {
 		return "", err
 	}
-	fromSlug, err := projectSlug(ws.MainRoot)
+	fromMemory, err := claudeProject(fromHome, ws.MainRoot)
 	if err != nil {
 		return "", err
 	}
-	toSlug, err := projectSlug(where.Root)
+	toMemory, err := claudeProject(where.Home, where.Root)
 	if err != nil {
 		return "", err
 	}
-	return sidecar, syncMemory(from, fromHome+"/.claude/projects/"+fromSlug+"/memory", to, where.Home+"/.claude/projects/"+toSlug+"/memory")
+	return sidecar, syncMemory(from, fromMemory+"/memory", to, toMemory+"/memory")
 }

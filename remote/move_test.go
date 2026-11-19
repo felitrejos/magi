@@ -15,10 +15,10 @@ import (
 	"github.com/felitrejos/magi/remote/internal/store"
 )
 
-func (f *fixture) moveHost() {
+func (f *fixture) moveHost(fake string) {
 	f.t.Helper()
 	f.isolatedTmux()
-	claude := f.tool("claude", fakeClaudeThatStarts)
+	claude := f.tool("claude", fake)
 	f.config(`local_roots = ["~/laptop"]
 
 [hosts.server]
@@ -63,7 +63,7 @@ func moveEvents(t *testing.T, out string) []moveReport {
 
 func TestMoveRefusesUnknownSessions(t *testing.T) {
 	f := newFixture(t)
-	f.moveHost()
+	f.moveHost(fakeClaudeThatStarts)
 	fresh := "0f0f0f0f-1111-2222-3333-eeeeeeeeeeee"
 	pid := strconv.Itoa(startFakeClaude(t, "60").Process.Pid)
 	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"`+fresh+`","status":"idle"}`)
@@ -85,7 +85,7 @@ func TestMoveRefusesUnknownSessions(t *testing.T) {
 
 func TestMovingAnIdleSessionStopsItAndHandsItOff(t *testing.T) {
 	f := newFixture(t)
-	f.moveHost()
+	f.moveHost(fakeClaudeThatStarts)
 	f.messUp(f.local)
 	id := "0f0f0f0f-1111-2222-3333-888888888888"
 	proc, transcript := f.localSession(id, "idle")
@@ -121,7 +121,7 @@ func TestMovingAnIdleSessionStopsItAndHandsItOff(t *testing.T) {
 
 func TestMovingABusySessionWaitsForItsTurnAndReportsTheHandoff(t *testing.T) {
 	f := newFixture(t)
-	f.moveHost()
+	f.moveHost(fakeClaudeThatStarts)
 	id := "0f0f0f0f-1111-2222-3333-999999999999"
 	proc, transcript := f.localSession(id, "busy")
 	path, _ := store.SessionPath("armed", id, ".json")
@@ -160,7 +160,7 @@ func TestMovingABusySessionWaitsForItsTurnAndReportsTheHandoff(t *testing.T) {
 
 func TestMoveSaysWhenTheStopHookNeverRuns(t *testing.T) {
 	f := newFixture(t)
-	f.moveHost()
+	f.moveHost(fakeClaudeThatStarts)
 	moveHookGrace = 300 * time.Millisecond
 	t.Cleanup(func() { moveHookGrace = 5 * time.Second })
 	id := "0f0f0f0f-1111-2222-3333-aaaaaaaaaaaa"
@@ -216,7 +216,7 @@ func TestTheStopHookReportsAFailedMoveToTheWaitingCommand(t *testing.T) {
 
 func TestASecondMoveOfTheSameSessionIsRefused(t *testing.T) {
 	f := newFixture(t)
-	f.moveHost()
+	f.moveHost(fakeClaudeThatStarts)
 	id := "0f0f0f0f-1111-2222-3333-cccccccccccc"
 	f.localSession(id, "busy")
 	unlock, err := lockMove(id)
@@ -238,6 +238,35 @@ func TestASecondMoveOfTheSameSessionIsRefused(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "other") {
 		t.Errorf("the earlier arming was overwritten: %s", data)
+	}
+}
+
+func TestAnArmingLeftByASessionThatIsGoneDoesNotBlockTheMove(t *testing.T) {
+	f := newFixture(t)
+	f.moveHost(fakeClaudeThatStarts)
+	id := "0f0f0f0f-1111-2222-3333-cccccccccccd"
+	proc, _ := f.localSession(id, "busy")
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := store.SessionPath("armed", id, ".json")
+	f.write(filepath.Dir(path), filepath.Base(path), `{"host":"other","pid":`+strconv.Itoa(gone.Process.Pid)+`}`)
+	done := make(chan string, 1)
+	go func() {
+		var out strings.Builder
+		moveCommand([]string{id, "server", "--json"}, &out)
+		done <- out.String()
+	}()
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(f.read(filepath.Dir(path), filepath.Base(path)), "server"); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("an arming left by a session that is gone kept the move from arming: %s", <-done)
+		}
+	}
+	proc.Process.Kill()
+	proc.Wait()
+	if events := moveEvents(t, <-done); events[0].Event != "waiting" {
+		t.Errorf("events = %+v", events)
 	}
 }
 

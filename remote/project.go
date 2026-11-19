@@ -244,7 +244,7 @@ func recordTab(m sh.Machine, sessionID string, tab sh.Tab) error {
 	return err
 }
 
-func closeRecordedTab(r *sh.Remote, sessionID string) error {
+func closeRecordedTab(r sh.Machine, sessionID string) error {
 	out, err := sh.Run(r, `f="$HOME/.magi/tabs/$1"; if [ -f "$f" ]; then cat "$f"; rm -f "$f"; fi`, sessionID)
 	if err != nil || len(out) == 0 {
 		return err

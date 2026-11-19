@@ -90,7 +90,7 @@ func status(w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := reportStrays(w); err != nil {
+	if err := reportMoves(w); err != nil {
 		return err
 	}
 	if err := reportWanted(w); err != nil {

@@ -1,5 +1,5 @@
 #!/bin/sh
-pid=$1 transcript=$2 host=$3 session_id=$4 tmux_pane=$5
+pid=$1 transcript=$2 host=$3 session_id=$4 tmux_pane=$5 journal=$6
 if [ -n "$pid" ]; then
   sleep 1
   kill -TERM "$pid" 2>/dev/null
@@ -16,3 +16,4 @@ if [ -f "$record" ]; then
 elif [ -n "$tmux_pane" ]; then
   tmux kill-pane -t "$tmux_pane"
 fi
+rm -f -- "$journal"

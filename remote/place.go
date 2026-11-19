@@ -215,8 +215,3 @@ func prefetchOrigin(m sh.Machine, dir string) {
 	defer cancel()
 	sh.Run(m.With(ctx), `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10' git -C "$1" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch --quiet origin`, dir)
 }
-
-func removeFolder(m sh.Machine, dir string) error {
-	_, err := sh.Run(m, `rm -rf -- "$1"`, dir)
-	return err
-}

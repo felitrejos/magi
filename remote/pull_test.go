@@ -14,21 +14,26 @@ import (
 	"github.com/felitrejos/magi/remote/internal/store"
 )
 
-func TestPullBringsTheSessionAndItsWorkBackFromTheServer(t *testing.T) {
-	f := newFixture(t)
+func (f *fixture) sessionLeftOnServer(home, id string) string {
+	f.t.Helper()
 	f.messUp(f.local)
-	out := f.workspace(f.local)
-	if err := f.push(f.remoteHost(), out, Placement{Root: f.remote}); err != nil {
-		t.Fatal(err)
+	ws := f.workspace(f.local)
+	if err := f.push(f.remoteHost(), ws, Placement{Root: f.remote}); err != nil {
+		f.t.Fatal(err)
 	}
-	if err := park(f.machine(), out.Root, out); err != nil {
-		t.Fatal(err)
+	if err := park(f.machine(), ws.Root, ws); err != nil {
+		f.t.Fatal(err)
 	}
 	f.write(f.remote, "edited.txt", "finished on the server")
+	transcript := f.transcript(home, f.remote, id)
+	f.write(filepath.Dir(transcript), filepath.Base(transcript), `{"cwd":"`+f.remote+`"}`+"\n")
+	return transcript
+}
+
+func TestPullBringsTheSessionAndItsWorkBackFromTheServer(t *testing.T) {
+	f := newFixture(t)
 	id := "0f0f0f0f-1111-2222-3333-888888888888"
-	slug, _ := projectSlug(f.remote)
-	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
-	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.remote+`"}`+"\n")
+	transcript := f.sessionLeftOnServer(f.home, id)
 
 	res, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Codex: "codex", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
 	if err != nil {

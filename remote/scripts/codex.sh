@@ -148,4 +148,7 @@ case $command in
   size)
     wc -c < "$1"
     ;;
+  path)
+    printf '%s\n' "$sessions/$1"
+    ;;
 esac

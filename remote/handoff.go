@@ -27,7 +27,7 @@ type Handoff struct {
 	Progress       func(step string)
 	Codex          bool
 	Rollout        string
-	Retire         func() error
+	Retire         func() (int, error)
 }
 
 type Step struct {
@@ -45,13 +45,6 @@ type Result struct {
 	From      string
 	FromDir   string
 	ToDir     string
-	Stray     *Stray
-}
-
-type Stray struct {
-	Host  string `json:"host"`
-	Tab   sh.Tab `json:"tab"`
-	Codex bool   `json:"codex"`
 }
 
 func tabLabel(name string, codex bool) string {
@@ -133,11 +126,11 @@ type handoffRun struct {
 	project     *Project
 	launcher    sh.Tmux
 	tab         sh.Tab
-	synced      bool
 	launchedAt  time.Time
 	setupStatus string
 	rollout     string
 	written     int
+	j           *moveJournal
 }
 
 func (h Handoff) Run(parent context.Context) (Result, error) {
@@ -163,13 +156,25 @@ func (r *handoffRun) run(ctx context.Context) error {
 	r.remoteDir = filepath.Join(r.where.Root, r.ws.Subdir)
 	r.res.NewFolder, r.res.From, r.res.FromDir, r.res.ToDir = r.where.NewFolder, r.local.Name(), r.Cwd, r.remoteDir
 	r.launcher = sh.Tmux{Machine: r.remote}
+	r.j = &moveJournal{Session: r.SessionID, Kind: "push", Host: r.HostName, Codex: r.Codex, Started: time.Now(), LocalTranscript: r.TranscriptPath, Workspace: r.ws, Where: r.where}
+	if r.j.Turns, err = turnsIn(r.local, r.TranscriptPath); err != nil {
+		return err
+	}
+	if r.j.RemoteTranscript, err = transcriptOn(r.remote, r.where.Home, r.remoteDir, r.SessionID, r.Codex, r.Rollout); err != nil {
+		return err
+	}
+	if err := r.j.at("sync"); err != nil {
+		return err
+	}
 
 	if err := r.st.run("sync", func() error {
 		return syncProject(r.local, r.remote, r.ws, r.where, r.Host.Exclude, func() error { return pushGit(r.local, r.remote, r.ws, r.where.Root) })
 	}); err != nil {
 		return r.undo(err, false)
 	}
-	r.synced = true
+	if err := r.j.at("transcript"); err != nil {
+		return r.undo(err, false)
+	}
 	var sidecar string
 	if err := r.st.run("transcript", func() (err error) {
 		if r.Codex {
@@ -195,28 +200,29 @@ func (r *handoffRun) run(ctx context.Context) error {
 	}); err != nil {
 		return r.undo(err, true)
 	}
+	if err := r.j.at("finish"); err != nil {
+		return r.undo(err, false)
+	}
 	r.finish()
 	if err := r.parent.Err(); err != nil {
-		return r.rollback(fmt.Errorf("the handoff was interrupted: %w", err))
+		return r.undo(fmt.Errorf("the handoff was interrupted: %w", err), false)
 	}
-	if r.Retire != nil {
-		if err := r.Retire(); err != nil {
-			return r.rollback(fmt.Errorf("closing the session here failed, so the copy on %s was stopped: %w", r.HostName, err))
-		}
+	if r.Retire == nil {
+		return nil
+	}
+	if err := r.j.at("retire"); err != nil {
+		return r.undo(err, false)
+	}
+	r.res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: r.SessionID, From: r.local.Name(), To: r.HostName, FromDir: r.Cwd, ToDir: r.remoteDir}))
+	retirer, err := r.Retire()
+	if err != nil {
+		return r.undo(fmt.Errorf("closing the session here failed, so the copy on %s was stopped: %w", r.HostName, err), false)
+	}
+	if retirer > 0 {
+		r.j.Retirer = retirer
+		r.res.note(r.j.at("retire"))
 	}
 	return nil
-}
-
-func (r *handoffRun) rollback(err error) error {
-	err = r.undo(err, false)
-	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if r.ws.Git != nil {
-		if unparkErr := unparkRepo(r.local.With(cleanup), r.ws.Root); unparkErr != nil {
-			err = fmt.Errorf("%w; unparking this checkout also failed: %v", err, unparkErr)
-		}
-	}
-	return err
 }
 
 func (r *handoffRun) inspect(ctx context.Context) error {
@@ -278,6 +284,10 @@ func (r *handoffRun) launch(sidecar string) error {
 	if r.tab, err = r.launcher.Start(r.where.Group, tabLabel(name, r.Codex), r.remoteDir, command, true); err != nil {
 		return err
 	}
+	r.j.Tab = &r.tab
+	if err := r.j.at("launched"); err != nil {
+		return err
+	}
 	var showErr error
 	if r.res.ShownOn, showErr = r.launcher.Show(r.tab); showErr != nil {
 		r.res.note(fmt.Errorf("showing the new tab failed: %w", showErr))
@@ -290,25 +300,10 @@ func (r *handoffRun) undo(err error, startTimedOut bool) error {
 	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	r.remote = r.remote.With(cleanup).(*sh.Remote)
-	r.launcher.Machine = r.remote
 	if startTimedOut && !r.trustedThere() {
 		err = fmt.Errorf("%w: the new session was waiting for you to trust %s; accept that there and hand off again", err, r.remoteDir)
 	}
-	stray := false
-	if r.tab.Pane != "" {
-		if stopErr := stopSession(r.remote, r.SessionID, r.Codex); stopErr != nil {
-			err = fmt.Errorf("%w; stopping it there also failed: %v", err, stopErr)
-			stray = true
-		}
-	}
-	if closeErr := r.launcher.Discard(r.tab); closeErr != nil && !sh.TabGone(closeErr) {
-		err = fmt.Errorf("%w; removing the new tab also failed: %v", err, closeErr)
-		stray = true
-	}
-	if stray {
-		r.res.Stray = &Stray{Host: r.HostName, Tab: r.tab, Codex: r.Codex}
-	}
-	return undoSync(err, r.remote, r.ws, r.where, r.synced)
+	return r.j.recovery(r.local.With(cleanup), r.remote, r.Host).giveBack(err)
 }
 
 func (r *handoffRun) trustedThere() bool {

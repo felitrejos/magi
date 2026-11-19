@@ -221,7 +221,6 @@ func TestAFolderThatAppearsDuringAHandoffIsNeverRemoved(t *testing.T) {
 	if !errors.Is(err, errFolderAppeared) {
 		t.Fatalf("err = %v, want the folder to be reported as appeared", err)
 	}
-	undoSync(err, r, ws, where, false)
 	if got := f.read(where.NewFolder, "mine.md"); got != "made by hand meanwhile" {
 		t.Errorf("the folder that appeared was touched: mine.md = %q", got)
 	}

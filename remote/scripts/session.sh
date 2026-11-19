@@ -11,6 +11,22 @@ same() {
   [ -z "$2" ] || [ "$(started "$1")" = "$(printf '%s' "$2" | tr -s ' ')" ]
 }
 
+ours() {
+  kill -0 "$1" 2>/dev/null || return 1
+  if [ -r "/proc/$1/cmdline" ]; then args=$(tr '\0' ' ' < "/proc/$1/cmdline"); else args=$(ps -o args= -p "$1"); fi
+  case $args in *claude* | *codex*) same "$1" "$2" ;; *) return 1 ;; esac
+}
+
+end() {
+  kill -TERM "$1" 2>/dev/null
+  i=0
+  while kill -0 "$1" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+  if kill -0 "$1" 2>/dev/null; then
+    echo "the session on this machine didn't stop" >&2
+    return 1
+  fi
+}
+
 case $command in
   running)
     id=$1
@@ -57,20 +73,11 @@ case $command in
     ;;
   stop)
     pid=$1 id=$2 since=$3
-    args() {
-      if [ -r "/proc/$pid/cmdline" ]; then tr '\0' ' ' < "/proc/$pid/cmdline"; else ps -o args= -p "$pid"; fi
-    }
-    if ! kill -0 "$pid" 2>/dev/null || ! args | grep -q claude || ! same "$pid" "$since"; then exit 0; fi
+    ours "$pid" "$since" || exit 0
     listed=$(agents "$4") || exit
     status=$(printf '%s\n' "$listed" | awk -v pid="$pid," '$1 == "\"pid\":" { mine = $2 == pid } mine && $1 == "\"status\":" { print $2; exit }')
     case $status in '"busy"'* | '"waiting"'*) exit 10 ;; esac
-    kill -TERM "$pid"
-    i=0
-    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "the session on this machine didn't stop" >&2
-      exit 1
-    fi
+    end "$pid" || exit
     if pgrep -f -- "[-]-resume $id" >/dev/null; then
       echo "another process is still running this session" >&2
       exit 1
@@ -79,5 +86,18 @@ case $command in
   kill)
     pkill -TERM -f -- "[-]-resume $1"
     true
+    ;;
+  end)
+    while [ $# -gt 1 ]; do
+      if ours "$1" "$2"; then end "$1" || exit; fi
+      shift 2
+    done
+    ;;
+  turns)
+    if [ -f "$1" ]; then
+      grep -E '"type":"(user|user_message)"' "$1" | grep -cv -e '"tool_result"' -e '"isMeta":true' -e '"type":"progress"' -e '\[magi\] This session was just handed off' || true
+    else
+      echo 0
+    fi
     ;;
 esac

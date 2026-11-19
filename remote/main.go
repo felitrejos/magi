@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
 	"github.com/felitrejos/magi/remote/internal/store"
@@ -36,8 +35,8 @@ Usage:
                                         move a Claude Code or Codex session on this machine to
                                         <host>, from outside it: now if it's idle, or when its
                                         turn ends; Codex needs codex = "<path>" for <host>
-  magi status                        recent handoffs, parked checkouts, and copies a failed
-                                        handoff left running, which it stops
+  magi status                        moves that were cut off, which it settles, then recent
+                                        handoffs and parked checkouts
   magi watch                         take back sessions other machines hand back here, over SSH
   magi watch install | uninstall     run magi watch in the background, starting at login
   magi unpark [dir]                  stop treating a checkout as parked
@@ -271,21 +270,18 @@ func stopHook(in io.Reader, out io.Writer) error {
 	unlock, err := lockMove(input.SessionID)
 	if err == nil {
 		defer unlock()
-		err = cleanStrayFor(input.SessionID)
+		err = recoverBefore(input.SessionID, true)
 	}
 	if err != nil {
 		if a.Notify {
-			err = errors.Join(err, writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: err.Error() + ", so this handoff didn't start"}))
+			err = errors.Join(err, writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: "this handoff didn't start: " + err.Error()}))
 		}
-		return json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": err.Error() + ", so this handoff didn't start. Tell the user."})
+		return json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": "This handoff didn't start: " + err.Error() + ". Tell the user."})
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
 
 	res, err := handoff(ctx, a, input)
-	if res.Stray != nil {
-		res.note(saveStray(input.SessionID, *res.Stray))
-	}
 	if err != nil {
 		reason := fmt.Sprintf("magi could not hand this session off to %s, so it is still running here: %v.", a.Host, err)
 		if a.Notify {
@@ -298,7 +294,6 @@ func stopHook(in io.Reader, out io.Writer) error {
 			"reason":   reason + " Tell the user what failed in plain words.",
 		})
 	}
-	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: input.SessionID, From: res.From, To: a.Host, FromDir: res.FromDir, ToDir: res.ToDir}))
 	if a.Notify {
 		res.note(writeMoveResult(input.SessionID, movedReport(input.SessionID, a.Host, res)))
 	}
@@ -349,9 +344,9 @@ func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 		SessionID:      input.SessionID,
 		TranscriptPath: input.TranscriptPath,
 		Cwd:            input.Cwd,
-		Retire: func() error {
+		Retire: func() (int, error) {
 			if err := markMoved(local, input.SessionID, a.Host); err != nil {
-				return err
+				return 0, err
 			}
 			return retire(a, input.SessionID, input.TranscriptPath)
 		},
@@ -377,10 +372,17 @@ func stillRunning(note string, tasks []backgroundTask) string {
 	return note + "; " + list
 }
 
-func retire(a armed, sessionID, transcriptPath string) error {
-	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), transcriptPath, a.Host, sessionID, os.Getenv("TMUX_PANE"))
+func retire(a armed, sessionID, transcriptPath string) (int, error) {
+	journal, err := movePath(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), transcriptPath, a.Host, sessionID, os.Getenv("TMUX_PANE"), journal)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	return cmd.Process.Pid, cmd.Process.Release()
 }
 
 func runSetupHere(dir, setup string, out io.Writer) error {
@@ -455,16 +457,13 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 		return pulledHere{}, err
 	}
 	defer unlock()
+	if err := recoverBefore(sessionID, false); err != nil {
+		return pulledHere{}, err
+	}
 	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Note: note, Out: out}.Run()
 	if err != nil {
 		return pulledHere{}, err
 	}
-	local, err := sh.NewLocal(context.Background())
-	if err != nil {
-		return pulledHere{}, err
-	}
-	res.note(appendLog(logEntry{Time: time.Now(), Kind: "pull", Session: res.Session, From: hostName, To: local.Name(), FromDir: res.FromDir, ToDir: res.ToDir}))
-	res.note(closeForwards(res.Session))
 	fmt.Fprintf(out, "Pulled the session back from %s in %s.\n", hostName, res.Summary())
 	if res.NewFolder != "" {
 		fmt.Fprintf(out, "This machine didn't have the project yet, so it now lives at %s.\n", res.NewFolder)
@@ -476,7 +475,7 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 	prompt := handoffPrompt(res.PromptInfo)
 	if inTab {
 		before := len(res.Notes)
-		if err := openPulledTab(local, &res, prompt); err != nil {
+		if err := openPulledTab(&res, prompt); err != nil {
 			return pulledHere{}, fmt.Errorf("the session is back in %s, but its tab didn't open (%w); continue it there with %s", res.ToDir, err, resumeHint(remoteSession{ID: res.Session, Codex: res.Codex}))
 		}
 		for _, note := range res.Notes[before:] {
@@ -490,8 +489,12 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 	return pulledHere{res: res, prompt: prompt, message: message}, nil
 }
 
-func openPulledTab(local *sh.Local, res *Pulled, prompt string) error {
+func openPulledTab(res *Pulled, prompt string) error {
 	cfg, _, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return err
 	}

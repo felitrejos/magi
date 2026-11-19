@@ -69,12 +69,13 @@ func output(cmd *exec.Cmd, what string) ([]byte, error) {
 }
 
 const (
-	ExitExists     = 7
-	ExitConflicts  = 8
-	ExitInProgress = 9
-	ExitBusy       = 10
-	ExitGone       = 11
-	ExitNoRoom     = 11
+	ExitExists      = 7
+	ExitConflicts   = 8
+	ExitInProgress  = 9
+	ExitBusy        = 10
+	ExitGone        = 11
+	ExitNoRoom      = 11
+	ExitUnreachable = 255
 )
 
 func ExitCode(err error) int {

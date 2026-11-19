@@ -59,12 +59,23 @@ func findCodexSession(m sh.Machine, id string) (remoteSession, error) {
 		return s, fmt.Errorf("couldn't tell which folder session %s on %s ran in", id, m.Name())
 	}
 	s.Transcript, s.Cwd = rollout, read.Thread.Cwd
-	out, err := sh.Run(m, codexScript, "running", id, rollout, s.Cwd)
+	s.Running, s.Unsure, err = codexRunning(m, id, rollout, s.Cwd)
 	if sh.ExitCode(err) == sh.ExitGone {
 		return s, gone
 	}
 	if err != nil {
 		return s, err
+	}
+	if len(s.Running) > 0 {
+		s.StaleTurn, err = staleTurn(m, s)
+	}
+	return s, err
+}
+
+func codexRunning(m sh.Machine, id, rollout, dir string) (running []int, unsure []string, err error) {
+	out, err := sh.Run(m, codexScript, "running", id, rollout, dir)
+	if err != nil {
+		return nil, nil, err
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		pid, kind, _ := strings.Cut(line, " ")
@@ -72,17 +83,14 @@ func findCodexSession(m sh.Machine, id string) (remoteSession, error) {
 		case "session":
 			n, err := strconv.Atoi(pid)
 			if err != nil {
-				return s, fmt.Errorf("unexpected process %q running session %s on %s", line, store.ShortID(id), m.Name())
+				return nil, nil, fmt.Errorf("unexpected process %q running session %s on %s", line, store.ShortID(id), m.Name())
 			}
-			s.Running = append(s.Running, n)
+			running = append(running, n)
 		case "folder":
-			s.Unsure = append(s.Unsure, pid)
+			unsure = append(unsure, pid)
 		}
 	}
-	if len(s.Running) > 0 {
-		s.StaleTurn, err = staleTurn(m, s)
-	}
-	return s, err
+	return running, unsure, nil
 }
 
 func staleTurn(m sh.Machine, s remoteSession) (string, error) {

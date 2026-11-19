@@ -166,6 +166,21 @@ func clearMoved(m sh.Machine, sessionID string) error {
 	return err
 }
 
+func retireTranscript(m sh.Machine, path, host string) error {
+	_, err := sh.Run(m, `[ ! -e "$1" ] || mv -- "$1" "$1.handed-off-to-$2" || [ ! -e "$1" ]`, path, host)
+	return err
+}
+
+func claudeTranscript(home, dir, sessionID string) (string, error) {
+	project, err := claudeProject(home, dir)
+	return project + "/" + sessionID + ".jsonl", err
+}
+
+func claudeProject(home, dir string) (string, error) {
+	slug, err := projectSlug(dir)
+	return home + "/.claude/projects/" + slug, err
+}
+
 func stopSession(m sh.Machine, sessionID string, codex bool) error {
 	script := sessionScript
 	if codex {

@@ -91,7 +91,7 @@ func (m mover) run() error {
 		return m.fail(err)
 	}
 	defer unlock()
-	if err := cleanStrayFor(m.session); err != nil {
+	if err := recoverBefore(m.session, true); err != nil {
 		return m.fail(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -192,24 +192,26 @@ func (m mover) now(local *sh.Local, host Host, s remoteSession, stopped bool) er
 	progress := func(step string) {
 		m.report(moveReport{Event: "step", OK: true, Step: step, Message: fmt.Sprintf("Moving session %s to %s: %s", store.ShortID(s.ID), m.host, step)})
 	}
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Codex: s.Codex, Rollout: s.Rollout}.Run(context.Background())
-	if res.Stray != nil {
-		res.note(saveStray(s.ID, *res.Stray))
+	retire := func() (int, error) {
+		finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		here := local.With(finish)
+		journal, err := movePath(s.ID)
+		if err == nil {
+			err = markMoved(here, s.ID, m.host)
+		}
+		if err == nil {
+			_, err = sh.Run(here, retireScript, "", s.Transcript, m.host, s.ID, "", journal)
+		}
+		return 0, err
 	}
+	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Codex: s.Codex, Rollout: s.Rollout, Retire: retire}.Run(context.Background())
 	if err != nil {
 		if stopped {
 			err = fmt.Errorf("%w. The session was stopped here; to carry on here instead, run %s in %s", err, resumeHint(s), s.Cwd)
 		}
 		return m.fail(err)
 	}
-	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	here := local.With(finish)
-	res.note(markMoved(here, s.ID, m.host))
-	if _, err := sh.Run(here, retireScript, "", s.Transcript, m.host, s.ID, ""); err != nil && !sh.TabGone(err) {
-		res.note(fmt.Errorf("retiring the session here failed: %w", err))
-	}
-	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir}))
 	m.report(movedReport(s.ID, m.host, res))
 	return nil
 }
@@ -244,7 +246,13 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 	if err := os.Remove(result); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return m.fail(err)
 	}
-	err = writeArmed(path, armed{Host: m.host, PID: s.Live.PID, Notify: true}, os.O_EXCL)
+	a := armed{Host: m.host, PID: s.Live.PID, Notify: true}
+	err = writeArmed(path, a, os.O_EXCL)
+	if errors.Is(err, os.ErrExist) && armedSessionGone(path) {
+		if err = os.Remove(path); err == nil {
+			err = writeArmed(path, a, os.O_EXCL)
+		}
+	}
 	if errors.Is(err, os.ErrExist) {
 		return m.fail(errors.New("the session is already armed to move when its turn ends"))
 	}
@@ -322,6 +330,12 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
+}
+
+func armedSessionGone(path string) bool {
+	data, err := os.ReadFile(path)
+	var a armed
+	return err == nil && json.Unmarshal(data, &a) == nil && errors.Is(syscall.Kill(a.PID, 0), syscall.ESRCH)
 }
 
 func exists(path string) (bool, error) {

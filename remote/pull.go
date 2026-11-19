@@ -116,9 +116,23 @@ func (p Pull) Run() (res Pulled, err error) {
 		return res, err
 	}
 	res.Session, res.Name, res.Codex = session.ID, baseName(where.Root), session.Codex
-
-	if err := st.run("stop", func() error { return stopAtTurnEnd(remote, session, p.Out) }); err != nil {
+	localDir := filepath.Join(where.Root, ws.Subdir)
+	j := &moveJournal{Session: session.ID, Kind: "pull", Host: p.HostName, Codex: session.Codex, Started: time.Now(), RemoteTranscript: session.Transcript, Workspace: ws, Where: where}
+	if j.LocalTranscript, err = transcriptOn(local, where.Home, localDir, session.ID, session.Codex, session.Rollout); err != nil {
 		return res, err
+	}
+	if err := j.at("stop"); err != nil {
+		return res, err
+	}
+
+	if err := st.run("stop", func() (err error) {
+		if err := stopAtTurnEnd(remote, session, p.Out); err != nil {
+			return err
+		}
+		j.Turns, err = turnsIn(remote, session.Transcript)
+		return err
+	}); err != nil {
+		return res, errors.Join(err, forgetMove(session.ID))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), pullBudget)
@@ -129,18 +143,20 @@ func (p Pull) Run() (res Pulled, err error) {
 	}
 	if err := st.run("inspect", func() (err error) {
 		ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude)
+		j.Workspace = ws
 		return err
 	}); err != nil {
-		return res, stopped(err)
+		return res, stopped(errors.Join(err, forgetMove(session.ID)))
+	}
+	if err := j.at("sync"); err != nil {
+		return res, stopped(errors.Join(err, forgetMove(session.ID)))
 	}
 	res.NewFolder = where.NewFolder
-	localDir := filepath.Join(where.Root, ws.Subdir)
 	res.FromDir, res.ToDir = session.Cwd, localDir
-	synced := false
 	undo := func(err error) error {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		return stopped(undoSync(err, local.With(cleanup), ws, where, synced))
+		return stopped(j.recovery(local.With(cleanup), remote, p.Host).giveBack(err))
 	}
 
 	if err := st.run("sync", func() error {
@@ -153,7 +169,9 @@ func (p Pull) Run() (res Pulled, err error) {
 	}); err != nil {
 		return res, undo(err)
 	}
-	synced = true
+	if err := j.at("transcript"); err != nil {
+		return res, undo(err)
+	}
 	var sidecar string
 	if err := st.run("transcript", func() (err error) {
 		if session.Codex {
@@ -165,13 +183,18 @@ func (p Pull) Run() (res Pulled, err error) {
 	}); err != nil {
 		return res, undo(err)
 	}
-	res.note(settle(remote, ws, p.Host.Exclude))
-	_, err = sh.Run(remote, `mv -- "$1" "$2"`, session.Transcript, session.Transcript+".handed-off-to-"+local.Name())
-	res.note(err)
-	res.note(markMoved(remote, session.ID, local.Name()))
-	res.note(clearMoved(local, session.ID))
+	res.note(j.at("retire"))
+	res.note(appendLog(logEntry{Time: time.Now(), Kind: "pull", Session: session.ID, From: p.HostName, To: local.Name(), FromDir: session.Cwd, ToDir: localDir}))
+	res.note(closeForwards(session.ID))
+	retired := retireCopy(remote, local, local.Name(), session.ID, session.Transcript, ws, p.Host.Exclude)
 	if err := closeRecordedTab(remote, session.ID); err != nil {
-		res.note(fmt.Errorf("closing the session's old tab on %s failed: %w", p.HostName, err))
+		retired = append(retired, fmt.Errorf("closing the session's old tab on %s failed: %w", p.HostName, err))
+	}
+	for _, err := range retired {
+		res.note(err)
+	}
+	if errors.Join(retired...) == nil {
+		res.note(forgetMove(session.ID))
 	}
 	project, err := approvedProject(local, where.Root)
 	res.note(err)

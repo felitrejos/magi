@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -58,6 +59,8 @@ func newRemote(ctx context.Context, h Host) (*sh.Remote, error) {
 	return sh.NewRemote(ctx, h.SSH, h.Claude, h.Codex)
 }
 
+var errNoHost = errors.New("no host")
+
 func loadHost(name string) (Host, error) {
 	cfg, path, err := loadConfig()
 	if err != nil {
@@ -66,7 +69,7 @@ func loadHost(name string) (Host, error) {
 	host, ok := cfg.Hosts[name]
 	if !ok {
 		names := slices.Sorted(maps.Keys(cfg.Hosts))
-		return Host{}, fmt.Errorf("no host %q in %s; configured hosts: %s", name, path, strings.Join(names, ", "))
+		return Host{}, fmt.Errorf("%w %q in %s; configured hosts: %s", errNoHost, name, path, strings.Join(names, ", "))
 	}
 	host.LocalRoots = cfg.LocalRoots
 	host.Exclude = cfg.Exclude

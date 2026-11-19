@@ -31,6 +31,11 @@ while [ $# -gt 0 ]; do
     *) if [ -z "$host" ]; then host=$1; shift; else break; fi ;;
   esac
 done
+if [ -e "$HOME/ssh-down" ]; then
+  echo "ssh: connect to host $host port 22: Network is unreachable" >&2
+  exit 255
+fi
+if [ -n "$MAGI_TEST_REMOTE_HOME" ]; then export HOME="$MAGI_TEST_REMOTE_HOME"; fi
 if [ -n "$MAGI_TEST_REMOTE_CODEX_HOME" ]; then export CODEX_HOME="$MAGI_TEST_REMOTE_CODEX_HOME"; fi
 exec "${MAGI_TEST_LOGIN_SHELL:-sh}" -c "$*"
 `
@@ -222,8 +227,14 @@ fi
 
 const fakeClaude = "#!/bin/sh\n" + fakeAgents
 
-const fakeClaudeThatStarts = "#!/bin/sh\n" + fakeAgents + `mkdir -p "$HOME/.claude/sessions"
+const fakeStart = `mkdir -p "$HOME/.claude/sessions"
 printf '{"pid":%s,"sessionId":"%s","cwd":"%s","startedAt":%s000,"bridgeSessionId":"bridge"}' $$ "$2" "$PWD" "$(date +%s)" > "$HOME/.claude/sessions/$$.json"
+`
+
+const fakeClaudeThatStarts = "#!/bin/sh\n" + fakeAgents + fakeStart + "exec sleep 60\n"
+
+const fakeClaudeThatAnswers = "#!/bin/sh\n" + fakeAgents + fakeStart + `sleep 1
+printf '%s\n' '{"type":"user","message":{"content":"[magi] This session was just handed off"}}' '{"type":"assistant","message":{"content":"on server"}}' >> "$HOME/.claude/projects/$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-/g')/$2.jsonl"
 exec sleep 60
 `
 
@@ -337,6 +348,14 @@ func (f *fixture) allow(dir string) {
 	if err := allowProject(dir, strings.NewReader("y\n"), io.Discard); err != nil {
 		f.t.Fatal(err)
 	}
+}
+
+func (f *fixture) serverHome() string {
+	f.t.Helper()
+	server := filepath.Join(f.home, "server")
+	f.t.Setenv("MAGI_TEST_REMOTE_HOME", server)
+	f.remote = filepath.Join(server, "developer", "acme", "api")
+	return server
 }
 
 func (f *fixture) handoffToServer(id string) Handoff {
