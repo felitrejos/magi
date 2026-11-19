@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -74,7 +75,7 @@ func TestTheTestedListIsFetchedAtMostHourlyAndTheBuiltInOneServesOffline(t *test
 func TestAHandoffRefusesAClaudeCodeThatHasntBeenTested(t *testing.T) {
 	f := newFixture(t)
 	id := "0f0f0f0f-1111-2222-3333-eeeeeeeeeeee"
-	h := f.readyHandoff(id)
+	h := f.handoffToServer(id)
 	t.Setenv("MAGI_FAKE_CLAUDE_VERSION", "9.9.9")
 	res, err := h.Run(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "hasn't passed magi's nightly tests") {
@@ -87,9 +88,15 @@ func TestAHandoffRefusesAClaudeCodeThatHasntBeenTested(t *testing.T) {
 
 func TestAPullRefusesACodexThatHasntBeenTested(t *testing.T) {
 	f := newFixture(t)
+	t.Setenv("MAGI_TEST_REMOTE_CODEX_HOME", f.remoteCodexHome())
+	id := "01a1c7ca-8144-7e23-82c1-87dc991d71e3"
+	f.codexRollout(f.remoteCodexHome(), id, f.remote, longAgo, false)
 	t.Setenv("MAGI_FAKE_CODEX_VERSION", "9.9.9")
-	err := refuseUntested(true, f.machine(), f.remoteHost(), "codex")
+	res, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Codex: "codex", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}}, SessionID: id, Out: io.Discard}.Run()
 	if err == nil || !strings.Contains(err.Error(), "Codex 9.9.9") {
 		t.Fatalf("err = %v, want the untested Codex refused", err)
+	}
+	if len(res.Steps) != 1 || res.Steps[0].Name != "find" {
+		t.Errorf("steps = %+v, want it to stop at find", res.Steps)
 	}
 }

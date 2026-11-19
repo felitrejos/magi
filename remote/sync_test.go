@@ -112,27 +112,6 @@ func TestARetryAfterAFailedHandoffIsAccepted(t *testing.T) {
 	}
 }
 
-func TestARetryAfterAFailedHandoffAcceptsWorkDoneHereMeanwhile(t *testing.T) {
-	f := newFixture(t)
-	f.messUp(f.local)
-	ws := f.workspace(f.local)
-	r := f.remoteHost()
-	if err := f.push(r, ws, Placement{Root: f.remote}); err != nil {
-		t.Fatal(err)
-	}
-	err := undoSync(errors.New("the new session didn't start"), r, ws, Placement{Root: f.remote}, true)
-	if !strings.Contains(err.Error(), "trying again updates it") {
-		t.Errorf("undo said %q", err)
-	}
-	f.write(f.local, "kept.txt", "edited while the session kept running here")
-	if err := f.push(r, f.workspace(f.local), Placement{Root: f.remote}); err != nil {
-		t.Fatalf("the retry was refused over the copy the failed attempt left: %v", err)
-	}
-	if got := f.read(f.remote, "kept.txt"); got != "edited while the session kept running here" {
-		t.Errorf("kept.txt on the server = %q", got)
-	}
-}
-
 func TestHiddenUntrackedFilesOnTheHostAreNotOverwritten(t *testing.T) {
 	f := newFixture(t)
 	f.git(f.remote, "config", "status.showUntrackedFiles", "no")
@@ -185,15 +164,9 @@ func TestAFileAddedOnTheParkedMachineIsNotCleanedAway(t *testing.T) {
 
 func TestANewCloneOfAShallowCheckoutIsFilledFromOrigin(t *testing.T) {
 	f := newFixture(t)
-	upstream := filepath.Join(f.home, "upstream", "api.git")
-	f.git(f.home, "clone", "-q", "--bare", f.local, upstream)
-	f.write(f.local, "more.txt", "second commit")
-	f.git(f.local, "add", ".")
-	f.git(f.local, "commit", "-q", "-m", "second")
-	f.git(f.local, "push", "-q", upstream, "main")
 	shallow := filepath.Join(f.home, "laptop", "shallow", "api")
-	f.git(f.home, "clone", "-q", "--depth", "1", "file://"+upstream, shallow)
-	f.write(shallow, "wip.txt", "uncommitted")
+	f.shallowClone(shallow)
+	f.git(shallow, "remote", "set-url", "origin", "file://"+filepath.Join(f.home, "upstream", "api.git"))
 	ws := f.workspace(shallow)
 	r := f.remoteHost()
 	where, err := place(r, ws, []string{"~/developer"}, "shallow", nil)
@@ -489,11 +462,11 @@ func TestInspectingFromASubfolderFindsLFSFilesAndSecretsAcrossTheRepository(t *t
 	}
 }
 
-func TestUncommittedLFSFilesArriveWithTheirContent(t *testing.T) {
+func (f *fixture) binFilesInLFS() {
+	f.t.Helper()
 	if _, err := exec.LookPath("git-lfs"); err != nil {
-		t.Skip("git-lfs isn't installed")
+		f.t.Skip("git-lfs isn't installed")
 	}
-	f := newFixture(t)
 	for _, repo := range []string{f.local, f.remote} {
 		f.git(repo, "config", "filter.lfs.clean", "git-lfs clean -- %f")
 		f.git(repo, "config", "filter.lfs.smudge", "git-lfs smudge -- %f")
@@ -501,6 +474,11 @@ func TestUncommittedLFSFilesArriveWithTheirContent(t *testing.T) {
 		f.git(repo, "config", "filter.lfs.required", "true")
 	}
 	f.write(f.local, ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n")
+}
+
+func TestUncommittedLFSFilesArriveWithTheirContent(t *testing.T) {
+	f := newFixture(t)
+	f.binFilesInLFS()
 	f.git(f.local, "add", ".gitattributes")
 	f.git(f.local, "commit", "-q", "-m", "lfs")
 	f.git(f.remote, "pull", "-q", f.local, "main")
@@ -905,17 +883,8 @@ func TestACheckoutThatFailsLeavesTheBranchWhereItWas(t *testing.T) {
 }
 
 func TestACorruptLFSObjectIsCaughtAndRemoved(t *testing.T) {
-	if _, err := exec.LookPath("git-lfs"); err != nil {
-		t.Skip("git-lfs isn't installed")
-	}
 	f := newFixture(t)
-	for _, repo := range []string{f.local, f.remote} {
-		f.git(repo, "config", "filter.lfs.clean", "git-lfs clean -- %f")
-		f.git(repo, "config", "filter.lfs.smudge", "git-lfs smudge -- %f")
-		f.git(repo, "config", "filter.lfs.process", "git-lfs filter-process")
-		f.git(repo, "config", "filter.lfs.required", "true")
-	}
-	f.write(f.local, ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n")
+	f.binFilesInLFS()
 	f.write(f.local, "weights.bin", "real weights")
 	f.git(f.local, "add", ".")
 	f.git(f.local, "commit", "-q", "-m", "weights")

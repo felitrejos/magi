@@ -34,11 +34,16 @@ func contractDir(t *testing.T) string {
 	return dir
 }
 
-func startClaude(t *testing.T, dir string, args ...string) (*exec.Cmd, *bytes.Buffer) {
+func needClaude(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude isn't installed")
 	}
+}
+
+func startClaude(t *testing.T, dir string, args ...string) (*exec.Cmd, *bytes.Buffer) {
+	t.Helper()
+	needClaude(t)
 	cmd := exec.Command("claude", append([]string{"-p", "--model", "haiku", "--output-format", "json"}, args...)...)
 	cmd.Dir, cmd.Env = dir, claudeEnv()
 	var out bytes.Buffer
@@ -63,8 +68,12 @@ func finishClaude(t *testing.T, cmd *exec.Cmd, out *bytes.Buffer) claudeReply {
 
 func runClaude(t *testing.T, dir string, args ...string) claudeReply {
 	t.Helper()
-	cmd, out := startClaude(t, dir, args...)
-	return finishClaude(t, cmd, out)
+	needClaude(t)
+	reply, err := tryClaude(dir, args...)
+	if err != nil {
+		t.Fatalf("claude failed: %v", err)
+	}
+	return reply
 }
 
 func TestContractClaudeRegistersALiveSession(t *testing.T) {

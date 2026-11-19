@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -14,18 +15,6 @@ import (
 )
 
 const forwardSession = "0f0f0f0f-1111-2222-3333-444444444444"
-
-func TestProjectPortsAreValidatedAndCanStandAlone(t *testing.T) {
-	p, err := parseProject([]byte("ports = [3000, 5173]\n"))
-	if err != nil || len(p.Ports) != 2 {
-		t.Fatalf("p = %+v, err = %v", p, err)
-	}
-	for _, bad := range []string{"ports = [0]", "ports = [70000]", "ports = [3000, 3000]"} {
-		if _, err := parseProject([]byte(bad)); err == nil {
-			t.Errorf("%q was accepted", bad)
-		}
-	}
-}
 
 func TestForwardArgsBindOnlyThisMachineAndUseTheirOwnConnection(t *testing.T) {
 	args := strings.Join(forwardArgs(forwardRecord{SSH: "homelab", Ports: []int{3000, 8080}}), " ")
@@ -85,7 +74,7 @@ func TestClosingAForwardStopsItsRunnerAndEverythingItStarted(t *testing.T) {
 	if child == 0 {
 		t.Fatal("the runner's child never started")
 	}
-	if err := closeForwardsCommand(t, forwardSession[:8]); err != nil {
+	if err := forwardsCommand([]string{"close", forwardSession[:8]}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	runner.Wait()
@@ -97,12 +86,6 @@ func TestClosingAForwardStopsItsRunnerAndEverythingItStarted(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("the record is still there: %v", err)
 	}
-}
-
-func closeForwardsCommand(t *testing.T, id string) error {
-	t.Helper()
-	var out strings.Builder
-	return forwardsCommand([]string{"close", id}, &out)
 }
 
 func TestARecordFromADeadRunnerNeverSignalsWhateverReusedItsPID(t *testing.T) {
@@ -134,20 +117,10 @@ func TestARecordFromADeadRunnerNeverSignalsWhateverReusedItsPID(t *testing.T) {
 
 func TestTheRunnerSaysWhenItsTunnelIsUpAndRetriesUntilItIsClosed(t *testing.T) {
 	path := forwardHome(t)
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte("#!/bin/sh\nsleep 0.6\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
-	forwardRetry = 50 * time.Millisecond
-	t.Cleanup(func() { forwardRetry = 2 * time.Second })
+	fakeTunnel(t, "ssh", "sleep 0.6\n")
 	listener, port := listen(t)
 	defer listener.Close()
-	if err := writeForward(path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{port}, State: forwardWaiting}); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- runForwards(forwardSession) }()
+	done := startRunner(t, path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{port}, State: forwardWaiting})
 	seen := map[string]bool{}
 	for deadline := time.Now().Add(5 * time.Second); !(seen[forwardConnected] && runnerAlive(path)) && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		if r, err := readForward(path); err == nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -67,25 +68,10 @@ func TestTmuxLauncherOpensItsOwnWindowAndCleansUp(t *testing.T) {
 
 func TestAHandoffMovesTheSessionAndOpensItInItsOwnTab(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
-	claude := f.tool("claude", fakeClaudeThatStarts)
-
-	f.messUp(f.local)
 	id := "0f0f0f0f-1111-2222-3333-444444444444"
-	slug, err := projectSlug(f.local)
-	if err != nil {
-		t.Fatal(err)
-	}
-	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
-	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
-
-	res, err := Handoff{
-		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
-		SessionID:      id,
-		TranscriptPath: transcript,
-		Cwd:            f.local,
-	}.Run(context.Background())
+	h := f.handoffToServer(id)
+	f.messUp(f.local)
+	res, err := h.Run(context.Background())
 	if err != nil {
 		t.Fatalf("handoff failed after %s: %v", res.Summary(), err)
 	}
@@ -113,18 +99,11 @@ func TestAHandoffMovesTheSessionAndOpensItInItsOwnTab(t *testing.T) {
 
 func TestAFailedHandoffLeavesNoTabAndARetryPicksUpFromIt(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
-	claude := f.tool("claude", fakeClaudeThatStarts)
+	h := f.handoffToServer("0f0f0f0f-1111-2222-3333-777777777777")
 	f.messUp(f.local)
-	id := "0f0f0f0f-1111-2222-3333-777777777777"
-	slug, _ := projectSlug(f.local)
-	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
-	h := Handoff{
-		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
-		SessionID:      id,
-		TranscriptPath: transcript,
-		Cwd:            f.local,
+	aside := filepath.Join(f.home, "aside.jsonl")
+	if err := os.Rename(h.TranscriptPath, aside); err != nil {
+		t.Fatal(err)
 	}
 	_, err := h.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "transcript") || !strings.Contains(err.Error(), "trying again updates it") {
@@ -133,7 +112,9 @@ func TestAFailedHandoffLeavesNoTabAndARetryPicksUpFromIt(t *testing.T) {
 	if windows, _ := exec.Command("tmux", "list-windows", "-a").Output(); len(windows) > 0 {
 		t.Errorf("a failed handoff left tmux windows: %s", windows)
 	}
-	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
+	if err := os.Rename(aside, h.TranscriptPath); err != nil {
+		t.Fatal(err)
+	}
 	f.write(f.local, "kept.txt", "edited while the session kept running here")
 	if _, err := h.Run(context.Background()); err != nil {
 		t.Fatalf("the retry failed: %v", err)

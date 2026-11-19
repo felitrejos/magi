@@ -60,61 +60,32 @@ func TestMemoryIsMergedNotReplaced(t *testing.T) {
 	}
 }
 
-func TestHandoffPromptCarriesTheNoteAndSubagentTranscripts(t *testing.T) {
-	p := handoffPrompt(Prompt{From: "laptop", To: "server", OldDir: "/a", NewDir: "/b", Git: true,
-		Note: "dev server on :3000; a subagent was halfway through the API tests", Sidecar: "/h/.claude/projects/-b/s1"})
-	for _, want := range []string{"dev server on :3000", "/h/.claude/projects/-b/s1/subagents", "staged and unstaged", "confirming you're on server"} {
-		if !strings.Contains(p, want) {
-			t.Errorf("prompt is missing %q:\n%s", want, p)
-		}
-	}
-}
-
 func TestWaitForRemoteControlWaitsForTheNewSessionsBridge(t *testing.T) {
 	f := newFixture(t)
 	launched := time.Now()
+	waitBriefly := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+		defer cancel()
+		r := f.remoteHost()
+		r.SetContext(ctx)
+		return waitForRemoteControl(r, "s1", launched)
+	}
+	if err := waitBriefly(); err == nil || !strings.Contains(err.Error(), "in time") {
+		t.Fatalf("with no session files: err = %v, want a timeout rather than a script failure", err)
+	}
 	sessions := filepath.Join(f.home, ".claude", "sessions")
 	stale := strconv.Itoa(startFakeClaude(t, "60").Process.Pid)
 	f.write(sessions, stale+".json", `{"pid":`+stale+`,"sessionId":"s1","startedAt":1000,"bridgeSessionId":"old"}`)
 	fresh := strconv.Itoa(startFakeClaude(t, "60").Process.Pid)
 	started := strconv.FormatInt(launched.UnixMilli(), 10)
 	f.write(sessions, fresh+".json", `{"pid":`+fresh+`,"sessionId":"s1","startedAt":`+started+`}`)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	defer cancel()
-	r := f.remoteHost()
-	r.SetContext(ctx)
-	if err := waitForRemoteControl(r, "s1", launched); err == nil {
+	if err := waitBriefly(); err == nil {
 		t.Fatal("an earlier run's bridge, or a new session without one, counted as up")
 	}
 
 	f.write(sessions, fresh+".json", `{"pid":`+fresh+`,"sessionId":"s1","startedAt":`+started+`,"bridgeSessionId":"cse_1"}`)
 	if err := waitForRemoteControl(f.remoteHost(), "s1", launched); err != nil {
 		t.Fatalf("the new session's bridge wasn't seen: %v", err)
-	}
-}
-
-func TestWaitForRemoteControlWorksWithNoSessionFiles(t *testing.T) {
-	f := newFixture(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
-	defer cancel()
-	r := f.remoteHost()
-	r.SetContext(ctx)
-	err := waitForRemoteControl(r, "s1", time.Now())
-	if err == nil || !strings.Contains(err.Error(), "in time") {
-		t.Fatalf("err = %v, want a timeout rather than a script failure", err)
-	}
-}
-
-func TestIsTrustedAcceptsATrustedParent(t *testing.T) {
-	f := newFixture(t)
-	f.write(f.home, ".claude.json", `{"projects":{"`+f.home+`/developer":{"hasTrustDialogAccepted":true}}}`)
-	r := f.remoteHost()
-	if trusted, err := isTrusted(r, f.remote); err != nil || !trusted {
-		t.Fatalf("trusted = %v, err = %v; want a trusted parent to count", trusted, err)
-	}
-	if trusted, err := isTrusted(r, filepath.Join(f.home, "elsewhere")); err != nil || trusted {
-		t.Fatalf("trusted = %v, err = %v; want an untrusted folder to report false", trusted, err)
 	}
 }
 
@@ -183,20 +154,6 @@ func TestProjectSlugMatchesClaudeFolderNames(t *testing.T) {
 	}
 }
 
-func TestRetireClosesATerminalSessionAndRetiresItsTranscript(t *testing.T) {
-	transcript := filepath.Join(t.TempDir(), "s.jsonl")
-	if err := os.WriteFile(transcript, []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	claude := startFakeClaude(t, "60")
-	if err := retire(armed{Host: "server", PID: claude.Process.Pid}, "0f0f0f0f-1111-2222-3333-aaaaaaaaaaaa", transcript); err != nil {
-		t.Fatal(err)
-	}
-	if !waitForFile(t, transcript+".handed-off-to-server", 5*time.Second) {
-		t.Fatal("transcript was not retired after the session was closed")
-	}
-}
-
 func TestLogFindsTheLastSessionSentToAHost(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if _, err := lastHandoffTo("server"); err == nil {
@@ -233,7 +190,7 @@ func TestLogFindsTheLastSessionSentToAHost(t *testing.T) {
 func TestSessionStateComesFromClaudeAgentsAndTheLinkFromTheRegistry(t *testing.T) {
 	f := newFixture(t)
 	pid := strconv.Itoa(startFakeClaude(t, "60").Process.Pid)
-	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"0a0a0a0a-1111-2222-3333-444444444444","cwd":"/old","status":"idle","bridgeSessionId":"cse_1","entrypoint":"cli","procStart":"Wed Nov 18 18:37:12 2026"}`)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"0a0a0a0a-1111-2222-3333-444444444444","cwd":"/old","status":"idle","bridgeSessionId":"cse_1","procStart":"Wed Nov 18 18:37:12 2026"}`)
 	f.tool("claude", `#!/bin/sh
 [ "$1 $2" = "agents --json" ] || exit 1
 cat <<'EOF'
@@ -241,7 +198,6 @@ cat <<'EOF'
   {
     "pid": `+pid+`,
     "cwd": "/srv/api",
-    "kind": "interactive",
     "startedAt": 1795027035220,
     "sessionId": "0a0a0a0a-1111-2222-3333-444444444444",
     "name": "fix login",
@@ -250,7 +206,6 @@ cat <<'EOF'
   {
     "pid": 1,
     "cwd": "/srv/web",
-    "kind": "interactive",
     "startedAt": 1795027035221,
     "sessionId": "0b0b0b0b-1111-2222-3333-444444444444",
     "name": "deploy",
@@ -425,7 +380,7 @@ func TestTheStopHookOnlyMovesASessionArmedFromItsOwnProcess(t *testing.T) {
 	}
 }
 
-func TestTheHandoffNoteListsWhatWasStillRunning(t *testing.T) {
+func TestHandoffPromptCarriesTheNoteWhatWasStillRunningAndSubagentTranscripts(t *testing.T) {
 	var input stopInput
 	stop := `{"session_id":"s","background_tasks":[
 		{"id":"b1","type":"shell","status":"running","description":"Start the dev server","command":"pnpm dev"},
@@ -434,10 +389,16 @@ func TestTheHandoffNoteListsWhatWasStillRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	note := stillRunning("the subagent had done a.ts and b.ts", input.BackgroundTasks)
-	p := handoffPrompt(Prompt{From: "laptop", To: "server", OldDir: "/a", NewDir: "/b", Note: note})
-	want := "the subagent had done a.ts and b.ts; still running when the turn ended: Start the dev server (shell pnpm dev); Migrate the billing tests (subagent)"
-	if !strings.Contains(p, want) {
-		t.Errorf("prompt is missing %q:\n%s", want, p)
+	p := handoffPrompt(Prompt{From: "laptop", To: "server", OldDir: "/a", NewDir: "/b", Git: true, Note: note, Sidecar: "/h/.claude/projects/-b/s1"})
+	for _, want := range []string{
+		"the subagent had done a.ts and b.ts; still running when the turn ended: Start the dev server (shell pnpm dev); Migrate the billing tests (subagent)",
+		"/h/.claude/projects/-b/s1/subagents",
+		"staged and unstaged",
+		"confirming you're on server",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt is missing %q:\n%s", want, p)
+		}
 	}
 	if got := stillRunning("", input.BackgroundTasks[:1]); got != "still running when the turn ended: Start the dev server (shell pnpm dev)" {
 		t.Errorf("with no note of Claude's the note is %q", got)

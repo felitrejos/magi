@@ -5,6 +5,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +13,11 @@ import (
 
 func TestAProjectFileTakesSetupServicesAndPortsOnly(t *testing.T) {
 	p, err := parseProject([]byte("setup = \"pnpm install\"\nservices = [\"pnpm dev\", \"pnpm worker\"]\n"))
-	if err != nil || p.Setup != "pnpm install" || strings.Join(p.Services, ",") != "pnpm dev,pnpm worker" || len(p.Hash) != 64 {
+	if err != nil || p.Setup != "pnpm install" || strings.Join(p.Services, ",") != "pnpm dev,pnpm worker" {
 		t.Fatalf("project = %+v, %v", p, err)
+	}
+	if p, err := parseProject([]byte("ports = [3000, 5173]\n")); err != nil || !slices.Equal(p.Ports, []int{3000, 5173}) {
+		t.Fatalf("ports alone = %+v, %v", p, err)
 	}
 	for body, want := range map[string]string{
 		"setup = \"x\"\nbuild = \"y\"\n": "unknown key",
@@ -22,6 +26,9 @@ func TestAProjectFileTakesSetupServicesAndPortsOnly(t *testing.T) {
 		"setup = [\n":                    projectFile,
 		"setup = \"  \"\n":               "setup can't be empty",
 		"setup = \"make\\u001b[2K\"\n":   "control characters",
+		"ports = [0]\n":                  "isn't a port",
+		"ports = [70000]\n":              "isn't a port",
+		"ports = [3000, 3000]\n":         "listed twice",
 	} {
 		if _, err := parseProject([]byte(body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("parseProject(%q) = %v, want an error about %q", body, err, want)
@@ -71,9 +78,8 @@ func TestAllowApprovesThatFileInThatProjectOnly(t *testing.T) {
 
 func TestAnUnapprovedProjectFileRunsNothing(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
 	f.write(f.local, projectFile, "setup = \"echo ran > setup.txt\"\n")
-	res, err := f.handoffWithProject("0f0f0f0f-1111-2222-3333-999999999990").Run(context.Background())
+	res, err := f.handoffToServer("0f0f0f0f-1111-2222-3333-999999999990").Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,11 +93,10 @@ func TestAnUnapprovedProjectFileRunsNothing(t *testing.T) {
 
 func TestServicesStartOnlyAfterSetupSucceeds(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
 	f.write(f.local, projectFile, "setup = \"sleep 1 && echo ready > setup.txt\"\nservices = [\"cat setup.txt > served.tmp && mv served.tmp served.txt\"]\n")
 	f.allow(f.local)
 	id := "0f0f0f0f-1111-2222-3333-999999999991"
-	if res, err := f.handoffWithProject(id).Run(context.Background()); err != nil || len(res.Notes) > 0 {
+	if res, err := f.handoffToServer(id).Run(context.Background()); err != nil || len(res.Notes) > 0 {
 		t.Fatalf("handoff: %v, notes %q", err, res.Noted())
 	}
 	if !waitForFile(t, filepath.Join(f.remote, "served.txt"), 10*time.Second) {
@@ -111,11 +116,10 @@ func TestServicesStartOnlyAfterSetupSucceeds(t *testing.T) {
 
 func TestAFailedSetupKeepsServicesFromStarting(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
 	f.write(f.local, projectFile, "setup = \"exit 3\"\nservices = [\"echo up > served.txt\"]\n")
 	f.allow(f.local)
 	id := "0f0f0f0f-1111-2222-3333-999999999992"
-	if _, err := f.handoffWithProject(id).Run(context.Background()); err != nil {
+	if _, err := f.handoffToServer(id).Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	status := filepath.Join(f.home, ".magi", "setup", id)
@@ -133,10 +137,9 @@ func TestAFailedSetupKeepsServicesFromStarting(t *testing.T) {
 
 func TestServicesWithoutSetupStartRightAway(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
 	f.write(f.local, projectFile, "services = [\"echo up > served.txt\"]\n")
 	f.allow(f.local)
-	if _, err := f.handoffWithProject("0f0f0f0f-1111-2222-3333-999999999993").Run(context.Background()); err != nil {
+	if _, err := f.handoffToServer("0f0f0f0f-1111-2222-3333-999999999993").Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !waitForFile(t, filepath.Join(f.remote, "served.txt"), 10*time.Second) {

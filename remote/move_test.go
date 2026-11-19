@@ -41,7 +41,7 @@ func (f *fixture) localSession(id, status string) (*exec.Cmd, string) {
 	f.t.Cleanup(func() { proc.Process.Kill(); proc.Wait() })
 	pid := strconv.Itoa(proc.Process.Pid)
 	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json",
-		`{"pid":`+pid+`,"sessionId":"`+id+`","cwd":"`+f.local+`","startedAt":1,"kind":"interactive","entrypoint":"cli","status":"`+status+`"}`)
+		`{"pid":`+pid+`,"sessionId":"`+id+`","cwd":"`+f.local+`","startedAt":1,"status":"`+status+`"}`)
 	return proc, transcript
 }
 

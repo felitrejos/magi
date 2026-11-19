@@ -72,19 +72,48 @@ func TestExpandHomeOnlyExpandsALeadingTilde(t *testing.T) {
 	}
 }
 
-func TestDoctorFailsVersionsMagiHasntTested(t *testing.T) {
-	r := testedRange{Min: "2.1.300", Max: "2.1.327"}
-	for text, want := range map[string]string{
-		"2.1.1 (Claude Code)":   "✗",
-		"2.1.327 (Claude Code)": "✓",
-		"9.0.0 (Claude Code)":   "✗",
-	} {
-		var out strings.Builder
-		c := &checks{out: &out}
-		c.tested(r, "Claude Code", "here", text)
-		if !strings.HasPrefix(strings.TrimSpace(out.String()), want) {
-			t.Errorf("%s gave %q, want %s", text, out.String(), want)
-		}
+func TestHostsWrittenWithDottedKeysOrAddedLaterKeepTheirPlace(t *testing.T) {
+	f := newFixture(t)
+	f.config(`[hosts]
+lab.ssh = "lab"
+lab.claude = "claude"
+lab.roots = ["~/d"]
+`)
+	if cfg, _, err := loadConfig(); err != nil || strings.Join(cfg.Order, " ") != "lab" {
+		t.Errorf("[hosts] with dotted keys: %v, %v", cfg.Order, err)
+	}
+	f.config(`hosts.box.ssh = "box"
+hosts.box.claude = "claude"
+hosts.box.roots = ["~/d"]
+
+[hosts.lab]
+ssh = "lab"
+claude = "claude"
+roots = ["~/d"]
+
+[hosts."odd \"name\""]
+ssh = "odd"
+claude = "claude"
+roots = ["~/d"]
+`)
+	cfg, path, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Order, "|"); got != `box|lab|odd "name"` {
+		t.Fatalf("order = %s", got)
+	}
+	cfg.Order = append(cfg.Order, "new")
+	cfg.Hosts["new"] = Host{SSH: "new", Claude: "claude", Roots: []string{"~/d"}, MinFreeMemory: "2G"}
+	if err := writeConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	again, _, err := loadConfig()
+	if err != nil {
+		t.Fatalf("rewritten config doesn't load: %v\n%s", err, f.read(filepath.Dir(path), "config.toml"))
+	}
+	if got := strings.Join(again.Order, "|"); got != `box|lab|odd "name"|new` || again.Hosts["lab"].SSH != "lab" || again.Hosts["new"].MinFreeMemory != "2G" {
+		t.Errorf("after rewriting: order %s, hosts %+v", got, again.Hosts)
 	}
 }
 
@@ -107,9 +136,11 @@ func TestInitWritesTheConfigAndKeepsAnswersWhenRunAgain(t *testing.T) {
 	f := newFixture(t)
 	f.tool("tailscale", "#!/bin/sh\nexit 1\n")
 	claude := f.tool("claude", fakeClaudeCLI)
-	codex := f.tool("codex", "#!/bin/sh\n")
+	codex := f.tool("codex", fakeCodex)
 	answers := strings.Join([]string{"~/laptop", "", "server", "fakehost", claude, codex, "~/developer", ""}, "\n") + "\n"
-	initConfig(strings.NewReader(answers), io.Discard)
+	if err := initConfig(strings.NewReader(answers), io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	h, err := loadHost("server")
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +148,9 @@ func TestInitWritesTheConfigAndKeepsAnswersWhenRunAgain(t *testing.T) {
 	if h.SSH != "fakehost" || h.Claude != claude || h.Codex != codex || strings.Join(h.Roots, ",") != "~/developer" || strings.Join(h.Secrets, ",") != ".env,.env.*" || !slices.Contains(h.Exclude, "node_modules") {
 		t.Fatalf("host = %+v", h)
 	}
-	initConfig(strings.NewReader("server\n"+strings.Repeat("\n", 6)), io.Discard)
+	if err := initConfig(strings.NewReader("server\n"+strings.Repeat("\n", 6)), io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	again, err := loadHost("server")
 	if err != nil {
 		t.Fatal(err)
@@ -135,9 +168,13 @@ func TestDoctorChecksTheServer(t *testing.T) {
 	c := &checks{out: &out}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	doctorHost(ctx, c, testedVersions{Claude: testedRange{Min: "2.1.300", Max: "2.1.327"}}, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer", "~/missing"}})
+	tested, err := parseTested(builtinTested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doctorHost(ctx, c, tested, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer", "~/missing"}})
 	report := out.String()
-	for _, want := range []string{"✓ ssh fakehost works", "✓ git 2.", "✓ Claude Code 2.1.325 on server", "✓ logged in to claude.ai on server", "✓ magi is on PATH on server", "✓ the magi plugin is installed and enabled on server", "✓ root ~/developer exists", "✗ root ~/missing exists"} {
+	for _, want := range []string{"✓ ssh fakehost works", "✓ git 2.", "✓ Claude Code " + tested.Claude.Max + " on server", "✓ logged in to claude.ai on server", "✓ magi is on PATH on server", "✓ the magi plugin is installed and enabled on server", "✓ root ~/developer exists", "✗ root ~/missing exists"} {
 		if !strings.Contains(report, want) {
 			t.Errorf("doctor report lacks %q:\n%s", want, report)
 		}
@@ -153,7 +190,11 @@ func TestDoctorSaysWhatTheServerIsMissing(t *testing.T) {
 	c := &checks{out: &out}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	doctorHost(ctx, c, testedVersions{Claude: testedRange{Min: "2.1.300", Max: "2.1.327"}}, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}})
+	tested, err := parseTested(builtinTested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doctorHost(ctx, c, tested, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}})
 	report := out.String()
 	for _, want := range []string{"✗ magi isn't on PATH on server", "install.sh | sh", "✗ the magi plugin is installed but disabled on server", "claude plugin enable magi@magi"} {
 		if !strings.Contains(report, want) {

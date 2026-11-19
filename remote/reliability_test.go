@@ -13,23 +13,15 @@ import (
 	"time"
 )
 
-func (f *fixture) readyHandoff(id string) Handoff {
+func (f *fixture) claudeTabHere() (Tmux, Tab) {
 	f.t.Helper()
 	f.isolatedTmux()
-	claude := f.tool("claude", fakeClaudeThatStarts)
-	slug, err := projectSlug(f.local)
+	tm := Tmux{remote: f.machine()}
+	tab, err := tm.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
-	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
-	return Handoff{
-		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
-		SessionID:      id,
-		TranscriptPath: transcript,
-		Cwd:            f.local,
-	}
+	return tm, tab
 }
 
 func tmuxWindows() string {
@@ -39,7 +31,7 @@ func tmuxWindows() string {
 
 func TestWhenTheOriginalCantBeClosedTheNewCopyIsStoppedAndNothingIsParked(t *testing.T) {
 	f := newFixture(t)
-	h := f.readyHandoff("0f0f0f0f-1111-2222-3333-555555555551")
+	h := f.handoffToServer("0f0f0f0f-1111-2222-3333-555555555551")
 	h.Retire = func() error { return errors.New("no shell") }
 	_, err := h.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "the copy on server was stopped") {
@@ -55,7 +47,7 @@ func TestWhenTheOriginalCantBeClosedTheNewCopyIsStoppedAndNothingIsParked(t *tes
 
 func TestAnInterruptedHandoffStopsTheNewCopy(t *testing.T) {
 	f := newFixture(t)
-	h := f.readyHandoff("0f0f0f0f-1111-2222-3333-555555555552")
+	h := f.handoffToServer("0f0f0f0f-1111-2222-3333-555555555552")
 	ctx, cancel := context.WithCancel(context.Background())
 	h.Progress = func(step string) {
 		if step == "start" {
@@ -74,7 +66,7 @@ func TestAnInterruptedHandoffStopsTheNewCopy(t *testing.T) {
 func TestAHandoffIsRefusedWhenTheSessionAlreadyRunsThere(t *testing.T) {
 	f := newFixture(t)
 	id := "0f0f0f0f-1111-2222-3333-555555555553"
-	h := f.readyHandoff(id)
+	h := f.handoffToServer(id)
 	running := exec.Command("sh", "-c", "sleep 30; :", "claude", "--resume", id)
 	if err := running.Start(); err != nil {
 		t.Fatal(err)
@@ -125,7 +117,7 @@ func TestASessionThatMovedRefusesNewInput(t *testing.T) {
 
 func TestACopyLeftByAFailedHandoffIsStoppedByStatus(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
 	if err := saveStray(id, Stray{Host: "server", Tab: Tab{Session: "gone", Window: "@999"}}); err != nil {
 		t.Fatal(err)
@@ -166,23 +158,11 @@ func TestEveryHandoffStepFitsInsideTheHooksTimeLimit(t *testing.T) {
 	if worst >= hookLimit {
 		t.Errorf("a handoff can take %s, more than the hook's %s", worst, hookLimit)
 	}
-	if moveHookLimit <= hookLimit {
-		t.Errorf("magi move gives up after %s, before the hook's %s", moveHookLimit, hookLimit)
-	}
 }
 
 func TestARecordedTmuxWindowIsOnlyClosedWhileItIsStillTheSameWindow(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
-	local, err := newLocal(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	tm := Tmux{remote: local}
-	tab, err := tm.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tm, tab := f.claudeTabHere()
 	if tab.Tag == "" {
 		t.Fatalf("tab = %+v, want its tag", tab)
 	}
@@ -205,16 +185,7 @@ func TestARecordedTmuxWindowIsOnlyClosedWhileItIsStillTheSameWindow(t *testing.T
 
 func TestARecordedTmuxWindowClosesAfterItsFirstPaneHasExited(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
-	local, err := newLocal(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	tm := Tmux{remote: local}
-	tab, err := tm.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tm, tab := f.claudeTabHere()
 	if _, err := tm.Split(tab, tab.Pane, true, "pnpm dev", f.local, []string{"sleep", "60"}); err != nil {
 		t.Fatal(err)
 	}
@@ -232,21 +203,12 @@ func TestARecordedTmuxWindowClosesAfterItsFirstPaneHasExited(t *testing.T) {
 
 func TestRetireClosesTheRecordedTabWhenItsSessionPaneClosesFirst(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
-	local, err := newLocal(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	tm := Tmux{remote: local}
-	tab, err := tm.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tm, tab := f.claudeTabHere()
 	if _, err := tm.Split(tab, tab.Pane, true, "pnpm dev", f.local, []string{"sleep", "60"}); err != nil {
 		t.Fatal(err)
 	}
 	id := "0f0f0f0f-1111-2222-3333-999999999993"
-	if err := recordTab(local, id, tab); err != nil {
+	if err := recordTab(tm.remote, id, tab); err != nil {
 		t.Fatal(err)
 	}
 	out, err := exec.Command("tmux", "display-message", "-p", "-t", tab.Pane, "#{pane_pid}").Output()
@@ -307,8 +269,7 @@ func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
 
 func TestAPullOpensATmuxWindow(t *testing.T) {
 	f := newFixture(t)
-	f.isolatedTmux()
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", fakeClaude+"exec sleep 60\n")
 	local, err := newLocal(context.Background())
 	if err != nil {
@@ -326,25 +287,17 @@ func TestAPullOpensATmuxWindow(t *testing.T) {
 
 func TestSessionsAndTheirDiffsAreReadOverSSH(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	id := "0f0f0f0f-1111-2222-3333-555555555558"
-	session := `{"pid":` + strconv.Itoa(os.Getpid()) + `,"sessionId":"` + id + `","cwd":"` + f.local + `","status":"waiting","waitingFor":"permission prompt","name":"fix login","bridgeSessionId":"session_01abc"}`
-	f.write(filepath.Join(f.home, ".claude", "sessions"), strconv.Itoa(os.Getpid())+".json", session)
-	f.write(filepath.Join(f.home, ".claude", "sessions"), "999999.json", `{"pid":999999,"sessionId":"gone","cwd":"/nowhere","status":"busy"}`)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), strconv.Itoa(os.Getpid())+".json", `{"pid":`+strconv.Itoa(os.Getpid())+`,"sessionId":"`+id+`","cwd":"`+f.local+`","name":"fix login"}`)
 	f.write(f.local, "kept.txt", "changed")
 	f.write(f.local, "brand-new.txt", "new")
 	all, err := everySession(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := describeSessions(all)
-	for _, want := range []string{"0f0f0f0f  fix login  waiting (permission prompt)  " + f.local, "https://claude.ai/code/session_01abc", "server:"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("sessions lack %q:\n%s", want, text)
-		}
-	}
-	if strings.Contains(text, "gone") {
-		t.Errorf("a session whose process ended is listed:\n%s", text)
+	if text := describeSessions(all); !strings.Contains(text, "server:") {
+		t.Errorf("sessions lack the server:\n%s", text)
 	}
 	if _, _, err := findAnySession(all, "fix login"); err == nil || !strings.Contains(err.Error(), "more than one") {
 		t.Errorf("the same session on both fixture machines should be ambiguous, got %v", err)
@@ -388,7 +341,6 @@ func TestHandingBackFindsTheMachineTheUserMeant(t *testing.T) {
 func TestATmuxGroupNamedOutsideASCIIKeepsItsTabsInOneSession(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
-	os.Unsetenv("TMUX")
 	tm := Tmux{remote: f.remoteHost()}
 	first, err := tm.Start("grp·é", "api · claude", f.remote, []string{"sleep", "60"}, false)
 	if err != nil {

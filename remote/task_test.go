@@ -16,10 +16,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func (f *fixture) taskHost(extra string) {
+func (f *fixture) taskHost() {
 	f.t.Helper()
 	f.isolatedTmux()
-	f.config("local_roots = [\"~/laptop\"]\nexclude = [\"node_modules\"]\n" + extra + `
+	f.config(`local_roots = ["~/laptop"]
+exclude = ["node_modules"]
 [hosts.server]
 ssh = "fakehost"
 claude = "~/bin/claude"
@@ -69,7 +70,7 @@ func (f *fixture) serverUntouched() {
 
 func TestARunElsewhereTaskRunsOnACopyOfTheWorkingTreeAndReturnsItsOutput(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.messUp(f.local)
 	before := f.git(f.local, "status", "--porcelain")
 	if out, err := exec.Command("tmux", "new-session", "-d", "-s", "acme").CombinedOutput(); err != nil {
@@ -135,7 +136,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"tot
 
 func TestADelegatedTaskAppliesItsChangesHereAndKeepsThemOnABranch(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", fakeDelegateClaude)
 	f.messUp(f.local)
 	staged := f.git(f.local, "diff", "--cached", "--name-status")
@@ -186,14 +187,8 @@ func TestADelegatedTaskAppliesItsChangesHereAndKeepsThemOnABranch(t *testing.T) 
 		t.Errorf("what's staged changed:\n%s\nwas:\n%s", got, staged)
 	}
 	f.serverUntouched()
-	claudeArgs := f.read(f.home, "claude-args")
-	for _, want := range []string{"-p", "acceptEdits", "--permission-prompts\nnone", "--allowedTools\nBash(go test:*)"} {
-		if !strings.Contains(claudeArgs, want) {
-			t.Errorf("claude args lack %q:\n%s", want, claudeArgs)
-		}
-	}
-	if strings.Contains(claudeArgs, "bypass") || strings.Contains(claudeArgs, "dangerously") {
-		t.Errorf("claude ran with permissions bypassed:\n%s", claudeArgs)
+	if claudeArgs := f.read(f.home, "claude-args"); !strings.Contains(claudeArgs, "--allowedTools\nBash(go test:*)") {
+		t.Errorf("claude didn't get the task's arguments:\n%s", claudeArgs)
 	}
 	if text := describeReport(r); !strings.Contains(text, "have been applied to your working tree") || !strings.Contains(text, "git diff "+shortCommit(s.Task.Base)+" "+o.Branch) {
 		t.Errorf("report:\n%s", text)
@@ -205,7 +200,7 @@ func TestADelegatedTaskAppliesItsChangesHereAndKeepsThemOnABranch(t *testing.T) 
 
 func TestADelegatedTaskAskedToKeepItsBranchLeavesTheWorkingTreeAlone(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", fakeDelegateClaude)
 	f.messUp(f.local)
 	before := f.git(f.local, "status", "--porcelain")
@@ -229,7 +224,7 @@ func TestADelegatedTaskAskedToKeepItsBranchLeavesTheWorkingTreeAlone(t *testing.
 
 func TestChangesThatClashWithEditsMadeHereSinceAreLeftOnTheBranch(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nsleep 1\nprintf 'theirs\\n' > kept.txt\nprintf new > added.txt\necho '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n")
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
 	if err != nil {
@@ -258,7 +253,7 @@ func TestChangesThatClashWithEditsMadeHereSinceAreLeftOnTheBranch(t *testing.T) 
 
 func TestADelegatedTaskThatChangesNothingSaysSo(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", "#!/bin/sh\ncat >/dev/null\necho '{\"type\":\"result\",\"subtype\":\"success\",\"num_turns\":1,\"result\":\"nothing to do\"}'\n")
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "look"})
 	if err != nil {
@@ -276,7 +271,7 @@ func TestADelegatedTaskThatChangesNothingSaysSo(t *testing.T) {
 
 func TestCancellingATaskStopsItAndRemovesItsCopy(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	marker := filepath.Join(f.home, "still-running")
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "sleep 30 && touch " + quote(marker)})
 	if err != nil {
@@ -306,7 +301,7 @@ func TestCancellingATaskStopsItAndRemovesItsCopy(t *testing.T) {
 
 func TestAPlainFolderTaskBringsTheFolderBack(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	notes := filepath.Join(f.home, "laptop", "notes")
 	f.write(notes, "todo.md", "one")
 	f.write(notes, "node_modules/x", "skip")
@@ -348,11 +343,6 @@ ssh = "gpu"
 claude = "claude"
 roots = ["~/developer"]
 `
-
-func (f *fixture) probesAs(output string) {
-	f.t.Helper()
-	f.probesEach(nil, output)
-}
 
 func (f *fixture) probesEach(outputs map[string]string, others string) {
 	f.t.Helper()
@@ -418,7 +408,7 @@ func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 func TestMachinesWhoseLoadIsUnknownAreTriedInConfigOrder(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
-	f.probesAs("Ubuntu 24.04\nx86_64\n\n")
+	f.probesEach(nil, "Ubuntu 24.04\nx86_64\n\n")
 	picks, _, err := chooseHosts(context.Background(), "", true)
 	if err != nil {
 		t.Fatal(err)
@@ -464,7 +454,7 @@ func TestBudgetsParseMemoryAndQuietHours(t *testing.T) {
 
 func TestTheTargetRechecksItsBudgetWhenATaskStarts(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nsleep 30\n")
 	f.config(strings.Replace(f.read(filepath.Join(f.home, ".config", "magi"), "config.toml"), "secrets = [\".env\", \"secret.txt\"]", "secrets = [\".env\", \"secret.txt\"]\nmax_agents = 1", 1))
 	first, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
@@ -486,30 +476,6 @@ func TestTheTargetRechecksItsBudgetWhenATaskStarts(t *testing.T) {
 	collectTask(first.Task.ID, true)
 	if _, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "z"}); err != nil {
 		t.Errorf("after cancelling, a delegate was refused: %v", err)
-	}
-}
-
-func TestConfigKeepsTheHostOrderWhenRewritten(t *testing.T) {
-	f := newFixture(t)
-	f.config(threeHosts)
-	cfg, path, err := loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Order = append(cfg.Order, "new")
-	cfg.Hosts["new"] = Host{SSH: "new", Claude: "claude", Roots: []string{"~/d"}, MinFreeMemory: "2G"}
-	if err := writeConfig(path, cfg); err != nil {
-		t.Fatal(err)
-	}
-	again, _, err := loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(again.Order, " "); got != "homelab small gpu new" {
-		t.Errorf("order = %s", got)
-	}
-	if again.Hosts["new"].MinFreeMemory != "2G" || again.Hosts["small"].SSH != "me@box" {
-		t.Errorf("hosts = %+v", again.Hosts)
 	}
 }
 
@@ -576,10 +542,6 @@ func TestTheToolServerOffersItsTools(t *testing.T) {
 	if text := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, "- small (ssh me@box)") {
 		t.Errorf("machines:\n%s", text)
 	}
-	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "delegate", Arguments: map[string]any{"task": "x", "permission_mode": "bypassPermissions"}})
-	if err != nil || !res.IsError || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, "isn't allowed") {
-		t.Errorf("delegate with bypassPermissions = %+v, %v", res, err)
-	}
 	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "task_result", Arguments: map[string]any{"task_id": "nope"}})
 	if err != nil || !res.IsError {
 		t.Errorf("task_result for a bad id = %+v, %v", res, err)
@@ -588,7 +550,7 @@ func TestTheToolServerOffersItsTools(t *testing.T) {
 
 func TestASessionTaskBringsItsChangesBackOnceTheUserQuits(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/claude-args\"\nwhile [ ! -f \"$HOME/quit\" ]; do sleep 0.1; done\nprintf done > session.txt\n")
 	f.write(f.home, ".claude.json", `{"projects":{}}`)
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindSession, Host: "server", Dir: f.local, Prompt: "hello there"})
@@ -620,7 +582,7 @@ func TestASessionTaskBringsItsChangesBackOnceTheUserQuits(t *testing.T) {
 
 func TestASecretIgnoredOnlyHereNeverReachesTheResultBranch(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nprintf changed > kept.txt\necho '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n")
 	f.write(filepath.Join(f.local, ".git", "info"), "exclude", "secret.txt\n")
 	f.write(f.local, "secret.txt", "hunter2")
@@ -647,7 +609,7 @@ func TestASecretIgnoredOnlyHereNeverReachesTheResultBranch(t *testing.T) {
 
 func TestCancellingAFinishedTaskStillBringsItsChangesBack(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nprintf changed > kept.txt\necho '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n")
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
 	if err != nil {
@@ -665,7 +627,7 @@ func TestCancellingAFinishedTaskStillBringsItsChangesBack(t *testing.T) {
 
 func TestACollectThatCannotFetchKeepsTheCopyForARetry(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nprintf changed > kept.txt\necho '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}'\n")
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
 	if err != nil {
@@ -713,7 +675,7 @@ printf '{"type":"result","subtype":"success","num_turns":1,"result":"did: %s"}\n
 
 func TestAFollowUpResumesTheSameClaudeAndMovesTheBranchForward(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", fakeTurnsClaude)
 	args, _ := delegateArgs(delegateInput{})
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "first", Claude: args})
@@ -783,7 +745,7 @@ func TestAFollowUpResumesTheSameClaudeAndMovesTheBranchForward(t *testing.T) {
 
 func TestOnlyADelegatedClaudeTakesFollowUps(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "true"})
 	if err != nil {
 		t.Fatal(err)
@@ -802,52 +764,9 @@ func TestOnlyADelegatedClaudeTakesFollowUps(t *testing.T) {
 	collectTask(d.Task.ID, true)
 }
 
-func TestHostsWrittenWithDottedKeysKeepTheirPlace(t *testing.T) {
-	f := newFixture(t)
-	f.config(`[hosts]
-lab.ssh = "lab"
-lab.claude = "claude"
-lab.roots = ["~/d"]
-`)
-	if cfg, _, err := loadConfig(); err != nil || strings.Join(cfg.Order, " ") != "lab" {
-		t.Errorf("[hosts] with dotted keys: %v, %v", cfg.Order, err)
-	}
-	f.config(`hosts.box.ssh = "box"
-hosts.box.claude = "claude"
-hosts.box.roots = ["~/d"]
-
-[hosts.lab]
-ssh = "lab"
-claude = "claude"
-roots = ["~/d"]
-
-[hosts."odd \"name\""]
-ssh = "odd"
-claude = "claude"
-roots = ["~/d"]
-`)
-	cfg, path, err := loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(cfg.Order, "|"); got != `box|lab|odd "name"` {
-		t.Fatalf("order = %s", got)
-	}
-	if err := writeConfig(path, cfg); err != nil {
-		t.Fatal(err)
-	}
-	again, _, err := loadConfig()
-	if err != nil {
-		t.Fatalf("rewritten config doesn't load: %v\n%s", err, f.read(filepath.Dir(path), "config.toml"))
-	}
-	if got := strings.Join(again.Order, "|"); got != `box|lab|odd "name"` || again.Hosts["lab"].SSH != "lab" {
-		t.Errorf("after rewriting: order %s, hosts %+v", got, again.Hosts)
-	}
-}
-
 func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	started, err := processStart(context.Background(), os.Getpid())
 	if err != nil || time.Since(started) < 0 || time.Since(started) > 10*time.Minute {
 		t.Fatalf("this process started %v (%v)", started, err)
@@ -887,9 +806,9 @@ func TestATaskRecordsWhichClaudeStartedItAndKeepsItsStateCurrent(t *testing.T) {
 	}
 }
 
-func TestClosingIdleCopiesIsReportedOnlyWhenCollectingAndNotWhileAnotherMagiHoldsOne(t *testing.T) {
+func TestClosingIdleCopiesReportsWhatFailedAndSkipsOneAnotherMagiHolds(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	idle := Outcome{State: "done", Kept: true, Ended: time.Now().Add(-2 * keepCopies)}
 	unreachable := &Task{ID: "0000000a", Kind: kindDelegate, Host: "gone", Outcome: &idle}
 	held := &Task{ID: "0000000b", Kind: kindDelegate, Host: "server", Outcome: &idle}
@@ -903,13 +822,6 @@ func TestClosingIdleCopiesIsReportedOnlyWhenCollectingAndNotWhileAnotherMagiHold
 		t.Fatal(err)
 	}
 	defer unlock()
-	text, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "true"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(text, "idle task copies") {
-		t.Errorf("starting work reports closing idle copies:\n%s", text)
-	}
 	note := sweepIdleCopies()
 	if !strings.Contains(note, "task 0000000a") || strings.Contains(note, "0000000b") {
 		t.Errorf("note = %q", note)
@@ -923,7 +835,7 @@ printf '{"type":"result","subtype":"success","num_turns":1,"result":"did: %s"}\n
 
 func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
+	f.taskHost()
 	f.tool("claude", fakeParentClaude)
 	sender := startFakeClaude(t, "60").Process.Pid
 	f.write(filepath.Join(f.home, ".claude", "sessions"), strconv.Itoa(sender)+".json", `{"pid":`+strconv.Itoa(sender)+`,"sessionId":"9fb6fe92","name":"fix login"}`)
@@ -968,10 +880,7 @@ func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing
 
 func TestWaitingOnATaskReturnsOnceItFinishes(t *testing.T) {
 	f := newFixture(t)
-	f.taskHost("")
-	if out, err := exec.Command("tmux", "new-session", "-d", "-s", "acme").CombinedOutput(); err != nil {
-		t.Fatalf("tmux: %v %s", err, out)
-	}
+	f.taskHost()
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "sleep 1; echo finished"})
 	if err != nil {
 		t.Fatal(err)

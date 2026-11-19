@@ -54,6 +54,8 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
 	builtin, err := parseTested(builtinTested)
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +206,7 @@ if [ "$1 $2" = "agents --json" ]; then
     pid=${pid%.json}
     [ -f "$f" ] && kill -0 "$pid" 2>/dev/null || continue
     printf '%s\n  {\n    "pid": %s' "$sep" "$pid"
-    for key in cwd kind startedAt sessionId name status waitingFor; do
+    for key in cwd startedAt sessionId name status waitingFor; do
       value=$(sed -nE 's/.*"'"$key"'":("[^"]*"|[0-9]+).*/\1/p' "$f")
       if [ -n "$value" ]; then printf ',\n    "%s": %s' "$key" "$value"; fi
     done
@@ -244,7 +246,7 @@ if [ "$1" = app-server ]; then
           continue
         fi
         cwd=$(grep -E '"type":"(session_meta|turn_context)"' "$f" | tail -n 1 | sed 's/.*"cwd":"\([^"]*\)".*/\1/')
-        case $f in *.jsonl.zst) ;; *) f=${f%%.jsonl*}.jsonl ;; esac
+        f=${f%%.jsonl*}.jsonl
         printf '{"method":"thread/status/changed","params":{}}\n{"id":%s,"result":{"thread":{"id":"%s","name":null,"path":"%s","cwd":"%s","status":{"type":"notLoaded"}}}}\n' "$id" "$thread" "$f" "$cwd"
         ;;
       *'"method":"config/read"'*)
@@ -276,7 +278,7 @@ sleep 60
 
 const fakeClaudeCLI = `#!/bin/sh
 case "$1" in
-  --version) echo "2.1.325 (Claude Code)" ;;
+  --version) echo "$MAGI_FAKE_CLAUDE_VERSION (Claude Code)" ;;
   auth) echo '{"loggedIn":true,"authMethod":"claude.ai"}' ;;
   plugin) if [ -n "$MAGI_FAKE_PLUGINS" ]; then echo "$MAGI_FAKE_PLUGINS"; else echo '[{"id":"magi@magi","enabled":true}]'; fi ;;
 esac
@@ -308,7 +310,6 @@ func (f *fixture) isolatedTmux() {
 	}
 	f.t.Cleanup(func() { os.RemoveAll(sockets) })
 	f.t.Setenv("TMUX_TMPDIR", sockets)
-	f.t.Setenv("TMUX", "")
 	f.t.Cleanup(func() {
 		out, _ := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_pid}").Output()
 		exec.Command("tmux", "kill-server").Run()
@@ -329,15 +330,19 @@ func (f *fixture) allow(dir string) {
 	}
 }
 
-func (f *fixture) handoffWithProject(id string) Handoff {
+func (f *fixture) handoffToServer(id string) Handoff {
 	f.t.Helper()
+	f.isolatedTmux()
 	claude := f.tool("claude", fakeClaudeThatStarts)
-	slug, _ := projectSlug(f.local)
+	slug, err := projectSlug(f.local)
+	if err != nil {
+		f.t.Fatal(err)
+	}
 	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
 	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
 	return Handoff{
 		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}},
+		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
 		SessionID:      id,
 		TranscriptPath: transcript,
 		Cwd:            f.local,
