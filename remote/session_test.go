@@ -369,6 +369,9 @@ func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
 	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &w); err != nil || !strings.Contains(w.Note, "npm run dev") {
 		t.Errorf("after the turn the request is %+v, %v; want it kept with what was still running", w, err)
 	}
+	if err := arm("laptop", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "Felipes-MacBook-Pro") {
+		t.Errorf("arm to a name no watcher matches gave %v; want it to name the machines that watch", err)
+	}
 	old := time.Now().Add(-time.Minute)
 	if err := os.Chtimes(heartbeat, old, old); err != nil {
 		t.Fatal(err)

@@ -67,17 +67,17 @@ func writeWanted(sessionID string, w wanted) error {
 	return os.Rename(tmp, path)
 }
 
-func watchingMachine(name string) (string, error) {
+func watchers() ([]string, error) {
 	dir, err := magiDir("watchers")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var fresh []string
 	for _, e := range entries {
@@ -86,7 +86,7 @@ func watchingMachine(name string) (string, error) {
 			fresh = append(fresh, e.Name())
 		}
 	}
-	return matchMachine(fresh, name), nil
+	return fresh, nil
 }
 
 func waitForPull(input stopInput, out io.Writer) error {

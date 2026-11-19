@@ -6,9 +6,9 @@ allowed-tools: Bash(magi arm:*)
 
 # Hand this session off
 
-magi moves this session to another machine once your turn ends. It syncs the project (for a git repository the branch, commits, staged and unstaged changes and secret files, for any other folder its files), the transcript and project memory, starts a new session there in a Rex or tmux tab with Remote Control, then closes this copy.
+magi moves this session to another machine once your turn ends. It syncs the project (for a git repository the branch, commits, staged and unstaged changes and secret files, for any other folder its files), the transcript and project memory, starts a new session there in a tmux window with Remote Control, then closes this copy.
 
-Handing back works the same way. If this session was handed off to this machine and the user says "hand this back to my Mac", follow the same steps with the Mac as the machine. This machine doesn't need to be set up to reach it. When it isn't, magi asks the overview to move the session, and the machine that can reach the other one does the move. That needs magi-overview installed on this machine with its agents running. Without it, tell the user to run `magi pull <this machine>` on the machine they want the session on.
+Handing back works the same way. If this session was handed off to this machine and the user says "hand this back to my Mac", follow the same steps with the Mac as the machine. This machine doesn't need to be set up to reach it. When it isn't, hand back works if the other machine runs `magi watch`. magi leaves a request here, that machine pulls the session over its own SSH connection once your turn ends, and this session keeps running here until it does. Without `magi watch` there, tell the user to run `magi pull <this machine>` on the machine they want the session on.
 
 Nothing that is running moves, so do this in order.
 
@@ -27,8 +27,8 @@ Nothing that is running moves, so do this in order.
    NOTE
    ```
 
-3. If it says there is no such host, it lists the configured ones. Run it again with the one the user meant, or ask if none clearly matches. If it says it doesn't know the machine but lists machines the overview sees, pick the one the user meant from that list (for example "my Mac" is the Mac's machine name there) and run it again. If it lists none, magi-overview isn't installed here or its agents aren't running, so tell the user to run `magi pull <this machine>` on the machine they want it on.
+3. A name that isn't a configured host is matched against the machines that run `magi watch` for this one, by the exact name or by a part of it that fits only one of them, so "my Mac" can be `mac`. If it says there is no such host, it lists the configured hosts and the machines that run `magi watch` for this one. Run it again with the one the user meant. If nothing matches, tell the user to run `magi pull <this machine>` on the machine they want the session on, or to run `magi watch install` there first.
 4. If it fails for any other reason, tell the user why and stop.
-5. If it succeeds, end your turn right away with one short line, for example "Handing off to homelab, it'll open there in a few seconds." Make no other tool calls, because the handoff starts when your turn ends.
+5. If it succeeds, it says either that the session is armed to move or that it asked the other machine to take the session back. End your turn right away with one short line, for example "Handing off to homelab, it'll open there in a few seconds." Make no other tool calls, because the handoff starts when your turn ends.
 
-If the handoff fails after your turn, you get a message saying what went wrong and this session keeps running here. Explain it to the user in plain words, and restart anything you stopped in step 1.
+If the handoff fails after your turn, you get a message saying what went wrong and this session keeps running here. Explain it to the user in plain words, and restart anything you stopped in step 1. When the other machine was asked to take the session back, a failure is written to that machine's `magi watch` log instead, it tries again each minute, and this session stays here meanwhile.

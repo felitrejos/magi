@@ -194,9 +194,13 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 	}
 	desktop := os.Getenv("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop"
 	if _, err := loadHost(hostName); err != nil {
-		watcher, watchErr := watchingMachine(hostName)
+		watching, watchErr := watchers()
 		if watchErr != nil {
 			return errors.Join(err, watchErr)
+		}
+		watcher := matchMachine(watching, hostName)
+		if watcher == "" && len(watching) > 0 {
+			return fmt.Errorf("%w, and no machine called %q runs magi watch for this one; these do: %s", err, hostName, strings.Join(watching, ", "))
 		}
 		if watcher == "" {
 			return fmt.Errorf("%w, and no machine called %q runs magi watch for this one, so bring the session back from there with magi pull", err, hostName)

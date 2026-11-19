@@ -181,9 +181,14 @@ func doctor(names []string, out io.Writer) error {
 		plugins, _ := run(ctx, "claude", "plugin", "list", "--json")
 		c.plugin(string(plugins))
 	}
-	if watchRunning() {
+	running := watchRunning()
+	_, tmuxErr := exec.LookPath("tmux")
+	switch {
+	case running && tmuxErr != nil:
+		c.warn("magi watch runs here but tmux isn't installed", "install tmux: a session handed back here opens in a tmux window")
+	case running:
 		c.pass("magi watch runs here, so sessions on other machines can be handed back")
-	} else {
+	default:
 		c.warn("magi watch isn't running here", "run magi watch install so a session on another machine can be handed back here")
 	}
 	home, err := os.UserHomeDir()
