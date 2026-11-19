@@ -96,6 +96,13 @@ func (p Pull) Run() (res Pulled, err error) {
 		if err != nil {
 			return err
 		}
+		program := p.Host.Claude
+		if session.Codex {
+			program = p.Host.Codex
+		}
+		if err := refuseUntested(session.Codex, local, remote, expandHome(program, remoteHome)); err != nil {
+			return err
+		}
 		if err := refuseHome(ws, remoteHome, p.HostName); err != nil {
 			return err
 		}

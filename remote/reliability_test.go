@@ -309,7 +309,7 @@ func TestAPullOpensATmuxWindow(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
 	f.taskHost("")
-	f.tool("claude", "#!/bin/sh\nsleep 60\n")
+	f.tool("claude", fakeClaude+"exec sleep 60\n")
 	local, err := newLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)

@@ -231,6 +231,13 @@ func (r *handoffRun) inspect(ctx context.Context) error {
 	if r.where, err = place(r.remote, r.ws, r.Host.Roots, localGroup(r.ws.MainRoot, r.Host.LocalRoots), r.Host.Exclude); err != nil {
 		return err
 	}
+	program := r.Host.Claude
+	if r.Codex {
+		program = r.Host.Codex
+	}
+	if err := refuseUntested(r.Codex, r.local, r.remote, expandHome(program, r.where.Home)); err != nil {
+		return err
+	}
 	if r.Codex {
 		return nil
 	}

@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-var testedClaude = [2]string{"2.1.319", "2.1.326"}
-
 var minGit = [3]int{2, 31, 0}
 
 type checks struct {
@@ -73,21 +71,13 @@ func compareVersions(a, b [3]int) int {
 	return 0
 }
 
-func (c *checks) claudeVersion(where, text string) {
-	v, ok := parseVersion(strings.TrimSpace(text))
-	low, _ := parseVersion(testedClaude[0])
-	high, _ := parseVersion(testedClaude[1])
-	switch {
-	case !ok:
-		c.warn("Claude Code version on "+where+" is unreadable: "+strings.TrimSpace(text), "magi was tested with "+testedClaude[0]+" to "+testedClaude[1]+".")
-	case compareVersions(v, low) < 0:
-		c.fail("Claude Code on "+where+" is "+strings.TrimSpace(text), "update it with claude update; magi needs "+testedClaude[0]+" or newer")
-	case compareVersions(v, high) > 0:
-		c.warn("Claude Code on "+where+" is "+strings.TrimSpace(text)+", newer than magi was tested with ("+testedClaude[1]+")",
-			"magi reads some Claude Code internals; if a handoff misbehaves, look for a magi update.")
-	default:
-		c.pass("Claude Code " + strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text), "(Claude Code)")) + " on " + where)
+func (c *checks) tested(r testedRange, tool, where, text string) {
+	version := versionPattern.FindString(text)
+	if err := r.refuse(tool, where, version); err != nil {
+		c.fail(err.Error(), "magi refuses to move sessions with it until then")
+		return
 	}
+	c.pass(tool + " " + version + " on " + where + " is a version magi was tested with")
 }
 
 func (c *checks) gitVersion(where, text string, err error) {
@@ -163,6 +153,10 @@ func doctor(names []string, out io.Writer) error {
 	if !c.check(err, "config at "+path, "run magi init to create it") {
 		return errors.New("fix the config first")
 	}
+	versions, err := loadTested()
+	if !c.check(err, "read which Claude Code and Codex versions magi was tested with", "check ~/.magi/tested.json") {
+		return errors.New("fix the tested versions first")
+	}
 	gitOut, gitErr := run(ctx, "git", "--version")
 	c.gitVersion("this machine", string(gitOut), gitErr)
 	for _, tool := range []string{"tar", "ssh"} {
@@ -175,11 +169,14 @@ func doctor(names []string, out io.Writer) error {
 		c.pass("magi is on PATH")
 	}
 	if v, err := run(ctx, "claude", "--version"); c.check(err, "claude is installed", "install Claude Code") {
-		c.claudeVersion("this machine", string(v))
+		c.tested(versions.Claude, "Claude Code", "this machine", string(v))
 		status, _ := run(ctx, "claude", "auth", "status")
 		c.login("this machine", string(status))
 		plugins, _ := run(ctx, "claude", "plugin", "list", "--json")
 		c.plugin(string(plugins))
+	}
+	if v, err := run(ctx, "codex", "--version"); err == nil {
+		c.tested(versions.Codex, "Codex", "this machine", string(v))
 	}
 	running := watchRunning()
 	_, tmuxErr := exec.LookPath("tmux")
@@ -214,7 +211,7 @@ func doctor(names []string, out io.Writer) error {
 			fmt.Fprintf(out, "  · no new tasks now: %s\n", reason)
 		}
 		hostCtx, cancelHost := context.WithTimeout(context.Background(), 60*time.Second)
-		doctorHost(hostCtx, c, name, h)
+		doctorHost(hostCtx, c, versions, name, h)
 		cancelHost()
 	}
 	if c.failed > 0 {
@@ -224,7 +221,7 @@ func doctor(names []string, out io.Writer) error {
 	return nil
 }
 
-func doctorHost(ctx context.Context, c *checks, name string, h Host) {
+func doctorHost(ctx context.Context, c *checks, versions testedVersions, name string, h Host) {
 	remote, err := newRemote(ctx, h)
 	if err != nil {
 		c.fail("ssh setup", err.Error())
@@ -244,9 +241,14 @@ func doctorHost(ctx context.Context, c *checks, name string, h Host) {
 	}
 	claude := expandHome(h.Claude, home)
 	if v, err := sh(remote, `"$1" --version`, claude); c.check(err, "claude at "+h.Claude+" on "+name, "fix the claude path for "+name) {
-		c.claudeVersion(name, string(v))
+		c.tested(versions.Claude, "Claude Code", name, string(v))
 		status, _ := sh(remote, `"$1" auth status`, claude)
 		c.login(name, string(status))
+	}
+	if h.Codex != "" {
+		if v, err := sh(remote, `"$1" --version`, expandHome(h.Codex, home)); c.check(err, "codex at "+h.Codex+" on "+name, "fix the codex path for "+name) {
+			c.tested(versions.Codex, "Codex", name, string(v))
+		}
 	}
 	for _, root := range h.Roots {
 		_, err := sh(remote, `[ -d "$1" ]`, expandHome(root, home))

@@ -72,15 +72,16 @@ func TestExpandHomeOnlyExpandsALeadingTilde(t *testing.T) {
 	}
 }
 
-func TestClaudeVersionCheckFailsOldAndWarnsNew(t *testing.T) {
+func TestDoctorFailsVersionsMagiHasntTested(t *testing.T) {
+	r := testedRange{Min: "2.1.300", Max: "2.1.327"}
 	for text, want := range map[string]string{
-		"2.1.1 (Claude Code)":              "✗",
-		testedClaude[1] + " (Claude Code)": "✓",
-		"9.0.0 (Claude Code)":              "!",
+		"2.1.1 (Claude Code)":   "✗",
+		"2.1.327 (Claude Code)": "✓",
+		"9.0.0 (Claude Code)":   "✗",
 	} {
 		var out strings.Builder
 		c := &checks{out: &out}
-		c.claudeVersion("here", text)
+		c.tested(r, "Claude Code", "here", text)
 		if !strings.HasPrefix(strings.TrimSpace(out.String()), want) {
 			t.Errorf("%s gave %q, want %s", text, out.String(), want)
 		}
@@ -133,7 +134,7 @@ func TestDoctorChecksTheServer(t *testing.T) {
 	c := &checks{out: &out}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	doctorHost(ctx, c, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer", "~/missing"}})
+	doctorHost(ctx, c, testedVersions{Claude: testedRange{Min: "2.1.300", Max: "2.1.327"}}, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer", "~/missing"}})
 	report := out.String()
 	for _, want := range []string{"✓ ssh fakehost works", "✓ git 2.", "✓ Claude Code 2.1.325 on server", "✓ logged in to claude.ai on server", "✓ root ~/developer exists", "✗ root ~/missing exists"} {
 		if !strings.Contains(report, want) {

@@ -1,0 +1,11 @@
+[Unit]
+Description=magi's contract tests against the newest Claude Code and Codex
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/usr/bin/git -C %h/.local/share/magi-nightly/magi fetch -q origin main
+ExecStartPre=/usr/bin/git -C %h/.local/share/magi-nightly/magi reset -q --hard origin/main
+ExecStart=/bin/sh %h/.local/share/magi-nightly/magi/ci/nightly.sh
+TimeoutStartSec=1h

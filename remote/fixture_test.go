@@ -54,6 +54,15 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	builtin, err := parseTested(builtinTested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MAGI_FAKE_CLAUDE_VERSION", builtin.Claude.Max)
+	t.Setenv("MAGI_FAKE_CODEX_VERSION", builtin.Codex.Max)
+	url := testedURL
+	testedURL = ""
+	t.Cleanup(func() { testedURL = url })
 	f.tool("claude", fakeClaude)
 	f.tool("codex", fakeCodex)
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -187,7 +196,8 @@ func startFakeClaude(t *testing.T, seconds string) *exec.Cmd {
 	return cmd
 }
 
-const fakeAgents = `if [ "$1 $2" = "agents --json" ]; then
+const fakeAgents = `if [ "$1" = --version ]; then echo "$MAGI_FAKE_CLAUDE_VERSION (Claude Code)"; exit; fi
+if [ "$1 $2" = "agents --json" ]; then
   sep='['
   for f in "$HOME"/.claude/sessions/*.json; do
     pid=${f##*/}
@@ -214,6 +224,7 @@ exec sleep 60
 `
 
 const fakeCodex = `#!/bin/sh
+if [ "$1" = --version ]; then echo "codex-cli $MAGI_FAKE_CODEX_VERSION"; exit; fi
 codex_home=${CODEX_HOME:-$HOME/.codex}
 config=$codex_home/config.toml
 if [ "$1" = app-server ]; then
