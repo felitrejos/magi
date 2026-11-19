@@ -154,7 +154,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 		}
 	}
 	var notes []error
-	if err := newLauncher(host, r).Discard(t.Tab); err != nil && !tabGone(err) {
+	if err := (Tmux{remote: r}).Discard(t.Tab); err != nil && !tabGone(err) {
 		notes = append(notes, fmt.Errorf("closing its tab on %s failed: %w", t.Host, err))
 	}
 	if !o.Kept {
@@ -174,7 +174,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 
 func tabGone(err error) bool {
 	msg := err.Error()
-	return strings.Contains(msg, "target") && strings.Contains(msg, "not found") || strings.Contains(msg, "can't find window") || strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to")
+	return strings.Contains(msg, "can't find window") || strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to")
 }
 
 func fetchLog(r *Remote, t *Task) (string, error) {

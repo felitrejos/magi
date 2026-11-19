@@ -108,13 +108,13 @@ func TestPullingASessionBackClosesItsTabOnTheServer(t *testing.T) {
 	if windows, _ := exec.Command("tmux", "list-windows", "-a").Output(); len(windows) == 0 {
 		t.Fatal("the handoff opened no tab")
 	}
-	if err := closeRecordedTab(f.remoteHost(), Host{Launcher: "tmux"}, id); err != nil {
+	if err := closeRecordedTab(f.remoteHost(), id); err != nil {
 		t.Fatal(err)
 	}
 	if windows, _ := exec.Command("tmux", "list-windows", "-a").Output(); len(windows) > 0 {
 		t.Errorf("the session's tab outlived it: %s", windows)
 	}
-	if err := closeRecordedTab(f.remoteHost(), Host{Launcher: "tmux"}, id); err != nil {
+	if err := closeRecordedTab(f.remoteHost(), id); err != nil {
 		t.Errorf("closing an already closed tab: %v", err)
 	}
 }
@@ -138,7 +138,7 @@ func TestPullRunsTheSetupHereAndTellsClaude(t *testing.T) {
 func TestWatchTakesBackASessionTheServerAsksItTo(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
-	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nsecrets = [\".env\"]\nlauncher = \"tmux\"\n")
+	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nsecrets = [\".env\"]\n")
 	tmux, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Fatal(err)

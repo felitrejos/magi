@@ -21,8 +21,6 @@ const (
 	forwardWaiting   = "waiting"
 )
 
-const rexSessionGone = 3
-
 var (
 	forwardRetry    = 2 * time.Second
 	forwardRetryMax = 30 * time.Second
@@ -34,16 +32,10 @@ type forwardRecord struct {
 	Session string    `json:"session"`
 	Host    string    `json:"host"`
 	SSH     string    `json:"ssh"`
-	Rex     *rexVia   `json:"rex,omitempty"`
 	Ports   []int     `json:"ports"`
 	PID     int       `json:"pid"`
 	State   string    `json:"state"`
 	Started time.Time `json:"started"`
-}
-
-type rexVia struct {
-	Server  string `json:"server"`
-	Session string `json:"session"`
 }
 
 func forwardsDir() (string, error) {
@@ -103,7 +95,7 @@ func runnerAlive(recordPath string) bool {
 	return false
 }
 
-func startForwards(session, host, ssh string, via *rexVia, ports []int) error {
+func startForwards(session, host, ssh string, ports []int) error {
 	if err := closeForwards(session); err != nil {
 		return err
 	}
@@ -118,7 +110,7 @@ func startForwards(session, host, ssh string, via *rexVia, ports []int) error {
 	if err != nil {
 		return err
 	}
-	record := forwardRecord{Session: session, Host: host, SSH: ssh, Rex: via, Ports: ports, State: forwardWaiting, Started: time.Now()}
+	record := forwardRecord{Session: session, Host: host, SSH: ssh, Ports: ports, State: forwardWaiting, Started: time.Now()}
 	if err := writeForward(path, record); err != nil {
 		return err
 	}
@@ -175,21 +167,16 @@ func runForwards(session string) error {
 		if err != nil {
 			return err
 		}
-		program, args := forwardCommand(record)
-		tunnel := exec.Command(program, args...)
+		tunnel := exec.Command("ssh", forwardArgs(record)...)
 		if err := tunnel.Start(); err != nil {
 			return err
 		}
 		exited := make(chan error, 1)
 		go func() { exited <- tunnel.Wait() }()
-		up, exit := awaitForward(record, exited)
-		if up {
+		if awaitForward(record, exited) {
 			setForwardState(path, forwardConnected)
-			exit = <-exited
+			<-exited
 			wait = forwardRetry
-		}
-		if record.Rex != nil && exitCode(exit) == rexSessionGone {
-			return nil
 		}
 		setForwardState(path, forwardWaiting)
 		time.Sleep(wait)
@@ -197,14 +184,14 @@ func runForwards(session string) error {
 	}
 }
 
-func awaitForward(r forwardRecord, exited <-chan error) (bool, error) {
+func awaitForward(r forwardRecord, exited <-chan error) bool {
 	for {
 		select {
-		case err := <-exited:
-			return false, err
+		case <-exited:
+			return false
 		case <-time.After(forwardPoll):
 			if forwardUp(r) {
-				return true, nil
+				return true
 			}
 		}
 	}
@@ -228,13 +215,6 @@ func setForwardState(path, state string) {
 	}
 	record.State = state
 	writeForward(path, record)
-}
-
-func forwardCommand(r forwardRecord) (string, []string) {
-	if r.Rex == nil {
-		return "ssh", forwardArgs(r)
-	}
-	return "rex", localForwards([]string{"--autostart=false", "-S", r.Rex.Server, "forward", "new", "-s", r.Rex.Session}, r.Ports)
 }
 
 func forwardArgs(r forwardRecord) []string {

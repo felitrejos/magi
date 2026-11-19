@@ -230,7 +230,7 @@ func projectPrompt(p *Project, status string) string {
 	return b.String()
 }
 
-func startProject(m Machine, l Launcher, tab Tab, dir, status string, p *Project) error {
+func startProject(m Machine, l Tmux, tab Tab, dir, status string, p *Project) error {
 	parent := m.Context()
 	ctx, cancel := context.WithTimeout(context.Background(), projectPanesLimit)
 	defer cancel()
@@ -259,22 +259,21 @@ func startProject(m Machine, l Launcher, tab Tab, dir, status string, p *Project
 	return nil
 }
 
-func recordTab(m Machine, sessionID, launcher string, tab Tab) error {
-	_, err := sh(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n%s\n' "$2" "$3" "$4" "$5" > "$HOME/.magi/tabs/$1"`, sessionID, launcher, tab.Session, tab.Window, tab.Tag)
+func recordTab(m Machine, sessionID string, tab Tab) error {
+	_, err := sh(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n' "$2" "$3" "$4" > "$HOME/.magi/tabs/$1"`, sessionID, tab.Session, tab.Window, tab.Tag)
 	return err
 }
 
-func closeRecordedTab(r *Remote, h Host, sessionID string) error {
+func closeRecordedTab(r *Remote, sessionID string) error {
 	out, err := sh(r, `f="$HOME/.magi/tabs/$1"; if [ -f "$f" ]; then cat "$f"; rm -f "$f"; fi`, sessionID)
 	if err != nil || len(out) == 0 {
 		return err
 	}
 	lines := strings.Split(string(out), "\n")
-	if len(lines) < 4 {
+	if len(lines) < 3 {
 		return fmt.Errorf("unexpected tab record for session %s on %s", sessionID, r.Name())
 	}
-	h.Launcher = lines[0]
-	if err := newLauncher(h, r).Discard(Tab{Session: lines[1], Window: lines[2], Tag: lines[3]}); err != nil && !tabGone(err) {
+	if err := (Tmux{remote: r}).Discard(Tab{Session: lines[0], Window: lines[1], Tag: lines[2]}); err != nil && !tabGone(err) {
 		return err
 	}
 	return nil

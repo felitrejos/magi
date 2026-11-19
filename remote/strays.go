@@ -83,7 +83,7 @@ func cleanStray(sessionID string, s Stray) error {
 	if err := stop(remote, sessionID); err != nil {
 		return err
 	}
-	if err := newLauncher(host, remote).Discard(s.Tab); err != nil && !tabGone(err) {
+	if err := (Tmux{remote: remote}).Discard(s.Tab); err != nil && !tabGone(err) {
 		return err
 	}
 	dir, err := strayDir()

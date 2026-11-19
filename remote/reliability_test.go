@@ -25,7 +25,7 @@ func (f *fixture) readyHandoff(id string) Handoff {
 	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
 	return Handoff{
 		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, Launcher: "tmux", LocalRoots: []string{"~/laptop"}},
+		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
 		SessionID:      id,
 		TranscriptPath: transcript,
 		Cwd:            f.local,
@@ -246,7 +246,7 @@ func TestRetireClosesTheRecordedTabWhenItsSessionPaneClosesFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "0f0f0f0f-1111-2222-3333-999999999993"
-	if err := recordTab(local, id, "tmux", tab); err != nil {
+	if err := recordTab(local, id, tab); err != nil {
 		t.Fatal(err)
 	}
 	out, err := exec.Command("tmux", "display-message", "-p", "-t", tab.Pane, "#{pane_pid}").Output()
@@ -294,7 +294,7 @@ func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sh(local, retireScript, fields[1], transcript, "server", "", "", "0f0f0f0f-1111-2222-3333-555555555556", fields[0]); err != nil {
+	if _, err := sh(local, retireScript, fields[1], transcript, "server", "0f0f0f0f-1111-2222-3333-555555555556", fields[0]); err != nil {
 		t.Fatal(err)
 	}
 	if panes, _ := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}").Output(); strings.Contains(string(panes), fields[0]) {

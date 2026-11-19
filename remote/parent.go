@@ -2,8 +2,7 @@ package main
 
 import (
 	"context"
-	"os/exec"
-	"runtime"
+	"os"
 	"slices"
 	"strings"
 )
@@ -40,7 +39,7 @@ func delegatingSession(c caller, project string) (*parentSession, error) {
 }
 
 func (p *parentSession) tabLabel() string {
-	return machineEmoji() + " ← " + p.Name
+	return machineLabel() + " ← " + p.Name
 }
 
 func withParent(id string, command []string) []string {
@@ -50,13 +49,8 @@ func withParent(id string, command []string) []string {
 	return append([]string{"env", parentEnv + "=" + id}, command...)
 }
 
-func machineEmoji() string {
-	if runtime.GOOS != "darwin" {
-		return "🗄️"
-	}
-	battery, err := exec.Command("pmset", "-g", "batt").Output()
-	if err == nil && strings.Contains(string(battery), "InternalBattery") {
-		return "💻"
-	}
-	return "🖥️"
+func machineLabel() string {
+	name, _ := os.Hostname()
+	short, _, _ := strings.Cut(name, ".")
+	return strings.ToLower(short)
 }

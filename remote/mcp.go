@@ -14,7 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const serverInstructions = `magi sends work from this session to the user's other machines over SSH: a shell command (run_elsewhere), a self-contained task for a background Claude (delegate), or a new interactive session (session_elsewhere). Each runs in its own copy of this project's working tree, in a Rex or tmux tab the user can watch, and never touches the user's checkouts there. When you collect a delegate with task_result, its changes are applied to this working tree, unless you passed keep_branch.
+const serverInstructions = `magi sends work from this session to the user's other machines over SSH: a shell command (run_elsewhere), a self-contained task for a background Claude (delegate), or a new interactive session (session_elsewhere). Each runs in its own copy of this project's working tree, in a tmux window the user can watch, and never touches the user's checkouts there. When you collect a delegate with task_result, its changes are applied to this working tree, unless you passed keep_branch.
 
 Starting work on another machine is the user's call. Before run_elsewhere, delegate or session_elsewhere: call machines, propose one machine (the one machines suggests, the first in the user's list with room, unless the user named one), say exactly what will run there, and let the user choose: run it there, run it here instead, or don't run it. Wait for the user's clear answer. Ask even when the user tells you to pick the machine or to run it wherever fits best: choosing the machine is your part, agreeing to it is theirs. Then start it and carry on with other work.
 
@@ -272,7 +272,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "session_elsewhere",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
-		Description: "Open a new interactive Claude session for this project on another machine, in its own copy of this project's working tree, in a Rex or tmux tab the user switches to, with Remote Control so it's also in every Claude app on their account. For when the user wants to work on something in parallel on a lighter machine. This session keeps running. It isn't opened when the user's Claude plan window is 90% used or more, since every machine shares that plan. Only with the user's clear yes: first call machines, then say which machine and what the new session will start with, and wait. When the user quits that session, task_result brings its changes back as a branch.",
+		Description: "Open a new interactive Claude session for this project on another machine, in its own copy of this project's working tree, in a tmux window, with Remote Control so it's also in every Claude app on their account. For when the user wants to work on something in parallel on a lighter machine. This session keeps running. It isn't opened when the user's Claude plan window is 90% used or more, since every machine shares that plan. Only with the user's clear yes: first call machines, then say which machine and what the new session will start with, and wait. When the user quits that session, task_result brings its changes back as a branch.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in sessionInput) (*mcp.CallToolResult, any, error) {
 		dir, err := projectDir(in.Dir)
 		if err != nil {

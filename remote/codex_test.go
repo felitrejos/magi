@@ -34,7 +34,6 @@ ssh = "fakehost"
 claude = "` + claude + `"
 ` + path + `roots = ["~/developer"]
 secrets = [".env"]
-launcher = "tmux"
 `)
 }
 

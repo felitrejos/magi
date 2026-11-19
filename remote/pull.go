@@ -208,7 +208,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	res.note(err)
 	res.note(markMoved(remote, session.ID, local.Name()))
 	res.note(clearMoved(local, session.ID))
-	if err := closeRecordedTab(remote, p.Host, session.ID); err != nil {
+	if err := closeRecordedTab(remote, session.ID); err != nil {
 		res.note(fmt.Errorf("closing the session's old tab on %s failed: %w", p.HostName, err))
 	}
 	project, err := approvedProject(local, where.Root)

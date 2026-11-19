@@ -40,11 +40,6 @@ Usage:
   magi watch install | uninstall     run magi watch in the background, starting at login
   magi unpark [dir]                  stop treating a checkout as parked
   magi allow [dir]                   let the project's .magi.toml run after handoffs
-  magi open <folder> [--codex] [--model <model>] [--json]
-                                        start a Claude (or Codex) session there, in a Rex session
-                                        named after its folder; --resume <id> continues a session
-                                        as a copy; --chat starts one in ~/Chats instead;
-                                        --list prints the project folders it knows
   magi forwards                      ports this machine forwards to sessions that moved
   magi forwards close <session-id>   stop forwarding a moved session's ports
   magi tasks                         work sent to other machines, and its state
@@ -123,8 +118,6 @@ func main() {
 			dir = args[1]
 		}
 		err = unpark(dir, os.Stdout)
-	case len(args) >= 1 && args[0] == "open":
-		err = openCommand(args[1:], os.Stdout)
 	case len(args) >= 1 && args[0] == "forwards":
 		err = forwardsCommand(args[1:], os.Stdout)
 	case len(args) == 2 && args[0] == "forward-run":
@@ -452,7 +445,7 @@ func stillRunning(note string, tasks []backgroundTask) string {
 }
 
 func retire(a armed, sessionID, transcriptPath string) error {
-	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), transcriptPath, a.Host, os.Getenv("REX_SESSION"), os.Getenv("REX_BLOCK"), sessionID, os.Getenv("TMUX_PANE"))
+	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), transcriptPath, a.Host, sessionID, os.Getenv("TMUX_PANE"))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()
 }
@@ -603,7 +596,7 @@ func openPulledTab(local *Local, res *Pulled, prompt string) error {
 		}
 		res.note(fmt.Errorf("it came from Claude Desktop, but opening it there failed (%w), so it opens in a tab", err))
 	}
-	roots, err := openRoots(local)
+	cfg, _, err := loadConfig()
 	if err != nil {
 		return err
 	}
@@ -619,11 +612,8 @@ func openPulledTab(local *Local, res *Pulled, prompt string) error {
 	if err != nil {
 		return fmt.Errorf("%s isn't installed on %s", command[0], local.Name())
 	}
-	var launcher Launcher = Tmux{remote: local}
-	if _, err := exec.LookPath("rex"); err == nil {
-		launcher = Rex{remote: local}
-	}
-	tab, err := launcher.Start(localGroup(root, roots), label, res.ToDir, append([]string{program}, command[1:]...), true)
+	launcher := Tmux{remote: local}
+	tab, err := launcher.Start(localGroup(root, cfg.LocalRoots), label, res.ToDir, append([]string{program}, command[1:]...), true)
 	if err != nil {
 		return err
 	}

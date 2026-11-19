@@ -184,7 +184,6 @@ func TestProjectSlugMatchesClaudeFolderNames(t *testing.T) {
 }
 
 func TestRetireClosesATerminalSessionAndRetiresItsTranscript(t *testing.T) {
-	t.Setenv("REX_SESSION", "")
 	transcript := filepath.Join(t.TempDir(), "s.jsonl")
 	if err := os.WriteFile(transcript, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
@@ -382,7 +381,7 @@ func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
 func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	f := newFixture(t)
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
-	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nlauncher = \"tmux\"\n")
+	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
 	t.Setenv("CLAUDE_PID", "")
 	if err := arm("server", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "CLAUDE_PID") {
 		t.Errorf("arm outside Claude Code gave %v", err)

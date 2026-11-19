@@ -123,7 +123,7 @@ type handoffRun struct {
 	where       Placement
 	remoteDir   string
 	project     *Project
-	launcher    Launcher
+	launcher    Tmux
 	tab         Tab
 	synced      bool
 	launchedAt  time.Time
@@ -154,7 +154,7 @@ func (r *handoffRun) run(ctx context.Context) error {
 	r.res.note(err)
 	r.remoteDir = filepath.Join(r.where.Root, r.ws.Subdir)
 	r.res.NewFolder, r.res.From, r.res.FromDir, r.res.ToDir = r.where.NewFolder, r.local.Name(), r.Cwd, r.remoteDir
-	r.launcher = newLauncher(r.Host, r.remote)
+	r.launcher = Tmux{remote: r.remote}
 
 	if err := r.st.run("sync", func() error {
 		return syncProject(r.local, r.remote, r.ws, r.where, r.Host.Exclude, func() error { return pushGit(r.local, r.remote, r.ws, r.where.Root) })
@@ -325,7 +325,7 @@ func (r *handoffRun) finish() {
 	if err := settle(r.local, r.ws, r.Host.Exclude); err != nil {
 		r.res.note(fmt.Errorf("marking this checkout as handed off failed, so handing the session back here will need a clean checkout: %w", err))
 	}
-	if err := recordTab(r.remote, r.SessionID, r.Host.Launcher, r.tab); err != nil {
+	if err := recordTab(r.remote, r.SessionID, r.tab); err != nil {
 		r.res.note(fmt.Errorf("recording the new tab failed: %w", err))
 	}
 	r.res.note(closeForwardsOn(r.remote, r.SessionID))
@@ -335,7 +335,7 @@ func (r *handoffRun) finish() {
 		}
 		if len(r.project.Ports) > 0 {
 			if err := r.st.run("ports", func() error {
-				return startForwards(r.SessionID, r.HostName, r.Host.SSH, forwardVia(r.launcher, r.tab), r.project.Ports)
+				return startForwards(r.SessionID, r.HostName, r.Host.SSH, r.project.Ports)
 			}); err != nil {
 				r.res.note(fmt.Errorf("forwarding its ports failed: %w", errors.Unwrap(err)))
 			} else {

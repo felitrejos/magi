@@ -12,7 +12,7 @@ import (
 )
 
 func TestHostRejectsRelativeRoots(t *testing.T) {
-	h := Host{SSH: "s", Claude: "c", Launcher: "rex", RexServer: "r", Roots: []string{"developer"}}
+	h := Host{SSH: "s", Claude: "c", Roots: []string{"developer"}}
 	if err := h.validate("server"); err == nil {
 		t.Fatal("a relative root was accepted")
 	}
@@ -104,17 +104,16 @@ func TestTheSameRootListedTwiceCountsOnce(t *testing.T) {
 
 func TestInitWritesTheConfigAndKeepsAnswersWhenRunAgain(t *testing.T) {
 	f := newFixture(t)
-	f.tool("rex", "#!/bin/sh\nexit 1\n")
 	f.tool("tailscale", "#!/bin/sh\nexit 1\n")
 	claude := f.tool("claude", fakeClaudeCLI)
 	codex := f.tool("codex", "#!/bin/sh\n")
-	answers := strings.Join([]string{"~/laptop", "", "server", "fakehost", claude, codex, "~/developer", "", "tmux"}, "\n") + "\n"
+	answers := strings.Join([]string{"~/laptop", "", "server", "fakehost", claude, codex, "~/developer", ""}, "\n") + "\n"
 	initConfig(strings.NewReader(answers), io.Discard)
 	h, err := loadHost("server")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.SSH != "fakehost" || h.Claude != claude || h.Codex != codex || strings.Join(h.Roots, ",") != "~/developer" || h.Launcher != "tmux" || strings.Join(h.Secrets, ",") != ".env,.env.*" || !slices.Contains(h.Exclude, "node_modules") {
+	if h.SSH != "fakehost" || h.Claude != claude || h.Codex != codex || strings.Join(h.Roots, ",") != "~/developer" || strings.Join(h.Secrets, ",") != ".env,.env.*" || !slices.Contains(h.Exclude, "node_modules") {
 		t.Fatalf("host = %+v", h)
 	}
 	initConfig(strings.NewReader("server\n"+strings.Repeat("\n", 6)), io.Discard)
@@ -134,7 +133,7 @@ func TestDoctorChecksTheServer(t *testing.T) {
 	c := &checks{out: &out}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	doctorHost(ctx, c, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer", "~/missing"}, Launcher: "tmux"})
+	doctorHost(ctx, c, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer", "~/missing"}})
 	report := out.String()
 	for _, want := range []string{"✓ ssh fakehost works", "✓ git 2.", "✓ Claude Code 2.1.325 on server", "✓ logged in to claude.ai on server", "✓ root ~/developer exists", "✗ root ~/missing exists"} {
 		if !strings.Contains(report, want) {

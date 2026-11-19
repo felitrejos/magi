@@ -25,7 +25,6 @@ ssh = "fakehost"
 claude = "~/bin/claude"
 roots = ["~/developer"]
 secrets = [".env", "secret.txt"]
-launcher = "tmux"
 `)
 }
 
@@ -351,19 +350,16 @@ const threeHosts = `
 ssh = "homelab"
 claude = "claude"
 roots = ["~/developer"]
-launcher = "tmux"
 
 [hosts.small]
 ssh = "me@box"
 claude = "claude"
 roots = ["~/developer"]
-launcher = "tmux"
 
 [hosts.gpu]
 ssh = "gpu"
 claude = "claude"
 roots = ["~/developer"]
-launcher = "tmux"
 `
 
 func (f *fixture) probesAs(output string) {
@@ -475,7 +471,7 @@ func TestBudgetsParseMemoryAndQuietHours(t *testing.T) {
 	if got := b.noRoom(at("12:00"), tight, true); !strings.Contains(got, "2.0 GB of memory is free there, its budget needs 4.0 GB") {
 		t.Errorf("noRoom = %q", got)
 	}
-	if err := (Host{SSH: "x", Claude: "c", Roots: []string{"~/d"}, Launcher: "tmux", QuietHours: "late"}).validate("x"); err == nil {
+	if err := (Host{SSH: "x", Claude: "c", Roots: []string{"~/d"}, QuietHours: "late"}).validate("x"); err == nil {
 		t.Error("a bad quiet_hours was accepted")
 	}
 }
@@ -484,7 +480,7 @@ func TestTheTargetRechecksItsBudgetWhenATaskStarts(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost("")
 	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nsleep 30\n")
-	f.config(strings.Replace(f.read(filepath.Join(f.home, ".config", "magi"), "config.toml"), "launcher = \"tmux\"", "launcher = \"tmux\"\nmax_agents = 1", 1))
+	f.config(strings.Replace(f.read(filepath.Join(f.home, ".config", "magi"), "config.toml"), "secrets = [\".env\", \"secret.txt\"]", "secrets = [\".env\", \"secret.txt\"]\nmax_agents = 1", 1))
 	first, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
 	if err != nil {
 		t.Fatal(err)
@@ -515,7 +511,7 @@ func TestConfigKeepsTheHostOrderWhenRewritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Order = append(cfg.Order, "new")
-	cfg.Hosts["new"] = Host{SSH: "new", Claude: "claude", Roots: []string{"~/d"}, Launcher: "tmux", MinFreeMemory: "2G"}
+	cfg.Hosts["new"] = Host{SSH: "new", Claude: "claude", Roots: []string{"~/d"}, MinFreeMemory: "2G"}
 	if err := writeConfig(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +873,6 @@ func TestHostsWrittenWithDottedKeysKeepTheirPlace(t *testing.T) {
 lab.ssh = "lab"
 lab.claude = "claude"
 lab.roots = ["~/d"]
-lab.launcher = "tmux"
 `)
 	if cfg, _, err := loadConfig(); err != nil || strings.Join(cfg.Order, " ") != "lab" {
 		t.Errorf("[hosts] with dotted keys: %v, %v", cfg.Order, err)
@@ -885,19 +880,16 @@ lab.launcher = "tmux"
 	f.config(`hosts.box.ssh = "box"
 hosts.box.claude = "claude"
 hosts.box.roots = ["~/d"]
-hosts.box.launcher = "tmux"
 
 [hosts.lab]
 ssh = "lab"
 claude = "claude"
 roots = ["~/d"]
-launcher = "tmux"
 
 [hosts."odd \"name\""]
 ssh = "odd"
 claude = "claude"
 roots = ["~/d"]
-launcher = "tmux"
 `)
 	cfg, path, err := loadConfig()
 	if err != nil {
@@ -1016,7 +1008,7 @@ func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing
 		t.Fatal(err)
 	}
 	id := s.Task.ID
-	label := machineEmoji() + " ← fix login"
+	label := machineLabel() + " ← fix login"
 	if !strings.Contains(describeStarted(s, "why"), "tab \""+label+"\"") {
 		t.Errorf("started:\n%s", describeStarted(s, "why"))
 	}

@@ -148,7 +148,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		command = append([]string{"sh", "-c", taskScript, "magi", "session", t.Dir}, claude...)
 	}
 
-	launcher := newLauncher(host, remote)
+	launcher := Tmux{remote: remote}
 	tab, err := launcher.Start(group, t.Label, t.RunDir, withParent(t.Parent, command), spec.Kind == kindSession)
 	if err != nil {
 		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))

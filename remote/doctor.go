@@ -252,40 +252,6 @@ func doctorHost(ctx context.Context, c *checks, name string, h Host) {
 		_, err := sh(remote, `[ -d "$1" ]`, expandHome(root, home))
 		c.check(err, "root "+root+" exists on "+name, "create it there or fix roots")
 	}
-	switch h.Launcher {
-	case "rex":
-		r := Rex{server: h.RexServer, remote: remote}
-		var clients struct {
-			Clients []struct {
-				State string `json:"connection_state"`
-				Info  struct {
-					Kind string `json:"kind"`
-				} `json:"info"`
-			} `json:"clients"`
-		}
-		if !c.check(r.rexJSON(&clients, "client", "ls", "--json"), "Rex reaches "+h.RexServer, "connect Rex to "+name+" (rex hosts add)") {
-			return
-		}
-		var status struct {
-			Revision int `json:"api_revision"`
-		}
-		if c.check(r.rexJSON(&status, "api", "call", "server.status"), "Rex's server on "+name+" answers", "restart Rex there") &&
-			status.Revision < rexAPI {
-			c.fail(fmt.Sprintf("Rex on %s is at API revision %d", name, status.Revision), fmt.Sprintf("update it to Rex %s (revision %d) and restart its server", rexRelease, rexAPI))
-		}
-		apps := 0
-		for _, cl := range clients.Clients {
-			if cl.Info.Kind == "app" && cl.State == "connected" {
-				apps++
-			}
-		}
-		if apps == 0 {
-			c.warn("no Rex app is connected to "+name, "handoffs still work; open Rex to have it switch to the new session.")
-		} else {
-			c.pass(fmt.Sprintf("%d Rex app(s) connected to %s; turn on Remote Control in Rex's settings so magi can switch them", apps, name))
-		}
-	case "tmux":
-		_, err := sh(remote, "command -v tmux >/dev/null")
-		c.check(err, "tmux on "+name, "install tmux there")
-	}
+	_, err = sh(remote, "command -v tmux >/dev/null")
+	c.check(err, "tmux on "+name, "install tmux there")
 }

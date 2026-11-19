@@ -145,7 +145,7 @@ func replyTask(ctx context.Context, id, message string) (*started, error) {
 	if _, err := shIn(r, `cd -- "$1" && rm -f exit status pid log view && cat > prompt`, []byte(message), t.Dir); err != nil {
 		return nil, err
 	}
-	launcher := newLauncher(host, r)
+	launcher := Tmux{remote: r}
 	tab, err := launcher.Start(t.Group, t.tabLabel(), t.RunDir, withParent(t.Parent, t.delegateCommand(host, "", true)), false)
 	if err != nil {
 		return nil, errors.Join(err, launcher.Discard(tab))

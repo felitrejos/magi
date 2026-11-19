@@ -26,8 +26,6 @@ type Host struct {
 	Codex         string   `toml:"codex,omitempty"`
 	Roots         []string `toml:"roots"`
 	Secrets       []string `toml:"secrets"`
-	Launcher      string   `toml:"launcher"`
-	RexServer     string   `toml:"rex_server"`
 	MaxAgents     int      `toml:"max_agents,omitempty"`
 	MinFreeMemory string   `toml:"min_free_memory,omitempty"`
 	QuietHours    string   `toml:"quiet_hours,omitempty"`
@@ -72,10 +70,6 @@ func (h Host) validate(name string) error {
 		return missing("claude")
 	case len(h.Roots) == 0:
 		return missing("roots")
-	case h.Launcher == "rex" && h.RexServer == "":
-		return missing("rex_server")
-	case h.Launcher != "rex" && h.Launcher != "tmux":
-		return fmt.Errorf("host %q: launcher must be \"rex\" or \"tmux\", got %q", name, h.Launcher)
 	}
 	for _, root := range h.Roots {
 		if !strings.HasPrefix(root, "/") && !strings.HasPrefix(root, "~/") {

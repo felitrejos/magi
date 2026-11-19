@@ -156,24 +156,6 @@ func initConfig(in io.Reader, out io.Writer) error {
 	}
 	h.Secrets = list(secrets)
 
-	suggested := "tmux"
-	if _, err := run(ctx, "rex", "-S", name, "ls", "--json"); err == nil {
-		suggested = "rex"
-	}
-	for {
-		if h.Launcher, err = p.ask("Open sessions in rex or tmux on "+name, firstNonEmpty(h.Launcher, suggested)); err != nil {
-			return err
-		}
-		if h.Launcher == "rex" || h.Launcher == "tmux" {
-			break
-		}
-		fmt.Fprintln(out, "Answer rex or tmux.")
-	}
-	if h.Launcher == "rex" {
-		if h.RexServer, err = p.ask("Rex host for "+name, firstNonEmpty(h.RexServer, name)); err != nil {
-			return err
-		}
-	}
 	if err := h.validate(name); err != nil {
 		return err
 	}

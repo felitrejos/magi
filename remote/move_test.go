@@ -23,7 +23,6 @@ ssh = "fakehost"
 claude = "` + claude + `"
 roots = ["~/developer"]
 secrets = [".env"]
-launcher = "tmux"
 `)
 }
 
@@ -188,7 +187,7 @@ func TestMoveSaysWhenTheStopHookNeverRuns(t *testing.T) {
 
 func TestTheStopHookReportsAFailedMoveToTheWaitingCommand(t *testing.T) {
 	f := newFixture(t)
-	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nlauncher = \"tmux\"\n")
+	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
 	id := "0f0f0f0f-1111-2222-3333-bbbbbbbbbbbb"
 	path, _ := armedPath(id, ".json")
 	t.Setenv("CLAUDE_PID", "4242")

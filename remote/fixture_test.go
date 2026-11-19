@@ -326,7 +326,7 @@ func (f *fixture) handoffWithProject(id string) Handoff {
 	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
 	return Handoff{
 		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Launcher: "tmux", LocalRoots: []string{"~/laptop"}},
+		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}},
 		SessionID:      id,
 		TranscriptPath: transcript,
 		Cwd:            f.local,

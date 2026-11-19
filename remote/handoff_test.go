@@ -81,7 +81,7 @@ func TestAHandoffMovesTheSessionAndOpensItInItsOwnTab(t *testing.T) {
 
 	res, err := Handoff{
 		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, Launcher: "tmux", LocalRoots: []string{"~/laptop"}},
+		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
 		SessionID:      id,
 		TranscriptPath: transcript,
 		Cwd:            f.local,
@@ -124,7 +124,7 @@ func TestAFailedHandoffLeavesNoTabAndARetryPicksUpFromIt(t *testing.T) {
 	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
 	h := Handoff{
 		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, Launcher: "tmux", LocalRoots: []string{"~/laptop"}},
+		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
 		SessionID:      id,
 		TranscriptPath: transcript,
 		Cwd:            f.local,
@@ -143,51 +143,5 @@ func TestAFailedHandoffLeavesNoTabAndARetryPicksUpFromIt(t *testing.T) {
 	}
 	if got := f.read(f.remote, "kept.txt"); got != "edited while the session kept running here" {
 		t.Errorf("kept.txt on the server = %q", got)
-	}
-}
-
-func TestRexSplitsBesideTheGivenPaneWithoutTakingFocus(t *testing.T) {
-	f := newFixture(t)
-	f.tool("rex", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/rex-args\"\necho '{\"block_ids\":[\"block:new\"]}'\n")
-	id, err := Rex{server: "server", remote: f.remoteHost()}.Split(Tab{Session: "session:s"}, "block:claude", true, "pnpm dev", "/srv/api", []string{"sh", "-c", "x"})
-	if err != nil || id != "block:new" {
-		t.Fatalf("split = %q, %v", id, err)
-	}
-	args := strings.Fields(f.read(f.home, "rex-args"))
-	want := "-S server split -s session:s -b block:claude --focus=false --label pnpm dev -c /srv/api --json --split below --ratio 35 -- sh -c x"
-	if got := strings.Join(args, " "); got != want {
-		t.Errorf("rex %s\nwant rex %s", got, want)
-	}
-}
-
-const fakeRexWindows = `#!/bin/sh
-printf '%s\n' "$*" >> "$HOME/rex-calls"
-case "$*" in
-*"window ls"*) cat "$HOME/rex-windows" ;;
-esac
-`
-
-func TestClosingTheLastTabOfARexSessionRemovesTheSession(t *testing.T) {
-	f := newFixture(t)
-	f.tool("rex", fakeRexWindows)
-	x := Rex{server: "server", remote: f.remoteHost()}
-
-	f.write(f.home, "rex-windows", `{"windows":[{"window_id":"window:other"}]}`)
-	if err := x.Discard(Tab{Session: "session:s", Window: "window:task"}); err != nil {
-		t.Fatal(err)
-	}
-	f.write(f.home, "rex-windows", `{"windows":[]}`)
-	if err := x.Discard(Tab{Session: "session:s", Window: "window:last"}); err != nil {
-		t.Fatal(err)
-	}
-	want := strings.Join([]string{
-		"-S server window close -s session:s window:task",
-		"-S server window ls -s session:s --json",
-		"-S server window close -s session:s window:last",
-		"-S server window ls -s session:s --json",
-		"-S server kill session:s",
-	}, "\n")
-	if got := strings.TrimSpace(f.read(f.home, "rex-calls")); got != want {
-		t.Errorf("rex calls:\n%s\nwant:\n%s", got, want)
 	}
 }
