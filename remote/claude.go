@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func projectSlug(dir string) (string, error) {
@@ -32,11 +34,11 @@ type sessionFileSet struct {
 	Subagents bool
 }
 
-func sessionFiles(m Machine, transcriptPath string) (sessionFileSet, error) {
+func sessionFiles(m sh.Machine, transcriptPath string) (sessionFileSet, error) {
 	set := sessionFileSet{Dir: filepath.Dir(transcriptPath)}
 	name := filepath.Base(transcriptPath)
 	sidecar := strings.TrimSuffix(name, ".jsonl")
-	out, err := sh(m, sessionScript, "transcript", transcriptPath)
+	out, err := sh.Run(m, sessionScript, "transcript", transcriptPath)
 	if err != nil {
 		return set, err
 	}
@@ -78,8 +80,8 @@ func (s liveSession) since() string {
 	return ""
 }
 
-func liveSessions(m Machine) ([]liveSession, error) {
-	out, err := sh(m, sessionScript, "live", m.Claude())
+func liveSessions(m sh.Machine) ([]liveSession, error) {
+	out, err := sh.Run(m, sessionScript, "live", m.Claude())
 	if err != nil {
 		return nil, err
 	}
@@ -114,8 +116,8 @@ func splitNull(out []byte) []string {
 	return items
 }
 
-func clock(m Machine) (time.Time, error) {
-	out, err := sh(m, "date +%s")
+func clock(m sh.Machine) (time.Time, error) {
+	out, err := sh.Run(m, "date +%s")
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -126,7 +128,7 @@ func clock(m Machine) (time.Time, error) {
 	return time.Unix(seconds, 0), nil
 }
 
-func waitForRemoteControl(m Machine, sessionID string, launchedAt time.Time) error {
+func waitForRemoteControl(m sh.Machine, sessionID string, launchedAt time.Time) error {
 	notBefore := launchedAt.Add(-10 * time.Second).UnixMilli()
 	for {
 		sessions, err := liveSessions(m)
@@ -146,35 +148,35 @@ func waitForRemoteControl(m Machine, sessionID string, launchedAt time.Time) err
 	}
 }
 
-func runningThere(m Machine, sessionID string) (bool, error) {
-	_, err := sh(m, sessionScript, "running", sessionID, m.Claude())
-	if exitCode(err) == exitBusy {
+func runningThere(m sh.Machine, sessionID string) (bool, error) {
+	_, err := sh.Run(m, sessionScript, "running", sessionID, m.Claude())
+	if sh.ExitCode(err) == sh.ExitBusy {
 		return true, nil
 	}
 	return false, err
 }
 
-func markMoved(m Machine, sessionID, host string) error {
-	_, err := sh(m, sessionScript, "moved", "mark", sessionID, host)
+func markMoved(m sh.Machine, sessionID, host string) error {
+	_, err := sh.Run(m, sessionScript, "moved", "mark", sessionID, host)
 	return err
 }
 
-func clearMoved(m Machine, sessionID string) error {
-	_, err := sh(m, sessionScript, "moved", "clear", sessionID)
+func clearMoved(m sh.Machine, sessionID string) error {
+	_, err := sh.Run(m, sessionScript, "moved", "clear", sessionID)
 	return err
 }
 
-func stopSession(m Machine, sessionID string, codex bool) error {
+func stopSession(m sh.Machine, sessionID string, codex bool) error {
 	script := sessionScript
 	if codex {
 		script = codexScript
 	}
-	_, err := sh(m, script, "kill", sessionID)
+	_, err := sh.Run(m, script, "kill", sessionID)
 	return err
 }
 
-func isTrusted(m Machine, dir string) (bool, error) {
-	out, err := sh(m, `cat "$HOME"/.claude.json`)
+func isTrusted(m sh.Machine, dir string) (bool, error) {
+	out, err := sh.Run(m, `cat "$HOME"/.claude.json`)
 	if err != nil {
 		return false, err
 	}
@@ -196,7 +198,7 @@ func isTrusted(m Machine, dir string) (bool, error) {
 	}
 }
 
-func carryTrust(local, remote Machine, localDir, remoteDir string) error {
+func carryTrust(local, remote sh.Machine, localDir, remoteDir string) error {
 	trustedHere, err := isTrusted(local, localDir)
 	if err != nil || !trustedHere {
 		return nil
@@ -210,8 +212,8 @@ func carryTrust(local, remote Machine, localDir, remoteDir string) error {
 	return nil
 }
 
-func markTrusted(m Machine, dir string) error {
-	out, err := sh(m, `f="$HOME/.claude.json"; cksum < "$f"; cat "$f"`)
+func markTrusted(m sh.Machine, dir string) error {
+	out, err := sh.Run(m, `f="$HOME/.claude.json"; cksum < "$f"; cat "$f"`)
 	if err != nil {
 		return err
 	}
@@ -240,7 +242,7 @@ func markTrusted(m Machine, dir string) error {
 	if err != nil {
 		return err
 	}
-	_, err = shIn(m, trustScript, updated, string(sum))
+	_, err = sh.RunInput(m, trustScript, updated, string(sum))
 	return err
 }
 
@@ -281,8 +283,8 @@ func handoffPrompt(p Prompt) string {
 	return b.String()
 }
 
-func syncMemory(from Machine, fromDir string, to Machine, toDir string) error {
-	listing, err := sh(from, memoryScript, "list", fromDir)
+func syncMemory(from sh.Machine, fromDir string, to sh.Machine, toDir string) error {
+	listing, err := sh.Run(from, memoryScript, "list", fromDir)
 	if err != nil {
 		return err
 	}
@@ -295,14 +297,14 @@ func syncMemory(from Machine, fromDir string, to Machine, toDir string) error {
 		}
 		files = append(files, f)
 	}
-	if err := transfer(from, fromDir, Archive{Paths: files, KeepNewer: true}, to, toDir); err != nil {
+	if err := sh.Transfer(from, fromDir, sh.Archive{Paths: files, KeepNewer: true}, to, toDir); err != nil {
 		return err
 	}
 	if !hasIndex {
 		return nil
 	}
-	read := func(m Machine, dir string) (string, error) {
-		out, err := sh(m, memoryScript, "read", dir)
+	read := func(m sh.Machine, dir string) (string, error) {
+		out, err := sh.Run(m, memoryScript, "read", dir)
 		return string(out), err
 	}
 	incoming, err := read(from, fromDir)
@@ -313,7 +315,7 @@ func syncMemory(from Machine, fromDir string, to Machine, toDir string) error {
 	if err != nil {
 		return err
 	}
-	_, err = shIn(to, memoryScript, []byte(mergeMemoryIndex(incoming, existing)), "write", toDir)
+	_, err = sh.RunInput(to, memoryScript, []byte(mergeMemoryIndex(incoming, existing)), "write", toDir)
 	return err
 }
 

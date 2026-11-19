@@ -13,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 const (
@@ -28,15 +31,15 @@ type wanted struct {
 }
 
 func writeWanted(sessionID string, w wanted) error {
-	path, err := sessionPath("wanted", sessionID, ".json")
+	path, err := store.SessionPath("wanted", sessionID, ".json")
 	if err != nil {
 		return err
 	}
-	return writeJSON(path, w)
+	return store.WriteJSON(path, w)
 }
 
 func watchers() ([]string, error) {
-	dir, err := magiDir("watchers")
+	dir, err := store.Dir("watchers")
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +61,7 @@ func watchers() ([]string, error) {
 }
 
 func waitForPull(input stopInput, out io.Writer) error {
-	path, err := sessionPath("wanted", input.SessionID, ".json")
+	path, err := store.SessionPath("wanted", input.SessionID, ".json")
 	if err != nil {
 		return err
 	}
@@ -83,7 +86,7 @@ func waitForPull(input stopInput, out io.Writer) error {
 }
 
 func reportWanted(w io.Writer) error {
-	dir, err := magiDir("wanted")
+	dir, err := store.Dir("wanted")
 	if err != nil {
 		return err
 	}
@@ -101,18 +104,18 @@ func reportWanted(w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "  %s  by %s\n", shortID(strings.TrimSuffix(filepath.Base(path), ".json")), request.To)
+		fmt.Fprintf(w, "  %s  by %s\n", store.ShortID(strings.TrimSuffix(filepath.Base(path), ".json")), request.To)
 	}
 	fmt.Fprintln(w)
 	return nil
 }
 
 func watch() error {
-	path, err := magiDir("watch.lock")
+	path, err := store.Dir("watch.lock")
 	if err != nil {
 		return err
 	}
-	unlock, err := lockFile(path, errors.New("magi watch is already running on this machine"))
+	unlock, err := store.Lock(path, errors.New("magi watch is already running on this machine"))
 	if err != nil {
 		return err
 	}
@@ -121,7 +124,7 @@ func watch() error {
 	if err != nil {
 		return err
 	}
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return err
 	}
@@ -165,7 +168,7 @@ func followRequests(ctx context.Context, name string, host Host, me string, logg
 	lines := bufio.NewScanner(stdout)
 	for lines.Scan() {
 		id := lines.Text()
-		if !sessionIDPattern.MatchString(id) || time.Since(tried[id]) < watchRetry {
+		if !store.SessionIDPattern.MatchString(id) || time.Since(tried[id]) < watchRetry {
 			continue
 		}
 		tried[id] = time.Now()
@@ -174,25 +177,25 @@ func followRequests(ctx context.Context, name string, host Host, me string, logg
 	return cmd.Wait()
 }
 
-func take(name string, remote *Remote, id string, logger *log.Logger) {
-	data, err := sh(remote, `cat "$HOME/.magi/wanted/$1.json"`, id)
+func take(name string, remote *sh.Remote, id string, logger *log.Logger) {
+	data, err := sh.Run(remote, `cat "$HOME/.magi/wanted/$1.json"`, id)
 	if err != nil {
-		logger.Printf("%s: reading the request for session %s failed: %v", name, shortID(id), err)
+		logger.Printf("%s: reading the request for session %s failed: %v", name, store.ShortID(id), err)
 		return
 	}
 	var w wanted
 	if err := json.Unmarshal(data, &w); err != nil {
-		logger.Printf("%s: the request for session %s is unreadable: %v", name, shortID(id), err)
+		logger.Printf("%s: the request for session %s is unreadable: %v", name, store.ShortID(id), err)
 		return
 	}
-	logger.Printf("%s: taking session %s back", name, shortID(id))
+	logger.Printf("%s: taking session %s back", name, store.ShortID(id))
 	pulled, err := pullHere(name, id, w.Note, logger.Writer(), true)
 	if err != nil {
-		logger.Printf("%s: taking session %s back failed: %v", name, shortID(id), err)
+		logger.Printf("%s: taking session %s back failed: %v", name, store.ShortID(id), err)
 		return
 	}
-	if _, err := sh(remote, `rm -f "$HOME/.magi/wanted/$1.json"`, id); err != nil {
-		logger.Printf("%s: removing the request for session %s failed: %v", name, shortID(id), err)
+	if _, err := sh.Run(remote, `rm -f "$HOME/.magi/wanted/$1.json"`, id); err != nil {
+		logger.Printf("%s: removing the request for session %s failed: %v", name, store.ShortID(id), err)
 	}
 	logger.Print(pulled.message)
 }

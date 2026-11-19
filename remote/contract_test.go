@@ -14,6 +14,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 func contractDir(t *testing.T) string {
@@ -79,7 +82,7 @@ func runClaude(t *testing.T, dir string, args ...string) claudeReply {
 func TestContractClaudeRegistersALiveSession(t *testing.T) {
 	dir := contractDir(t)
 	cmd, out := startClaude(t, dir, "Run the shell command sleep 8, then reply with just: done", "--allowedTools", "Bash(sleep:*)")
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +100,7 @@ func TestContractClaudeRegistersALiveSession(t *testing.T) {
 		cmd.Wait()
 		t.Fatalf("claude agents --json never listed a busy session in %s\n%s", dir, out)
 	}
-	if live.PID <= 0 || !sessionIDPattern.MatchString(live.SessionID) || live.StartedAt <= 0 {
+	if live.PID <= 0 || !store.SessionIDPattern.MatchString(live.SessionID) || live.StartedAt <= 0 {
 		t.Errorf("claude agents --json lacks what magi reads: %+v", *live)
 	}
 	if live.since() == "" {
@@ -106,10 +109,10 @@ func TestContractClaudeRegistersALiveSession(t *testing.T) {
 	if running, err := runningThere(local, live.SessionID); err != nil || !running {
 		t.Errorf("runningThere = %v, %v for the live session", running, err)
 	}
-	if _, err := sh(local, sessionScript, "stop", strconv.Itoa(live.PID), live.SessionID, live.since(), local.Claude()); exitCode(err) != exitBusy {
+	if _, err := sh.Run(local, sessionScript, "stop", strconv.Itoa(live.PID), live.SessionID, live.since(), local.Claude()); sh.ExitCode(err) != sh.ExitBusy {
 		t.Errorf("stopping the busy session gave %v, want it refused as busy", err)
 	}
-	probe, err := sh(local, platformScript, local.Claude())
+	probe, err := sh.Run(local, platformScript, local.Claude())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +146,7 @@ func hookSettings(t *testing.T, dir string, scripts map[string]string) (string, 
 func TestContractClaudeResumesAMovedTranscript(t *testing.T) {
 	from, to := contractDir(t), contractDir(t)
 	first := runClaude(t, from, "Remember the word KUMQUAT. Reply with just: ok")
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

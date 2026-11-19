@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 const codexHello = `{"id":0,"method":"initialize","params":{"clientInfo":{"name":"magi","version":"1"}}}
@@ -25,7 +27,7 @@ type codexThread struct {
 	Name string `json:"name"`
 }
 
-func askCodex(m Machine, calls ...codexCall) (string, []json.RawMessage, error) {
+func askCodex(m sh.Machine, calls ...codexCall) (string, []json.RawMessage, error) {
 	cmd := m.Command(codexScript, "app", m.Codex())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -47,7 +49,7 @@ func askCodex(m Machine, calls ...codexCall) (string, []json.RawMessage, error) 
 		err = waitErr
 	}
 	if err != nil {
-		return "", nil, fmt.Errorf("asking Codex on %s: %w", m.Name(), &commandError{what: "codex app-server", stderr: strings.TrimSpace(stderr.String()), err: err})
+		return "", nil, fmt.Errorf("asking Codex on %s: %w", m.Name(), &sh.Error{What: "codex app-server", Stderr: strings.TrimSpace(stderr.String()), Err: err})
 	}
 	return home, answers, nil
 }
@@ -115,8 +117,8 @@ func (e *codexRefusal) Error() string {
 	return e.Method + ": " + e.Message
 }
 
-func openCodexSessions(m Machine) ([]codexThread, error) {
-	out, err := sh(m, codexScript, "opened")
+func openCodexSessions(m sh.Machine) ([]codexThread, error) {
+	out, err := sh.Run(m, codexScript, "opened")
 	if err != nil {
 		return nil, err
 	}

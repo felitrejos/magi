@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 const reachWait = 8 * time.Second
@@ -96,11 +98,11 @@ func surveyFleet(ctx context.Context, cfg Config, agents bool) fleetView {
 }
 
 func probeHere(ctx context.Context) *fleetMachine {
-	local, err := newLocal(ctx)
+	local, err := sh.NewLocal(ctx)
 	if err != nil {
 		return nil
 	}
-	out, err := sh(local, platformScript, local.Claude())
+	out, err := sh.Run(local, platformScript, local.Claude())
 	if err != nil {
 		return nil
 	}
@@ -116,7 +118,7 @@ func probePlatform(ctx context.Context, name string, h Host) (*fleetMachine, err
 	if err != nil {
 		return nil, err
 	}
-	out, err := sh(r, platformScript, r.Claude())
+	out, err := sh.Run(r, platformScript, r.Claude())
 	if err != nil {
 		return nil, err
 	}

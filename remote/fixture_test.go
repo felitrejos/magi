@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 const fakeSSH = `#!/bin/sh
@@ -120,7 +122,7 @@ func (f *fixture) read(dir, name string) string {
 	return string(data)
 }
 
-func (f *fixture) remoteHost() *Remote {
+func (f *fixture) remoteHost() *sh.Remote {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	f.t.Cleanup(cancel)
@@ -131,18 +133,18 @@ func (f *fixture) remoteHost() *Remote {
 	return r
 }
 
-func (f *fixture) machine() *Local {
+func (f *fixture) machine() *sh.Local {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	f.t.Cleanup(cancel)
-	l, err := newLocal(ctx)
+	l, err := sh.NewLocal(ctx)
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	return l
 }
 
-func (f *fixture) push(r *Remote, ws Workspace, where Placement) error {
+func (f *fixture) push(r *sh.Remote, ws Workspace, where Placement) error {
 	l := f.machine()
 	return syncProject(l, r, ws, where, nil, func() error { return pushGit(l, r, ws, where.Root) })
 }

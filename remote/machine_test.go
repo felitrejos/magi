@@ -4,11 +4,13 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func TestRemoteErrorsShowTheShellsMessageWithoutTheScript(t *testing.T) {
 	f := newFixture(t)
-	_, err := sh(f.remoteHost(), `cd -- "$1"`, "/nonexistent-folder")
+	_, err := sh.Run(f.remoteHost(), `cd -- "$1"`, "/nonexistent-folder")
 	if err == nil || strings.Contains(err.Error(), "set --") || len(err.Error()) > 200 || !strings.Contains(err.Error(), "/nonexistent-folder") {
 		t.Errorf("err = %q", err)
 	}
@@ -28,7 +30,7 @@ func TestRemoteScriptsReceiveEveryByteWhateverTheLoginShell(t *testing.T) {
 			}
 			f := newFixture(t)
 			t.Setenv("MAGI_TEST_LOGIN_SHELL", path)
-			out, err := sh(f.remoteHost(), `for a; do printf '%s\0' "$a"; done`, args...)
+			out, err := sh.Run(f.remoteHost(), `for a; do printf '%s\0' "$a"; done`, args...)
 			if err != nil {
 				t.Fatal(err)
 			}

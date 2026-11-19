@@ -2,24 +2,15 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 const keepCopies = 24 * time.Hour
-
-func newSessionID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
 
 func (t *Task) remoteHome() string {
 	return strings.TrimSuffix(t.Dir, "/.magi/tasks/"+t.ID)
@@ -39,7 +30,7 @@ func (t *Task) delegateCommand(host Host, setup string, resume bool) []string {
 	return append([]string{"sh", "-c", taskScript, "magi", "delegate", t.Dir, setup}, claude...)
 }
 
-func (t *Task) removeCopy(r *Remote) error {
+func (t *Task) removeCopy(r *sh.Remote) error {
 	slug := ""
 	if t.Kind == kindDelegate {
 		var err error
@@ -47,7 +38,7 @@ func (t *Task) removeCopy(r *Remote) error {
 			return err
 		}
 	}
-	if _, err := sh(r, taskScript, "remove", t.Dir, slug); err != nil {
+	if _, err := sh.Run(r, taskScript, "remove", t.Dir, slug); err != nil {
 		return fmt.Errorf("removing its copy at %s on %s failed: %w", t.Dir, t.Host, err)
 	}
 	return nil
@@ -142,10 +133,10 @@ func replyTask(ctx context.Context, id, message string) (*started, error) {
 	if err := checkRoom(r, host, t, "room"); err != nil {
 		return nil, err
 	}
-	if _, err := shIn(r, `cd -- "$1" && rm -f exit status pid log view && cat > prompt`, []byte(message), t.Dir); err != nil {
+	if _, err := sh.RunInput(r, `cd -- "$1" && rm -f exit status pid log view && cat > prompt`, []byte(message), t.Dir); err != nil {
 		return nil, err
 	}
-	launcher := Tmux{remote: r}
+	launcher := sh.Tmux{Machine: r}
 	tab, err := launcher.Start(t.Group, t.tabLabel(), t.RunDir, withParent(t.Parent, t.delegateCommand(host, "", true)), false)
 	if err != nil {
 		return nil, errors.Join(err, launcher.Discard(tab))

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 type Config struct {
@@ -49,6 +52,10 @@ func (h Host) program(codex bool) string {
 		return h.Codex
 	}
 	return h.Claude
+}
+
+func newRemote(ctx context.Context, h Host) (*sh.Remote, error) {
+	return sh.NewRemote(ctx, h.SSH, h.Claude, h.Codex)
 }
 
 func loadHost(name string) (Host, error) {
@@ -156,5 +163,5 @@ func writeConfig(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(path, b.Bytes())
+	return store.WriteAtomic(path, b.Bytes())
 }

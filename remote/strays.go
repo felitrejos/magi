@@ -10,20 +10,23 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 const strayCleanup = 20 * time.Second
 
 func saveStray(sessionID string, s Stray) error {
-	path, err := sessionPath("strays", sessionID, ".json")
+	path, err := store.SessionPath("strays", sessionID, ".json")
 	if err != nil {
 		return err
 	}
-	return writeJSON(path, s)
+	return store.WriteJSON(path, s)
 }
 
 func loadStrays() (map[string]Stray, error) {
-	dir, err := magiDir("strays")
+	dir, err := store.Dir("strays")
 	if err != nil {
 		return nil, err
 	}
@@ -60,10 +63,10 @@ func cleanStray(sessionID string, s Stray) error {
 	if err := stopSession(remote, sessionID, s.Codex); err != nil {
 		return err
 	}
-	if err := (Tmux{remote: remote}).Discard(s.Tab); err != nil && !tabGone(err) {
+	if err := (sh.Tmux{Machine: remote}).Discard(s.Tab); err != nil && !sh.TabGone(err) {
 		return err
 	}
-	path, err := sessionPath("strays", sessionID, ".json")
+	path, err := store.SessionPath("strays", sessionID, ".json")
 	if err != nil {
 		return err
 	}
@@ -71,7 +74,7 @@ func cleanStray(sessionID string, s Stray) error {
 }
 
 func cleanStrayFor(sessionID string) error {
-	path, err := sessionPath("strays", sessionID, ".json")
+	path, err := store.SessionPath("strays", sessionID, ".json")
 	if err != nil {
 		return err
 	}
@@ -100,10 +103,10 @@ func reportStrays(w io.Writer) error {
 	fmt.Fprintln(w, "\nCopies left running by a handoff that failed partway:")
 	for id, s := range strays {
 		if err := cleanStray(id, s); err != nil {
-			fmt.Fprintf(w, "  %s on %s is still there (%v); stop it there or run magi status again\n", shortID(id), s.Host, err)
+			fmt.Fprintf(w, "  %s on %s is still there (%v); stop it there or run magi status again\n", store.ShortID(id), s.Host, err)
 			continue
 		}
-		fmt.Fprintf(w, "  %s on %s, stopped now\n", shortID(id), s.Host)
+		fmt.Fprintf(w, "  %s on %s, stopped now\n", store.ShortID(id), s.Host)
 	}
 	return nil
 }

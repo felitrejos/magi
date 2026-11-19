@@ -11,12 +11,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
-func (f *fixture) claudeTabHere() (Tmux, Tab) {
+func (f *fixture) claudeTabHere() (sh.Tmux, sh.Tab) {
 	f.t.Helper()
 	f.isolatedTmux()
-	tm := Tmux{remote: f.machine()}
+	tm := sh.Tmux{Machine: f.machine()}
 	tab, err := tm.Start("acme", "api · claude", f.local, []string{"sleep", "60"}, false)
 	if err != nil {
 		f.t.Fatal(err)
@@ -89,7 +92,7 @@ func TestASessionThatMovedRefusesNewInput(t *testing.T) {
 	if err := promptHook(strings.NewReader(input), &out); err != nil || out.String() != "" {
 		t.Fatalf("before moving: %q, %v", out.String(), err)
 	}
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +122,7 @@ func TestACopyLeftByAFailedHandoffIsStoppedByStatus(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
-	if err := saveStray(id, Stray{Host: "server", Tab: Tab{Session: "gone", Window: "@999"}}); err != nil {
+	if err := saveStray(id, Stray{Host: "server", Tab: sh.Tab{Session: "gone", Window: "@999"}}); err != nil {
 		t.Fatal(err)
 	}
 	var out strings.Builder
@@ -167,7 +170,7 @@ func TestARecordedTmuxWindowIsOnlyClosedWhileItIsStillTheSameWindow(t *testing.T
 		t.Fatalf("tab = %+v, want its tag", tab)
 	}
 	stale := tab
-	stale.SessionCreated, stale.Tag = false, newSessionID()
+	stale.SessionCreated, stale.Tag = false, store.NewSessionID()
 	if err := tm.Discard(stale); err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +211,7 @@ func TestRetireClosesTheRecordedTabWhenItsSessionPaneClosesFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "0f0f0f0f-1111-2222-3333-999999999993"
-	if err := recordTab(tm.remote, id, tab); err != nil {
+	if err := recordTab(tm.Machine, id, tab); err != nil {
 		t.Fatal(err)
 	}
 	out, err := exec.Command("tmux", "display-message", "-p", "-t", tab.Pane, "#{pane_pid}").Output()
@@ -252,11 +255,11 @@ func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
 	fields := []string{strings.TrimSpace(string(out)), strconv.Itoa(original.Process.Pid)}
 	transcript := filepath.Join(f.home, "session.jsonl")
 	f.write(f.home, "session.jsonl", "{}\n")
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sh(local, retireScript, fields[1], transcript, "server", "0f0f0f0f-1111-2222-3333-555555555556", fields[0]); err != nil {
+	if _, err := sh.Run(local, retireScript, fields[1], transcript, "server", "0f0f0f0f-1111-2222-3333-555555555556", fields[0]); err != nil {
 		t.Fatal(err)
 	}
 	if panes, _ := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}").Output(); strings.Contains(string(panes), fields[0]) {
@@ -271,7 +274,7 @@ func TestAPullOpensATmuxWindow(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
 	f.tool("claude", fakeClaude+"exec sleep 60\n")
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +324,7 @@ func TestASessionStartedInATabCanFindMagiEvenWithABarePath(t *testing.T) {
 	if err := os.Chmod(filepath.Join(f.home, ".local", "bin", "magi"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(shellIn(f.local, "sh", "-c", "magi")[0], shellIn(f.local, "sh", "-c", "magi")[1:]...)
+	cmd := exec.Command(sh.InDir(f.local, "sh", "-c", "magi")[0], sh.InDir(f.local, "sh", "-c", "magi")[1:]...)
 	cmd.Env = []string{"HOME=" + f.home, "PATH=/usr/bin:/bin"}
 	out, err := cmd.CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != "found" {
@@ -341,7 +344,7 @@ func TestHandingBackFindsTheMachineTheUserMeant(t *testing.T) {
 func TestATmuxGroupNamedOutsideASCIIKeepsItsTabsInOneSession(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
-	tm := Tmux{remote: f.remoteHost()}
+	tm := sh.Tmux{Machine: f.remoteHost()}
 	first, err := tm.Start("grp·é", "api · claude", f.remote, []string{"sleep", "60"}, false)
 	if err != nil {
 		t.Fatal(err)

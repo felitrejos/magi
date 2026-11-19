@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func machineFor(name, os, arch string, cpu float64, tools ...string) fleetMachine {
@@ -115,11 +117,11 @@ func TestAMachineReportsItsLoadOverSSH(t *testing.T) {
 		t.Errorf("a machine with no load lines counts as measured: %+v", partial)
 	}
 	newFixture(t)
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := sh(local, platformScript, local.Claude())
+	out, err := sh.Run(local, platformScript, local.Claude())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +149,7 @@ func TestAMacsAvailableMemoryIsItsFreeCachedAndPurgeablePages(t *testing.T) {
 	f.tool("uname", "#!/bin/sh\ncase $1 in -s) echo Darwin ;; -m) echo arm64 ;; esac\n")
 	f.tool("sw_vers", "#!/bin/sh\necho 27.2\n")
 	f.tool("sysctl", macSysctl)
-	out, err := sh(f.machine(), platformScript, "claude")
+	out, err := sh.Run(f.machine(), platformScript, "claude")
 	if err != nil {
 		t.Fatal(err)
 	}

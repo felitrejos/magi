@@ -13,6 +13,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 const (
@@ -76,7 +79,7 @@ func moveCommand(args []string, out io.Writer) error {
 }
 
 func (m mover) run() error {
-	if !sessionIDPattern.MatchString(m.session) {
+	if !store.SessionIDPattern.MatchString(m.session) {
 		return m.fail(fmt.Errorf("%q is not a session id", m.session))
 	}
 	host, err := loadHost(m.host)
@@ -93,7 +96,7 @@ func (m mover) run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	local, err := newLocal(ctx)
+	local, err := sh.NewLocal(ctx)
 	if err != nil {
 		return m.fail(err)
 	}
@@ -106,8 +109,8 @@ func (m mover) run() error {
 	}
 	stopped := false
 	if s.Live != nil {
-		_, err := sh(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since(), local.Claude())
-		if exitCode(err) == exitBusy {
+		_, err := sh.Run(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since(), local.Claude())
+		if sh.ExitCode(err) == sh.ExitBusy {
 			unlock()
 			return m.whenTurnEnds(s)
 		}
@@ -119,9 +122,9 @@ func (m mover) run() error {
 	return m.now(local, host, s, stopped)
 }
 
-func (m mover) codex(local *Local, host Host, s remoteSession) error {
+func (m mover) codex(local *sh.Local, host Host, s remoteSession) error {
 	if host.Codex == "" {
-		return m.fail(fmt.Errorf("session %s is a Codex session; set codex to the path of codex on %s under [hosts.%s] in magi's config to move it there", shortID(s.ID), m.host, tomlKey(m.host)))
+		return m.fail(fmt.Errorf("session %s is a Codex session; set codex to the path of codex on %s under [hosts.%s] in magi's config to move it there", store.ShortID(s.ID), m.host, tomlKey(m.host)))
 	}
 	if err := s.refuseUnsure(local); err != nil {
 		return m.fail(err)
@@ -139,20 +142,20 @@ func (m mover) codex(local *Local, host Host, s remoteSession) error {
 	if len(s.Running) == 0 {
 		return m.now(local, host, s, false)
 	}
-	local = local.With(context.Background()).(*Local)
+	local = local.With(context.Background()).(*sh.Local)
 	interrupted := make(chan os.Signal, 1)
 	signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(interrupted)
 	for told := false; ; told = true {
 		err := stopCodex(local, s)
-		if exitCode(err) != exitBusy {
+		if sh.ExitCode(err) != sh.ExitBusy {
 			if err != nil {
 				return m.fail(err)
 			}
 			return m.now(local, host, s, true)
 		}
 		if !told {
-			m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", shortID(s.ID), m.host)})
+			m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", store.ShortID(s.ID), m.host)})
 		}
 		if !slices.ContainsFunc(s.Running, func(pid int) bool { return syscall.Kill(pid, 0) == nil }) {
 			return m.fail(errors.New("the session ended before its turn did, so it didn't move"))
@@ -166,28 +169,28 @@ func (m mover) codex(local *Local, host Host, s remoteSession) error {
 }
 
 func lockMove(sessionID string) (func(), error) {
-	path, err := sessionPath("armed", sessionID, ".lock")
+	path, err := store.SessionPath("armed", sessionID, ".lock")
 	if err != nil {
 		return nil, err
 	}
-	return lockFile(path, fmt.Errorf("session %s is already being moved", shortID(sessionID)))
+	return store.Lock(path, fmt.Errorf("session %s is already being moved", store.ShortID(sessionID)))
 }
 
-func findLocalSession(local *Local, id string) (remoteSession, error) {
+func findLocalSession(local *sh.Local, id string) (remoteSession, error) {
 	s, err := findSession(local, id)
 	if !errors.Is(err, errNoSession) {
 		return s, err
 	}
 	if live, _ := liveSessions(local); slices.ContainsFunc(live, func(l liveSession) bool { return l.SessionID == id }) {
-		return s, fmt.Errorf("session %s hasn't started a conversation yet, so there's nothing to move", shortID(id))
+		return s, fmt.Errorf("session %s hasn't started a conversation yet, so there's nothing to move", store.ShortID(id))
 	}
 	return s, fmt.Errorf("no Claude Code or Codex session %s on %s", id, local.Name())
 }
 
-func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error {
-	m.report(moveReport{Event: "moving", OK: true, Message: fmt.Sprintf("Moving session %s to %s...", shortID(s.ID), m.host)})
+func (m mover) now(local *sh.Local, host Host, s remoteSession, stopped bool) error {
+	m.report(moveReport{Event: "moving", OK: true, Message: fmt.Sprintf("Moving session %s to %s...", store.ShortID(s.ID), m.host)})
 	progress := func(step string) {
-		m.report(moveReport{Event: "step", OK: true, Step: step, Message: fmt.Sprintf("Moving session %s to %s: %s", shortID(s.ID), m.host, step)})
+		m.report(moveReport{Event: "step", OK: true, Step: step, Message: fmt.Sprintf("Moving session %s to %s: %s", store.ShortID(s.ID), m.host, step)})
 	}
 	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Codex: s.Codex, Rollout: s.Rollout}.Run(context.Background())
 	if res.Stray != nil {
@@ -203,7 +206,7 @@ func (m mover) now(local *Local, host Host, s remoteSession, stopped bool) error
 	defer cancel()
 	here := local.With(finish)
 	res.note(markMoved(here, s.ID, m.host))
-	if _, err := sh(here, retireScript, "", s.Transcript, m.host, s.ID, ""); err != nil && !tabGone(err) {
+	if _, err := sh.Run(here, retireScript, "", s.Transcript, m.host, s.ID, ""); err != nil && !sh.TabGone(err) {
 		res.note(fmt.Errorf("retiring the session here failed: %w", err))
 	}
 	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir}))
@@ -216,7 +219,7 @@ func movedReport(sessionID, host string, res Result) moveReport {
 	if len(res.ShownOn) > 0 {
 		where = "open in " + strings.Join(res.ShownOn, ", ")
 	}
-	msg := fmt.Sprintf("Moved session %s to %s in %s. It's %s", shortID(sessionID), host, res.Summary(), where)
+	msg := fmt.Sprintf("Moved session %s to %s in %s. It's %s", store.ShortID(sessionID), host, res.Summary(), where)
 	if res.NewFolder != "" {
 		msg += fmt.Sprintf(". %s didn't have the project yet, so it now lives at %s", host, res.NewFolder)
 	}
@@ -230,11 +233,11 @@ func movedReport(sessionID, host string, res Result) moveReport {
 }
 
 func (m mover) whenTurnEnds(s remoteSession) error {
-	path, err := sessionPath("armed", s.ID, ".json")
+	path, err := store.SessionPath("armed", s.ID, ".json")
 	if err != nil {
 		return m.fail(err)
 	}
-	result, err := sessionPath("armed", s.ID, ".result.json")
+	result, err := store.SessionPath("armed", s.ID, ".result.json")
 	if err != nil {
 		return m.fail(err)
 	}
@@ -254,12 +257,12 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 	if err != nil {
 		return disarm(fmt.Errorf("arming the session failed: %w", err))
 	}
-	m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", shortID(s.ID), m.host)})
+	m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", store.ShortID(s.ID), m.host)})
 
 	interrupted := make(chan os.Signal, 1)
 	signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(interrupted)
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return disarm(err)
 	}
@@ -330,9 +333,9 @@ func exists(path string) (bool, error) {
 }
 
 func writeMoveResult(sessionID string, r moveReport) error {
-	path, err := sessionPath("armed", sessionID, ".result.json")
+	path, err := store.SessionPath("armed", sessionID, ".result.json")
 	if err != nil {
 		return err
 	}
-	return writeJSON(path, r)
+	return store.WriteJSON(path, r)
 }

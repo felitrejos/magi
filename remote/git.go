@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
@@ -43,20 +45,20 @@ const (
 	outPrefix   = "refs/magi/out/"
 )
 
-func readWorkspace(m Machine, cwd string, secretPatterns, exclude []string) (Workspace, error) {
+func readWorkspace(m sh.Machine, cwd string, secretPatterns, exclude []string) (Workspace, error) {
 	return inspect(m, cwd, secretPatterns, exclude, true)
 }
 
-func inspect(m Machine, cwd string, secretPatterns, exclude []string, outermost bool) (Workspace, error) {
+func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermost bool) (Workspace, error) {
 	climb := "0"
 	if outermost {
 		climb = "1"
 	}
-	out, err := sh(m, inspectScript, cwd, climb)
-	switch exitCode(err) {
-	case exitConflicts:
+	out, err := sh.Run(m, inspectScript, cwd, climb)
+	switch sh.ExitCode(err) {
+	case sh.ExitConflicts:
 		return Workspace{}, errors.New("the repository has unresolved merge conflicts; resolve them before handing off")
-	case exitInProgress:
+	case sh.ExitInProgress:
 		return Workspace{}, errors.New("a merge, rebase or cherry-pick is in progress; finish or abort it before handing off")
 	}
 	if err != nil {
@@ -150,12 +152,12 @@ func inspect(m Machine, cwd string, secretPatterns, exclude []string, outermost 
 	return ws, nil
 }
 
-func gitlinks(m Machine, repo string) ([]string, error) {
-	out, err := sh(m, gitlinksScript, repo)
+func gitlinks(m sh.Machine, repo string) ([]string, error) {
+	out, err := sh.Run(m, gitlinksScript, repo)
 	return splitNull(out), err
 }
 
-func findSecrets(m Machine, root string, patterns, exclude, submodules []string) ([]string, error) {
+func findSecrets(m sh.Machine, root string, patterns, exclude, submodules []string) ([]string, error) {
 	if len(patterns) == 0 {
 		return nil, nil
 	}
@@ -178,7 +180,7 @@ func findSecrets(m Machine, root string, patterns, exclude, submodules []string)
 		}
 	}
 	args = append(args, ")", "-print0")
-	out, err := sh(m, secretsScript, args...)
+	out, err := sh.Run(m, secretsScript, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,8 +195,8 @@ func baseName(path string) string {
 	return path[strings.LastIndex(path, "/")+1:]
 }
 
-func park(m Machine, repo string, ws Workspace) error {
-	if _, err := sh(m, `cd -- "$1" && git update-ref "$2" "$3"`, repo, parkedRef, ws.Git.Worktree); err != nil {
+func park(m sh.Machine, repo string, ws Workspace) error {
+	if _, err := sh.Run(m, `cd -- "$1" && git update-ref "$2" "$3"`, repo, parkedRef, ws.Git.Worktree); err != nil {
 		return err
 	}
 	for _, sub := range ws.Submodules {
@@ -205,8 +207,8 @@ func park(m Machine, repo string, ws Workspace) error {
 	return nil
 }
 
-func checkoutAccepts(m Machine, repo string, ws Workspace) error {
-	if _, err := sh(m, checkoutScript, "check", repo, "", ws.Git.Worktree, "", ""); err != nil {
+func checkoutAccepts(m sh.Machine, repo string, ws Workspace) error {
+	if _, err := sh.Run(m, checkoutScript, "check", repo, "", ws.Git.Worktree, "", ""); err != nil {
 		return err
 	}
 	for _, sub := range ws.Submodules {
@@ -225,25 +227,25 @@ func snapshotRefspecs(g GitState, from func(name, value string) string) []string
 	return specs
 }
 
-func ensureSubmodule(m Machine, repo string, sub Workspace) error {
-	out, err := sh(m, submoduleScript, repo, sub.Subpath, sub.Git.Origin)
+func ensureSubmodule(m sh.Machine, repo string, sub Workspace) error {
+	out, err := sh.Run(m, submoduleScript, repo, sub.Subpath, sub.Git.Origin)
 	if err != nil || len(out) == 0 {
 		return err
 	}
 	for _, entry := range splitNull(out) {
 		if _, path, _ := strings.Cut(entry, "\n"); path == sub.Subpath {
-			_, err := sh(m, `cd -- "$1" && git submodule init --quiet -- "$2"`, repo, sub.Subpath)
+			_, err := sh.Run(m, `cd -- "$1" && git submodule init --quiet -- "$2"`, repo, sub.Subpath)
 			return err
 		}
 	}
 	return nil
 }
 
-func seedLFS(from, to Machine, ws Workspace, repo string) error {
+func seedLFS(from, to sh.Machine, ws Workspace, repo string) error {
 	if len(ws.LFSObjects) == 0 {
 		return nil
 	}
-	out, err := shIn(to, lfsScript, []byte(strings.Join(ws.LFSObjects, "\x00")+"\x00"), "missing", repo)
+	out, err := sh.RunInput(to, lfsScript, []byte(strings.Join(ws.LFSObjects, "\x00")+"\x00"), "missing", repo)
 	if err != nil {
 		return err
 	}
@@ -252,16 +254,16 @@ func seedLFS(from, to Machine, ws Workspace, repo string) error {
 		return nil
 	}
 	missing := answer[1:]
-	if err := transfer(from, ws.LFSStore, Archive{Paths: missing}, to, answer[0]); err != nil {
+	if err := sh.Transfer(from, ws.LFSStore, sh.Archive{Paths: missing}, to, answer[0]); err != nil {
 		return err
 	}
-	_, err = shIn(to, lfsScript, []byte(strings.Join(missing, "\x00")+"\x00"), "verify", answer[0])
+	_, err = sh.RunInput(to, lfsScript, []byte(strings.Join(missing, "\x00")+"\x00"), "verify", answer[0])
 	return err
 }
 
 type sendObjects func(ws Workspace, repo string) error
 
-func syncGit(from, to Machine, ws Workspace, repo, mode string, send sendObjects) error {
+func syncGit(from, to sh.Machine, ws Workspace, repo, mode string, send sendObjects) error {
 	if err := send(ws, repo); err != nil {
 		return errors.Join(err, dropRefs(to, repo))
 	}
@@ -269,7 +271,7 @@ func syncGit(from, to Machine, ws Workspace, repo, mode string, send sendObjects
 		return errors.Join(err, dropRefs(to, repo))
 	}
 	g := ws.Git
-	if _, err := sh(to, checkoutScript, mode, repo, g.Head, g.Worktree, g.Index, g.Branch); err != nil {
+	if _, err := sh.Run(to, checkoutScript, mode, repo, g.Head, g.Worktree, g.Index, g.Branch); err != nil {
 		return errors.Join(err, dropRefs(to, repo))
 	}
 	if err := finishGit(from, to, ws, repo, mode, send); err != nil {
@@ -278,16 +280,16 @@ func syncGit(from, to Machine, ws Workspace, repo, mode string, send sendObjects
 	return nil
 }
 
-func finishGit(from, to Machine, ws Workspace, repo, mode string, send sendObjects) error {
+func finishGit(from, to sh.Machine, ws Workspace, repo, mode string, send sendObjects) error {
 	if ws.LFSStore != "" && ws.Git.Head != "" {
-		if _, err := sh(to, `cd -- "$1" && if git lfs version >/dev/null 2>&1 && git config --get filter.lfs.clean >/dev/null; then git lfs checkout >&2; fi`, repo); err != nil {
+		if _, err := sh.Run(to, `cd -- "$1" && if git lfs version >/dev/null 2>&1 && git config --get filter.lfs.clean >/dev/null; then git lfs checkout >&2; fi`, repo); err != nil {
 			return err
 		}
 	}
-	if err := transfer(from, ws.Root, Archive{Paths: ws.Secrets, Follow: true}, to, repo); err != nil {
+	if err := sh.Transfer(from, ws.Root, sh.Archive{Paths: ws.Secrets, Follow: true}, to, repo); err != nil {
 		return err
 	}
-	if err := transfer(from, ws.Root, Archive{Paths: ws.LFS}, to, repo); err != nil {
+	if err := sh.Transfer(from, ws.Root, sh.Archive{Paths: ws.LFS}, to, repo); err != nil {
 		return err
 	}
 	for _, sub := range ws.Submodules {
@@ -301,45 +303,45 @@ func finishGit(from, to Machine, ws Workspace, repo, mode string, send sendObjec
 	return nil
 }
 
-func pushGit(local *Local, remote *Remote, ws Workspace, remoteRepo string) error {
+func pushGit(local *sh.Local, remote *sh.Remote, ws Workspace, remoteRepo string) error {
 	return sendGit(local, remote, ws, remoteRepo, "apply")
 }
 
-func sendGit(local *Local, remote *Remote, ws Workspace, remoteRepo, mode string) error {
+func sendGit(local *sh.Local, remote *sh.Remote, ws Workspace, remoteRepo, mode string) error {
 	return syncGit(local, remote, ws, remoteRepo, mode, func(ws Workspace, repo string) error {
 		refspecs := snapshotRefspecs(*ws.Git, func(ref, id string) string { return id + ":" + ref })
-		_, err := sh(local, `dir=$1 to=$3; export GIT_SSH_COMMAND="$2"; shift 3; cd -- "$dir" || exit
+		_, err := sh.Run(local, `dir=$1 to=$3; export GIT_SSH_COMMAND="$2"; shift 3; cd -- "$dir" || exit
 if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git push --quiet --force --no-verify --receive-pack='git -c receive.shallowUpdate=true receive-pack' "$to" "$1" || exit; fi
 git push --quiet --force --no-verify "$to" "$@"`,
-			append([]string{ws.Root, remote.sshCommand(), remote.host + ":" + repo}, refspecs...)...)
+			append([]string{ws.Root, remote.SSHCommand(), remote.Name() + ":" + repo}, refspecs...)...)
 		return err
 	})
 }
 
-func pullGit(remote *Remote, local *Local, ws Workspace, localRepo string) error {
+func pullGit(remote *sh.Remote, local *sh.Local, ws Workspace, localRepo string) error {
 	return syncGit(remote, local, ws, localRepo, "apply", func(ws Workspace, repo string) error {
 		mark := []string{ws.Root}
 		for _, spec := range snapshotRefspecs(*ws.Git, func(ref, id string) string { return outPrefix + baseName(ref) + " " + id }) {
 			name, id, _ := strings.Cut(spec, " ")
 			mark = append(mark, name, id)
 		}
-		if _, err := sh(remote, `cd -- "$1" && shift && while [ $# -gt 0 ]; do git update-ref "$1" "$2" || exit; shift 2; done`, mark...); err != nil {
+		if _, err := sh.Run(remote, `cd -- "$1" && shift && while [ $# -gt 0 ]; do git update-ref "$1" "$2" || exit; shift 2; done`, mark...); err != nil {
 			return err
 		}
 		refspecs := snapshotRefspecs(*ws.Git, func(ref, _ string) string { return "+" + outPrefix + baseName(ref) + ":" + ref })
-		_, fetchErr := sh(local, `dir=$1 ssh=$2; shift 2; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git fetch --quiet --atomic --update-shallow --no-tags "$@"`,
-			append([]string{repo, remote.sshCommand(), remote.host + ":" + ws.Root}, refspecs...)...)
+		_, fetchErr := sh.Run(local, `dir=$1 ssh=$2; shift 2; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git fetch --quiet --atomic --update-shallow --no-tags "$@"`,
+			append([]string{repo, remote.SSHCommand(), remote.Name() + ":" + ws.Root}, refspecs...)...)
 		cleanErr := deleteRefs(remote, ws.Root, outPrefix+"handoff", outPrefix+"worktree", outPrefix+"index")
 		return errors.Join(fetchErr, cleanErr)
 	})
 }
 
-func dropRefs(m Machine, repo string) error {
+func dropRefs(m sh.Machine, repo string) error {
 	return deleteRefs(m, repo, handoffRef, worktreeRef, indexRef)
 }
 
-func deleteRefs(m Machine, repo string, refs ...string) error {
-	_, err := sh(m, `cd -- "$1" && shift && for r; do git update-ref -d "$r"; done`, append([]string{repo}, refs...)...)
+func deleteRefs(m sh.Machine, repo string, refs ...string) error {
+	_, err := sh.Run(m, `cd -- "$1" && shift && for r; do git update-ref -d "$r"; done`, append([]string{repo}, refs...)...)
 	return err
 }
 
@@ -347,7 +349,7 @@ func sshStyle(raw string) bool {
 	return strings.HasPrefix(raw, "ssh://") || !strings.Contains(raw, "://") && strings.Contains(raw, ":")
 }
 
-func resolveAliases(m Machine, origins []string) (map[string]string, error) {
+func resolveAliases(m sh.Machine, origins []string) (map[string]string, error) {
 	var hosts []string
 	seen := map[string]bool{}
 	for _, o := range origins {
@@ -361,7 +363,7 @@ func resolveAliases(m Machine, origins []string) (map[string]string, error) {
 	if len(hosts) == 0 {
 		return aliases, nil
 	}
-	out, err := sh(m, hostsScript, hosts...)
+	out, err := sh.Run(m, hostsScript, hosts...)
 	if err != nil {
 		return nil, err
 	}

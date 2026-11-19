@@ -6,13 +6,16 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 const maxDiff = 60_000
 
 type machineSessions struct {
 	Name     string
-	Machine  Machine
+	Machine  sh.Machine
 	Sessions []liveSession
 	Codex    []codexThread
 	Err      error
@@ -20,7 +23,7 @@ type machineSessions struct {
 }
 
 func everySession(ctx context.Context) ([]machineSessions, error) {
-	local, err := newLocal(ctx)
+	local, err := sh.NewLocal(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +74,7 @@ func describeSessions(all []machineSessions) string {
 			if s.WaitingFor != "" {
 				state += " (" + s.WaitingFor + ")"
 			}
-			line := fmt.Sprintf("  %s  %s  %s  %s", shortID(s.SessionID), sessionTitle(s), state, s.Cwd)
+			line := fmt.Sprintf("  %s  %s  %s  %s", store.ShortID(s.SessionID), sessionTitle(s), state, s.Cwd)
 			if s.BridgeSessionID != nil && *s.BridgeSessionID != "" {
 				line += "  https://claude.ai/code/" + *s.BridgeSessionID
 			}
@@ -82,7 +85,7 @@ func describeSessions(all []machineSessions) string {
 			if title == "" {
 				title = baseName(t.Cwd)
 			}
-			fmt.Fprintf(&b, "  %s  %s  codex  %s\n", shortID(t.ID), title, t.Cwd)
+			fmt.Fprintf(&b, "  %s  %s  codex  %s\n", store.ShortID(t.ID), title, t.Cwd)
 		}
 		if m.CodexErr != nil {
 			fmt.Fprintf(&b, "  couldn't read its Codex sessions (%v)\n", m.CodexErr)
@@ -105,7 +108,7 @@ func findAnySession(all []machineSessions, query string) (machineSessions, liveS
 	for _, m := range all {
 		for _, s := range m.Sessions {
 			if strings.HasPrefix(s.SessionID, query) || len(query) >= 4 && strings.Contains(strings.ToLower(sessionTitle(s)), strings.ToLower(query)) {
-				matches = append(matches, fmt.Sprintf("%s %s on %s", shortID(s.SessionID), sessionTitle(s), m.Name))
+				matches = append(matches, fmt.Sprintf("%s %s on %s", store.ShortID(s.SessionID), sessionTitle(s), m.Name))
 				foundOn, found = m, s
 			}
 		}
@@ -120,8 +123,8 @@ func findAnySession(all []machineSessions, query string) (machineSessions, liveS
 	return foundOn, found, fmt.Errorf("%q matches more than one session: %s", query, strings.Join(matches, ", "))
 }
 
-func sessionDiff(m Machine, s liveSession) (string, error) {
-	out, err := sh(m, sessionScript, "diff", s.Cwd)
+func sessionDiff(m sh.Machine, s liveSession) (string, error) {
+	out, err := sh.Run(m, sessionScript, "diff", s.Cwd)
 	if err != nil {
 		return "", err
 	}

@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 func TestOnlyTestedVersionsAreAccepted(t *testing.T) {
@@ -61,7 +63,7 @@ func TestTheTestedListIsFetchedAtMostHourlyAndTheBuiltInOneServesOffline(t *test
 	if calls.Load() != 1 {
 		t.Errorf("fetched %d times within the hour, want once", calls.Load())
 	}
-	path, _ := magiDir("tested.json")
+	path, _ := store.Dir("tested.json")
 	old := time.Now().Add(-2 * testedFresh)
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)

@@ -5,6 +5,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func pruneArgs(exclude []string) []string {
@@ -21,11 +23,11 @@ func pruneArgs(exclude []string) []string {
 	return append(args, ")", "-prune", "-o")
 }
 
-func folder(m Machine, command, dir string, args ...string) ([]byte, error) {
-	return sh(m, folderScript, append([]string{command, dir}, args...)...)
+func folder(m sh.Machine, command, dir string, args ...string) ([]byte, error) {
+	return sh.Run(m, folderScript, append([]string{command, dir}, args...)...)
 }
 
-func listFolder(m Machine, dir string, exclude []string) ([]string, error) {
+func listFolder(m sh.Machine, dir string, exclude []string) ([]string, error) {
 	out, err := folder(m, "list", dir, pruneArgs(exclude)...)
 	if err != nil {
 		return nil, err
@@ -61,8 +63,8 @@ func underAny(p string, dirs map[string]bool) bool {
 	return false
 }
 
-func mirrorFolder(from Machine, fromDir string, to Machine, toDir string, exclude []string) error {
-	if err := transfer(from, fromDir, Archive{Paths: []string{"."}, Exclude: exclude}, to, toDir); err != nil {
+func mirrorFolder(from sh.Machine, fromDir string, to sh.Machine, toDir string, exclude []string) error {
+	if err := sh.Transfer(from, fromDir, sh.Archive{Paths: []string{"."}, Exclude: exclude}, to, toDir); err != nil {
 		return err
 	}
 	keep, err := listFolder(from, fromDir, exclude)
@@ -77,11 +79,11 @@ func mirrorFolder(from Machine, fromDir string, to Machine, toDir string, exclud
 	if len(remove) == 0 {
 		return nil
 	}
-	_, err = shIn(to, folderScript, []byte(strings.Join(remove, "\x00")+"\x00"), "remove", toDir)
+	_, err = sh.RunInput(to, folderScript, []byte(strings.Join(remove, "\x00")+"\x00"), "remove", toDir)
 	return err
 }
 
-func fingerprint(m Machine, dir string, exclude []string) (string, error) {
+func fingerprint(m sh.Machine, dir string, exclude []string) (string, error) {
 	out, err := folder(m, "fingerprint", dir, pruneArgs(exclude)...)
 	return strings.TrimSpace(string(out)), err
 }
@@ -93,7 +95,7 @@ type Folder struct {
 	RootCommit string
 }
 
-func folderState(m Machine, dir string) (Folder, error) {
+func folderState(m sh.Machine, dir string) (Folder, error) {
 	out, err := folder(m, "state", dir)
 	if err != nil {
 		return Folder{}, err
@@ -109,7 +111,7 @@ func folderState(m Machine, dir string) (Folder, error) {
 	return f, nil
 }
 
-func registerFolder(m Machine, dir string, exclude []string) error {
+func registerFolder(m sh.Machine, dir string, exclude []string) error {
 	recorded, err := fingerprint(m, dir, exclude)
 	if err != nil {
 		return err
@@ -118,7 +120,7 @@ func registerFolder(m Machine, dir string, exclude []string) error {
 	return err
 }
 
-func folderUnchanged(m Machine, dir, recorded string, exclude []string) error {
+func folderUnchanged(m sh.Machine, dir, recorded string, exclude []string) error {
 	now, err := fingerprint(m, dir, exclude)
 	if err != nil {
 		return err

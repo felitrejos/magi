@@ -13,6 +13,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 var tryProject = regexp.MustCompile(`^magi-try-[0-9a-f]{8}$`)
@@ -73,7 +76,7 @@ func tryRoundTrip(cfg Config, name string, out io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return err
 	}
@@ -81,13 +84,13 @@ func tryRoundTrip(cfg Config, name string, out io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
-	project := "magi-try-" + newTaskID()
+	project := "magi-try-" + store.NewTaskID()
 	dir := filepath.Join(expandHome(cfg.LocalRoots[0], home), project)
 	word := tryWords[rand.IntN(len(tryWords))]
 	fmt.Fprintf(out, "\nTrying a round trip to %s with a throwaway session in %s. It takes three short Claude turns on your account.\n\n", name, dir)
 	var id string
 	defer func() { err = errors.Join(err, tryCleanup(local, cfg.LocalRoots, host, project, id)) }()
-	if _, err := sh(local, tryScript, "setup", dir); err != nil {
+	if _, err := sh.Run(local, tryScript, "setup", dir); err != nil {
 		return fmt.Errorf("creating the test project failed: %w", err)
 	}
 	started, err := tryClaude(dir, "Remember the word "+word+". Reply with just: ok")
@@ -129,7 +132,7 @@ func tryClaude(dir string, args ...string) (claudeReply, error) {
 	return reply, err
 }
 
-func tryCleanup(local *Local, localRoots []string, host Host, project, sessionID string) error {
+func tryCleanup(local *sh.Local, localRoots []string, host Host, project, sessionID string) error {
 	if !tryProject.MatchString(project) {
 		return fmt.Errorf("refusing to remove %q, which isn't a magi try project", project)
 	}
@@ -142,10 +145,10 @@ func tryCleanup(local *Local, localRoots []string, host Host, project, sessionID
 		if sessionID != "" {
 			errs = append(errs, closeRecordedTab(remote, sessionID))
 		}
-		_, err := sh(remote, tryScript, append([]string{"cleanup", project, sessionID}, host.Roots...)...)
+		_, err := sh.Run(remote, tryScript, append([]string{"cleanup", project, sessionID}, host.Roots...)...)
 		errs = append(errs, err)
 	}
-	_, err := sh(local, tryScript, append([]string{"cleanup", project, sessionID}, localRoots...)...)
+	_, err := sh.Run(local, tryScript, append([]string{"cleanup", project, sessionID}, localRoots...)...)
 	if err := errors.Join(append(errs, err)...); err != nil {
 		return fmt.Errorf("removing the test project %s failed: %w", project, err)
 	}

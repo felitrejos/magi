@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +11,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 const (
@@ -44,7 +45,7 @@ type Task struct {
 	Checkout string    `json:"checkout"`
 	RunDir   string    `json:"run_dir"`
 	Where    string    `json:"where"`
-	Tab      Tab       `json:"tab"`
+	Tab      sh.Tab    `json:"tab"`
 	Label    string    `json:"tab_label,omitempty"`
 	Parent   string    `json:"parent_session,omitempty"`
 	Outcome  *Outcome  `json:"outcome,omitempty"`
@@ -88,16 +89,8 @@ type TaskSpec struct {
 	Caller  int
 }
 
-func newTaskID() string {
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(b)
-}
-
 func (t *Task) save() error {
-	dir, err := magiDir("tasks")
+	dir, err := store.Dir("tasks")
 	if err != nil {
 		return err
 	}
@@ -105,14 +98,14 @@ func (t *Task) save() error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(dir, t.ID+".json"), data)
+	return store.WriteAtomic(filepath.Join(dir, t.ID+".json"), data)
 }
 
 func loadTask(id string) (*Task, error) {
 	if !taskIDPattern.MatchString(id) {
 		return nil, fmt.Errorf("%q isn't a task id; task ids are 8 hex characters", id)
 	}
-	dir, err := magiDir("tasks")
+	dir, err := store.Dir("tasks")
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +124,7 @@ func loadTask(id string) (*Task, error) {
 }
 
 func listTasks() ([]*Task, error) {
-	dir, err := magiDir("tasks")
+	dir, err := store.Dir("tasks")
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +167,7 @@ func (t *Task) branch() string {
 }
 
 func (t *Task) forget() error {
-	dir, err := magiDir("tasks")
+	dir, err := store.Dir("tasks")
 	if err != nil {
 		return err
 	}
@@ -197,7 +190,7 @@ type taskState struct {
 	Tail  string
 }
 
-func (t *Task) remote(ctx context.Context) (*Remote, Host, error) {
+func (t *Task) remote(ctx context.Context) (*sh.Remote, Host, error) {
 	host, err := loadHost(t.Host)
 	if err != nil {
 		return nil, host, err
@@ -232,9 +225,9 @@ func (t *Task) noteState(state string) error {
 var errTaskBusy = errors.New("being collected by another magi right now; try again in a moment")
 
 func lockTask(id string) (func(), error) {
-	dir, err := magiDir("tasks")
+	dir, err := store.Dir("tasks")
 	if err != nil {
 		return nil, err
 	}
-	return lockFile(filepath.Join(dir, id+".lock"), fmt.Errorf("task %s is %w", id, errTaskBusy))
+	return store.Lock(filepath.Join(dir, id+".lock"), fmt.Errorf("task %s is %w", id, errTaskBusy))
 }

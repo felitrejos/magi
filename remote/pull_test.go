@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 func TestPullBringsTheSessionAndItsWorkBackFromTheServer(t *testing.T) {
@@ -125,8 +127,8 @@ func TestWatchTakesBackASessionTheServerAsksItTo(t *testing.T) {
 	var logged strings.Builder
 	go followRequests(ctx, "server", host, me, log.New(&logged, "", 0))
 	t.Cleanup(func() { t.Log(logged.String()) })
-	wantedFile, _ := sessionPath("wanted", id, ".json")
-	staleFile, _ := sessionPath("wanted", stale, ".json")
+	wantedFile, _ := store.SessionPath("wanted", id, ".json")
+	staleFile, _ := store.SessionPath("wanted", stale, ".json")
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
 		if _, err := os.Stat(wantedFile); os.IsNotExist(err) {
 			break

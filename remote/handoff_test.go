@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func TestAHandoffWorksWhenTheServersLoginShellIsTcsh(t *testing.T) {
@@ -32,7 +34,7 @@ func TestAHandoffWorksWhenTheServersLoginShellIsTcsh(t *testing.T) {
 func TestTmuxLauncherOpensItsOwnWindowAndCleansUp(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
-	tm := Tmux{remote: f.remoteHost()}
+	tm := sh.Tmux{Machine: f.remoteHost()}
 
 	first, err := tm.Start("my.group", "api · claude", f.remote, []string{"sleep", "60"}, true)
 	if err != nil {

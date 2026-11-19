@@ -11,10 +11,13 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
-func probeTask(r *Remote, t *Task) (taskState, error) {
-	out, err := sh(r, taskScript, "status", t.Dir, fmt.Sprint(tailBytes))
+func probeTask(r *sh.Remote, t *Task) (taskState, error) {
+	out, err := sh.Run(r, taskScript, "status", t.Dir, fmt.Sprint(tailBytes))
 	if err != nil {
 		return taskState{}, err
 	}
@@ -112,7 +115,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	}
 	cancelled := false
 	if cancelIt && st.State == "running" {
-		if _, err := sh(r, taskScript, "cancel", t.Dir); err != nil {
+		if _, err := sh.Run(r, taskScript, "cancel", t.Dir); err != nil {
 			return nil, err
 		}
 		for i := 0; i < 40 && st.State == "running"; i++ {
@@ -129,7 +132,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	if st.State == "running" {
 		return &taskReport{Task: t, State: st}, nil
 	}
-	local, err := newLocal(ctx)
+	local, err := sh.NewLocal(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +157,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 		}
 	}
 	var notes []error
-	if err := (Tmux{remote: r}).Discard(t.Tab); err != nil && !tabGone(err) {
+	if err := (sh.Tmux{Machine: r}).Discard(t.Tab); err != nil && !sh.TabGone(err) {
 		notes = append(notes, fmt.Errorf("closing its tab on %s failed: %w", t.Host, err))
 	}
 	if !o.Kept {
@@ -172,8 +175,8 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	return &taskReport{Task: t, State: taskState{State: "collected", Exit: o.Exit, Tail: o.Tail}}, nil
 }
 
-func fetchLog(r *Remote, t *Task) (string, error) {
-	dir, err := magiDir("tasks")
+func fetchLog(r *sh.Remote, t *Task) (string, error) {
+	dir, err := store.Dir("tasks")
 	if err != nil {
 		return "", err
 	}
@@ -190,7 +193,7 @@ func fetchLog(r *Remote, t *Task) (string, error) {
 	cmd.Stdout, cmd.Stderr = f, &stderr
 	var runErr error
 	if err := cmd.Run(); err != nil {
-		runErr = &commandError{what: "sh", stderr: strings.TrimSpace(stderr.String()), err: err}
+		runErr = &sh.Error{What: "sh", Stderr: strings.TrimSpace(stderr.String()), Err: err}
 	}
 	if err := errors.Join(runErr, f.Close()); err != nil {
 		return "", err
@@ -224,9 +227,9 @@ func finalMessage(logPath string) string {
 	return ""
 }
 
-func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error {
+func bringChanges(local *sh.Local, r *sh.Remote, host Host, t *Task, o *Outcome) error {
 	if !t.Git {
-		dir, err := magiDir("tasks")
+		dir, err := store.Dir("tasks")
 		if err != nil {
 			return err
 		}
@@ -234,7 +237,7 @@ func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error
 		if err := os.MkdirAll(files, 0o700); err != nil {
 			return err
 		}
-		if err := transfer(r, t.Checkout, Archive{Paths: []string{"."}, Exclude: host.Exclude}, local, files); err != nil {
+		if err := sh.Transfer(r, t.Checkout, sh.Archive{Paths: []string{"."}, Exclude: host.Exclude}, local, files); err != nil {
 			return fmt.Errorf("copying the task's folder back failed: %w", err)
 		}
 		o.Files = files
@@ -248,7 +251,7 @@ func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error
 	if t.Tip != "" {
 		base = t.Tip
 	}
-	out, err := sh(r, taskScript, "result", t.Dir, t.Checkout, t.Head, base, message)
+	out, err := sh.Run(r, taskScript, "result", t.Dir, t.Checkout, t.Head, base, message)
 	if err != nil {
 		return fmt.Errorf("recording the task's changes failed: %w", err)
 	}
@@ -262,12 +265,12 @@ func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error
 	if !commitPattern.MatchString(result) {
 		return fmt.Errorf("unexpected commit id %q from %s", result, t.Host)
 	}
-	if _, err := sh(local, `dir=$1 ssh=$2 from=$3 ref=$4; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git fetch --quiet --no-tags --no-write-fetch-head "$from" "+refs/magi/result:refs/heads/$ref"`,
-		t.Project, r.sshCommand(), r.host+":"+t.Checkout, t.branch()); err != nil {
+	if _, err := sh.Run(local, `dir=$1 ssh=$2 from=$3 ref=$4; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git fetch --quiet --no-tags --no-write-fetch-head "$from" "+refs/magi/result:refs/heads/$ref"`,
+		t.Project, r.SSHCommand(), r.Name()+":"+t.Checkout, t.branch()); err != nil {
 		return fmt.Errorf("fetching the task's changes failed: %w", err)
 	}
 	o.Branch, o.From, t.Tip = t.branch(), base, result
-	if stat, err := sh(local, `cd -- "$1" && git diff --stat "$2" "$3" --`, t.Project, base, "refs/heads/"+t.branch()); err == nil {
+	if stat, err := sh.Run(local, `cd -- "$1" && git diff --stat "$2" "$3" --`, t.Project, base, "refs/heads/"+t.branch()); err == nil {
 		o.Diffstat = strings.TrimRight(string(stat), "\n")
 	}
 	if t.Kind == kindDelegate && !t.Keep && o.Diffstat != "" {
@@ -276,8 +279,8 @@ func bringChanges(local *Local, r *Remote, host Host, t *Task, o *Outcome) error
 	return nil
 }
 
-func applyChanges(local *Local, t *Task, o *Outcome) {
-	_, err := sh(local, `cd -- "$1" && git diff --binary "$2" "$3" -- | git apply --binary`, t.Project, o.From, "refs/heads/"+o.Branch)
+func applyChanges(local *sh.Local, t *Task, o *Outcome) {
+	_, err := sh.Run(local, `cd -- "$1" && git diff --binary "$2" "$3" -- | git apply --binary`, t.Project, o.From, "refs/heads/"+o.Branch)
 	if err != nil {
 		o.Unapplied = strings.TrimPrefix(err.Error(), "on "+local.Name()+": ")
 		return

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -273,7 +275,7 @@ func TestCancellingATaskStopsItAndRemovesItsCopy(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
 	marker := filepath.Join(f.home, "still-running")
-	s, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "sleep 30 && touch " + quote(marker)})
+	s, err := startTask(context.Background(), TaskSpec{Kind: kindRun, Host: "server", Dir: f.local, Command: "sleep 30 && touch " + sh.Quote(marker)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +658,7 @@ func TestACollectThatCannotFetchKeepsTheCopyForARetry(t *testing.T) {
 func TestTaskScriptsOnlyTouchTaskFolders(t *testing.T) {
 	f := newFixture(t)
 	for _, dir := range []string{f.home + "/.magi/tasks/..", f.home + "/.magi/tasks/abc", f.home + "/elsewhere/0123abcd", f.home + "/.magi/tasks/0123abcd/.."} {
-		if _, err := sh(f.machine(), taskScript, "remove", dir); err == nil {
+		if _, err := sh.Run(f.machine(), taskScript, "remove", dir); err == nil {
 			t.Errorf("remove accepted %s", dir)
 		}
 	}
@@ -774,7 +776,7 @@ func TestATaskKeepsItsStateCurrent(t *testing.T) {
 	id := tasks[0].ID
 	record := func() map[string]any {
 		var m map[string]any
-		dir, _ := magiDir("tasks")
+		dir, _ := store.Dir("tasks")
 		json.Unmarshal([]byte(f.read(dir, id+".json")), &m)
 		return m
 	}
@@ -897,12 +899,12 @@ func TestRemovingACopyThatCantBeFullyDeletedSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(locked, 0o700) })
-	_, err := sh(f.remoteHost(), taskScript, "remove", dir, "")
+	_, err := sh.Run(f.remoteHost(), taskScript, "remove", dir, "")
 	if err == nil || !strings.Contains(err.Error(), "couldn't be removed") {
 		t.Fatalf("removing reported %v", err)
 	}
 	os.Chmod(locked, 0o700)
-	if _, err := sh(f.remoteHost(), taskScript, "remove", dir, ""); err != nil {
+	if _, err := sh.Run(f.remoteHost(), taskScript, "remove", dir, ""); err != nil {
 		t.Fatalf("removing a plain copy: %v", err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -912,7 +914,7 @@ func TestRemovingACopyThatCantBeFullyDeletedSaysSo(t *testing.T) {
 
 func TestForgettingATaskRemovesEveryTurnsLog(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	dir, err := magiDir("tasks")
+	dir, err := store.Dir("tasks")
 	if err != nil {
 		t.Fatal(err)
 	}

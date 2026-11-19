@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 type started struct {
@@ -23,7 +26,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err != nil {
 		return nil, err
 	}
-	local, err := newLocal(ctx)
+	local, err := sh.NewLocal(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +50,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		return nil, err
 	}
 	group := localGroup(ws.MainRoot, host.LocalRoots)
-	id := newTaskID()
+	id := store.NewTaskID()
 	label, parentID := taskTabLabel(ws.Name, spec.Kind, id), ""
 	delegator, err := delegatingSession(spec.Caller, ws.Name)
 	if err != nil {
@@ -103,7 +106,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	removeCopy := func(err error) error {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if _, rmErr := sh(remote.With(cleanup), taskScript, "remove", t.Dir); rmErr != nil {
+		if _, rmErr := sh.Run(remote.With(cleanup), taskScript, "remove", t.Dir); rmErr != nil {
 			return fmt.Errorf("%w; removing the task's copy at %s on %s also failed: %v", err, t.Dir, spec.Host, rmErr)
 		}
 		return errors.Join(err, t.forget())
@@ -132,10 +135,10 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	case kindRun:
 		command = []string{"sh", "-c", taskScript, "magi", "run", t.Dir, setup, spec.Command}
 	case kindDelegate:
-		if _, err := shIn(remote, `cat > "$1"`, []byte(spec.Prompt), t.Dir+"/prompt"); err != nil {
+		if _, err := sh.RunInput(remote, `cat > "$1"`, []byte(spec.Prompt), t.Dir+"/prompt"); err != nil {
 			return nil, removeCopy(err)
 		}
-		t.Session, t.Claude = newSessionID(), spec.Claude
+		t.Session, t.Claude = store.NewSessionID(), spec.Claude
 		command = t.delegateCommand(host, setup, false)
 	case kindSession:
 		claude := []string{expandHome(host.Claude, remoteHome), "--remote-control", ws.Name + " task " + id}
@@ -145,7 +148,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		command = append([]string{"sh", "-c", taskScript, "magi", "session", t.Dir}, claude...)
 	}
 
-	launcher := Tmux{remote: remote}
+	launcher := sh.Tmux{Machine: remote}
 	tab, err := launcher.Start(group, t.Label, t.RunDir, withParent(t.Parent, command), spec.Kind == kindSession)
 	if err != nil {
 		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
@@ -167,8 +170,8 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err := t.save(); err != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		launcher.remote = remote.With(cleanup)
-		_, cancelErr := sh(launcher.remote, taskScript, "cancel", t.Dir)
+		launcher.Machine = remote.With(cleanup)
+		_, cancelErr := sh.Run(launcher.Machine, taskScript, "cancel", t.Dir)
 		return nil, removeCopy(errors.Join(err, cancelErr, launcher.Discard(tab)))
 	}
 	return res, nil
@@ -176,12 +179,12 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 
 const launchWait = 20 * time.Second
 
-func waitForTask(m Machine, dir string) error {
+func waitForTask(m sh.Machine, dir string) error {
 	deadline := time.Now().Add(launchWait)
 	for {
-		if _, err := sh(m, `[ -s "$1/pid" ] || [ -f "$1/exit" ]`, dir); err == nil {
+		if _, err := sh.Run(m, `[ -s "$1/pid" ] || [ -f "$1/exit" ]`, dir); err == nil {
 			return nil
-		} else if exitCode(err) != 1 {
+		} else if sh.ExitCode(err) != 1 {
 			return err
 		}
 		if time.Now().After(deadline) {
@@ -199,15 +202,15 @@ func taskTabLabel(name, kind, id string) string {
 	return fmt.Sprintf("%s · %s %s", name, kind, id)
 }
 
-func checkRoom(remote *Remote, host Host, t *Task, action string) error {
+func checkRoom(remote *sh.Remote, host Host, t *Task, action string) error {
 	b, _ := host.budget()
 	if reason := b.noRoom(time.Now(), nil, false); reason != "" {
 		return &noRoomError{Host: t.Host, Reason: reason}
 	}
-	_, err := sh(remote, taskScript, action, t.Dir, t.Kind, strconv.Itoa(b.MaxAgents), fmt.Sprintf("%.0f", b.MinFree))
-	var ce *commandError
-	if exitCode(err) == exitNoRoom && errors.As(err, &ce) {
-		return &noRoomError{Host: t.Host, Reason: ce.stderr}
+	_, err := sh.Run(remote, taskScript, action, t.Dir, t.Kind, strconv.Itoa(b.MaxAgents), fmt.Sprintf("%.0f", b.MinFree))
+	var ce *sh.Error
+	if sh.ExitCode(err) == sh.ExitNoRoom && errors.As(err, &ce) {
+		return &noRoomError{Host: t.Host, Reason: ce.Stderr}
 	}
 	return err
 }
@@ -224,18 +227,18 @@ func excludeLine(path string) string {
 	return b.String()
 }
 
-func copyProject(local *Local, remote *Remote, ws Workspace, host Host, clone, checkout string) error {
+func copyProject(local *sh.Local, remote *sh.Remote, ws Workspace, host Host, clone, checkout string) error {
 	if ws.Git == nil {
-		if _, err := sh(remote, `mkdir -p -- "$1"`, checkout); err != nil {
+		if _, err := sh.Run(remote, `mkdir -p -- "$1"`, checkout); err != nil {
 			return err
 		}
-		return transfer(local, ws.Root, Archive{Paths: []string{"."}, Exclude: host.Exclude}, remote, checkout)
+		return sh.Transfer(local, ws.Root, sh.Archive{Paths: []string{"."}, Exclude: host.Exclude}, remote, checkout)
 	}
 	if clone == "" {
 		if err := initRepo(remote, checkout, ws.Git.Origin); err != nil {
 			return err
 		}
-	} else if _, err := sh(remote, `mkdir -p -- "$(dirname -- "$2")" && git clone --quiet --no-checkout -- "$1" "$2" && cd -- "$2" && git remote remove origin && if [ -n "$3" ]; then git remote add origin "$3"; fi`, clone, checkout, ws.Git.Origin); err != nil {
+	} else if _, err := sh.Run(remote, `mkdir -p -- "$(dirname -- "$2")" && git clone --quiet --no-checkout -- "$1" "$2" && cd -- "$2" && git remote remove origin && if [ -n "$3" ]; then git remote add origin "$3"; fi`, clone, checkout, ws.Git.Origin); err != nil {
 		return err
 	}
 	if err := sendGit(local, remote, ws, checkout, "copy"); err != nil {
@@ -248,6 +251,6 @@ func copyProject(local *Local, remote *Remote, ws Workspace, host Host, clone, c
 	for i, secret := range ws.Secrets {
 		lines[i] = excludeLine(secret)
 	}
-	_, err := shIn(remote, `cd -- "$1" && f=$(git rev-parse --path-format=absolute --git-path info/exclude) && mkdir -p -- "$(dirname -- "$f")" && cat >> "$f"`, []byte(strings.Join(lines, "\n")+"\n"), checkout)
+	_, err := sh.RunInput(remote, `cd -- "$1" && f=$(git rev-parse --path-format=absolute --git-path info/exclude) && mkdir -p -- "$(dirname -- "$f")" && cat >> "$f"`, []byte(strings.Join(lines, "\n")+"\n"), checkout)
 	return err
 }

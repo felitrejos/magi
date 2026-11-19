@@ -5,6 +5,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 const parentEnv = "MAGI_PARENT"
@@ -18,7 +20,7 @@ func delegatingSession(pid int, project string) (*parentSession, error) {
 	if pid == 0 {
 		return nil, nil
 	}
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return nil, err
 	}

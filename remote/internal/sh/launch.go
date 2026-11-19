@@ -1,9 +1,11 @@
-package main
+package sh
 
 import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 type Tab struct {
@@ -14,19 +16,12 @@ type Tab struct {
 	SessionCreated bool
 }
 
-func shellIn(dir string, command ...string) []string {
+func InDir(dir string, command ...string) []string {
 	return append([]string{"sh", "-c", `cd -- "$1" && shift && PATH="$HOME/.local/bin:$PATH" exec "$@"`, "magi", dir}, command...)
 }
 
-func tabLabel(name string, codex bool) string {
-	if codex {
-		return name + " · codex"
-	}
-	return name + " · claude"
-}
-
 type Tmux struct {
-	remote Machine
+	Machine Machine
 }
 
 var tmuxName = strings.NewReplacer(".", "_", ":", "_").Replace
@@ -36,12 +31,12 @@ func (t Tmux) Start(group, label, dir string, command []string, focus bool) (Tab
 	if !focus {
 		detached = "1"
 	}
-	name, tag, shell := tmuxName(group), newSessionID(), shellIn(dir, command...)
+	name, tag, shell := tmuxName(group), store.NewSessionID(), InDir(dir, command...)
 	created := false
-	out, err := sh(t.remote, tmuxScript, append([]string{"new-window", "=" + name, label, dir, tag, detached}, shell...)...)
+	out, err := Run(t.Machine, tmuxScript, append([]string{"new-window", "=" + name, label, dir, tag, detached}, shell...)...)
 	if err != nil && noTmuxSession(err) {
 		created = true
-		out, err = sh(t.remote, tmuxScript, append([]string{"new-session", name, label, dir, tag}, shell...)...)
+		out, err = Run(t.Machine, tmuxScript, append([]string{"new-session", name, label, dir, tag}, shell...)...)
 	}
 	if err != nil {
 		return Tab{}, err
@@ -49,7 +44,7 @@ func (t Tmux) Start(group, label, dir string, command []string, focus bool) (Tab
 	fields := strings.Fields(string(out))
 	if len(fields) != 3 {
 		if created {
-			_, killErr := sh(t.remote, tmuxScript, "kill-session", "="+name)
+			_, killErr := Run(t.Machine, tmuxScript, "kill-session", "="+name)
 			return Tab{}, errors.Join(fmt.Errorf("unexpected tmux output %q", out), killErr)
 		}
 		return Tab{}, fmt.Errorf("unexpected tmux output %q", out)
@@ -62,7 +57,7 @@ func noTmuxSession(err error) bool {
 	return strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to")
 }
 
-func tabGone(err error) bool {
+func TabGone(err error) bool {
 	return noTmuxSession(err) || strings.Contains(err.Error(), "can't find window")
 }
 
@@ -71,7 +66,7 @@ func (t Tmux) Split(anchor string, below bool, dir string, command []string) (st
 	if below {
 		direction = "below"
 	}
-	out, err := sh(t.remote, tmuxScript, append([]string{"split", anchor, direction, dir}, command...)...)
+	out, err := Run(t.Machine, tmuxScript, append([]string{"split", anchor, direction, dir}, command...)...)
 	if err != nil {
 		return "", err
 	}
@@ -83,12 +78,12 @@ func (t Tmux) Split(anchor string, below bool, dir string, command []string) (st
 }
 
 func (t Tmux) Show(tab Tab) ([]string, error) {
-	out, err := sh(t.remote, tmuxScript, "select", tab.Window)
+	out, err := Run(t.Machine, tmuxScript, "select", tab.Window)
 	if err != nil {
 		return nil, err
 	}
 	if clients := strings.Fields(string(out)); len(clients) > 0 {
-		return []string{fmt.Sprintf("tmux on %s (%d attached)", t.remote.Name(), len(clients))}, nil
+		return []string{fmt.Sprintf("tmux on %s (%d attached)", t.Machine.Name(), len(clients))}, nil
 	}
 	return nil, nil
 }
@@ -97,13 +92,13 @@ func (t Tmux) Discard(tab Tab) error {
 	var err error
 	switch {
 	case tab.SessionCreated:
-		_, err = sh(t.remote, tmuxScript, "kill-session", tab.Session)
+		_, err = Run(t.Machine, tmuxScript, "kill-session", tab.Session)
 	case tab.Window != "":
-		_, err = sh(t.remote, tmuxScript, "kill-window", tab.Window, tab.Tag)
+		_, err = Run(t.Machine, tmuxScript, "kill-window", tab.Window, tab.Tag)
 	}
 	return err
 }
 
 func (t Tmux) Where(group string) string {
-	return fmt.Sprintf("in tmux on %s (ssh -t %s tmux attach -t %s)", t.remote.Name(), t.remote.Name(), quote("="+tmuxName(group)))
+	return fmt.Sprintf("in tmux on %s (ssh -t %s tmux attach -t %s)", t.Machine.Name(), t.Machine.Name(), Quote("="+tmuxName(group)))
 }

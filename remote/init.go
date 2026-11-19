@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 type prompter struct {
@@ -43,11 +45,11 @@ func list(answer string) []string {
 	return items
 }
 
-func existing(m Machine, candidates []string) []string {
+func existing(m sh.Machine, candidates []string) []string {
 	var found, dirs []string
 	for _, c := range candidates {
 		dir := strings.TrimPrefix(c, "~/")
-		if _, err := sh(m, `d=$HOME/$1; shift; [ -d "$d" ] || exit 1; for f; do [ "$d" -ef "$HOME/$f" ] && exit 1; done; exit 0`, append([]string{dir}, dirs...)...); err == nil {
+		if _, err := sh.Run(m, `d=$HOME/$1; shift; [ -d "$d" ] || exit 1; for f; do [ "$d" -ef "$HOME/$f" ] && exit 1; done; exit 0`, append([]string{dir}, dirs...)...); err == nil {
 			found = append(found, c)
 			dirs = append(dirs, dir)
 		}
@@ -58,7 +60,7 @@ func existing(m Machine, candidates []string) []string {
 var projectFolders = []string{"~/Developer", "~/developer", "~/Projects", "~/projects", "~/code", "~/src", "~/dev"}
 
 func tailscalePeers(ctx context.Context) []string {
-	out, err := run(ctx, "tailscale", "status", "--json")
+	out, err := sh.Exec(ctx, "tailscale", "status", "--json")
 	if err != nil {
 		return nil
 	}
@@ -84,7 +86,7 @@ func initConfig(in io.Reader, out io.Writer) error {
 	p := prompter{in: bufio.NewReader(in), out: out}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	local, err := newLocal(ctx)
+	local, err := sh.NewLocal(ctx)
 	if err != nil {
 		return err
 	}
@@ -136,14 +138,14 @@ func initConfig(in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if _, err := sh(remote, "true"); err != nil {
+	if _, err := sh.Run(remote, "true"); err != nil {
 		return fmt.Errorf("ssh %s doesn't work without a password prompt yet; set up key-based ssh (or Tailscale SSH) and run magi init again: %w", h.SSH, err)
 	}
-	detected, _ := sh(remote, `for c in "$HOME/.local/bin/claude" "$(command -v claude 2>/dev/null)" /opt/homebrew/bin/claude /usr/local/bin/claude; do [ -x "$c" ] && { printf '%s' "$c" | sed "s|^$HOME/|~/|"; exit 0; }; done; true`)
+	detected, _ := sh.Run(remote, `for c in "$HOME/.local/bin/claude" "$(command -v claude 2>/dev/null)" /opt/homebrew/bin/claude /usr/local/bin/claude; do [ -x "$c" ] && { printf '%s' "$c" | sed "s|^$HOME/|~/|"; exit 0; }; done; true`)
 	if h.Claude, err = p.ask("Path to claude on "+name, firstNonEmpty(h.Claude, string(detected))); err != nil {
 		return err
 	}
-	detected, _ = sh(remote, `for c in "$HOME/.local/bin/codex" "$(command -v codex 2>/dev/null)" /opt/homebrew/bin/codex /usr/local/bin/codex; do [ -x "$c" ] && { printf '%s' "$c" | sed "s|^$HOME/|~/|"; exit 0; }; done; true`)
+	detected, _ = sh.Run(remote, `for c in "$HOME/.local/bin/codex" "$(command -v codex 2>/dev/null)" /opt/homebrew/bin/codex /usr/local/bin/codex; do [ -x "$c" ] && { printf '%s' "$c" | sed "s|^$HOME/|~/|"; exit 0; }; done; true`)
 	if h.Codex, err = p.ask("Path to codex on "+name+", to move Codex sessions there (blank if you don't use Codex there)", firstNonEmpty(h.Codex, string(detected))); err != nil {
 		return err
 	}

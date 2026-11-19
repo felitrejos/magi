@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 func resumeHint(s remoteSession) string {
@@ -21,7 +24,7 @@ func resumeHint(s remoteSession) string {
 
 var errNoSession = errors.New("no session")
 
-func findCodexSession(m Machine, id string) (remoteSession, error) {
+func findCodexSession(m sh.Machine, id string) (remoteSession, error) {
 	s := remoteSession{ID: id, Codex: true}
 	gone := fmt.Errorf("%w %s on %s", errNoSession, id, m.Name())
 	if m.Codex() == "" {
@@ -42,22 +45,22 @@ func findCodexSession(m Machine, id string) (remoteSession, error) {
 		} `json:"thread"`
 	}
 	if err := json.Unmarshal(answers[0], &read); err != nil {
-		return s, fmt.Errorf("unreadable Codex session %s on %s: %w", shortID(id), m.Name(), err)
+		return s, fmt.Errorf("unreadable Codex session %s on %s: %w", store.ShortID(id), m.Name(), err)
 	}
 	rollout, sessions := read.Thread.Path, home+"/sessions"
 	if !strings.HasSuffix(rollout, ".jsonl") {
-		return s, fmt.Errorf("session %s on %s is a compressed Codex session (%s), and magi moves only uncompressed ones", shortID(id), m.Name(), rollout)
+		return s, fmt.Errorf("session %s on %s is a compressed Codex session (%s), and magi moves only uncompressed ones", store.ShortID(id), m.Name(), rollout)
 	}
 	var ok bool
 	if s.Rollout, ok = strings.CutPrefix(rollout, sessions+"/"); !ok {
-		return s, fmt.Errorf("session %s on %s is at %s, outside %s", shortID(id), m.Name(), rollout, sessions)
+		return s, fmt.Errorf("session %s on %s is at %s, outside %s", store.ShortID(id), m.Name(), rollout, sessions)
 	}
 	if read.Thread.Cwd == "" {
 		return s, fmt.Errorf("couldn't tell which folder session %s on %s ran in", id, m.Name())
 	}
 	s.Transcript, s.Cwd = rollout, read.Thread.Cwd
-	out, err := sh(m, codexScript, "running", id, rollout, s.Cwd)
-	if exitCode(err) == exitGone {
+	out, err := sh.Run(m, codexScript, "running", id, rollout, s.Cwd)
+	if sh.ExitCode(err) == sh.ExitGone {
 		return s, gone
 	}
 	if err != nil {
@@ -69,7 +72,7 @@ func findCodexSession(m Machine, id string) (remoteSession, error) {
 		case "session":
 			n, err := strconv.Atoi(pid)
 			if err != nil {
-				return s, fmt.Errorf("unexpected process %q running session %s on %s", line, shortID(id), m.Name())
+				return s, fmt.Errorf("unexpected process %q running session %s on %s", line, store.ShortID(id), m.Name())
 			}
 			s.Running = append(s.Running, n)
 		case "folder":
@@ -82,8 +85,8 @@ func findCodexSession(m Machine, id string) (remoteSession, error) {
 	return s, err
 }
 
-func staleTurn(m Machine, s remoteSession) (string, error) {
-	out, err := sh(m, codexScript, "turn", s.Transcript)
+func staleTurn(m sh.Machine, s remoteSession) (string, error) {
+	out, err := sh.Run(m, codexScript, "turn", s.Transcript)
 	if err != nil || len(bytes.TrimSpace(out)) == 0 {
 		return "", err
 	}
@@ -107,7 +110,7 @@ func staleTurn(m Machine, s remoteSession) (string, error) {
 	for _, pid := range s.Running {
 		args = append(args, strconv.Itoa(pid))
 	}
-	out, err = sh(m, codexScript, args...)
+	out, err = sh.Run(m, codexScript, args...)
 	if err != nil {
 		return "", err
 	}
@@ -124,8 +127,8 @@ func staleTurn(m Machine, s remoteSession) (string, error) {
 	return event.Timestamp, nil
 }
 
-func refuseOpenCodex(m Machine, id string, stopping []int) error {
-	out, err := sh(m, codexScript, "open", id)
+func refuseOpenCodex(m sh.Machine, id string, stopping []int) error {
+	out, err := sh.Run(m, codexScript, "open", id)
 	if err != nil {
 		return err
 	}
@@ -135,31 +138,31 @@ func refuseOpenCodex(m Machine, id string, stopping []int) error {
 			continue
 		}
 		if strings.Contains(args, " app-server") {
-			return fmt.Errorf("session %s is still open in the Codex background server on %s (pid %s); it lets go of a session a minute after the last app showing it closes it, so close it there, wait a minute, then try again", shortID(id), m.Name(), pid)
+			return fmt.Errorf("session %s is still open in the Codex background server on %s (pid %s); it lets go of a session a minute after the last app showing it closes it, so close it there, wait a minute, then try again", store.ShortID(id), m.Name(), pid)
 		}
-		return fmt.Errorf("session %s is open in Codex on %s (pid %s); quit it there, then try again", shortID(id), m.Name(), pid)
+		return fmt.Errorf("session %s is open in Codex on %s (pid %s); quit it there, then try again", store.ShortID(id), m.Name(), pid)
 	}
 	return nil
 }
 
-func (s remoteSession) refuseUnsure(m Machine) error {
+func (s remoteSession) refuseUnsure(m sh.Machine) error {
 	if len(s.Unsure) == 0 {
 		return nil
 	}
-	return fmt.Errorf("a Codex is open in %s on %s (pid %s), and magi can't tell whether it's session %s; quit Codex there, then move it again", s.Cwd, m.Name(), strings.Join(s.Unsure, ", "), shortID(s.ID))
+	return fmt.Errorf("a Codex is open in %s on %s (pid %s), and magi can't tell whether it's session %s; quit Codex there, then move it again", s.Cwd, m.Name(), strings.Join(s.Unsure, ", "), store.ShortID(s.ID))
 }
 
-func stopCodex(m Machine, s remoteSession) error {
+func stopCodex(m sh.Machine, s remoteSession) error {
 	args := []string{"stop", s.Transcript, s.StaleTurn}
 	for _, pid := range s.Running {
 		args = append(args, strconv.Itoa(pid))
 	}
-	_, err := sh(m, codexScript, args...)
+	_, err := sh.Run(m, codexScript, args...)
 	return err
 }
 
-func moveRollout(from Machine, path, rel, fromRoot string, to Machine, toRoot string) (string, int, error) {
-	data, err := sh(from, `cat -- "$1"`, path)
+func moveRollout(from sh.Machine, path, rel, fromRoot string, to sh.Machine, toRoot string) (string, int, error) {
+	data, err := sh.Run(from, `cat -- "$1"`, path)
 	if err != nil {
 		return "", 0, err
 	}
@@ -167,7 +170,7 @@ func moveRollout(from Machine, path, rel, fromRoot string, to Machine, toRoot st
 	if err != nil {
 		return "", 0, err
 	}
-	out, err := shIn(to, codexScript, rewritten, "write", rel)
+	out, err := sh.RunInput(to, codexScript, rewritten, "write", rel)
 	if err != nil {
 		return "", 0, err
 	}
@@ -228,9 +231,9 @@ func replacePath(line []byte, old, replacement string) []byte {
 	}
 }
 
-func waitForCodex(m Machine, rollout string, written int) error {
+func waitForCodex(m sh.Machine, rollout string, written int) error {
 	for {
-		out, err := sh(m, codexScript, "size", rollout)
+		out, err := sh.Run(m, codexScript, "size", rollout)
 		if err != nil {
 			return err
 		}
@@ -255,7 +258,7 @@ type codexConfig struct {
 	} `json:"projects"`
 }
 
-func readCodexConfig(m Machine) (string, codexConfig, error) {
+func readCodexConfig(m sh.Machine) (string, codexConfig, error) {
 	var read struct {
 		Config codexConfig `json:"config"`
 		Layers []struct {
@@ -292,7 +295,7 @@ func (c codexConfig) trusts(dir string) bool {
 	}
 }
 
-func carryCodexTrust(local, remote Machine, localDir, remoteDir, remoteRoot string) error {
+func carryCodexTrust(local, remote sh.Machine, localDir, remoteDir, remoteRoot string) error {
 	_, here, err := readCodexConfig(local)
 	if err != nil {
 		return err

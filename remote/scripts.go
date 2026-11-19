@@ -21,16 +21,12 @@ var (
 	clonesScript string
 	//go:embed scripts/hosts.sh
 	hostsScript string
-	//go:embed scripts/transfer.sh
-	transferScript string
 	//go:embed scripts/started.sh
 	startedScript string
 	//go:embed scripts/session.sh
 	sessionBody string
 	//go:embed scripts/memory.sh
 	memoryScript string
-	//go:embed scripts/tmux.sh
-	tmuxScript string
 	//go:embed scripts/retire.sh
 	retireScript string
 	//go:embed scripts/project.sh

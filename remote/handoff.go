@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 const (
@@ -47,8 +50,15 @@ type Result struct {
 
 type Stray struct {
 	Host  string `json:"host"`
-	Tab   Tab    `json:"tab"`
+	Tab   sh.Tab `json:"tab"`
 	Codex bool   `json:"codex"`
+}
+
+func tabLabel(name string, codex bool) string {
+	if codex {
+		return name + " · codex"
+	}
+	return name + " · claude"
 }
 
 func (r *Result) note(err error) {
@@ -115,14 +125,14 @@ type handoffRun struct {
 	parent      context.Context
 	st          stepper
 	res         Result
-	local       *Local
-	remote      *Remote
+	local       *sh.Local
+	remote      *sh.Remote
 	ws          Workspace
 	where       Placement
 	remoteDir   string
 	project     *Project
-	launcher    Tmux
-	tab         Tab
+	launcher    sh.Tmux
+	tab         sh.Tab
 	synced      bool
 	launchedAt  time.Time
 	setupStatus string
@@ -141,7 +151,7 @@ func (h Handoff) Run(parent context.Context) (Result, error) {
 
 func (r *handoffRun) run(ctx context.Context) error {
 	var err error
-	if r.local, err = newLocal(ctx); err != nil {
+	if r.local, err = sh.NewLocal(ctx); err != nil {
 		return err
 	}
 	if err := r.st.run("inspect", func() error { return r.inspect(ctx) }); err != nil {
@@ -152,7 +162,7 @@ func (r *handoffRun) run(ctx context.Context) error {
 	r.res.note(err)
 	r.remoteDir = filepath.Join(r.where.Root, r.ws.Subdir)
 	r.res.NewFolder, r.res.From, r.res.FromDir, r.res.ToDir = r.where.NewFolder, r.local.Name(), r.Cwd, r.remoteDir
-	r.launcher = Tmux{remote: r.remote}
+	r.launcher = sh.Tmux{Machine: r.remote}
 
 	if err := r.st.run("sync", func() error {
 		return syncProject(r.local, r.remote, r.ws, r.where, r.Host.Exclude, func() error { return pushGit(r.local, r.remote, r.ws, r.where.Root) })
@@ -238,7 +248,7 @@ func (r *handoffRun) inspect(ctx context.Context) error {
 		return err
 	}
 	if running {
-		return fmt.Errorf("session %s is already running on %s; close it there before handing it off again", shortID(r.SessionID), r.HostName)
+		return fmt.Errorf("session %s is already running on %s; close it there before handing it off again", store.ShortID(r.SessionID), r.HostName)
 	}
 	return nil
 }
@@ -279,8 +289,8 @@ func (r *handoffRun) launch(sidecar string) error {
 func (r *handoffRun) undo(err error, startTimedOut bool) error {
 	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	r.remote = r.remote.With(cleanup).(*Remote)
-	r.launcher.remote = r.remote
+	r.remote = r.remote.With(cleanup).(*sh.Remote)
+	r.launcher.Machine = r.remote
 	if startTimedOut && !r.trustedThere() {
 		err = fmt.Errorf("%w: the new session was waiting for you to trust %s; accept that there and hand off again", err, r.remoteDir)
 	}
@@ -291,7 +301,7 @@ func (r *handoffRun) undo(err error, startTimedOut bool) error {
 			stray = true
 		}
 	}
-	if closeErr := r.launcher.Discard(r.tab); closeErr != nil && !tabGone(closeErr) {
+	if closeErr := r.launcher.Discard(r.tab); closeErr != nil && !sh.TabGone(closeErr) {
 		err = fmt.Errorf("%w; removing the new tab also failed: %v", err, closeErr)
 		stray = true
 	}

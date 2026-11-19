@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 const projectFile = ".magi.toml"
@@ -89,7 +91,7 @@ func readProject(root string) (*Project, error) {
 	return p, nil
 }
 
-func approvedProject(local *Local, root string) (*Project, error) {
+func approvedProject(local *sh.Local, root string) (*Project, error) {
 	p, err := readProject(root)
 	if p == nil || err != nil {
 		return nil, err
@@ -105,7 +107,7 @@ func approvedProject(local *Local, root string) (*Project, error) {
 }
 
 func readApprovals() (map[string]string, error) {
-	path, err := magiDir("allowed")
+	path, err := store.Dir("allowed")
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +130,7 @@ func readApprovals() (map[string]string, error) {
 }
 
 func writeApprovals(approvals map[string]string) error {
-	path, err := magiDir("allowed")
+	path, err := store.Dir("allowed")
 	if err != nil {
 		return err
 	}
@@ -136,11 +138,11 @@ func writeApprovals(approvals map[string]string) error {
 	for file, hash := range approvals {
 		fmt.Fprintf(&b, "%s\t%s\n", hash, file)
 	}
-	return writeAtomic(path, []byte(b.String()))
+	return store.WriteAtomic(path, []byte(b.String()))
 }
 
 func allowProject(dir string, in io.Reader, out io.Writer) error {
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return err
 	}
@@ -186,8 +188,8 @@ func allowProject(dir string, in io.Reader, out io.Writer) error {
 	return nil
 }
 
-func prepareSetupStatus(m Machine, sessionID string) (string, error) {
-	out, err := sh(m, `mkdir -p "$HOME/.magi/setup" && f="$HOME/.magi/setup/$1" && : > "$f" && printf '%s' "$f"`, sessionID)
+func prepareSetupStatus(m sh.Machine, sessionID string) (string, error) {
+	out, err := sh.Run(m, `mkdir -p "$HOME/.magi/setup" && f="$HOME/.magi/setup/$1" && : > "$f" && printf '%s' "$f"`, sessionID)
 	return string(out), err
 }
 
@@ -210,10 +212,10 @@ func projectPrompt(p *Project, status string) string {
 	return b.String()
 }
 
-func startProject(l Tmux, tab Tab, dir, status string, p *Project) error {
+func startProject(l sh.Tmux, tab sh.Tab, dir, status string, p *Project) error {
 	ctx, cancel := context.WithTimeout(context.Background(), projectPanesLimit)
 	defer cancel()
-	l.remote = l.remote.With(ctx)
+	l.Machine = l.Machine.With(ctx)
 	type pane struct{ role, command string }
 	var panes []pane
 	if p.Setup != "" {
@@ -228,7 +230,7 @@ func startProject(l Tmux, tab Tab, dir, status string, p *Project) error {
 	}
 	anchor, below := tab.Pane, true
 	for _, pn := range panes {
-		id, err := l.Split(anchor, below, dir, shellIn(dir, "sh", "-c", projectScript, "magi", pn.role, marker, pn.command))
+		id, err := l.Split(anchor, below, dir, sh.InDir(dir, "sh", "-c", projectScript, "magi", pn.role, marker, pn.command))
 		if err != nil {
 			return fmt.Errorf("the project's panes didn't open: %w", err)
 		}
@@ -237,13 +239,13 @@ func startProject(l Tmux, tab Tab, dir, status string, p *Project) error {
 	return nil
 }
 
-func recordTab(m Machine, sessionID string, tab Tab) error {
-	_, err := sh(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n' "$2" "$3" "$4" > "$HOME/.magi/tabs/$1"`, sessionID, tab.Session, tab.Window, tab.Tag)
+func recordTab(m sh.Machine, sessionID string, tab sh.Tab) error {
+	_, err := sh.Run(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n' "$2" "$3" "$4" > "$HOME/.magi/tabs/$1"`, sessionID, tab.Session, tab.Window, tab.Tag)
 	return err
 }
 
-func closeRecordedTab(r *Remote, sessionID string) error {
-	out, err := sh(r, `f="$HOME/.magi/tabs/$1"; if [ -f "$f" ]; then cat "$f"; rm -f "$f"; fi`, sessionID)
+func closeRecordedTab(r *sh.Remote, sessionID string) error {
+	out, err := sh.Run(r, `f="$HOME/.magi/tabs/$1"; if [ -f "$f" ]; then cat "$f"; rm -f "$f"; fi`, sessionID)
 	if err != nil || len(out) == 0 {
 		return err
 	}
@@ -251,7 +253,7 @@ func closeRecordedTab(r *Remote, sessionID string) error {
 	if len(lines) < 3 {
 		return fmt.Errorf("unexpected tab record for session %s on %s", sessionID, r.Name())
 	}
-	if err := (Tmux{remote: r}).Discard(Tab{Session: lines[0], Window: lines[1], Tag: lines[2]}); err != nil && !tabGone(err) {
+	if err := (sh.Tmux{Machine: r}).Discard(sh.Tab{Session: lines[0], Window: lines[1], Tag: lines[2]}); err != nil && !sh.TabGone(err) {
 		return err
 	}
 	return nil

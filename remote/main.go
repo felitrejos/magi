@@ -10,13 +10,15 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 var version = "dev"
@@ -58,8 +60,6 @@ Used by the Claude Code plugin:
   magi mcp                           the plugin's tool server, on stdin and stdout
   magi forward-run <session-id>      keeps a moved session's ports forwarded (started by a move)
 `
-
-var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type armed struct {
 	Host   string `json:"host"`
@@ -160,64 +160,6 @@ func currentVersion() string {
 	return version
 }
 
-func magiDir(sub string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".magi", sub), nil
-}
-
-func sessionPath(sub, sessionID, suffix string) (string, error) {
-	if !sessionIDPattern.MatchString(sessionID) {
-		return "", fmt.Errorf("%q is not a Claude session id", sessionID)
-	}
-	dir, err := magiDir(sub)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, sessionID+suffix), nil
-}
-
-func writeAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	_, err = f.Write(data)
-	if err := errors.Join(err, f.Close()); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
-}
-
-func writeJSON(path string, v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return writeAtomic(path, data)
-}
-
-func lockFile(path string, busy error) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return nil, busy
-	}
-	return func() { f.Close() }, nil
-}
-
 func writeArmed(path string, a armed, flag int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -257,7 +199,7 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", watcher)
 		return nil
 	}
-	path, err := sessionPath("armed", sessionID, ".json")
+	path, err := store.SessionPath("armed", sessionID, ".json")
 	if err != nil {
 		return err
 	}
@@ -302,7 +244,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if err := json.NewDecoder(in).Decode(&input); err != nil {
 		return err
 	}
-	path, err := sessionPath("armed", input.SessionID, ".json")
+	path, err := store.SessionPath("armed", input.SessionID, ".json")
 	if err != nil {
 		return err
 	}
@@ -370,10 +312,10 @@ func promptHook(in io.Reader, out io.Writer) error {
 	if err := json.NewDecoder(in).Decode(&input); err != nil {
 		return err
 	}
-	if !sessionIDPattern.MatchString(input.SessionID) {
+	if !store.SessionIDPattern.MatchString(input.SessionID) {
 		return nil
 	}
-	path, err := sessionPath("moved", input.SessionID, "")
+	path, err := store.SessionPath("moved", input.SessionID, "")
 	if err != nil {
 		return err
 	}
@@ -396,7 +338,7 @@ func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	local, err := newLocal(ctx)
+	local, err := sh.NewLocal(ctx)
 	if err != nil {
 		return Result{}, err
 	}
@@ -517,7 +459,7 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 	if err != nil {
 		return pulledHere{}, err
 	}
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return pulledHere{}, err
 	}
@@ -541,14 +483,14 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 			fmt.Fprintf(out, "Note: %v\n", note)
 		}
 	}
-	message := fmt.Sprintf("Brought session %s back from %s to %s", shortID(res.Session), hostName, res.ToDir)
+	message := fmt.Sprintf("Brought session %s back from %s to %s", store.ShortID(res.Session), hostName, res.ToDir)
 	if len(res.Notes) > 0 {
 		message += " (" + res.Noted() + ")"
 	}
 	return pulledHere{res: res, prompt: prompt, message: message}, nil
 }
 
-func openPulledTab(local *Local, res *Pulled, prompt string) error {
+func openPulledTab(local *sh.Local, res *Pulled, prompt string) error {
 	cfg, _, err := loadConfig()
 	if err != nil {
 		return err
@@ -563,7 +505,7 @@ func openPulledTab(local *Local, res *Pulled, prompt string) error {
 		return fmt.Errorf("%s isn't installed on %s", command[0], local.Name())
 	}
 	command[0] = program
-	launcher := Tmux{remote: local}
+	launcher := sh.Tmux{Machine: local}
 	tab, err := launcher.Start(localGroup(root, cfg.LocalRoots), tabLabel(res.Name, res.Codex), res.ToDir, command, true)
 	if err != nil {
 		return err

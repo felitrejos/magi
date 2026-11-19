@@ -14,6 +14,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 const (
@@ -59,7 +62,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	}
 	waitCtx, cancelWait := context.WithTimeout(context.Background(), pullWait)
 	defer cancelWait()
-	local, err := newLocal(waitCtx)
+	local, err := sh.NewLocal(waitCtx)
 	if err != nil {
 		return res, err
 	}
@@ -80,7 +83,7 @@ func (p Pull) Run() (res Pulled, err error) {
 		}
 		if session.Codex {
 			if local.Codex() == "" {
-				return fmt.Errorf("session %s is a Codex session, and codex isn't installed on %s", shortID(session.ID), local.Name())
+				return fmt.Errorf("session %s is a Codex session, and codex isn't installed on %s", store.ShortID(session.ID), local.Name())
 			}
 			if err := refuseOpenCodex(remote, session.ID, session.Running); err != nil {
 				return err
@@ -120,7 +123,7 @@ func (p Pull) Run() (res Pulled, err error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), pullBudget)
 	defer cancel()
-	local, remote = local.With(ctx).(*Local), remote.With(ctx).(*Remote)
+	local, remote = local.With(ctx).(*sh.Local), remote.With(ctx).(*sh.Remote)
 	stopped := func(err error) error {
 		return fmt.Errorf("%w. The session is stopped on %s; to carry on there instead, run %s in %s on %s", err, p.HostName, resumeHint(session), session.Cwd, p.HostName)
 	}
@@ -163,7 +166,7 @@ func (p Pull) Run() (res Pulled, err error) {
 		return res, undo(err)
 	}
 	res.note(settle(remote, ws, p.Host.Exclude))
-	_, err = sh(remote, `mv -- "$1" "$2"`, session.Transcript, session.Transcript+".handed-off-to-"+local.Name())
+	_, err = sh.Run(remote, `mv -- "$1" "$2"`, session.Transcript, session.Transcript+".handed-off-to-"+local.Name())
 	res.note(err)
 	res.note(markMoved(remote, session.ID, local.Name()))
 	res.note(clearMoved(local, session.ID))
@@ -177,12 +180,12 @@ func (p Pull) Run() (res Pulled, err error) {
 	return res, nil
 }
 
-func findSession(r Machine, id string) (remoteSession, error) {
-	if !sessionIDPattern.MatchString(id) {
+func findSession(r sh.Machine, id string) (remoteSession, error) {
+	if !store.SessionIDPattern.MatchString(id) {
 		return remoteSession{}, fmt.Errorf("%q is not a session id", id)
 	}
 	s := remoteSession{ID: id}
-	out, err := sh(r, sessionScript, "find", id)
+	out, err := sh.Run(r, sessionScript, "find", id)
 	if err != nil {
 		return s, err
 	}
@@ -202,7 +205,7 @@ func findSession(r Machine, id string) (remoteSession, error) {
 		s.Cwd = s.Live.Cwd
 		return s, nil
 	}
-	out, err = sh(r, sessionScript, "cwd", s.Transcript)
+	out, err = sh.Run(r, sessionScript, "cwd", s.Transcript)
 	if err != nil {
 		return s, err
 	}
@@ -218,13 +221,13 @@ func findSession(r Machine, id string) (remoteSession, error) {
 	return s, fmt.Errorf("couldn't tell which folder session %s on %s ran in", id, r.Name())
 }
 
-func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
+func stopAtTurnEnd(r *sh.Remote, s remoteSession, out io.Writer) error {
 	stop := func() error { return stopCodex(r, s) }
 	switch {
 	case s.Live != nil:
 		pid := strconv.Itoa(s.Live.PID)
 		stop = func() error {
-			_, err := sh(r, sessionScript, "stop", pid, s.ID, s.Live.since(), r.Claude())
+			_, err := sh.Run(r, sessionScript, "stop", pid, s.ID, s.Live.since(), r.Claude())
 			return err
 		}
 	case len(s.Running) == 0:
@@ -233,7 +236,7 @@ func stopAtTurnEnd(r *Remote, s remoteSession, out io.Writer) error {
 	told := false
 	for {
 		err := stop()
-		if exitCode(err) != exitBusy {
+		if sh.ExitCode(err) != sh.ExitBusy {
 			return err
 		}
 		if !told {

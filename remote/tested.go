@@ -11,6 +11,9 @@ import (
 	"regexp"
 	"slices"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 //go:embed tested.json
@@ -50,13 +53,13 @@ func parseTested(data []byte) (testedVersions, error) {
 }
 
 func loadTested() (testedVersions, error) {
-	path, err := magiDir("tested.json")
+	path, err := store.Dir("tested.json")
 	if err != nil {
 		return testedVersions{}, err
 	}
 	if info, err := os.Stat(path); testedURL != "" && (err != nil || time.Since(info.ModTime()) > testedFresh) {
 		if data, err := fetchTested(); err == nil {
-			if err := writeAtomic(path, data); err != nil {
+			if err := store.WriteAtomic(path, data); err != nil {
 				return testedVersions{}, err
 			}
 		}
@@ -105,12 +108,12 @@ func (r testedRange) refuse(tool, where, version string) error {
 	return nil
 }
 
-func toolVersion(m Machine, program string) (string, error) {
-	out, err := sh(m, `"$1" --version`, program)
+func toolVersion(m sh.Machine, program string) (string, error) {
+	out, err := sh.Run(m, `"$1" --version`, program)
 	return versionPattern.FindString(string(out)), err
 }
 
-func refuseUntested(codex bool, local Machine, remote Machine, remoteProgram string) error {
+func refuseUntested(codex bool, local sh.Machine, remote sh.Machine, remoteProgram string) error {
 	t, err := loadTested()
 	if err != nil {
 		return fmt.Errorf("reading which versions magi was tested with failed: %w", err)
@@ -120,7 +123,7 @@ func refuseUntested(codex bool, local Machine, remote Machine, remoteProgram str
 		tool, r, localProgram = "Codex", t.Codex, local.Codex()
 	}
 	for _, m := range []struct {
-		machine Machine
+		machine sh.Machine
 		program string
 	}{{local, localProgram}, {remote, remoteProgram}} {
 		version, err := toolVersion(m.machine, m.program)

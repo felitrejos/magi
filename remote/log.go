@@ -12,6 +12,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 type logEntry struct {
@@ -25,7 +28,7 @@ type logEntry struct {
 }
 
 func appendLog(e logEntry) error {
-	path, err := magiDir("handoffs.jsonl")
+	path, err := store.Dir("handoffs.jsonl")
 	if err != nil {
 		return err
 	}
@@ -40,7 +43,7 @@ func appendLog(e logEntry) error {
 }
 
 func readLog() ([]logEntry, error) {
-	path, err := magiDir("handoffs.jsonl")
+	path, err := store.Dir("handoffs.jsonl")
 	if err != nil {
 		return nil, err
 	}
@@ -74,16 +77,12 @@ func lastHandoffTo(host string) (string, error) {
 		case e.Kind == "pull" && e.From == host:
 			pulledBack[e.Session] = true
 		case e.Kind == "push" && e.To == host && pulledBack[e.Session]:
-			return "", fmt.Errorf("the last session handed off to %s (%s) was already brought back; pass the session id: magi pull %s <session-id>", host, shortID(e.Session), host)
+			return "", fmt.Errorf("the last session handed off to %s (%s) was already brought back; pass the session id: magi pull %s <session-id>", host, store.ShortID(e.Session), host)
 		case e.Kind == "push" && e.To == host:
 			return e.Session, nil
 		}
 	}
 	return "", fmt.Errorf("no handoff to %s is recorded here; pass the session id: magi pull %s <session-id>", host, host)
-}
-
-func shortID(id string) string {
-	return id[:min(8, len(id))]
 }
 
 func status(w io.Writer) error {
@@ -103,9 +102,9 @@ func status(w io.Writer) error {
 	}
 	fmt.Fprintln(w, "Recent handoffs:")
 	for _, e := range slices.Backward(entries[max(0, len(entries)-15):]) {
-		fmt.Fprintf(w, "  %s  %-4s  %s  %s:%s → %s:%s\n", e.Time.Local().Format("2006-01-02 15:04"), e.Kind, shortID(e.Session), e.From, e.FromDir, e.To, e.ToDir)
+		fmt.Fprintf(w, "  %s  %-4s  %s  %s:%s → %s:%s\n", e.Time.Local().Format("2006-01-02 15:04"), e.Kind, store.ShortID(e.Session), e.From, e.FromDir, e.To, e.ToDir)
 	}
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return err
 	}
@@ -116,7 +115,7 @@ func status(w io.Writer) error {
 			continue
 		}
 		checked[e.FromDir] = true
-		if ref, err := sh(local, `git -C "$1" rev-parse -q --verify "$2" 2>/dev/null || :`, e.FromDir, parkedRef); err == nil && len(ref) > 0 {
+		if ref, err := sh.Run(local, `git -C "$1" rev-parse -q --verify "$2" 2>/dev/null || :`, e.FromDir, parkedRef); err == nil && len(ref) > 0 {
 			parked = append(parked, e.FromDir)
 		}
 	}
@@ -125,12 +124,12 @@ func status(w io.Writer) error {
 	}
 	fmt.Fprintln(w, "\nParked checkouts here (a session left them; it can come back, and they're refused if edited meanwhile):")
 	for _, dir := range parked {
-		fmt.Fprintf(w, "  %s    unpark with: magi unpark %s\n", dir, quote(dir))
+		fmt.Fprintf(w, "  %s    unpark with: magi unpark %s\n", dir, sh.Quote(dir))
 	}
 	return nil
 }
 
-func unparkRepo(m Machine, repo string) error {
+func unparkRepo(m sh.Machine, repo string) error {
 	if err := deleteRefs(m, repo, parkedRef); err != nil {
 		return err
 	}
@@ -147,11 +146,11 @@ func unparkRepo(m Machine, repo string) error {
 }
 
 func unpark(dir string, out io.Writer) error {
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return err
 	}
-	top, err := sh(local, `git -C "$1" rev-parse --show-toplevel`, dir)
+	top, err := sh.Run(local, `git -C "$1" rev-parse --show-toplevel`, dir)
 	if err != nil {
 		return fmt.Errorf("%s isn't a git checkout, and only git checkouts are parked: %w", dir, err)
 	}

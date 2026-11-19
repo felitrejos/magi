@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func TestHandoffReproducesCommitsStagingAndTheWorkingTree(t *testing.T) {
@@ -325,7 +327,7 @@ func TestHandoffCreatesACloneForAProjectTheHostDoesNotHave(t *testing.T) {
 	}
 	ws.Git.Origin = "git@github.com:acme/brand-new.git"
 	ws.Git.OriginKey = originKey(ws.Git.Origin, nil)
-	if repo, err := matchClone(clones, ws, r.host); err != nil || repo != "" {
+	if repo, err := matchClone(clones, ws, r.Name()); err != nil || repo != "" {
 		t.Fatalf("matchClone = %q, %v; want no clone", repo, err)
 	}
 	dir := filepath.Join(f.home, "developer", "acme", "brand-new")
@@ -352,7 +354,7 @@ func TestMatchCloneFindsARepoWithNoRemoteByItsFirstCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, err := matchClone(clones, f.workspace(f.local), r.host)
+	repo, err := matchClone(clones, f.workspace(f.local), r.Name())
 	if err != nil || repo != f.remote {
 		t.Fatalf("matchClone = %q, %v; want %q", repo, err, f.remote)
 	}
@@ -702,7 +704,7 @@ func TestACopyCutOffMidwayLeavesTheDestinationUntouched(t *testing.T) {
 	}
 	f.write(src, "big", string(big))
 	f.write(dst, "big", "old")
-	if err := transfer(f.remoteHost(), src, Archive{Paths: []string{"big"}}, f.machine(), dst); err == nil {
+	if err := sh.Transfer(f.remoteHost(), src, sh.Archive{Paths: []string{"big"}}, f.machine(), dst); err == nil {
 		t.Fatal("a copy cut off midway succeeded")
 	}
 	if got := f.read(dst, "big"); got != "old" {
@@ -728,7 +730,7 @@ func TestACopyIntoAnExistingTreeWithAReadOnlyFolderLeavesNothingBehind(t *testin
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(filepath.Join(src, "ro"), 0o755); os.Chmod(filepath.Join(dst, "ro"), 0o755) })
-	if err := transfer(f.remoteHost(), src, Archive{Paths: []string{"ro"}}, f.machine(), dst); err != nil {
+	if err := sh.Transfer(f.remoteHost(), src, sh.Archive{Paths: []string{"ro"}}, f.machine(), dst); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.read(dst, "ro/g") + f.read(dst, "other"); got != "newkept" {

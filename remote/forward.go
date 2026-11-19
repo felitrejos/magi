@@ -14,6 +14,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 const (
@@ -68,7 +71,7 @@ func startForwards(session, host, ssh string, ports []int) error {
 	if err := closeForwards(session); err != nil {
 		return err
 	}
-	path, err := sessionPath("forwards", session, ".json")
+	path, err := store.SessionPath("forwards", session, ".json")
 	if err != nil {
 		return err
 	}
@@ -77,7 +80,7 @@ func startForwards(session, host, ssh string, ports []int) error {
 		return err
 	}
 	record := forwardRecord{Session: session, Host: host, SSH: ssh, Ports: ports, State: forwardWaiting, Started: time.Now()}
-	if err := writeJSON(path, record); err != nil {
+	if err := store.WriteJSON(path, record); err != nil {
 		return err
 	}
 	cmd := exec.Command(self, "forward-run", session)
@@ -86,7 +89,7 @@ func startForwards(session, host, ssh string, ports []int) error {
 		return errors.Join(err, os.Remove(path))
 	}
 	record.PID = cmd.Process.Pid
-	if err := writeJSON(path, record); err != nil {
+	if err := store.WriteJSON(path, record); err != nil {
 		return errors.Join(err, syscall.Kill(-record.PID, syscall.SIGTERM), os.Remove(path))
 	}
 	return cmd.Process.Release()
@@ -95,7 +98,7 @@ func startForwards(session, host, ssh string, ports []int) error {
 func holdLock(recordPath string) (func(), error) {
 	deadline := time.Now().Add(forwardLockWait)
 	for {
-		unlock, err := lockFile(lockPath(recordPath), syscall.EWOULDBLOCK)
+		unlock, err := store.Lock(lockPath(recordPath), syscall.EWOULDBLOCK)
 		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
 			return unlock, err
 		}
@@ -104,7 +107,7 @@ func holdLock(recordPath string) (func(), error) {
 }
 
 func runForwards(session string) error {
-	path, err := sessionPath("forwards", session, ".json")
+	path, err := store.SessionPath("forwards", session, ".json")
 	if err != nil {
 		return err
 	}
@@ -172,7 +175,7 @@ func setForwardState(path, state string) {
 		return
 	}
 	record.State = state
-	writeJSON(path, record)
+	store.WriteJSON(path, record)
 }
 
 func forwardArgs(r forwardRecord) []string {
@@ -198,7 +201,7 @@ func localForwards(args []string, ports []int) []string {
 }
 
 func closeForwards(session string) error {
-	path, err := sessionPath("forwards", session, ".json")
+	path, err := store.SessionPath("forwards", session, ".json")
 	if err != nil {
 		return err
 	}
@@ -215,14 +218,14 @@ func closeForwards(session string) error {
 	}
 	if alive && record.PID > 0 {
 		if err := syscall.Kill(-record.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-			return fmt.Errorf("stopping the forward for session %s: %w", shortID(session), err)
+			return fmt.Errorf("stopping the forward for session %s: %w", store.ShortID(session), err)
 		}
 	}
 	return nil
 }
 
 func listForwards() ([]forwardRecord, error) {
-	dir, err := magiDir("forwards")
+	dir, err := store.Dir("forwards")
 	if err != nil {
 		return nil, err
 	}
@@ -264,8 +267,8 @@ func resolveForward(prefix string) (string, error) {
 	}
 }
 
-func closeForwardsOn(m Machine, session string) error {
-	if _, err := sh(m, closeForwardsScript, session); err != nil {
+func closeForwardsOn(m sh.Machine, session string) error {
+	if _, err := sh.Run(m, closeForwardsScript, session); err != nil {
 		return fmt.Errorf("%s was forwarding this session's ports and still is: %w", m.Name(), err)
 	}
 	return nil
@@ -287,7 +290,7 @@ func forwardsCommand(args []string, out io.Writer) error {
 			for i, port := range r.Ports {
 				ports[i] = fmt.Sprintf("localhost:%d", port)
 			}
-			fmt.Fprintf(out, "%s  %s  %s  %s\n", shortID(r.Session), r.Host, strings.Join(ports, ", "), r.State)
+			fmt.Fprintf(out, "%s  %s  %s  %s\n", store.ShortID(r.Session), r.Host, strings.Join(ports, ", "), r.State)
 		}
 		return nil
 	case len(args) == 2 && args[0] == "close":

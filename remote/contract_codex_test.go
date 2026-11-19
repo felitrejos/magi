@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func startCodex(t *testing.T, dir string, args ...string) (*exec.Cmd, *bytes.Buffer) {
@@ -68,7 +70,7 @@ func codexThreadID(t *testing.T, out string) string {
 func TestContractCodexResumesASessionMovedToAnotherCodexHome(t *testing.T) {
 	from, to := contractDir(t), contractDir(t)
 	id := codexThreadID(t, runCodex(t, from, "Remember the word QUINCE. Reply with just: ok"))
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +127,7 @@ func TestContractCodexResumesASessionMovedToAnotherCodexHome(t *testing.T) {
 func TestContractCodexListsAnOpenSession(t *testing.T) {
 	dir := contractDir(t)
 	cmd, out := startCodex(t, dir, "Run the shell command: sleep 8. Then reply with just: done")
-	local, err := newLocal(context.Background())
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +157,7 @@ func TestContractCodexTrustIsWrittenOnlyOverTheVersionMagiRead(t *testing.T) {
 		t.Skip("codex isn't installed")
 	}
 	f := newFixture(t)
-	f.tool("codex", "#!/bin/sh\nexec "+quote(codex)+" \"$@\"\n")
+	f.tool("codex", "#!/bin/sh\nexec "+sh.Quote(codex)+" \"$@\"\n")
 	here, there := t.TempDir(), t.TempDir()
 	t.Setenv("CODEX_HOME", here)
 	t.Setenv("MAGI_TEST_REMOTE_CODEX_HOME", there)

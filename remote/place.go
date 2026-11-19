@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func expandHome(path, home string) string {
@@ -70,7 +72,7 @@ type Placement struct {
 	NewFolder string
 }
 
-func place(target Machine, ws Workspace, roots []string, groupIfNew string, exclude []string) (Placement, error) {
+func place(target sh.Machine, ws Workspace, roots []string, groupIfNew string, exclude []string) (Placement, error) {
 	home, err := homeDir(target)
 	if err != nil {
 		return Placement{}, err
@@ -117,13 +119,13 @@ type Clone struct {
 	RootCommit string
 }
 
-func homeDir(m Machine) (string, error) {
-	out, err := sh(m, `printf '%s' "$HOME"`)
+func homeDir(m sh.Machine) (string, error) {
+	out, err := sh.Run(m, `printf '%s' "$HOME"`)
 	return string(out), err
 }
 
-func listClones(m Machine, roots []string) ([]Clone, error) {
-	out, err := sh(m, clonesScript, roots...)
+func listClones(m sh.Machine, roots []string) ([]Clone, error) {
+	out, err := sh.Run(m, clonesScript, roots...)
 	if err != nil {
 		return nil, err
 	}
@@ -181,23 +183,23 @@ func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
 
 var errFolderAppeared = errors.New("the folder appeared meanwhile; move it away or hand off again")
 
-func claimNewFolder(m Machine, dir string) error {
+func claimNewFolder(m sh.Machine, dir string) error {
 	_, err := folder(m, "claim", dir)
-	if exitCode(err) == exitExists {
+	if sh.ExitCode(err) == sh.ExitExists {
 		return fmt.Errorf("%s on %s: %w", dir, m.Name(), errFolderAppeared)
 	}
 	return err
 }
 
-func createClone(m Machine, dir, origin string) error {
+func createClone(m sh.Machine, dir, origin string) error {
 	if err := claimNewFolder(m, dir); err != nil {
 		return err
 	}
 	return initRepo(m, dir, origin)
 }
 
-func initRepo(m Machine, dir, origin string) error {
-	if _, err := sh(m, `mkdir -p -- "$(dirname -- "$1")" && git init --quiet "$1" && if [ -n "$2" ]; then git -C "$1" remote add origin "$2"; fi`, dir, origin); err != nil {
+func initRepo(m sh.Machine, dir, origin string) error {
+	if _, err := sh.Run(m, `mkdir -p -- "$(dirname -- "$1")" && git init --quiet "$1" && if [ -n "$2" ]; then git -C "$1" remote add origin "$2"; fi`, dir, origin); err != nil {
 		return err
 	}
 	if origin != "" {
@@ -208,13 +210,13 @@ func initRepo(m Machine, dir, origin string) error {
 
 const prefetchLimit = 30 * time.Second
 
-func prefetchOrigin(m Machine, dir string) {
+func prefetchOrigin(m sh.Machine, dir string) {
 	ctx, cancel := context.WithTimeout(m.Context(), prefetchLimit)
 	defer cancel()
-	sh(m.With(ctx), `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10' git -C "$1" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch --quiet origin`, dir)
+	sh.Run(m.With(ctx), `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10' git -C "$1" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch --quiet origin`, dir)
 }
 
-func removeFolder(m Machine, dir string) error {
-	_, err := sh(m, `rm -rf -- "$1"`, dir)
+func removeFolder(m sh.Machine, dir string) error {
+	_, err := sh.Run(m, `rm -rf -- "$1"`, dir)
 	return err
 }
