@@ -305,19 +305,11 @@ func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
 	}
 }
 
-func TestAPullOpensATmuxWindowWhenThereIsNoRex(t *testing.T) {
+func TestAPullOpensATmuxWindow(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
 	f.taskHost("")
-	tmux, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Fatal(err)
-	}
 	f.tool("claude", "#!/bin/sh\nsleep 60\n")
-	if err := os.Symlink(tmux, filepath.Join(f.home, "bin", "tmux")); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
 	local, err := newLocal(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +324,7 @@ func TestAPullOpensATmuxWindowWhenThereIsNoRex(t *testing.T) {
 	}
 }
 
-func TestSessionsAndTheirDiffsAreReadWithoutTheOverview(t *testing.T) {
+func TestSessionsAndTheirDiffsAreReadOverSSH(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost("")
 	id := "0f0f0f0f-1111-2222-3333-555555555558"

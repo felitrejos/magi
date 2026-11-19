@@ -139,21 +139,6 @@ func TestWatchTakesBackASessionTheServerAsksItTo(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
 	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nsecrets = [\".env\"]\n")
-	tmux, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(tmux, filepath.Join(f.home, "bin", "tmux")); err != nil {
-		t.Fatal(err)
-	}
-	for _, tool := range []string{"git", "git-lfs"} {
-		if path, err := exec.LookPath(tool); err == nil {
-			if err := os.Symlink(path, filepath.Join(f.home, "bin", tool)); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
 	out := f.workspace(f.local)
 	if err := f.push(f.remoteHost(), out, Placement{Root: f.remote}); err != nil {
 		t.Fatal(err)
