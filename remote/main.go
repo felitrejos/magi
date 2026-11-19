@@ -291,7 +291,9 @@ func stopHook(in io.Reader, out io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
 
-	res, err := handoff(ctx, a, input)
+	cfg, _, err := loadConfig()
+	archive := err == nil && a.Desktop && cfg.ArchiveLeftBehind
+	res, err := handoff(ctx, a, input, archive)
 	if res.Stray != nil {
 		res.note(saveStray(input.SessionID, *res.Stray))
 	}
@@ -314,7 +316,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if a.Desktop && res.RemoteControl != "" {
 		res.note(exec.Command("open", "claude://claude.ai/code/"+res.RemoteControl).Run())
 	}
-	return json.NewEncoder(out).Encode(handedOff(a, res))
+	return json.NewEncoder(out).Encode(handedOff(a, res, archive))
 }
 
 func hookSession(in io.Reader) (home, sessionID string, err error) {
@@ -377,7 +379,7 @@ func passReturnNote(home, sessionID string, out io.Writer) error {
 	})
 }
 
-func handedOff(a armed, res Result) map[string]string {
+func handedOff(a armed, res Result, archive bool) map[string]string {
 	where := fmt.Sprintf("It's running %s, and with Remote Control it's in every Claude app on your account", res.Where)
 	if len(res.ShownOn) > 0 {
 		where = fmt.Sprintf("It's open in %s, and with Remote Control it's in every Claude app on your account", strings.Join(res.ShownOn, ", "))
@@ -391,12 +393,21 @@ func handedOff(a armed, res Result) map[string]string {
 	if len(res.Notes) > 0 {
 		where += ". Notes: " + res.Noted()
 	}
+	if archive {
+		return map[string]string{
+			"decision": "block",
+			"reason": fmt.Sprintf("magi handed this session off to %s in %s. %s. "+
+				"The user set archive_left_behind = true in magi's config, which asks for the copy left behind to be archived after every handoff from Claude Desktop. "+
+				"Tell the user in one short line where the session continues now, then archive this session with the archive_session tool and session_id \"self\" (load it with ToolSearch if needed). "+
+				"Make no other tool calls.", a.Host, res.Summary(), where),
+		}
+	}
 	return map[string]string{
 		"systemMessage": fmt.Sprintf("Handed off to %s in %s. %s. This copy is closing.", a.Host, res.Summary(), where),
 	}
 }
 
-func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
+func handoff(ctx context.Context, a armed, input stopInput, archive bool) (Result, error) {
 	host, err := loadHost(a.Host)
 	if err != nil {
 		return Result{}, err
@@ -414,7 +425,7 @@ func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 		TranscriptPath: input.TranscriptPath,
 		Cwd:            input.Cwd,
 		Retire: func() error {
-			if err := markMoved(local, input.SessionID, a.Host); err != nil {
+			if err := markMoved(local, input.SessionID, a.Host); err != nil || archive {
 				return err
 			}
 			return retire(a, input.SessionID, input.TranscriptPath)
@@ -558,9 +569,12 @@ func openPulledTab(local *Local, res *Pulled, prompt string) error {
 	if !res.Codex && leftFromDesktop(res.Session) {
 		info := res.PromptInfo
 		info.WithMessage = true
-		err := openInDesktop(res.ToDir, res.Session, handoffPrompt(info))
+		fork, err := forkTranscript(res.ToDir, res.Session)
 		if err == nil {
-			res.InDesktop = true
+			err = openInDesktop(res.ToDir, fork, handoffPrompt(info))
+		}
+		if err == nil {
+			res.Session, res.InDesktop = fork, true
 			return nil
 		}
 		res.note(fmt.Errorf("it came from Claude Desktop, but opening it there failed (%w), so it opens in a tab", err))

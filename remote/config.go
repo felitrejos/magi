@@ -14,10 +14,11 @@ import (
 )
 
 type Config struct {
-	LocalRoots []string        `toml:"local_roots"`
-	Exclude    []string        `toml:"exclude"`
-	Hosts      map[string]Host `toml:"hosts"`
-	Order      []string        `toml:"-"`
+	LocalRoots        []string        `toml:"local_roots"`
+	Exclude           []string        `toml:"exclude"`
+	ArchiveLeftBehind bool            `toml:"archive_left_behind,omitempty"`
+	Hosts             map[string]Host `toml:"hosts"`
+	Order             []string        `toml:"-"`
 }
 
 type Host struct {

@@ -43,6 +43,32 @@ type Pulled struct {
 	InDesktop   bool
 }
 
+func forkTranscript(dir, sessionID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	slug, err := projectSlug(dir)
+	if err != nil {
+		return "", err
+	}
+	project := filepath.Join(home, ".claude", "projects", slug)
+	data, err := os.ReadFile(filepath.Join(project, sessionID+".jsonl"))
+	if err != nil {
+		return "", err
+	}
+	id := newSessionID()
+	data = bytes.ReplaceAll(data, []byte(`"sessionId":"`+sessionID+`"`), []byte(`"sessionId":"`+id+`"`))
+	if err := os.WriteFile(filepath.Join(project, id+".jsonl"), data, 0o600); err != nil {
+		return "", err
+	}
+	sidecar := filepath.Join(project, sessionID)
+	if _, err := os.Stat(sidecar); errors.Is(err, os.ErrNotExist) {
+		return id, nil
+	}
+	return id, os.CopyFS(filepath.Join(project, id), os.DirFS(sidecar))
+}
+
 func openInDesktop(dir, sessionID, note string) error {
 	if runtime.GOOS != "darwin" {
 		return errors.New("Claude Desktop hand back works on macOS only")

@@ -483,3 +483,28 @@ func TestTheHandoffNoteListsWhatWasStillRunning(t *testing.T) {
 		t.Errorf("with nothing running the note is %q", got)
 	}
 }
+
+func TestADesktopCopyIsAskedToArchiveItselfOnlyWhenTheUserChoseThat(t *testing.T) {
+	a := armed{Host: "homelab", Desktop: true}
+	res := Result{Where: "in a tmux window on homelab"}
+	reply := handedOff(a, res, true)
+	if reply["decision"] != "block" || !strings.Contains(reply["reason"], `archive_session`) || !strings.Contains(reply["reason"], `"self"`) || !strings.Contains(reply["reason"], "archive_left_behind") {
+		t.Errorf("with archive_left_behind the reply is %v", reply)
+	}
+	if reply := handedOff(a, res, false); reply["decision"] != "" || !strings.Contains(reply["systemMessage"], "Handed off to homelab") {
+		t.Errorf("without it the reply is %v", reply)
+	}
+}
+
+func TestTheArchiveRuleIsFoundInClaudeSettings(t *testing.T) {
+	for settings, want := range map[string]bool{
+		`{"permissions":{"allow":["mcp__ccd_session_mgmt__archive_session"]}}`: true,
+		`{"permissions":{"allow":["Bash(ls:*)","mcp__ccd_session_mgmt"]}}`:     true,
+		`{"permissions":{"allow":["mcp__ccd_session_mgmt__list_sessions"]}}`:   false,
+		`{"statusLine":{}}`: false,
+	} {
+		if got := allowsArchive([]byte(settings)); got != want {
+			t.Errorf("allowsArchive(%s) = %v, want %v", settings, got, want)
+		}
+	}
+}
