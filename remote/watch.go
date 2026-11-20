@@ -26,6 +26,7 @@ import (
 
 const (
 	watcherFresh  = 15 * time.Second
+	historyKept   = time.Hour
 	watchRetry    = time.Minute
 	watchBackoff  = time.Minute
 	tailscaleWait = 5 * time.Second
@@ -254,6 +255,7 @@ type watcher struct {
 	live   liveMachine
 	block  []string
 	usage  map[int]use
+	cpu    map[string][]cpuReading
 }
 
 type liveMachine struct {
@@ -269,7 +271,19 @@ type liveMachine struct {
 	BootedAt  time.Time   `json:"bootedAt,omitzero"`
 	Battery   *battery    `json:"battery,omitempty"`
 	Relayed   bool        `json:"relayed,omitempty"`
+	History   []reading   `json:"history,omitempty"`
 	Sessions  []liveEntry `json:"sessions"`
+}
+
+type reading struct {
+	At       int64   `json:"at"`
+	Load     float64 `json:"load"`
+	MemoryMB int     `json:"memoryMB"`
+}
+
+type cpuReading struct {
+	At  int64 `json:"at"`
+	CPU int   `json:"cpu"`
 }
 
 type space struct {
@@ -284,16 +298,17 @@ type battery struct {
 }
 
 type liveEntry struct {
-	ID            string    `json:"id"`
-	Title         string    `json:"title"`
-	Folder        string    `json:"folder"`
-	State         string    `json:"state"`
-	WaitingOn     string    `json:"waitingOn,omitempty"`
-	Since         time.Time `json:"since,omitzero"`
-	RemoteControl string    `json:"remoteControl,omitempty"`
-	Tmux          string    `json:"tmux,omitempty"`
-	CPU           int       `json:"cpu"`
-	MemoryMB      int       `json:"memoryMB"`
+	ID            string       `json:"id"`
+	Title         string       `json:"title"`
+	Folder        string       `json:"folder"`
+	State         string       `json:"state"`
+	WaitingOn     string       `json:"waitingOn,omitempty"`
+	Since         time.Time    `json:"since,omitzero"`
+	RemoteControl string       `json:"remoteControl,omitempty"`
+	Tmux          string       `json:"tmux,omitempty"`
+	CPU           int          `json:"cpu"`
+	MemoryMB      int          `json:"memoryMB"`
+	CPUHistory    []cpuReading `json:"cpuHistory,omitempty"`
 	pid           int
 }
 
@@ -304,7 +319,23 @@ type use struct {
 }
 
 func newWatcher(name, ssh string, m sh.Machine, logger *log.Logger, copies string) *watcher {
-	return &watcher{name: name, m: m, copies: copies, logger: logger, live: liveMachine{SSH: ssh, Sessions: []liveEntry{}}}
+	w := &watcher{name: name, m: m, copies: copies, logger: logger, live: liveMachine{SSH: ssh, Sessions: []liveEntry{}}, cpu: map[string][]cpuReading{}}
+	var kept liveMachine
+	if path, err := livePath(name); err == nil && store.ReadJSON(path, &kept) == nil {
+		w.live.History = kept.History
+		for _, s := range kept.Sessions {
+			w.cpu[s.ID] = s.CPUHistory
+		}
+	}
+	return w
+}
+
+func recent[T any](readings []T, at func(T) int64, now time.Time) []T {
+	from := now.Add(-historyKept).Unix()
+	for len(readings) > 0 && at(readings[0]) < from {
+		readings = readings[1:]
+	}
+	return readings
 }
 
 func (w *watcher) follow(me string) error {
@@ -401,6 +432,13 @@ func (w *watcher) stats(line string, now time.Time) error {
 	}
 	l.BootedAt, l.Pressure, l.Battery = time.Unix(booted, 0), "", nil
 	l.Relayed = l.SSH != "" && relayed(l.SSH)
+	l.History = recent(append(l.History, reading{At: now.Unix(), Load: l.Load, MemoryMB: l.Memory.UsedMB}), func(r reading) int64 { return r.At }, now)
+	ids := map[int]string{}
+	cpu := map[string][]cpuReading{}
+	for _, s := range l.Sessions {
+		ids[s.pid] = s.ID
+		cpu[s.ID] = w.cpu[s.ID]
+	}
 	usage := map[int]use{}
 	for _, field := range strings.Fields(line)[9:] {
 		if pressure, ok := strings.CutPrefix(field, "pressure="); ok {
@@ -421,10 +459,16 @@ func (w *watcher) stats(line string, now time.Time) error {
 		}
 		if last, ok := w.usage[pid]; ok {
 			u.cpu = int(math.Round(max(0, (u.seconds-last.seconds)/now.Sub(last.at).Seconds()*100)))
+			if id, ok := ids[pid]; ok {
+				cpu[id] = append(cpu[id], cpuReading{At: now.Unix(), CPU: u.cpu})
+			}
 		}
 		usage[pid] = u
 	}
-	w.usage = usage
+	for id, readings := range cpu {
+		cpu[id] = recent(readings, func(r cpuReading) int64 { return r.At }, now)
+	}
+	w.usage, w.cpu = usage, cpu
 	return nil
 }
 
@@ -449,7 +493,7 @@ func relayed(ssh string) bool {
 func (w *watcher) save() error {
 	for i := range w.live.Sessions {
 		s := &w.live.Sessions[i]
-		s.CPU, s.MemoryMB = w.usage[s.pid].cpu, w.usage[s.pid].memoryMB
+		s.CPU, s.MemoryMB, s.CPUHistory = w.usage[s.pid].cpu, w.usage[s.pid].memoryMB, w.cpu[s.ID]
 	}
 	path, err := livePath(w.name)
 	if err != nil {

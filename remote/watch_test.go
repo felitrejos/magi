@@ -234,6 +234,41 @@ printf '%s\n' /sys/class/power_supply/AC/type:Mains /sys/class/power_supply/AC/o
 	}
 }
 
+func hourOfStats(w *watcher, start time.Time) {
+	for i, at := range []time.Duration{0, 30 * time.Second, time.Hour, time.Hour + 30*time.Second} {
+		w.hear(fmt.Sprintf("stats 10 %d 100 200 300 400 0 0 1794928938 42:%d:150", i, 3*i), start.Add(at))
+	}
+}
+
+func TestTheLiveFileKeepsTheLastHourOfLoadMemoryAndSessionCPU(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	w.live.Sessions = []liveEntry{{ID: "a", pid: 42}}
+	start := time.Unix(1_800_000_000, 0)
+	hourOfStats(w, start)
+	live := readLive(t, "server")
+	from := start.Add(30 * time.Second).Unix()
+	want := []reading{{At: from, Load: 1, MemoryMB: 100}, {At: from + 3570, Load: 2, MemoryMB: 100}, {At: from + 3600, Load: 3, MemoryMB: 100}}
+	if fmt.Sprint(live.History) != fmt.Sprint(want) {
+		t.Errorf("history = %+v, want the readings of the last hour %+v", live.History, want)
+	}
+	wantCPU := []cpuReading{{At: from, CPU: 10}, {At: from + 3570, CPU: 0}, {At: from + 3600, CPU: 10}}
+	if fmt.Sprint(live.Sessions[0].CPUHistory) != fmt.Sprint(wantCPU) {
+		t.Errorf("session CPU history = %+v, want %+v", live.Sessions[0].CPUHistory, wantCPU)
+	}
+}
+
+func TestARestartedWatcherKeepsTheHistoryInTheLiveFile(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	w.live.Sessions = []liveEntry{{ID: "a", pid: 42}}
+	hourOfStats(w, time.Unix(1_800_000_000, 0))
+	restarted := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	if fmt.Sprint(restarted.live.History) != fmt.Sprint(w.live.History) || fmt.Sprint(restarted.cpu) != fmt.Sprint(w.cpu) {
+		t.Errorf("a restarted watcher has history %+v and CPU %+v, want %+v and %+v", restarted.live.History, restarted.cpu, w.live.History, w.cpu)
+	}
+}
+
 func TestAMachineReachedThroughATailscaleRelayIsMarkedRelayed(t *testing.T) {
 	f := newFixture(t)
 	f.tool("tailscale", `#!/bin/sh
@@ -317,6 +352,36 @@ func TestTheLiveFileSaysHowToOpenASession(t *testing.T) {
 		if live := readLive(t, "server"); len(live.Sessions) == 1 {
 			if s := live.Sessions[0]; s.RemoteControl != "https://claude.ai/code/session_42" || s.Tmux != window || live.SSH != "me@server" {
 				t.Errorf("the session opens through %q and tmux window %q (want %s), the machine over ssh %q", s.RemoteControl, s.Tmux, window, live.SSH)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the session never reached the live file")
+		}
+	}
+}
+
+func TestASessionSeveralProcessesBelowItsPaneGetsTheWindow(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	server := f.serverHome()
+	started := filepath.Join(t.TempDir(), "pid")
+	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{window_id}", `sh -c 'sleep 60 & echo $! > "$0"; wait' `+started+`; :`).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := strings.TrimSpace(string(out))
+	if !waitForFile(t, started, 10*time.Second) {
+		t.Fatal("the session process never started")
+	}
+	data, _ := os.ReadFile(started)
+	pid := strings.TrimSpace(string(data))
+	f.write(filepath.Join(server, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"0f0f0f0f-1111-2222-3333-555555555560","cwd":"/srv/api","status":"idle"}`)
+	go newWatcher("server", "me@server", f.remoteHost(), log.New(io.Discard, "", 0), "").follow("")
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		if live := readLive(t, "server"); len(live.Sessions) == 1 {
+			if s := live.Sessions[0]; s.Tmux != window {
+				t.Errorf("a session two processes below its pane has tmux window %q, want %s", s.Tmux, window)
 			}
 			return
 		}

@@ -53,12 +53,19 @@ while :; do
     registry=$live
     case $live in *'"status":"waiting"'*) live="${live}waiting $("$cli" agents --json | tr -d '\n')
 " ;; esac
-    panes=$(tmux list-panes -a -F '#{pane_pid} #{window_id}' 2>/dev/null)
-    for pid in $pids; do
-      window=$(printf '%s\n' "$panes" | awk -v a="$pid" -v b="$(ps -o ppid= -p "$pid")" '$1 == a || $1 == b + 0 { print $2; exit }')
-      if [ -n "$window" ]; then live="${live}tab $pid $window
+    tabs=$({ tmux list-panes -a -F 'pane #{pane_pid} #{window_id}' 2>/dev/null; ps -A -o pid= -o ppid= | sed 's/^/process /'; } | awk -v pids="$pids" '
+      $1 == "pane" { pane[$2] = $3 }
+      $1 == "process" { parent[$2] = $3 }
+      END {
+        n = split(pids, p, " ")
+        for (i = 1; i <= n; i++) {
+          q = p[i]
+          while (q > 1 && !(q in pane)) q = parent[q] + 0
+          if (q in pane) print "tab", p[i], pane[q]
+        }
+      }')
+    if [ -n "$tabs" ]; then live="$live$tabs
 "; fi
-    done
     printf '%s' "$live"
     echo sessions
   fi
