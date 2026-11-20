@@ -8,7 +8,15 @@ permissions:
   contents: read
 
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  round-trip:
+    uses: ./.github/workflows/round-trip.yml
+    secrets: inherit
+
   release:
+    needs: [checks, round-trip]
     runs-on: ubuntu-latest
     permissions:
       contents: write

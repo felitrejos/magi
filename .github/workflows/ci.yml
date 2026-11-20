@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -39,6 +40,18 @@ jobs:
       - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - run: go test -count=1 ./...
+
+  core-debian:
+    name: magi on Debian
+    runs-on: ubuntu-latest
+    container: golang:1.27
+    steps:
+      - run: apt-get update -qq && apt-get install -y -qq tmux fish tcsh git-lfs
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: useradd -m ci && chown -R ci .
+      - run: su ci -s /bin/sh -c "export PATH=/usr/local/go/bin:\$PATH HOME=/home/ci; git config --global user.email ci@example.com; git config --global user.name ci; git config --global init.defaultBranch main; cd remote && go test -count=1 ./..."
 
   core-busybox:
     name: magi on BusyBox
