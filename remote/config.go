@@ -27,7 +27,6 @@ type Config struct {
 type Host struct {
 	SSH           string   `toml:"ssh"`
 	Claude        string   `toml:"claude"`
-	Codex         string   `toml:"codex,omitempty"`
 	Roots         []string `toml:"roots"`
 	Secrets       []string `toml:"secrets"`
 	MaxAgents     int      `toml:"max_agents,omitempty"`
@@ -48,15 +47,8 @@ func configPath() (string, error) {
 	return filepath.Join(home, ".config", "magi", "config.toml"), nil
 }
 
-func (h Host) program(codex bool) string {
-	if codex {
-		return h.Codex
-	}
-	return h.Claude
-}
-
 func newRemote(ctx context.Context, h Host) (*sh.Remote, error) {
-	return sh.NewRemote(ctx, h.SSH, h.Claude, h.Codex)
+	return sh.NewRemote(ctx, h.SSH, h.Claude)
 }
 
 var errNoHost = errors.New("no host")

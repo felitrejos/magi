@@ -12,7 +12,7 @@ import (
 
 const askSize = 50_000_000
 
-func describeCopy(m sh.Machine, hostName string, host Host, ws Workspace, here, codex bool) (string, bool, error) {
+func describeCopy(m sh.Machine, hostName string, host Host, ws Workspace, here bool) (string, bool, error) {
 	lines := []string{"What goes to " + hostName + ":"}
 	secrets := nested(ws, func(w Workspace) []string { return w.Secrets })
 	untracked := nested(ws, func(w Workspace) []string { return w.Untracked })
@@ -73,11 +73,7 @@ func describeCopy(m sh.Machine, hostName string, host Host, ws Workspace, here, 
 			lines = append(lines, "  from "+projectFile+": "+project.runs())
 		}
 	}
-	if codex {
-		lines = append(lines, "  the conversation")
-	} else {
-		lines = append(lines, "  the conversation and its project memory")
-	}
+	lines = append(lines, "  the conversation and its project memory")
 	ask := len(secrets) > 0 || len(untracked) > 0 || size >= askSize
 	return strings.Join(append(lines, closing), "\n"), ask, nil
 }
@@ -91,7 +87,7 @@ func describeSession(m sh.Machine, hostName string, host Host, sessionID string,
 	if err != nil {
 		return "", false, err
 	}
-	return describeCopy(m, hostName, host, ws, here, s.Codex)
+	return describeCopy(m, hostName, host, ws, here)
 }
 
 func nested(ws Workspace, list func(Workspace) []string) []string {

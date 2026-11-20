@@ -11,13 +11,37 @@ same() {
   [ -z "$2" ] || [ "$(started "$1")" = "$(printf '%s' "$2" | tr -s ' ')" ]
 }
 
+args_of() {
+  if [ -r "/proc/$1/cmdline" ]; then
+    tr '\0' ' ' < "/proc/$1/cmdline"
+  else
+    ps -o args= -p "$1"
+  fi
+}
+
+processes() {
+  if [ -d /proc/self ]; then
+    for dir in /proc/[0-9]*; do
+      args=$(args_of "${dir#/proc/}" 2>/dev/null)
+      if [ -n "$args" ]; then printf '%s %s\n' "${dir#/proc/}" "$args"; fi
+    done
+  else
+    ps -axo pid=,args=
+  fi
+}
+
 resuming() {
-  processes | program_is claude | grep -F -- " --resume $1"
+  processes | awk '{
+    program = $2
+    if (program ~ /(^|\/)(sh|bash|dash|zsh|node)$/) program = $3
+    sub(/.*\//, "", program)
+    if (program == "claude") print
+  }' | grep -F -- " --resume $1"
 }
 
 ours() {
   kill -0 "$1" 2>/dev/null || return 1
-  case $(args_of "$1") in *claude* | *codex*) same "$1" "$2" ;; *) return 1 ;; esac
+  case $(args_of "$1") in *claude*) same "$1" "$2" ;; *) return 1 ;; esac
 }
 
 end() {
@@ -97,7 +121,7 @@ case $command in
     ;;
   turns)
     if [ -f "$1" ]; then
-      grep -E '"type":"(user|user_message)"' "$1" | grep -cv -e '"tool_result"' -e '"isMeta":true' -e '"type":"progress"' -e '\[magi\] This session was just handed off' || true
+      grep -F '"type":"user"' "$1" | grep -cv -e '"tool_result"' -e '"isMeta":true' -e '"type":"progress"' -e '\[magi\] This session was just handed off' || true
     else
       echo 0
     fi

@@ -127,7 +127,7 @@ func TestStopSessionStopsTheSessionButNotTheTmuxServerThatStartedIt(t *testing.T
 	sessionID := "11111111-2222-3333-4444-555555555555"
 	server := runProgram(t, "tmux", "new-session", "--resume", sessionID)
 	session := runProgram(t, "claude", "--resume", sessionID)
-	if err := stopSession(f.remoteHost(), sessionID, false); err != nil {
+	if err := stopSession(f.remoteHost(), sessionID); err != nil {
 		t.Fatalf("stopSession failed: %v", err)
 	}
 	select {

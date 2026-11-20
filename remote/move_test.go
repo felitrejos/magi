@@ -56,7 +56,7 @@ func TestMoveRefusesUnknownSessions(t *testing.T) {
 	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"`+fresh+`","status":"idle"}`)
 	for id, want := range map[string]string{
 		fresh:                                  "session 0f0f0f0f hasn't started a conversation yet, so there's nothing to move",
-		"0f0f0f0f-1111-2222-3333-777777777777": "no Claude Code or Codex session 0f0f0f0f-1111-2222-3333-777777777777",
+		"0f0f0f0f-1111-2222-3333-777777777777": "no Claude Code session 0f0f0f0f-1111-2222-3333-777777777777",
 		"not-an-id":                            "is not a session id",
 	} {
 		if err := (mover{session: id, host: "server", out: io.Discard}).run(); err == nil || !strings.Contains(err.Error(), want) {

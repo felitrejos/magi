@@ -26,8 +26,6 @@ type Handoff struct {
 	Note           string
 	Progress       func(step string)
 	Show           func(block string)
-	Codex          bool
-	Rollout        string
 	Retire         func() (int, error)
 }
 
@@ -46,10 +44,7 @@ type Result struct {
 	ToDir     string
 }
 
-func tabLabel(name string, codex bool) string {
-	if codex {
-		return name + " · codex"
-	}
+func tabLabel(name string) string {
 	return name + " · claude"
 }
 
@@ -127,8 +122,6 @@ type handoffRun struct {
 	tab         sh.Tab
 	launchedAt  time.Time
 	setupStatus string
-	rollout     string
-	written     int
 	j           *moveJournal
 }
 
@@ -153,7 +146,7 @@ func (r *handoffRun) run(ctx context.Context) error {
 	r.project = project
 	r.res.note(err)
 	if r.Show != nil {
-		if block, _, err := describeCopy(r.local, r.HostName, r.Host, r.ws, true, r.Codex); err != nil {
+		if block, _, err := describeCopy(r.local, r.HostName, r.Host, r.ws, true); err != nil {
 			r.res.note(err)
 		} else {
 			r.Show(block)
@@ -162,11 +155,11 @@ func (r *handoffRun) run(ctx context.Context) error {
 	r.remoteDir = filepath.Join(r.where.Root, r.ws.Subdir)
 	r.res.NewFolder, r.res.ToDir = r.where.NewFolder, r.remoteDir
 	r.launcher = sh.Tmux{Machine: r.remote}
-	r.j = &moveJournal{Session: r.SessionID, Kind: "push", Host: r.HostName, Codex: r.Codex, Started: time.Now(), LocalTranscript: r.TranscriptPath, Workspace: r.ws, Where: r.where}
+	r.j = &moveJournal{Session: r.SessionID, Kind: "push", Host: r.HostName, Started: time.Now(), LocalTranscript: r.TranscriptPath, Workspace: r.ws, Where: r.where}
 	if r.j.Turns, err = turnsIn(r.local, r.TranscriptPath); err != nil {
 		return err
 	}
-	if r.j.RemoteTranscript, err = transcriptOn(r.remote, r.where.Home, r.remoteDir, r.SessionID, r.Codex, r.Rollout); err != nil {
+	if r.j.RemoteTranscript, err = claudeTranscript(r.where.Home, r.remoteDir, r.SessionID); err != nil {
 		return err
 	}
 	if err := r.j.at("sync"); err != nil {
@@ -183,10 +176,6 @@ func (r *handoffRun) run(ctx context.Context) error {
 	}
 	var sidecar string
 	if err := r.st.run("transcript", func() (err error) {
-		if r.Codex {
-			r.rollout, r.written, err = moveRollout(r.local, r.TranscriptPath, r.Rollout, r.ws.Root, r.remote, r.where.Root)
-			return err
-		}
 		sidecar, err = moveTranscript(r.local, r.TranscriptPath, r.ws, r.remote, r.where, r.remoteDir)
 		return err
 	}); err != nil {
@@ -199,9 +188,6 @@ func (r *handoffRun) run(ctx context.Context) error {
 	defer cancelStart()
 	remote := r.remote.With(start)
 	if err := r.st.run("start", func() error {
-		if r.Codex {
-			return waitForCodex(remote, r.rollout, r.written)
-		}
 		link, err := waitForRemoteControl(remote, r.SessionID, r.launchedAt)
 		if err == nil {
 			r.res.Where += ", and in the Claude apps at " + link
@@ -243,11 +229,8 @@ func (r *handoffRun) inspect(ctx context.Context) error {
 	if r.where, err = place(r.remote, r.ws, r.Host.Roots, localGroup(r.ws.MainRoot, r.Host.LocalRoots), r.Host.Exclude); err != nil {
 		return err
 	}
-	if err := refuseUntested(r.Codex, r.local, r.remote, expandHome(r.Host.program(r.Codex), r.where.Home)); err != nil {
+	if err := refuseUntested(r.local, r.remote, expandHome(r.Host.Claude, r.where.Home)); err != nil {
 		return err
-	}
-	if r.Codex {
-		return nil
 	}
 	running, err := runningThere(r.remote, r.SessionID)
 	if err != nil {
@@ -272,16 +255,12 @@ func (r *handoffRun) launch(sidecar string) error {
 		projectNote = projectPrompt(r.project, r.setupStatus)
 	}
 	name := baseName(r.where.Root)
-	prompt := handoffPrompt(Prompt{From: r.local.Name(), To: r.HostName, OldDir: r.Cwd, NewDir: r.remoteDir, Git: r.ws.Git != nil, Note: r.Note, Sidecar: sidecar, Project: projectNote, Codex: r.Codex})
-	command := resumeCommand(r.SessionID, name, prompt, r.Codex)
-	command[0] = expandHome(r.Host.program(r.Codex), r.where.Home)
-	if r.Codex {
-		r.res.note(carryCodexTrust(r.local, r.remote, r.Cwd, r.remoteDir, r.where.Root))
-	} else {
-		r.res.note(carryTrust(r.local, r.remote, r.Cwd, r.remoteDir))
-	}
+	prompt := handoffPrompt(Prompt{From: r.local.Name(), To: r.HostName, OldDir: r.Cwd, NewDir: r.remoteDir, Git: r.ws.Git != nil, Note: r.Note, Sidecar: sidecar, Project: projectNote})
+	command := resumeCommand(r.SessionID, name, prompt)
+	command[0] = expandHome(r.Host.Claude, r.where.Home)
+	r.res.note(carryTrust(r.local, r.remote, r.Cwd, r.remoteDir))
 	r.res.note(clearMoved(r.remote, r.SessionID))
-	if r.tab, err = r.launcher.Start(r.where.Group, tabLabel(name, r.Codex), r.remoteDir, command, true); err != nil {
+	if r.tab, err = r.launcher.Start(r.where.Group, tabLabel(name), r.remoteDir, command, true); err != nil {
 		return err
 	}
 	r.j.Tab = &r.tab
@@ -307,10 +286,6 @@ func (r *handoffRun) undo(err error, startTimedOut bool) error {
 }
 
 func (r *handoffRun) trustedThere() bool {
-	if r.Codex {
-		_, cfg, err := readCodexConfig(r.remote)
-		return err != nil || cfg.trusts(r.remoteDir)
-	}
 	trusted, err := isTrusted(r.remote, r.remoteDir)
 	return err != nil || trusted
 }

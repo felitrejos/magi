@@ -41,7 +41,6 @@ if [ -e "$HOME/ssh-down" ]; then
   exit 255
 fi
 if [ -n "$MAGI_TEST_REMOTE_HOME" ]; then export HOME="$MAGI_TEST_REMOTE_HOME"; fi
-if [ -n "$MAGI_TEST_REMOTE_CODEX_HOME" ]; then export CODEX_HOME="$MAGI_TEST_REMOTE_CODEX_HOME"; fi
 exec "${MAGI_TEST_LOGIN_SHELL:-sh}" -c "$*"
 `
 
@@ -74,13 +73,11 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("MAGI_FAKE_CLAUDE_VERSION", builtin.Claude.Max)
-	t.Setenv("MAGI_FAKE_CODEX_VERSION", builtin.Codex.Max)
+	t.Setenv("MAGI_FAKE_CLAUDE_VERSION", builtin.Max)
 	url := testedURL
 	testedURL = ""
 	t.Cleanup(func() { testedURL = url })
 	f.tool("claude", fakeClaude)
-	f.tool("codex", fakeCodex)
 	f.tool("launchctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
 	f.tool("systemctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -140,7 +137,7 @@ func (f *fixture) remoteHost() *sh.Remote {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	f.t.Cleanup(cancel)
-	r, err := newRemote(ctx, Host{SSH: "fakehost", Claude: "claude", Codex: "codex"})
+	r, err := newRemote(ctx, Host{SSH: "fakehost", Claude: "claude"})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -245,57 +242,6 @@ const fakeClaudeThatStarts = "#!/bin/sh\n" + fakeAgents + fakeStart + "exec slee
 const fakeClaudeThatAnswers = "#!/bin/sh\n" + fakeAgents + fakeStart + `sleep 1
 printf '%s\n' '{"type":"user","message":{"content":"[magi] This session was just handed off"}}' '{"type":"assistant","message":{"content":"on server"}}' >> "$HOME/.claude/projects/$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-/g')/$2.jsonl"
 exec sleep 60
-`
-
-const fakeCodex = `#!/bin/sh
-if [ "$1" = --version ]; then echo "codex-cli $MAGI_FAKE_CODEX_VERSION"; exit; fi
-codex_home=${CODEX_HOME:-$HOME/.codex}
-config=$codex_home/config.toml
-if [ "$1" = app-server ]; then
-  mkdir -p "$codex_home"
-  while read -r line; do
-    printf '%s\n' "$line" >> "$codex_home/app-server-calls"
-    id=${line#'{"id":'}
-    id=${id%%,*}
-    case $line in
-      *'"method":"initialize"'*) printf '{"id":0,"result":{"codexHome":"%s"}}\n' "$codex_home" ;;
-      *'"method":"thread/read"'*)
-        thread=${line##*'"threadId":"'}
-        thread=${thread%%'"'*}
-        f=$(find "$codex_home/sessions" -name "rollout-*-$thread.jsonl*" 2>/dev/null | head -n 1)
-        if [ -z "$f" ]; then
-          printf '{"id":%s,"error":{"code":-32600,"message":"thread not loaded: %s"}}\n' "$id" "$thread"
-          continue
-        fi
-        cwd=$(grep -E '"type":"(session_meta|turn_context)"' "$f" | tail -n 1 | sed 's/.*"cwd":"\([^"]*\)".*/\1/')
-        f=${f%%.jsonl*}.jsonl
-        printf '{"method":"thread/status/changed","params":{}}\n{"id":%s,"result":{"thread":{"id":"%s","name":null,"path":"%s","cwd":"%s","status":{"type":"notLoaded"}}}}\n' "$id" "$thread" "$f" "$cwd"
-        ;;
-      *'"method":"config/read"'*)
-        projects=$(awk '/^\[/ { key = "" } /^\[projects\./ { key = substr($0, 11, length($0) - 11) } /^trust_level/ && key != "" { printf "%s%s:{\"trust_level\":%s}", sep, key, $3; sep = "," }' "$config" 2>/dev/null)
-        printf '{"id":%s,"result":{"config":{"projects":{%s}},"layers":[{"name":{"type":"user"},"version":"%s"}]}}\n' "$id" "$projects" "$(cksum 2>/dev/null < "$config")"
-        ;;
-      *'"method":"config/value/write"'*)
-        expected=${line##*'"expectedVersion":"'}
-        expected=${expected%%'"'*}
-        if [ "$expected" != "$(cksum 2>/dev/null < "$config")" ]; then
-          printf '{"id":%s,"error":{"code":-32600,"data":{"config_write_error_code":"configVersionConflict"},"message":"Configuration was modified since last read. Fetch latest version and retry."}}\n' "$id"
-          continue
-        fi
-        key=${line#*'"keyPath":"projects.'}
-        key=$(printf '%s' "${key%%.trust_level*}" | sed 's/\\"/"/g')
-        printf '\n[projects.%s]\ntrust_level = "trusted"\n' "$key" >> "$config"
-        printf '{"id":%s,"result":{"status":"ok"}}\n' "$id"
-        ;;
-    esac
-  done
-  exit
-fi
-printf '%s\n' "$@" > "$HOME/codex-args"
-while [ $# -gt 0 ] && [ "$1" != resume ]; do shift; done
-f=$(find "$codex_home/sessions" -name "rollout-*-$2.jsonl")
-printf '%s\n' '{"timestamp":"t","type":"event_msg","payload":{"type":"task_started"}}' '{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete"}}' >> "$f"
-sleep 60
 `
 
 func (f *fixture) tool(name, body string) string {

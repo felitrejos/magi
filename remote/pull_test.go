@@ -35,7 +35,7 @@ func TestPullBringsTheSessionAndItsWorkBackFromTheServer(t *testing.T) {
 	id := "0f0f0f0f-1111-2222-3333-888888888888"
 	transcript := f.sessionLeftOnServer(f.home, id)
 
-	res, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Codex: "codex", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
+	res, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
 	if err != nil {
 		t.Fatalf("pull failed after %s: %v", res.Summary(), err)
 	}

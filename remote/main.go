@@ -396,7 +396,7 @@ func openPulledTab(res *Pulled, prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	command := resumeCommand(res.Session, res.Name, prompt, res.Codex)
+	command := resumeCommand(res.Session, res.Name, prompt)
 	program, err := exec.LookPath(command[0])
 	if err != nil {
 		return "", fmt.Errorf("%s isn't installed on %s", command[0], local.Name())
@@ -405,17 +405,13 @@ func openPulledTab(res *Pulled, prompt string) (string, error) {
 	launcher := sh.Tmux{Machine: local}
 	group := localGroup(res.ProjectRoot, cfg.LocalRoots)
 	launched := time.Now()
-	tab, err := launcher.Start(group, tabLabel(res.Name, res.Codex), res.ToDir, command, true)
+	tab, err := launcher.Start(group, tabLabel(res.Name), res.ToDir, command, true)
 	if err != nil {
 		return "", err
 	}
 	if _, err := launcher.Show(tab); err != nil {
 		res.note(fmt.Errorf("showing the new tab failed: %w", err))
 	}
-	where := launcher.Where(group)
-	if res.Codex {
-		return where, nil
-	}
 	link, err := waitForRemoteControl(local, res.Session, launched)
-	return where + ", and in the Claude apps at " + link, err
+	return launcher.Where(group) + ", and in the Claude apps at " + link, err
 }

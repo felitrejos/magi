@@ -24,14 +24,13 @@ var minGit = [3]int{2, 31, 0}
 
 var projectFolders = []string{"~/Developer", "~/developer", "~/Projects", "~/projects", "~/code", "~/src", "~/dev"}
 
-const findClaudeScript = `for t in claude codex; do for c in "$HOME/.local/bin/$t" "$(command -v "$t" 2>/dev/null)" "/opt/homebrew/bin/$t" "/usr/local/bin/$t"; do [ -x "$c" ] && { printf '%s' "$c" | sed "s|^$HOME/|~/|"; break; }; done; echo; done`
+const findClaudeScript = `for c in "$HOME/.local/bin/claude" "$(command -v claude 2>/dev/null)" /opt/homebrew/bin/claude /usr/local/bin/claude; do if [ -x "$c" ]; then printf '%s' "$c" | sed "s|^$HOME/|~/|"; break; fi; done`
 
 type setupInput struct {
 	Host       string   `json:"host" jsonschema:"the name the user calls that machine by, for example homelab; it's how they'll say \"hand this off to my homelab\""`
 	SSH        string   `json:"ssh,omitempty" jsonschema:"the ssh destination, such as user@homelab or a Tailscale name; defaults to host, or to what the config already has"`
 	Roots      []string `json:"roots,omitempty" jsonschema:"folders projects live in on that machine, each starting with / or ~/; new projects go in the first. Leave out to keep what the config has, or to use the usual folders that exist there, such as ~/developer or ~/projects"`
 	LocalRoots []string `json:"local_roots,omitempty" jsonschema:"folders projects live in on this machine. Leave out to keep what the config has, or to use the usual folders that exist here"`
-	Codex      bool     `json:"codex,omitempty" jsonschema:"true to move Codex sessions to and from that machine as well"`
 }
 
 func setupMachine(in setupInput) (string, error) {
@@ -77,14 +76,8 @@ func setupMachine(in setupInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	claude, codex, _ := strings.Cut(strings.TrimSuffix(string(found), "\n"), "\n")
-	if h.Claude = cmp.Or(claude, h.Claude); h.Claude == "" {
+	if h.Claude = cmp.Or(string(found), h.Claude); h.Claude == "" {
 		return fmt.Sprintf("Claude Code isn't installed on %s. Only the user can install it and log in there. Then call setup_machine again.\n", in.Host), nil
-	}
-	if in.Codex {
-		if h.Codex = cmp.Or(codex, h.Codex); h.Codex == "" {
-			return fmt.Sprintf("Codex isn't installed on %s. Install it there, or call setup_machine without codex.\n", in.Host), nil
-		}
 	}
 	if len(in.Roots) > 0 {
 		h.Roots = in.Roots
@@ -260,13 +253,13 @@ func (c *checks) check(err error, what, fix string) bool {
 	return true
 }
 
-func (c *checks) tested(r testedRange, tool, where, text string) {
+func (c *checks) tested(r testedRange, where, text string) {
 	version := versionPattern.FindString(text)
-	if err := r.refuse(tool, where, version); err != nil {
+	if err := r.refuse(where, version); err != nil {
 		c.fail(err.Error(), "magi refuses to move sessions with it until then")
 		return
 	}
-	c.pass(tool + " " + version + " on " + where + " is a version magi was tested with")
+	c.pass("Claude Code " + version + " on " + where + " is a version magi was tested with")
 }
 
 func (c *checks) gitVersion(where, text string, err error) {
@@ -322,12 +315,12 @@ func doctor(cfg Config, name string, h Host, plugin magiPlugin, pluginErr error,
 	}
 	fmt.Fprintf(out, "\nThis machine (%s)\n", local.Name())
 	versions, err := loadTested()
-	if !c.check(err, "read which Claude Code and Codex versions magi was tested with", "check ~/.magi/tested.json") {
+	if !c.check(err, "read which Claude Code versions magi was tested with", "check ~/.magi/tested.json") {
 		return errors.New("fix the tested versions first")
 	}
 	_, err = exec.LookPath("ssh")
 	c.check(err, "ssh is installed", "install ssh")
-	doctorMachine(c, versions, local, "this machine", local.Claude(), local.Codex(), cfg.LocalRoots)
+	doctorMachine(c, versions, local, "this machine", local.Claude(), cfg.LocalRoots)
 	running := watchRunning()
 	_, tmuxErr := exec.LookPath("tmux")
 	switch {
@@ -349,7 +342,7 @@ func doctor(cfg Config, name string, h Host, plugin magiPlugin, pluginErr error,
 		return err
 	}
 	if _, err := c.run(remote, "true"); c.check(err, "ssh "+h.SSH+" works without a password prompt", "only the user can do this: set up key-based SSH to "+h.SSH) {
-		doctorMachine(c, versions, remote, name, h.Claude, h.Codex, h.Roots)
+		doctorMachine(c, versions, remote, name, h.Claude, h.Roots)
 		c.plugin(remote, name, plugin, pluginErr)
 		_, err = c.run(remote, "command -v tmux >/dev/null")
 		c.check(err, "tmux on "+name, "install tmux there; when that needs sudo, only the user can do it")
@@ -360,7 +353,7 @@ func doctor(cfg Config, name string, h Host, plugin magiPlugin, pluginErr error,
 	return nil
 }
 
-func doctorMachine(c *checks, versions testedVersions, m sh.Machine, name, claudePath, codexPath string, roots []string) {
+func doctorMachine(c *checks, versions testedRange, m sh.Machine, name, claudePath string, roots []string) {
 	gitOut, gitErr := c.run(m, "git --version")
 	c.gitVersion(name, string(gitOut), gitErr)
 	_, err := c.run(m, "command -v tar >/dev/null")
@@ -373,14 +366,9 @@ func doctorMachine(c *checks, versions testedVersions, m sh.Machine, name, claud
 	home := string(out)
 	claude := expandHome(claudePath, home)
 	if v, err := c.run(m, `"$1" --version`, claude); c.check(err, "claude at "+claudePath+" on "+name, "call setup_machine again so it finds claude there") {
-		c.tested(versions.Claude, "Claude Code", name, string(v))
+		c.tested(versions, name, string(v))
 		status, _ := c.run(m, `"$1" auth status`, claude)
 		c.login(name, string(status))
-	}
-	if codexPath != "" {
-		if v, err := c.run(m, `"$1" --version`, expandHome(codexPath, home)); c.check(err, "codex at "+codexPath+" on "+name, "call setup_machine again with codex so it finds codex there") {
-			c.tested(versions.Codex, "Codex", name, string(v))
-		}
 	}
 	for _, root := range roots {
 		_, err := c.run(m, `[ -d "$1" ]`, expandHome(root, home))

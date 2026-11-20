@@ -69,7 +69,6 @@ const (
 	ExitConflicts   = 8
 	ExitInProgress  = 9
 	ExitBusy        = 10
-	ExitGone        = 11
 	ExitNoRoom      = 11
 	ExitUnreachable = 255
 )
@@ -88,7 +87,6 @@ type Machine interface {
 	With(context.Context) Machine
 	Command(script string, args ...string) *exec.Cmd
 	Claude() string
-	Codex() string
 }
 
 func Run(m Machine, script string, args ...string) ([]byte, error) {
@@ -125,9 +123,8 @@ func stopped(m Machine, err error) bool {
 }
 
 type Local struct {
-	ctx   context.Context
-	name  string
-	codex string
+	ctx  context.Context
+	name string
 }
 
 func NewLocal(ctx context.Context) (*Local, error) {
@@ -135,14 +132,12 @@ func NewLocal(ctx context.Context) (*Local, error) {
 	if err != nil {
 		return nil, err
 	}
-	codex, _ := exec.LookPath("codex")
-	return &Local{ctx: ctx, name: strings.TrimSuffix(name, ".local"), codex: codex}, nil
+	return &Local{ctx: ctx, name: strings.TrimSuffix(name, ".local")}, nil
 }
 
 func (l *Local) Name() string             { return l.name }
 func (l *Local) Context() context.Context { return l.ctx }
 func (l *Local) Claude() string           { return "claude" }
-func (l *Local) Codex() string            { return l.codex }
 func (l *Local) With(ctx context.Context) Machine {
 	c := *l
 	c.ctx = ctx
@@ -157,10 +152,9 @@ type Remote struct {
 	host   string
 	opts   []string
 	claude string
-	codex  string
 }
 
-func NewRemote(ctx context.Context, ssh, claude, codex string) (*Remote, error) {
+func NewRemote(ctx context.Context, ssh, claude string) (*Remote, error) {
 	sockets, err := store.Dir("ssh")
 	if err != nil {
 		return nil, err
@@ -172,7 +166,6 @@ func NewRemote(ctx context.Context, ssh, claude, codex string) (*Remote, error) 
 		ctx:    ctx,
 		host:   ssh,
 		claude: claude,
-		codex:  codex,
 		opts: []string{
 			"-o", "BatchMode=yes",
 			"-o", "ConnectTimeout=10",
@@ -188,7 +181,6 @@ func NewRemote(ctx context.Context, ssh, claude, codex string) (*Remote, error) 
 func (r *Remote) Name() string             { return r.host }
 func (r *Remote) Context() context.Context { return r.ctx }
 func (r *Remote) Claude() string           { return r.claude }
-func (r *Remote) Codex() string            { return r.codex }
 func (r *Remote) With(ctx context.Context) Machine {
 	c := *r
 	c.ctx = ctx

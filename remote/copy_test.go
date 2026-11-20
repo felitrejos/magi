@@ -18,7 +18,7 @@ func TestTheBlockNamesWhatGoesAndNeverASecretsValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ask, err := describeCopy(f.machine(), "server", Host{Secrets: []string{".env"}}, f.workspace(f.local), true, false)
+	got, ask, err := describeCopy(f.machine(), "server", Host{Secrets: []string{".env"}}, f.workspace(f.local), true)
 	want := `What goes to server:
   branch main, its commits, and 1 changed file
   files git doesn't track yet: .magi.toml, a.txt, b.txt, c.txt, d.txt and 2 more
@@ -41,7 +41,7 @@ func TestAPlainFolderNamesItsSecretsButNeverTheirValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := describeCopy(f.machine(), "server", Host{Secrets: []string{".env"}}, ws, true, false)
+	got, _, err := describeCopy(f.machine(), "server", Host{Secrets: []string{".env"}}, ws, true)
 	if err != nil || !strings.Contains(got, "secret files, by name only: .env") || strings.Contains(got, "private-value") {
 		t.Fatalf("block = %q, %v", got, err)
 	}
@@ -69,7 +69,7 @@ func TestAnExcludedUntrackedFileStaysBehind(t *testing.T) {
 	if got := f.git(f.local, "show", ws.Git.Worktree+":build/run.sh"); got != "edited" {
 		t.Errorf("a tracked file under an excluded name went as %q", got)
 	}
-	if got, _, err := describeCopy(f.machine(), "server", Host{}, ws, false, false); err != nil || !strings.Contains(got, "\n  left out by exclude in magi's config: build/out.o and web/dist/\n") {
+	if got, _, err := describeCopy(f.machine(), "server", Host{}, ws, false); err != nil || !strings.Contains(got, "\n  left out by exclude in magi's config: build/out.o and web/dist/\n") {
 		t.Errorf("block = %v\n%s", err, got)
 	}
 }
@@ -85,7 +85,7 @@ func TestACopyNeedsAYesForSecretsUntrackedFilesOr50MB(t *testing.T) {
 		{Workspace{Git: git, Untracked: []string{"notes.txt"}}, true},
 		{Workspace{Git: git, Secrets: []string{".env"}}, true},
 	} {
-		if _, ask, err := describeCopy(nil, "server", Host{}, c.ws, false, false); err != nil || ask != c.ask {
+		if _, ask, err := describeCopy(nil, "server", Host{}, c.ws, false); err != nil || ask != c.ask {
 			t.Errorf("%+v: ask %v, %v", c.ws, ask, err)
 		}
 	}

@@ -1,24 +1,18 @@
 #!/bin/sh
-name=$1 cli=$2 codex=$3
+name=$1 cli=$2
 case $cli in \~/*) cli=$HOME/${cli#\~/} ;; esac
 wanted=$HOME/.magi/wanted
-locks=${CODEX_HOME:-$HOME/.codex}/thread-writer-locks
 if [ -n "$name" ]; then
   mkdir -p "$HOME/.magi/watchers" "$wanted"
   ps -A -o pid= -o ppid= -o args= | loop="magi set -- \\047$name\\047" awk '$2 == 1 && index($0, ENVIRON["loop"]) && index($0, ".magi/watchers") { print $1 }' | while read -r pid; do kill "$pid"; done
 fi
-tick=0 registry=- shown=- scanned=-
+tick=0 registry=-
 usage() {
   if [ -r /proc/self/stat ]; then
     cat /proc/[0-9]*/stat 2>/dev/null | sed 's/^\([0-9]*\) (.*) /\1 /' | awk -v hz="$(getconf CLK_TCK)" -v page="$(getconf PAGESIZE)" '{ print $1, $3, ($13 + $14 + $15 + $16) / hz, $23 * page / 1024 }'
   else
     ps -A -o pid= -o ppid= -o time= -o rss=
   fi
-}
-scan() {
-  now=
-  for lock in "$locks"/*.lock; do now="$now $lock"; done
-  for pid in $held; do kill -0 "$pid" 2>/dev/null && now="$now $pid"; done
 }
 while :; do
   if [ -n "$name" ]; then
@@ -50,40 +44,11 @@ while :; do
     registry=$live
     case $live in *'"status":"waiting"'*) live="${live}waiting $("$cli" agents --json | tr -d '\n')
 " ;; esac
-    claude=$live
-  fi
-  if [ -n "$codex" ]; then
-    scan
-    if [ "$now" != "$scanned" ]; then
-      opened=$(sh -c "$codex" magi opened)
-      held=$(printf '%s\n' "$opened" | cut -d ' ' -f 2 | tr , ' ')
-      scan
-      scanned=$now grown=-
-      set --
-      while read -r _ _ rollout; do
-        if [ -n "$rollout" ]; then set -- "$@" "$rollout"; fi
-      done <<EOF
-$opened
-EOF
-    fi
-    if [ $# -eq 0 ]; then
-      threads=
-    elif [ "$grown" = - ] || [ $((tick % 3)) -eq 0 ]; then
-      sizes=$(wc -c "$@")
-      if [ "$sizes" != "$grown" ]; then
-        grown=$sizes
-        threads=$(printf '%s\n' "$opened" | sh -c "$codex" magi states)
-      fi
-    fi
-  fi
-  if [ "$claude$threads" != "$shown" ]; then
-    shown=$claude$threads
-    printf '%s' "$claude"
-    if [ -n "$threads" ]; then printf '%s\n' "$threads"; fi
+    printf '%s' "$live"
     echo sessions
   fi
   if [ $((tick % 15)) -eq 0 ]; then
-    printf 'stats %s\n' "$({ load; df -Pk "$HOME"; usage; } | awk -v roots="$pids $held" '
+    printf 'stats %s\n' "$({ load; df -Pk "$HOME"; usage; } | awk -v roots="$pids" '
       function seconds(t, n, p, i, s) {
         n = split(t, p, /[-:]/)
         for (i = 1; i <= n; i++) s = s * (i == 2 && t ~ /-/ ? 24 : 60) + p[i]

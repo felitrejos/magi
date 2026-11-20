@@ -51,43 +51,10 @@ func (m mover) run() error {
 	if err != nil {
 		return err
 	}
-	if s.Codex {
-		return m.codex(local, host, s)
-	}
 	if s.Live == nil {
 		return m.now(local, host, s, false)
 	}
 	_, err = sh.Run(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since(), local.Claude())
-	if sh.ExitCode(err) == sh.ExitBusy {
-		return busyError(s)
-	}
-	if err != nil {
-		return err
-	}
-	return m.now(local, host, s, true)
-}
-
-func (m mover) codex(local *sh.Local, host Host, s remoteSession) error {
-	if host.Codex == "" {
-		return fmt.Errorf("session %s is a Codex session, and %s isn't set up for Codex; call setup_machine for %s with codex set to true", store.ShortID(s.ID), m.host, m.host)
-	}
-	if err := s.refuseUnsure(local); err != nil {
-		return err
-	}
-	if err := refuseOpenCodex(local, s.ID, s.Running); err != nil {
-		return err
-	}
-	remote, err := newRemote(local.Context(), host)
-	if err != nil {
-		return err
-	}
-	if err := refuseOpenCodex(remote, s.ID, nil); err != nil {
-		return err
-	}
-	if len(s.Running) == 0 {
-		return m.now(local, host, s, false)
-	}
-	err = stopCodex(local, s)
 	if sh.ExitCode(err) == sh.ExitBusy {
 		return busyError(s)
 	}
@@ -113,7 +80,7 @@ func findLocalSession(local *sh.Local, id string) (remoteSession, error) {
 	if live, _ := liveSessions(local); slices.ContainsFunc(live, func(l liveSession) bool { return l.SessionID == id }) {
 		return s, fmt.Errorf("session %s hasn't started a conversation yet, so there's nothing to move", store.ShortID(id))
 	}
-	return s, fmt.Errorf("no Claude Code or Codex session %s on %s", id, local.Name())
+	return s, fmt.Errorf("no Claude Code session %s on %s", id, local.Name())
 }
 
 func (m mover) now(local *sh.Local, host Host, s remoteSession, stopped bool) error {
@@ -126,13 +93,9 @@ func (m mover) now(local *sh.Local, host Host, s remoteSession, stopped bool) er
 		return retire(local.With(finish), m.host, s.ID, s.Transcript, 0)
 	}
 	show := func(block string) { fmt.Fprintln(m.out, block) }
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Show: show, Codex: s.Codex, Rollout: s.Rollout, Retire: closeHere}.Run(context.Background())
+	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Show: show, Retire: closeHere}.Run(context.Background())
 	if err != nil && stopped {
-		program := local.Claude()
-		if s.Codex {
-			program = local.Codex()
-		}
-		return reopen(local, "here", program, localGroup(s.Cwd, host.LocalRoots), s, "Moving this session to "+m.host, err)
+		return reopen(local, "here", local.Claude(), localGroup(s.Cwd, host.LocalRoots), s, "Moving this session to "+m.host, err)
 	}
 	if err != nil {
 		return err

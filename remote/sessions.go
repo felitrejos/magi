@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -21,9 +20,7 @@ type machineSessions struct {
 	Name     string
 	Machine  sh.Machine
 	Sessions []liveSession
-	Codex    []codexThread
 	Err      error
-	CodexErr error
 }
 
 func everySession(ctx context.Context) ([]machineSessions, error) {
@@ -53,7 +50,7 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 				}
 				m.Machine = r
 			}
-			m.read()
+			m.Sessions, m.Err = liveSessions(m.Machine)
 			m.Machine = m.Machine.With(ctx)
 		})
 	}
@@ -61,17 +58,11 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 	return all, nil
 }
 
-func (m *machineSessions) read() {
-	if m.Sessions, m.Err = liveSessions(m.Machine); m.Err == nil && m.Machine.Codex() != "" {
-		m.Codex, m.CodexErr = openCodexSessions(m.Machine)
-	}
-}
-
 func describeSessions(all []machineSessions) string {
 	var b strings.Builder
 	var waiting, unchecked []string
 	for _, m := range all {
-		if m.Err != nil || m.CodexErr != nil {
+		if m.Err != nil {
 			unchecked = append(unchecked, m.Name)
 		}
 		for _, s := range m.Sessions {
@@ -98,8 +89,8 @@ func describeSessions(all []machineSessions) string {
 			fmt.Fprintf(&b, "%s: not reachable (%v)\n", m.Name, m.Err)
 			continue
 		}
-		if len(m.Sessions) == 0 && len(m.Codex) == 0 && m.CodexErr == nil {
-			fmt.Fprintf(&b, "%s: no Claude Code or Codex sessions running\n", m.Name)
+		if len(m.Sessions) == 0 {
+			fmt.Fprintf(&b, "%s: no Claude Code sessions running\n", m.Name)
 			continue
 		}
 		fmt.Fprintf(&b, "%s:\n", m.Name)
@@ -109,13 +100,6 @@ func describeSessions(all []machineSessions) string {
 				line += "  " + remoteControlLink + *s.BridgeSessionID
 			}
 			fmt.Fprintln(&b, line)
-		}
-		for _, t := range m.Codex {
-			c := codexSession(t)
-			fmt.Fprintf(&b, "  %s  %s  codex %s  %s\n", store.ShortID(c.SessionID), sessionTitle(c), c.Status, c.Cwd)
-		}
-		if m.CodexErr != nil {
-			fmt.Fprintf(&b, "  couldn't read its Codex sessions (%v)\n", m.CodexErr)
 		}
 	}
 	return b.String()
@@ -139,22 +123,11 @@ func waitingOn(s liveSession) string {
 	return " (" + s.WaitingFor + ")"
 }
 
-func codexSession(t codexThread) liveSession {
-	s := liveSession{SessionID: t.ID, Cwd: t.Cwd, Name: t.Name, Status: "idle", Codex: true}
-	if t.Busy {
-		s.Status = "busy"
-	}
-	return s
-}
-
 func findAnySession(all []machineSessions, query string) (machineSessions, liveSession, error) {
 	var matches []string
 	var foundOn machineSessions
 	var found liveSession
 	for _, m := range all {
-		for _, t := range m.Codex {
-			m.Sessions = append(m.Sessions, codexSession(t))
-		}
 		for _, s := range m.Sessions {
 			if strings.HasPrefix(s.SessionID, query) || len(query) >= 4 && strings.Contains(strings.ToLower(sessionTitle(s)), strings.ToLower(query)) {
 				matches = append(matches, sessionLabel(m.Name, s))
@@ -164,7 +137,7 @@ func findAnySession(all []machineSessions, query string) (machineSessions, liveS
 	}
 	switch len(matches) {
 	case 0:
-		return foundOn, found, fmt.Errorf("no running Claude Code or Codex session matches %q", query)
+		return foundOn, found, fmt.Errorf("no running Claude Code session matches %q", query)
 	case 1:
 		return foundOn, found, nil
 	}
@@ -197,18 +170,11 @@ func waitSession(query string, every time.Duration) (string, error) {
 			continue
 		}
 		i := slices.IndexFunc(all, func(o machineSessions) bool { return o.Name == m.Name })
-		if i < 0 {
-			return sessionLabel(m.Name, s) + " ended.", nil
-		}
-		unread := all[i].Err
-		if s.Codex {
-			unread = cmp.Or(unread, all[i].CodexErr)
-		}
-		if unread == nil {
+		if i < 0 || all[i].Err == nil {
 			return sessionLabel(m.Name, s) + " ended.", nil
 		}
 		if failures++; failures >= waitFailures {
-			return "", fmt.Errorf("%s couldn't be checked: %w", m.Name, unread)
+			return "", fmt.Errorf("%s couldn't be checked: %w", m.Name, all[i].Err)
 		}
 	}
 	if s.Status == "waiting" {

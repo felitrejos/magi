@@ -62,7 +62,6 @@ type liveSession struct {
 	Status     string `json:"status"`
 	WaitingFor string `json:"waitingFor"`
 	Name       string `json:"name"`
-	Codex      bool   `json:"-"`
 	StatusAt   int64  `json:"statusUpdatedAt"`
 	fromRegistry
 }
@@ -185,12 +184,8 @@ func claudeProject(home, dir string) (string, error) {
 	return home + "/.claude/projects/" + slug, err
 }
 
-func stopSession(m sh.Machine, sessionID string, codex bool) error {
-	script := sessionScript
-	if codex {
-		script = codexScript
-	}
-	_, err := sh.Run(m, script, "kill", sessionID)
+func stopSession(m sh.Machine, sessionID string) error {
+	_, err := sh.Run(m, sessionScript, "kill", sessionID)
 	return err
 }
 
@@ -207,16 +202,12 @@ func isTrusted(m sh.Machine, dir string) (bool, error) {
 	if err := json.Unmarshal(out, &state); err != nil {
 		return false, fmt.Errorf("read ~/.claude.json on %s: %w", m.Name(), err)
 	}
-	return trustedUnder(dir, func(d string) bool { return state.Projects[d].Trusted }), nil
-}
-
-func trustedUnder(dir string, trusted func(string) bool) bool {
 	for d := dir; ; d = filepath.Dir(d) {
-		if trusted(d) {
-			return true
+		if state.Projects[d].Trusted {
+			return true, nil
 		}
 		if d == filepath.Dir(d) {
-			return false
+			return false, nil
 		}
 	}
 }
@@ -275,20 +266,14 @@ type Prompt struct {
 	Note                     string
 	Sidecar                  string
 	Project                  string
-	Codex                    bool
 }
 
 func handoffPrompt(p Prompt) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[magi] This session was just handed off from %s to %s. The project is now at %s (it was %s on %s). ", p.From, p.To, p.NewDir, p.OldDir, p.From)
-	switch {
-	case p.Git && p.Codex:
-		b.WriteString("Branch, commits, staged and unstaged changes and secret files were synced. ")
-	case p.Git:
+	if p.Git {
 		b.WriteString("Branch, commits, staged and unstaged changes, secret files and project memory were synced. ")
-	case p.Codex:
-		b.WriteString("The folder's files were copied. ")
-	default:
+	} else {
 		b.WriteString("The folder's files and project memory were copied. ")
 	}
 	b.WriteString("Earlier messages mention the old paths: use the new ones from now on, and read a file again before editing it here. ")

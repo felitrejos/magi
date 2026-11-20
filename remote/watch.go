@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -205,14 +204,12 @@ func watchHost(w *watcher, me string) {
 }
 
 type watcher struct {
-	name     string
-	m        sh.Machine
-	logger   *log.Logger
-	live     liveMachine
-	block    []string
-	codexIDs string
-	codex    map[string]codexThread
-	usage    map[int]use
+	name   string
+	m      sh.Machine
+	logger *log.Logger
+	live   liveMachine
+	block  []string
+	usage  map[int]use
 }
 
 type liveMachine struct {
@@ -234,13 +231,12 @@ type liveEntry struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	Folder    string    `json:"folder"`
-	Codex     bool      `json:"codex,omitempty"`
 	State     string    `json:"state"`
 	WaitingOn string    `json:"waitingOn,omitempty"`
 	Since     time.Time `json:"since,omitzero"`
 	CPU       int       `json:"cpu"`
 	MemoryMB  int       `json:"memoryMB"`
-	pids      []int
+	pid       int
 }
 
 type use struct {
@@ -255,11 +251,7 @@ func newWatcher(name string, m sh.Machine, logger *log.Logger) *watcher {
 
 func (w *watcher) follow(me string) error {
 	w.block = nil
-	codex := ""
-	if w.m.Codex() != "" {
-		codex = codexScript
-	}
-	cmd := w.m.Command(watchScript, me, w.m.Claude(), codex)
+	cmd := w.m.Command(watchScript, me, w.m.Claude())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -290,7 +282,7 @@ func (w *watcher) follow(me string) error {
 func (w *watcher) hear(line string, now time.Time) {
 	kind, rest, _ := strings.Cut(line, " ")
 	switch kind {
-	case "claude", "waiting", "codex":
+	case "claude", "waiting":
 		w.block = append(w.block, line)
 		return
 	case "sessions":
@@ -309,8 +301,6 @@ func (w *watcher) hear(line string, now time.Time) {
 
 func (w *watcher) sessions() {
 	var sessions []liveSession
-	var codex []liveEntry
-	var ids []string
 	waiting := map[int]string{}
 	for _, line := range w.block {
 		kind, rest, _ := strings.Cut(line, " ")
@@ -326,47 +316,14 @@ func (w *watcher) sessions() {
 			for _, s := range listed {
 				waiting[s.PID] = s.WaitingFor
 			}
-		case "codex":
-			id, rest, _ := strings.Cut(rest, " ")
-			state, list, _ := strings.Cut(rest, " ")
-			e := liveEntry{ID: id, Codex: true, State: state}
-			for _, pid := range strings.Split(list, ",") {
-				n, _ := strconv.Atoi(pid)
-				e.pids = append(e.pids, n)
-			}
-			codex = append(codex, e)
-			ids = append(ids, id)
 		}
 	}
 	w.block = nil
-	if seen := strings.Join(ids, " "); seen != w.codexIDs {
-		ctx, cancel := context.WithTimeout(w.m.Context(), reachWait)
-		threads, err := readCodexThreads(w.m.With(ctx), ids)
-		cancel()
-		if err != nil {
-			w.logger.Printf("%s: reading its Codex sessions failed: %v", w.name, err)
-		} else {
-			w.codexIDs, w.codex = seen, map[string]codexThread{}
-			for _, t := range threads {
-				w.codex[t.ID] = t
-			}
-		}
-	}
 	entries := []liveEntry{}
 	for _, s := range sessions {
-		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], pids: []int{s.PID}}
+		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], pid: s.PID}
 		if s.StatusAt > 0 {
 			e.Since = time.UnixMilli(s.StatusAt)
-		}
-		entries = append(entries, e)
-	}
-	for _, e := range codex {
-		t := w.codex[e.ID]
-		e.Title, e.Folder, e.Since = sessionTitle(codexSession(t)), t.Cwd, time.Now()
-		for _, old := range w.live.Sessions {
-			if old.ID == e.ID && old.State == e.State {
-				e.Since = old.Since
-			}
 		}
 		entries = append(entries, e)
 	}
@@ -397,11 +354,7 @@ func (w *watcher) stats(line string, now time.Time) error {
 func (w *watcher) save() error {
 	for i := range w.live.Sessions {
 		s := &w.live.Sessions[i]
-		s.CPU, s.MemoryMB = 0, 0
-		for _, pid := range s.pids {
-			s.CPU += w.usage[pid].cpu
-			s.MemoryMB += w.usage[pid].memoryMB
-		}
+		s.CPU, s.MemoryMB = w.usage[s.pid].cpu, w.usage[s.pid].memoryMB
 	}
 	path, err := livePath(w.name)
 	if err != nil {

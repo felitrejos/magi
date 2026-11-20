@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -199,7 +198,7 @@ func newMCPServer() *mcp.Server {
 	addTool(server, &mcp.Tool{
 		Name:        "sessions",
 		Annotations: readOnly,
-		Description: "List the Claude Code and Codex sessions running on this machine and on every machine in the user's magi config, read over SSH. The first line says which sessions are waiting on the user, so this one call answers \"does anything need me?\". Then each session's id, title, state and folder: busy, waiting (and on what) or idle for Claude Code, busy or idle for Codex, from its session file (a Codex approval wait isn't visible from outside Codex, and a Codex turn that was killed midway can still read as busy), and its Remote Control link when it has one. Read-only.",
+		Description: "List the Claude Code sessions running on this machine and on every machine in the user's magi config, read over SSH. The first line says which sessions are waiting on the user, so this one call answers \"does anything need me?\". Then each session's id, title, state (busy, waiting and on what, or idle), folder, and its Remote Control link when it has one. Read-only.",
 	}, func(ctx context.Context, _ struct{}) (string, error) {
 		all, err := everySession(ctx)
 		if err != nil {
@@ -211,7 +210,7 @@ func newMCPServer() *mcp.Server {
 	addTool(server, &mcp.Tool{
 		Name:        "diff",
 		Annotations: readOnly,
-		Description: "Show a running Claude Code or Codex session's uncommitted changes (git diff against HEAD, plus new untracked files), on whichever machine it runs, read over SSH. Long diffs keep their end. Read-only.",
+		Description: "Show a running Claude Code session's uncommitted changes (git diff against HEAD, plus new untracked files), on whichever machine it runs, read over SSH. Long diffs keep their end. Read-only.",
 	}, func(ctx context.Context, in sessionQuery) (string, error) {
 		all, err := everySession(ctx)
 		if err != nil {
@@ -226,12 +225,12 @@ func newMCPServer() *mcp.Server {
 
 	addTool(server, &mcp.Tool{
 		Name:        "move_session",
-		Description: "Move a Claude Code or Codex session, other than this one, between this machine and another, with its conversation and its working tree. A session that runs here goes to a host as machines lists it; a session that runs on a host comes here when to is this machine's name, and opens here in a tmux window, with Remote Control for Claude Code. A session that was quit, here or on a host, moves the same way when you pass its full session id, as status lists it. Returns what went across and where it now runs. When the copy includes secret files, files git doesn't track, or 50 MB or more, a call without confirmed moves nothing and returns what would go: show it to the user, and after their yes call again with confirmed set to true. A session that's in the middle of a turn or waiting on the user isn't moved: run magi wait <session id> as a background shell command, then move it if that says it's idle, or ask the user to answer it first if that says it's waiting on them. To move this session itself, use the handoff skill. Moving a session is the user's call: before calling, say which session goes to which machine, and wait for the user's clear yes.",
+		Description: "Move a Claude Code session, other than this one, between this machine and another, with its conversation and its working tree. A session that runs here goes to a host as machines lists it; a session that runs on a host comes here when to is this machine's name, and opens here in a tmux window, with Remote Control. A session that was quit, here or on a host, moves the same way when you pass its full session id, as status lists it. Returns what went across and where it now runs. When the copy includes secret files, files git doesn't track, or 50 MB or more, a call without confirmed moves nothing and returns what would go: show it to the user, and after their yes call again with confirmed set to true. A session that's in the middle of a turn or waiting on the user isn't moved: run magi wait <session id> as a background shell command, then move it if that says it's idle, or ask the user to answer it first if that says it's waiting on them. To move this session itself, use the handoff skill. Moving a session is the user's call: before calling, say which session goes to which machine, and wait for the user's clear yes.",
 	}, moveSession)
 
 	addTool(server, &mcp.Tool{
 		Name:        "setup_machine",
-		Description: "Set up magi with another machine, or check one that's set up already, for \"set up magi with my homelab\" or \"check my homelab\". It checks key-based SSH to it, finds Claude Code there (and Codex, with codex), saves the machine in magi's config, installs the magi plugin there if it's missing, starts magi watch here in the background so sessions can be handed back to this machine, checks both machines, then moves a throwaway session there and back, which takes three short Claude turns on the user's account and a minute or two. Returns each check, and what only the user can do, such as logging in to Claude there. Installing things on another machine is the user's call: before calling, say that it installs the magi plugin on that machine and a background watcher here, and wait for the user's clear yes.",
+		Description: "Set up magi with another machine, or check one that's set up already, for \"set up magi with my homelab\" or \"check my homelab\". It checks key-based SSH to it, finds Claude Code there, saves the machine in magi's config, installs the magi plugin there if it's missing, starts magi watch here in the background so sessions can be handed back to this machine, checks both machines, then moves a throwaway session there and back, which takes three short Claude turns on the user's account and a minute or two. Returns each check, and what only the user can do, such as logging in to Claude there. Installing things on another machine is the user's call: before calling, say that it installs the magi plugin on that machine and a background watcher here, and wait for the user's clear yes.",
 	}, func(_ context.Context, in setupInput) (string, error) {
 		return setupMachine(in)
 	})
@@ -395,8 +394,8 @@ func moveSession(ctx context.Context, in moveInput) (string, error) {
 	}
 	if err != nil {
 		for _, o := range all {
-			if unread := cmp.Or(o.Err, o.CodexErr); unread != nil {
-				err = fmt.Errorf("%w; %s couldn't be read: %w", err, o.Name, unread)
+			if o.Err != nil {
+				err = fmt.Errorf("%w; %s couldn't be read: %w", err, o.Name, o.Err)
 			}
 		}
 		return "", err

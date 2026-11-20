@@ -27,7 +27,6 @@ type moveJournal struct {
 	Session          string    `json:"-"`
 	Kind             string    `json:"kind"`
 	Host             string    `json:"host"`
-	Codex            bool      `json:"codex"`
 	Started          time.Time `json:"started"`
 	Step             string    `json:"step"`
 	Undone           bool      `json:"undone,omitempty"`
@@ -74,14 +73,6 @@ func (j *moveJournal) reached(steps ...string) bool {
 	return slices.Contains(steps, j.Step)
 }
 
-func transcriptOn(m sh.Machine, home, dir, id string, codex bool, rollout string) (string, error) {
-	if !codex {
-		return claudeTranscript(home, dir, id)
-	}
-	out, err := sh.Run(m, codexScript, "path", rollout)
-	return strings.TrimSpace(string(out)), err
-}
-
 func turnsIn(m sh.Machine, transcript string) (int, error) {
 	out, err := sh.Run(m, sessionScript, "turns", transcript)
 	if err != nil {
@@ -120,23 +111,13 @@ func (c *sessionCopy) running() bool {
 }
 
 func (c *sessionCopy) look(j *moveJournal) error {
-	if j.Codex {
-		running, _, err := codexRunning(c.m, j.Session, c.transcript, c.dir)
-		if err != nil && sh.ExitCode(err) != sh.ExitGone {
-			return err
-		}
-		for _, pid := range running {
-			c.procs = append(c.procs, strconv.Itoa(pid), "")
-		}
-	} else {
-		sessions, err := liveSessions(c.m)
-		if err != nil {
-			return err
-		}
-		for _, s := range sessions {
-			if s.SessionID == j.Session {
-				c.procs = append(c.procs, strconv.Itoa(s.PID), s.since())
-			}
+	sessions, err := liveSessions(c.m)
+	if err != nil {
+		return err
+	}
+	for _, s := range sessions {
+		if s.SessionID == j.Session {
+			c.procs = append(c.procs, strconv.Itoa(s.PID), s.since())
 		}
 	}
 	turns, err := turnsIn(c.m, c.transcript)
@@ -340,7 +321,7 @@ func (r *recovery) undo() (string, error) {
 		return "", err
 	}
 	if to.procs == nil && j.Kind == "push" {
-		if err := stopSession(r.remote, j.Session, j.Codex); err != nil {
+		if err := stopSession(r.remote, j.Session); err != nil {
 			return "", err
 		}
 	}
@@ -382,8 +363,6 @@ func (r *recovery) next(c *sessionCopy) string {
 		return fmt.Sprintf("it isn't running; move_session with session %s brings it here", r.j.Session)
 	case c.here || r.j.Tab == nil:
 		return "it's still open, in " + c.dir
-	case r.j.Codex:
-		return "it's open " + sh.Tmux{Machine: r.remote}.Where(r.j.Where.Group)
 	}
 	return "it's open " + sh.Tmux{Machine: r.remote}.Where(r.j.Where.Group) + ", and in the Claude apps through Remote Control"
 }

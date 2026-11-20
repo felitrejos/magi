@@ -23,6 +23,8 @@ const (
 
 var turnEndPoll = 2 * time.Second
 
+var errNoSession = errors.New("no session")
+
 type Pull struct {
 	HostName  string
 	Host      Host
@@ -38,7 +40,6 @@ type Pulled struct {
 	PromptInfo  Prompt
 	Project     *Project
 	ProjectRoot string
-	Codex       bool
 }
 
 type remoteSession struct {
@@ -46,11 +47,6 @@ type remoteSession struct {
 	Transcript string
 	Cwd        string
 	Live       *liveSession
-	Codex      bool
-	Rollout    string
-	Running    []int
-	StaleTurn  string
-	Unsure     []string
 }
 
 func (p Pull) Run() (res Pulled, err error) {
@@ -78,24 +74,10 @@ func (p Pull) Run() (res Pulled, err error) {
 		if session, err = findSession(remote, p.SessionID); err != nil {
 			return err
 		}
-		if err := session.refuseUnsure(remote); err != nil {
-			return err
-		}
-		if session.Codex {
-			if local.Codex() == "" {
-				return fmt.Errorf("session %s is a Codex session, and codex isn't installed on %s", store.ShortID(session.ID), local.Name())
-			}
-			if err := refuseOpenCodex(remote, session.ID, session.Running); err != nil {
-				return err
-			}
-			if err := refuseOpenCodex(local, session.ID, nil); err != nil {
-				return err
-			}
-		}
 		if ws, remoteHome, err = sourceWorkspace(remote, p.HostName, session.Cwd, p.Host.Secrets, p.Host.Exclude); err != nil {
 			return err
 		}
-		if err := refuseUntested(session.Codex, local, remote, expandHome(p.Host.program(session.Codex), remoteHome)); err != nil {
+		if err := refuseUntested(local, remote, expandHome(p.Host.Claude, remoteHome)); err != nil {
 			return err
 		}
 		if where, err = place(local, ws, p.Host.LocalRoots, serverGroup(ws.MainRoot, p.Host.Roots, remoteHome), p.Host.Exclude); err != nil {
@@ -108,10 +90,10 @@ func (p Pull) Run() (res Pulled, err error) {
 	}); err != nil {
 		return res, err
 	}
-	res.Session, res.Name, res.Codex = session.ID, baseName(where.Root), session.Codex
+	res.Session, res.Name = session.ID, baseName(where.Root)
 	localDir := filepath.Join(where.Root, ws.Subdir)
-	j := &moveJournal{Session: session.ID, Kind: "pull", Host: p.HostName, Codex: session.Codex, Started: time.Now(), RemoteTranscript: session.Transcript, Workspace: ws, Where: where}
-	if j.LocalTranscript, err = transcriptOn(local, where.Home, localDir, session.ID, session.Codex, session.Rollout); err != nil {
+	j := &moveJournal{Session: session.ID, Kind: "pull", Host: p.HostName, Started: time.Now(), RemoteTranscript: session.Transcript, Workspace: ws, Where: where}
+	if j.LocalTranscript, err = claudeTranscript(where.Home, localDir, session.ID); err != nil {
 		return res, err
 	}
 	if err := j.at("stop"); err != nil {
@@ -132,10 +114,10 @@ func (p Pull) Run() (res Pulled, err error) {
 	defer cancel()
 	local, remote = local.With(ctx).(*sh.Local), remote.With(ctx).(*sh.Remote)
 	stopped := func(err error) error {
-		if session.Live == nil && len(session.Running) == 0 {
+		if session.Live == nil {
 			return err
 		}
-		return reopen(remote, "on "+p.HostName, expandHome(p.Host.program(session.Codex), remoteHome), serverGroup(ws.MainRoot, p.Host.Roots, remoteHome), session, "Bringing this session to "+local.Name(), err)
+		return reopen(remote, "on "+p.HostName, expandHome(p.Host.Claude, remoteHome), serverGroup(ws.MainRoot, p.Host.Roots, remoteHome), session, "Bringing this session to "+local.Name(), err)
 	}
 	if err := st.run("inspect", func() (err error) {
 		ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude)
@@ -144,7 +126,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	}); err != nil {
 		return res, stopped(errors.Join(err, forgetMove(session.ID)))
 	}
-	if block, _, err := describeCopy(remote, local.Name(), p.Host, ws, false, session.Codex); err != nil {
+	if block, _, err := describeCopy(remote, local.Name(), p.Host, ws, false); err != nil {
 		res.note(err)
 	} else {
 		fmt.Fprintln(p.Out, block)
@@ -175,10 +157,6 @@ func (p Pull) Run() (res Pulled, err error) {
 	}
 	var sidecar string
 	if err := st.run("transcript", func() (err error) {
-		if session.Codex {
-			_, _, err = moveRollout(remote, session.Transcript, session.Rollout, ws.Root, local, where.Root)
-			return err
-		}
 		sidecar, err = moveTranscript(remote, session.Transcript, ws, local, where, localDir)
 		return err
 	}); err != nil {
@@ -202,7 +180,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	project, err := approvedProject(local, where.Root)
 	res.note(err)
 	res.Project, res.ProjectRoot = project, where.Root
-	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Note: p.Note, Sidecar: sidecar, Codex: session.Codex}
+	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Note: p.Note, Sidecar: sidecar}
 	return res, nil
 }
 
@@ -216,7 +194,7 @@ func findSession(r sh.Machine, id string) (remoteSession, error) {
 		return s, err
 	}
 	if s.Transcript = strings.TrimSpace(string(out)); s.Transcript == "" {
-		return findCodexSession(r, id)
+		return s, fmt.Errorf("%w %s on %s", errNoSession, id, r.Name())
 	}
 	sessions, err := liveSessions(r)
 	if err != nil {
@@ -248,20 +226,13 @@ func findSession(r sh.Machine, id string) (remoteSession, error) {
 }
 
 func stopAtTurnEnd(r *sh.Remote, s remoteSession, out io.Writer) error {
-	stop := func() error { return stopCodex(r, s) }
-	switch {
-	case s.Live != nil:
-		pid := strconv.Itoa(s.Live.PID)
-		stop = func() error {
-			_, err := sh.Run(r, sessionScript, "stop", pid, s.ID, s.Live.since(), r.Claude())
-			return err
-		}
-	case len(s.Running) == 0:
+	if s.Live == nil {
 		return nil
 	}
+	pid := strconv.Itoa(s.Live.PID)
 	told := false
 	for {
-		err := stop()
+		_, err := sh.Run(r, sessionScript, "stop", pid, s.ID, s.Live.since(), r.Claude())
 		if sh.ExitCode(err) != sh.ExitBusy {
 			return err
 		}
@@ -284,17 +255,14 @@ func reopen(m sh.Machine, place, program, group string, s remoteSession, move st
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupBudget)
 	defer cancel()
 	name := baseName(s.Cwd)
-	command := resumeCommand(s.ID, name, fmt.Sprintf("[magi] %s failed (%v), so this session carries on here.", move, err), s.Codex)
+	command := resumeCommand(s.ID, name, fmt.Sprintf("[magi] %s failed (%v), so this session carries on here.", move, err))
 	command[0] = program
-	if _, openErr := (sh.Tmux{Machine: m.With(ctx)}).Start(group, tabLabel(name, s.Codex), s.Cwd, command, false); openErr != nil {
+	if _, openErr := (sh.Tmux{Machine: m.With(ctx)}).Start(group, tabLabel(name), s.Cwd, command, false); openErr != nil {
 		return fmt.Errorf("%w. The session is stopped %s, and reopening it failed (%v); the user can resume it in %s", err, place, openErr, s.Cwd)
 	}
 	return fmt.Errorf("%w. The session was stopped for the move, so magi reopened it %s in a tmux window", err, place)
 }
 
-func resumeCommand(sessionID, name, prompt string, codex bool) []string {
-	if codex {
-		return []string{"codex", "-c", "check_for_update_on_startup=false", "-c", `tui.resume_cwd="current"`, "resume", sessionID, prompt}
-	}
+func resumeCommand(sessionID, name, prompt string) []string {
 	return []string{"claude", "--resume", sessionID, "--remote-control", name, prompt}
 }
