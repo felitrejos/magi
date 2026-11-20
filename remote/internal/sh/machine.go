@@ -5,12 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -235,29 +233,6 @@ func (r *Remote) SSHCommand() string {
 	return "ssh " + quoteAll(r.opts)
 }
 
-type meter struct{}
-
-func Metered(ctx context.Context, copied *atomic.Int64) context.Context {
-	return context.WithValue(ctx, meter{}, copied)
-}
-
-func Copied(m Machine, n int64) {
-	if copied, ok := m.Context().Value(meter{}).(*atomic.Int64); ok {
-		copied.Add(n)
-	}
-}
-
-type counted struct {
-	r io.Reader
-	n int64
-}
-
-func (c *counted) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += int64(n)
-	return n, err
-}
-
 type Archive struct {
 	Paths     []string
 	Exclude   []string
@@ -287,8 +262,7 @@ func Transfer(from Machine, fromDir string, a Archive, to Machine, toDir string)
 		keep = "1"
 	}
 	unpack := to.Command(transferScript, "unpack", toDir, keep)
-	stream := &counted{r: read}
-	unpack.Stdin = stream
+	unpack.Stdin = read
 	var unpackErr bytes.Buffer
 	unpack.Stderr = &unpackErr
 
@@ -296,18 +270,15 @@ func Transfer(from Machine, fromDir string, a Archive, to Machine, toDir string)
 	if startErr == nil {
 		startErr = unpack.Start()
 	}
+	read.Close()
 	write.Close()
 	if startErr != nil {
-		read.Close()
 		if pack.Process != nil {
 			pack.Wait()
 		}
 		return startErr
 	}
-	unpacked := unpack.Wait()
-	read.Close()
-	packed := pack.Wait()
-	Copied(from, stream.n)
+	unpacked, packed := unpack.Wait(), pack.Wait()
 	for _, side := range []struct {
 		m   Machine
 		err error

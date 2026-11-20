@@ -41,7 +41,6 @@ if [ -e "$HOME/ssh-down" ]; then
   exit 255
 fi
 if [ -n "$MAGI_TEST_REMOTE_HOME" ]; then export HOME="$MAGI_TEST_REMOTE_HOME"; fi
-unset GIT_TRACE2_EVENT
 exec "${MAGI_TEST_LOGIN_SHELL:-sh}" -c "$*"
 `
 
