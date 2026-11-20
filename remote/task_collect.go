@@ -7,13 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
-	"github.com/felitrejos/magi/remote/internal/store"
+)
+
+const (
+	keepCopies    = 24 * time.Hour
+	keepCollected = 7 * 24 * time.Hour
 )
 
 func probeTask(r *sh.Remote, t *Task) (taskState, error) {
@@ -47,9 +50,6 @@ func taskStatus(id string) (*taskReport, error) {
 	}
 	st, err := probeTask(r, t)
 	if err != nil {
-		return nil, err
-	}
-	if err := t.noteState(st.State); err != nil {
 		return nil, err
 	}
 	return &taskReport{Task: t, State: st}, nil
@@ -125,7 +125,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 			}
 		}
 		if st.State == "running" {
-			return nil, fmt.Errorf("task %s on %s is still running after being told to stop; close its tab there (%s)", t.ID, t.Host, t.tabLabel())
+			return nil, fmt.Errorf("task %s on %s is still running after being told to stop; close its tab there (%s)", t.ID, t.Host, t.Label)
 		}
 		cancelled = true
 	}
@@ -168,7 +168,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	if err := errors.Join(notes...); err != nil {
 		o.Note = err.Error()
 	}
-	t.Outcome, t.State = o, "collected"
+	t.Outcome = o
 	if err := t.save(); err != nil {
 		return nil, err
 	}
@@ -176,13 +176,13 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 }
 
 func fetchLog(r *sh.Remote, t *Task) (string, error) {
-	dir, err := store.Dir("tasks")
+	name := t.ID + ".log"
+	if t.Turn > 1 {
+		name = fmt.Sprintf("%s-%d.log", t.ID, t.Turn)
+	}
+	path, err := taskPath(name)
 	if err != nil {
 		return "", err
-	}
-	path := filepath.Join(dir, t.ID+".log")
-	if t.Turn > 1 {
-		path = filepath.Join(dir, fmt.Sprintf("%s-%d.log", t.ID, t.Turn))
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -229,11 +229,10 @@ func finalMessage(logPath string) string {
 
 func bringChanges(local *sh.Local, r *sh.Remote, host Host, t *Task, o *Outcome) error {
 	if !t.Git {
-		dir, err := store.Dir("tasks")
+		files, err := taskPath(t.ID + ".files")
 		if err != nil {
 			return err
 		}
-		files := filepath.Join(dir, t.ID+".files")
 		if err := os.MkdirAll(files, 0o700); err != nil {
 			return err
 		}
@@ -286,4 +285,67 @@ func applyChanges(local *sh.Local, t *Task, o *Outcome) {
 		return
 	}
 	o.Applied = true
+}
+
+func (t *Task) removeCopy(r *sh.Remote) error {
+	slug := ""
+	if t.Kind == kindDelegate {
+		var err error
+		if slug, err = projectSlug(t.RunDir); err != nil {
+			return err
+		}
+	}
+	if _, err := sh.Run(r, taskScript, "remove", t.Dir, slug); err != nil {
+		return fmt.Errorf("removing its copy at %s on %s failed: %w", t.Dir, t.Host, err)
+	}
+	return nil
+}
+
+func closeIdleCopy(id string) error {
+	unlock, err := lockTask(id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	t, err := loadTask(id)
+	if err != nil || t.Outcome == nil || !t.Outcome.Kept || time.Since(t.Outcome.Ended) < keepCopies {
+		return err
+	}
+	return t.closeCopy()
+}
+
+func sweepTasks() string {
+	tasks, err := listTasks()
+	errs := []error{err}
+	for _, t := range tasks {
+		switch {
+		case t.Outcome == nil:
+		case t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies:
+			if err := closeIdleCopy(t.ID); err != nil && !errors.Is(err, errTaskBusy) {
+				errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
+			}
+		case !t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCollected:
+			if err := t.forget(); err != nil {
+				errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
+			}
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Sprintf("Note: tidying up old tasks failed: %v\n", err)
+	}
+	return ""
+}
+
+func (t *Task) closeCopy() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r, _, err := t.remote(ctx)
+	if err != nil {
+		return err
+	}
+	if err := t.removeCopy(r); err != nil {
+		return err
+	}
+	t.Outcome.Kept, t.Outcome.Closed = false, true
+	return t.save()
 }

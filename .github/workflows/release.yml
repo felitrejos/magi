@@ -8,7 +8,11 @@ permissions:
   contents: read
 
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: checks
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -18,9 +22,14 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27.x"
-          check-latest: true
+          go-version-file: remote/go.mod
           cache-dependency-path: remote/go.sum
+      - name: Check the tag matches the plugin's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(jq -r .version plugin/.claude-plugin/plugin.json)
+          [ "$TAG" = "v$version" ] || { echo "tag $TAG doesn't match plugin.json's version $version" >&2; exit 1; }
       - name: Build and package
         working-directory: remote
         env:
@@ -28,16 +37,15 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          for t in aarch64-apple-darwin:darwin:arm64 x86_64-apple-darwin:darwin:amd64 x86_64-unknown-linux-musl:linux:amd64 aarch64-unknown-linux-musl:linux:arm64; do
-            target=${t%%:*} rest=${t#*:}
+          for target in darwin_arm64 darwin_amd64 linux_amd64 linux_arm64; do
             out="$GITHUB_WORKSPACE/build/$target"
             mkdir -p "$out"
-            GOOS=${rest%%:*} GOARCH=${rest#*:} go build -trimpath -ldflags "-s -w -X main.version=${TAG#v}" -o "$out/magi" .
-            tar -czf "$GITHUB_WORKSPACE/dist/magi-$target.tar.gz" -C "$out" magi -C "$GITHUB_WORKSPACE" LICENSE README.md
-            (cd "$GITHUB_WORKSPACE/dist" && shasum -a 256 "magi-$target.tar.gz" > "magi-$target.tar.gz.sha256")
+            GOOS=${target%_*} GOARCH=${target#*_} go build -trimpath -ldflags "-s -w -X main.version=${TAG#v}" -o "$out/magi" .
+            tar -czf "$GITHUB_WORKSPACE/dist/magi_$target.tar.gz" -C "$out" magi -C "$GITHUB_WORKSPACE" LICENSE README.md
           done
+          (cd "$GITHUB_WORKSPACE/dist" && shasum -a 256 magi_*.tar.gz > checksums.txt)
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --verify-tag --generate-notes --title "magi $TAG" dist/* install.sh
+        run: gh release create "$TAG" --verify-tag --generate-notes --title "magi $TAG" dist/*

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -128,7 +127,7 @@ func TestARunElsewhereTaskRunsOnACopyOfTheWorkingTreeAndReturnsItsOutput(t *test
 
 const fakeDelegateClaude = `#!/bin/sh
 prompt=$(cat)
-printf '%s\n' "$@" > "$HOME/claude-args"
+printf '%s\n' "$@" "MAGI_DELEGATE=$MAGI_DELEGATE" > "$HOME/claude-args"
 printf '{"type":"system","subtype":"init"}\n'
 printf 'claude was here\n' > claude.txt
 printf 'changed by claude\n' > kept.txt
@@ -189,7 +188,7 @@ func TestADelegatedTaskAppliesItsChangesHereAndKeepsThemOnABranch(t *testing.T) 
 		t.Errorf("what's staged changed:\n%s\nwas:\n%s", got, staged)
 	}
 	f.serverUntouched()
-	if claudeArgs := f.read(f.home, "claude-args"); !strings.Contains(claudeArgs, "--allowedTools\nBash(go test:*)") {
+	if claudeArgs := f.read(f.home, "claude-args"); !strings.Contains(claudeArgs, "--allowedTools\nBash(go test:*)") || !strings.Contains(claudeArgs, "MAGI_DELEGATE=1") {
 		t.Errorf("claude didn't get the task's arguments:\n%s", claudeArgs)
 	}
 	if text := describeReport(r); !strings.Contains(text, "have been applied to your working tree") || !strings.Contains(text, "git diff "+shortCommit(s.Task.Base)+" "+o.Branch) {
@@ -445,7 +444,7 @@ func TestBudgetsParseMemoryAndQuietHours(t *testing.T) {
 	if got := b.String(); got != "at most 2 working agents, at least 4.0 GB free memory, nothing new 22:00-07:00" {
 		t.Errorf("budget = %q", got)
 	}
-	tight := &fleetMachine{MemoryTotal: 8 << 30, MemoryUsed: 6 << 30, Cores: 4, Load: []float64{0}}
+	tight := &fleetMachine{MemoryTotal: 8 << 30, MemoryUsed: 6 << 30, Cores: 4}
 	if got := b.noRoom(at("12:00"), tight, true); !strings.Contains(got, "2.0 GB of memory is free there, its budget needs 4.0 GB") {
 		t.Errorf("noRoom = %q", got)
 	}
@@ -457,7 +456,7 @@ func TestBudgetsParseMemoryAndQuietHours(t *testing.T) {
 func TestTheTargetRechecksItsBudgetWhenATaskStarts(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
-	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nsleep 30\n")
+	f.tool("claude", "#!/bin/sh\n"+fakeAgents+"cat >/dev/null\nsleep 30\n")
 	f.config(strings.Replace(f.read(filepath.Join(f.home, ".config", "magi"), "config.toml"), "secrets = [\".env\", \"secret.txt\"]", "secrets = [\".env\", \"secret.txt\"]\nmax_agents = 1", 1))
 	first, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
 	if err != nil {
@@ -476,9 +475,11 @@ func TestTheTargetRechecksItsBudgetWhenATaskStarts(t *testing.T) {
 		t.Errorf("%d task records, want the delegate and the command", len(tasks))
 	}
 	collectTask(first.Task.ID, true)
-	if _, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "z"}); err != nil {
-		t.Errorf("after cancelling, a delegate was refused: %v", err)
+	last, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "z"})
+	if err != nil {
+		t.Fatalf("after cancelling, a delegate was refused: %v", err)
 	}
+	collectTask(last.Task.ID, true)
 }
 
 func TestADelegatedClaudeNeverBypassesPermissions(t *testing.T) {
@@ -513,30 +514,37 @@ func TestADelegatedClaudeNeverBypassesPermissions(t *testing.T) {
 func TestTheToolServerOffersItsTools(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
-	serverSide, clientSide := mcp.NewInMemoryTransports()
-	ctx := context.Background()
-	if _, err := newMCPServer().Connect(ctx, serverSide, nil); err != nil {
-		t.Fatal(err)
+	connect := func() *mcp.ClientSession {
+		serverSide, clientSide := mcp.NewInMemoryTransports()
+		if _, err := newMCPServer().Connect(context.Background(), serverSide, nil); err != nil {
+			t.Fatal(err)
+		}
+		session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(context.Background(), clientSide, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { session.Close() })
+		return session
 	}
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientSide, nil)
-	if err != nil {
-		t.Fatal(err)
+	names := func(session *mcp.ClientSession) string {
+		tools, err := session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, tool := range tools.Tools {
+			names = append(names, tool.Name)
+		}
+		return strings.Join(names, " ")
 	}
-	defer session.Close()
+	session := connect()
 	if !strings.Contains(session.InitializeResult().Instructions, "run it here instead, or don't run it") {
 		t.Errorf("instructions = %q", session.InitializeResult().Instructions)
 	}
-	tools, err := session.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, tool := range tools.Tools {
-		names = append(names, tool.Name)
-	}
-	if got := strings.Join(names, " "); got != "cancel_task delegate diff machines run_elsewhere session_elsewhere sessions task_reply task_result task_status" {
+	if got := names(session); got != "allow_project cancel_task delegate diff machines move_session run_elsewhere session_elsewhere sessions setup_machine status task_reply task_result task_status uninstall unpark" {
 		t.Errorf("tools = %s", got)
 	}
+	ctx := context.Background()
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "machines"})
 	if err != nil || res.IsError {
 		t.Fatalf("machines = %+v, %v", res, err)
@@ -548,12 +556,16 @@ func TestTheToolServerOffersItsTools(t *testing.T) {
 	if err != nil || !res.IsError {
 		t.Errorf("task_result for a bad id = %+v, %v", res, err)
 	}
+	t.Setenv("MAGI_DELEGATE", "1")
+	if got := names(connect()); got != "diff machines sessions task_status" {
+		t.Errorf("a delegated Claude is offered %s", got)
+	}
 }
 
 func TestASessionTaskBringsItsChangesBackOnceTheUserQuits(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
-	f.tool("claude", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/claude-args\"\nwhile [ ! -f \"$HOME/quit\" ]; do sleep 0.1; done\nprintf done > session.txt\n")
+	f.tool("claude", "#!/bin/sh\n"+fakeAgents+"printf '%s\\n' \"$@\" > \"$HOME/claude-args\"\nwhile [ ! -f \"$HOME/quit\" ]; do sleep 0.1; done\nprintf done > session.txt\n")
 	f.write(f.home, ".claude.json", `{"projects":{}}`)
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindSession, Host: "server", Dir: f.local, Prompt: "hello there"})
 	if err != nil {
@@ -766,33 +778,6 @@ func TestOnlyADelegatedClaudeTakesFollowUps(t *testing.T) {
 	collectTask(d.Task.ID, true)
 }
 
-func TestATaskKeepsItsStateCurrent(t *testing.T) {
-	f := newFixture(t)
-	f.taskHost()
-	if _, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "sleep 0.5"}); err != nil {
-		t.Fatal(err)
-	}
-	tasks, _ := listTasks()
-	id := tasks[0].ID
-	record := func() map[string]any {
-		var m map[string]any
-		dir, _ := store.Dir("tasks")
-		json.Unmarshal([]byte(f.read(dir, id+".json")), &m)
-		return m
-	}
-	if m := record(); m["state"] != "running" {
-		t.Errorf("record = %v", m)
-	}
-	f.waitForTask(id)
-	if m := record(); m["state"] != "done" {
-		t.Errorf("after finishing, state = %v", m["state"])
-	}
-	collectTask(id, false)
-	if m := record(); m["state"] != "collected" {
-		t.Errorf("after collecting, state = %v", m["state"])
-	}
-}
-
 func TestClosingIdleCopiesReportsWhatFailedAndSkipsOneAnotherMagiHolds(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
@@ -809,21 +794,20 @@ func TestClosingIdleCopiesReportsWhatFailedAndSkipsOneAnotherMagiHolds(t *testin
 		t.Fatal(err)
 	}
 	defer unlock()
-	note := sweepIdleCopies()
+	note := sweepTasks()
 	if !strings.Contains(note, "task 0000000a") || strings.Contains(note, "0000000b") {
 		t.Errorf("note = %q", note)
 	}
 }
 
-const fakeParentClaude = "#!/bin/sh\n" + fakeAgents + `prompt=$(cat)
-echo "parent=$MAGI_PARENT" >> "$HOME/claude-parents"
+const fakeSenderClaude = "#!/bin/sh\n" + fakeAgents + `prompt=$(cat)
 printf '{"type":"result","subtype":"success","num_turns":1,"result":"did: %s"}\n' "$prompt"
 `
 
-func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing.T) {
+func TestADelegatedTaskKeepsItsSendersTabNameAcrossFollowUps(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
-	f.tool("claude", fakeParentClaude)
+	f.tool("claude", fakeSenderClaude)
 	sender := startFakeClaude(t, "60").Process.Pid
 	f.write(filepath.Join(f.home, ".claude", "sessions"), strconv.Itoa(sender)+".json", `{"pid":`+strconv.Itoa(sender)+`,"sessionId":"9fb6fe92","name":"fix login"}`)
 	args, _ := delegateArgs(delegateInput{})
@@ -832,7 +816,7 @@ func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing
 		t.Fatal(err)
 	}
 	id := s.Task.ID
-	label := machineLabel() + " ← fix login"
+	label := f.machine().Name() + " ← fix login"
 	if !strings.Contains(describeStarted(s, "why"), "tab \""+label+"\"") {
 		t.Errorf("started:\n%s", describeStarted(s, "why"))
 	}
@@ -844,25 +828,14 @@ func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Task.tabLabel() != label {
-		t.Errorf("the follow-up's tab is %q", r.Task.tabLabel())
+	if r.Task.Label != label {
+		t.Errorf("the follow-up's tab is %q", r.Task.Label)
 	}
 	windows, _ := exec.Command("tmux", "list-windows", "-a", "-F", "#{window_name}").Output()
 	if strings.Contains(string(windows), " · delegate ") {
 		t.Errorf("tmux windows = %q", windows)
 	}
 	f.waitForTask(id)
-	if got := f.read(f.home, "claude-parents"); got != "parent=9fb6fe92\nparent=9fb6fe92\n" {
-		t.Errorf("claude ran with %q", got)
-	}
-
-	var old Task
-	if err := json.Unmarshal([]byte(`{"id":"0000000c","kind":"delegate","name":"api"}`), &old); err != nil {
-		t.Fatal(err)
-	}
-	if old.tabLabel() != "api · delegate 0000000c" || strings.Join(withParent(old.Parent, []string{"sh"}), " ") != "sh" {
-		t.Errorf("an older task's tab is %q", old.tabLabel())
-	}
 }
 
 func TestWaitingOnATaskReturnsOnceItFinishes(t *testing.T) {

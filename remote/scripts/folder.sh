@@ -10,6 +10,10 @@ case $command in
     cd -- "$dir"
     find . "$@" ! -name . -print0
     ;;
+  size)
+    cd -- "$dir"
+    find . "$@" -type f -exec ls -ln {} + | awk '{n++; b += $5} END {printf "%.0f %.0f\n", n, b}'
+    ;;
   fingerprint)
     cd -- "$dir"
     s=$(command -p -v stat || command -v stat)
@@ -54,9 +58,5 @@ case $command in
     [ ! -e "$dir" ] || exit 7
     mkdir -p "$(dirname "$dir")"
     mkdir "$dir"
-    ;;
-  *)
-    echo "folder.sh: unknown command $command" >&2
-    exit 2
     ;;
 esac

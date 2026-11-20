@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -67,9 +69,10 @@ func TestWaitForRemoteControlWaitsForTheNewSessionsBridge(t *testing.T) {
 	f := newFixture(t)
 	launched := time.Now()
 	waitBriefly := func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
-		return waitForRemoteControl(f.remoteHost().With(ctx), "s1", launched)
+		_, err := waitForRemoteControl(f.remoteHost().With(ctx), "s1", launched)
+		return err
 	}
 	if err := waitBriefly(); err == nil || !strings.Contains(err.Error(), "in time") {
 		t.Fatalf("with no session files: err = %v, want a timeout rather than a script failure", err)
@@ -85,7 +88,7 @@ func TestWaitForRemoteControlWaitsForTheNewSessionsBridge(t *testing.T) {
 	}
 
 	f.write(sessions, fresh+".json", `{"pid":`+fresh+`,"sessionId":"s1","startedAt":`+started+`,"bridgeSessionId":"cse_1"}`)
-	if err := waitForRemoteControl(f.remoteHost(), "s1", launched); err != nil {
+	if _, err := waitForRemoteControl(f.remoteHost(), "s1", launched); err != nil {
 		t.Fatalf("the new session's bridge wasn't seen: %v", err)
 	}
 }
@@ -119,23 +122,27 @@ func TestTrustCarriesOverToTheOtherMachineAndKeepsEverythingElse(t *testing.T) {
 	}
 }
 
-func TestStopSessionStopsTheSessionWithoutKillingItself(t *testing.T) {
+func TestStopSessionStopsTheSessionButNotTheTmuxServerThatStartedIt(t *testing.T) {
 	f := newFixture(t)
+	f.tool("ps", "#!/bin/sh\nPATH=${PATH#*:} ps \"$@\" | sed 's/^/   /'\n")
 	sessionID := "11111111-2222-3333-4444-555555555555"
-	fake := exec.Command("sh", "-c", "sleep 30; : --resume "+sessionID)
-	if err := fake.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- fake.Wait() }()
-	if err := stopSession(f.remoteHost(), sessionID, false); err != nil {
+	server := runProgram(t, "tmux", "new-session", "--resume", sessionID)
+	session := runProgram(t, "claude", "--resume", sessionID)
+	if err := stopSession(f.remoteHost(), sessionID); err != nil {
 		t.Fatalf("stopSession failed: %v", err)
 	}
 	select {
-	case <-done:
+	case <-session:
 	case <-time.After(5 * time.Second):
-		fake.Process.Kill()
 		t.Fatal("the session process was not stopped")
+	}
+	select {
+	case <-server:
+		t.Fatal("the tmux server that started the session was killed too")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if running, err := runningThere(f.remoteHost(), sessionID); err != nil || running {
+		t.Errorf("runningThere = %v, %v with only the tmux server left", running, err)
 	}
 }
 
@@ -155,36 +162,28 @@ func TestProjectSlugMatchesClaudeFolderNames(t *testing.T) {
 	}
 }
 
-func TestLogFindsTheLastSessionSentToAHost(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	if _, err := lastHandoffTo("server"); err == nil {
-		t.Fatal("found a session in an empty log")
-	}
-	for _, e := range []logEntry{
-		{Time: time.Now(), Kind: "push", Session: "11111111-0000-0000-0000-000000000000", From: "laptop", To: "server", FromDir: "/a", ToDir: "/b"},
-		{Time: time.Now(), Kind: "push", Session: "22222222-0000-0000-0000-000000000000", From: "laptop", To: "other", FromDir: "/a", ToDir: "/c"},
-		{Time: time.Now(), Kind: "push", Session: "33333333-0000-0000-0000-000000000000", From: "laptop", To: "server", FromDir: "/d", ToDir: "/e"},
-	} {
-		if err := appendLog(e); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := lastHandoffTo("server")
-	if err != nil || got != "33333333-0000-0000-0000-000000000000" {
-		t.Fatalf("lastHandoffTo = %q, %v", got, err)
-	}
-	if err := appendLog(logEntry{Time: time.Now(), Kind: "pull", Session: "33333333-0000-0000-0000-000000000000", From: "server", To: "laptop"}); err != nil {
+func TestStatusListsHandoffsParkedCheckoutsAndForwards(t *testing.T) {
+	f := newFixture(t)
+	if err := appendLog(logEntry{Time: time.Now(), Kind: "push", Session: "33333333-0000-0000-0000-000000000000", From: f.machine().Name(), To: "server", FromDir: f.local, ToDir: "/e"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lastHandoffTo("server"); err == nil || !strings.Contains(err.Error(), "already brought back") {
-		t.Errorf("after pulling it back, lastHandoffTo gave %v", err)
-	}
-	var out strings.Builder
-	if err := status(&out); err != nil {
+	ws := f.workspace(f.local)
+	if err := park(f.machine(), ws.Root, ws); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "33333333") || !strings.Contains(out.String(), "laptop:/d → server:/e") {
-		t.Errorf("status output:\n%s", out.String())
+	path, _ := store.SessionPath("forwards", "33333333-0000-0000-0000-000000000000", ".json")
+	if err := store.WriteJSON(path, forwardRecord{Session: "33333333-0000-0000-0000-000000000000", Host: "server", Ports: []int{3000}}); err != nil {
+		t.Fatal(err)
+	}
+	text, failed := f.call("status", nil)
+	if failed || !strings.Contains(text, "33333333") || !strings.Contains(text, ":"+f.local+" → server:/e") || !strings.Contains(text, "call unpark with its folder:\n  "+f.local+"\n") || !strings.Contains(text, "localhost:3000") {
+		t.Fatalf("status:\n%s", text)
+	}
+	if text, failed := f.call("unpark", map[string]any{"dir": f.local}); failed || !strings.Contains(text, "no longer parked") {
+		t.Fatalf("unpark: %s", text)
+	}
+	if text, _ := f.call("status", nil); strings.Contains(text, "call unpark") {
+		t.Errorf("after unpark:\n%s", text)
 	}
 }
 
@@ -224,6 +223,7 @@ EOF
 	for _, want := range []string{
 		"  0a0a0a0a  fix login  busy  /srv/api  https://claude.ai/code/cse_1\n",
 		"  0b0b0b0b  deploy  waiting (permission)  /srv/web\n",
+		"Waiting on you: deploy (0b0b0b0b) on " + f.machine().Name() + " (permission).\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("sessions lack %q:\n%s", want, text)
@@ -259,6 +259,8 @@ func TestFindSessionPrefersTheNewestRecordAndRejectsBadIDs(t *testing.T) {
 
 func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
 	f := newFixture(t)
+	turnEndPoll = 50 * time.Millisecond
+	t.Cleanup(func() { turnEndPoll = 2 * time.Second })
 	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	fake := exec.Command("sh", "-c", "sleep 30; : claude --resume "+id)
 	if err := fake.Start(); err != nil {
@@ -270,7 +272,7 @@ func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
 	f.write(f.home, ".claude/sessions/"+pid+".json", `{"pid":`+pid+`,"sessionId":"`+id+`","status":"busy"}`)
 	idle := `{"pid":` + pid + `,"sessionId":"` + id + `","status":"idle"}`
 	go func() {
-		time.Sleep(2500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		if err := os.WriteFile(filepath.Join(f.home, ".claude/sessions", pid+".json"), []byte(idle), 0o644); err != nil {
 			t.Error(err)
 		}
@@ -280,7 +282,7 @@ func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
 	if err := stopAtTurnEnd(f.remoteHost(), remoteSession{ID: id, Live: &liveSession{PID: fake.Process.Pid}}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(started) < 2*time.Second || !strings.Contains(out.String(), "Waiting") {
+	if time.Since(started) < 500*time.Millisecond || !strings.Contains(out.String(), "Waiting") {
 		t.Errorf("stopped before the turn ended (%s, %q)", time.Since(started), out.String())
 	}
 	select {
@@ -309,8 +311,9 @@ func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
 	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
 	t.Setenv("CLAUDE_PID", "4242")
 	heartbeat := filepath.Join(f.home, ".magi", "watchers", "Felipes-MacBook-Pro")
-	f.write(filepath.Dir(heartbeat), filepath.Base(heartbeat), "")
-	if err := arm("mac", id, "dev server on :3000", io.Discard); err != nil {
+	f.write(filepath.Dir(heartbeat), filepath.Base(heartbeat), `{"secrets":[".env"],"exclude":["node_modules"]}`)
+	f.localSession(id, "busy")
+	if err := arm("mac", id, "dev server on :3000", false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	path, _ := store.SessionPath("wanted", id, ".json")
@@ -325,15 +328,47 @@ func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
 	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &w); err != nil || !strings.Contains(w.Note, "npm run dev") {
 		t.Errorf("after the turn the request is %+v, %v; want it kept with what was still running", w, err)
 	}
-	if err := arm("laptop", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "Felipes-MacBook-Pro") {
+	if err := arm("laptop", id, "", false, io.Discard); err == nil || !strings.Contains(err.Error(), "Felipes-MacBook-Pro") {
 		t.Errorf("arm to a name no watcher matches gave %v; want it to name the machines that watch", err)
 	}
 	old := time.Now().Add(-time.Minute)
 	if err := os.Chtimes(heartbeat, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := arm("mac", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "magi pull") {
+	if err := arm("mac", id, "", false, io.Discard); err == nil || !strings.Contains(err.Error(), "set up magi with this machine") {
 		t.Errorf("arm with only a stale watcher gave %v", err)
+	}
+}
+
+func TestArmWaitsForTheUsersYesWhenSecretFilesGo(t *testing.T) {
+	f := newFixture(t)
+	id := "0f0f0f0f-1111-2222-3333-555555555557"
+	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
+	t.Setenv("CLAUDE_PID", "4242")
+	f.write(filepath.Join(f.home, ".magi", "watchers"), "Felipes-MacBook-Pro", `{"secrets":["credentials.json"]}`)
+	f.write(f.local, ".env", "K=1")
+	f.write(f.local, ".gitignore", ".env*\nnode_modules/\ncredentials.json\n")
+	f.write(f.local, "credentials.json", "{}")
+	f.localSession(id, "busy")
+	for _, c := range []struct{ to, kind, block, secrets, done string }{
+		{"server", "armed", "What goes to server:", "secret files, by name only: .env\n", "Armed: "},
+		{"mac", "wanted", "What goes to Felipes-MacBook-Pro:", "secret files, by name only: credentials.json\n", "Asked Felipes-MacBook-Pro"},
+	} {
+		path, _ := store.SessionPath(c.kind, id, ".json")
+		var out strings.Builder
+		if err := arm(c.to, id, "", false, &out); err != nil || !strings.HasPrefix(out.String(), "Not armed") || !strings.Contains(out.String(), "magi arm "+c.to+" "+id+" --yes") || !strings.Contains(out.String(), c.block) || !strings.Contains(out.String(), c.secrets) {
+			t.Errorf("arm %s without a yes: %v\n%s", c.to, err, out.String())
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("arm %s without a yes left %s", c.to, path)
+		}
+		out.Reset()
+		if err := arm(c.to, id, "", true, &out); err != nil || !strings.HasPrefix(out.String(), c.done) {
+			t.Errorf("arm %s with a yes: %v\n%s", c.to, err, out.String())
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("arm %s with a yes: %v", c.to, err)
+		}
 	}
 }
 
@@ -342,20 +377,28 @@ func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
 	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
 	t.Setenv("CLAUDE_PID", "")
-	if err := arm("server", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "CLAUDE_PID") {
+	if err := arm("server", id, "", false, io.Discard); err == nil || !strings.Contains(err.Error(), "CLAUDE_PID") {
 		t.Errorf("arm outside Claude Code gave %v", err)
 	}
 	t.Setenv("CLAUDE_PID", "4242")
-	if err := arm("nowhere", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "server") {
+	if err := arm("nowhere", id, "", false, io.Discard); err == nil || !strings.Contains(err.Error(), "server") {
 		t.Errorf("arm to an unknown host gave %v", err)
 	}
-	if err := arm("server", "not-an-id", "", io.Discard); err == nil {
+	if err := arm("server", "not-an-id", "", false, io.Discard); err == nil {
 		t.Error("arm accepted a malformed session id")
 	}
-	if err := arm("server", id, "dev server on :3000", io.Discard); err != nil {
-		t.Fatal(err)
-	}
 	path, _ := store.SessionPath("armed", id, ".json")
+	if err := arm("server", id, "", true, io.Discard); err == nil || !strings.Contains(err.Error(), "no session") {
+		t.Errorf("arm for a session whose copy can't be read gave %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("a session whose copy couldn't be read was armed")
+	}
+	f.localSession(id, "busy")
+	var out strings.Builder
+	if err := arm("server", id, "dev server on :3000", false, &out); err != nil || !strings.Contains(out.String(), "What goes to server:\n  branch main") {
+		t.Fatalf("arm: %q, %v", out.String(), err)
+	}
 	var a armed
 	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &a); err != nil || a.Host != "server" || a.PID != 4242 || a.Note != "dev server on :3000" {
 		t.Errorf("armed = %+v, %v", a, err)
@@ -406,5 +449,38 @@ func TestHandoffPromptCarriesTheNoteWhatWasStillRunningAndSubagentTranscripts(t 
 	}
 	if got := stillRunning("", nil); got != "" {
 		t.Errorf("with nothing running the note is %q", got)
+	}
+}
+
+func TestNothingWaitingSaysWhichMachinesWentUnchecked(t *testing.T) {
+	text := describeSessions([]machineSessions{{Name: "laptop"}, {Name: "nas", Err: errors.New("timed out")}})
+	if want := "Nothing that magi could check is waiting on you. Not checked: nas.\n"; !strings.HasPrefix(text, want) {
+		t.Fatalf("sessions start %q, want %q", text, want)
+	}
+}
+
+func TestWaitingOnASessionReturnsOnceItIsntBusy(t *testing.T) {
+	f := newFixture(t)
+	id := "0f0f0f0f-1111-2222-3333-dddddddddddd"
+	proc, _ := f.localSession(id, "busy")
+	done := make(chan string, 1)
+	go func() {
+		text, err := waitSession("0f0f0f0f", 50*time.Millisecond)
+		done <- text + fmt.Sprint(err)
+	}()
+	select {
+	case got := <-done:
+		t.Fatalf("the wait returned while the session was busy: %s", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+	pid := strconv.Itoa(proc.Process.Pid)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"`+id+`","cwd":"`+f.local+`","startedAt":1,"status":"idle"}`)
+	select {
+	case got := <-done:
+		if want := "api (0f0f0f0f) on " + f.machine().Name() + " is idle.<nil>"; got != want {
+			t.Errorf("wait = %q, want %q", got, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wait didn't return once the session was idle")
 	}
 }

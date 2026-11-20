@@ -32,38 +32,6 @@ render() {
   fi
 }
 
-working() {
-  n=0
-  for d in "$HOME"/.magi/tasks/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]; do
-    if [ ! -d "$d" ] || [ -f "$d/exit" ]; then continue; fi
-    case $(cat "$d/kind" 2>/dev/null) in
-      delegate | session) ;;
-      *) continue ;;
-    esac
-    if [ -f "$d/pid" ]; then
-      read -r p < "$d/pid"
-      if ! kill -0 "$p" 2>/dev/null; then continue; fi
-    elif [ -z "$(find "$d" -prune -mmin -10)" ]; then
-      continue
-    fi
-    n=$((n + 1))
-  done
-  for f in "$HOME"/.claude/sessions/*.json; do
-    if [ ! -f "$f" ] || ! grep -q '"status": *"busy"' "$f" || grep -qF '/.magi/tasks/' "$f"; then continue; fi
-    p=${f##*/}
-    if kill -0 "${p%.json}" 2>/dev/null; then n=$((n + 1)); fi
-  done
-  echo "$n"
-}
-
-available() {
-  if [ "$(uname -s)" = Darwin ]; then
-    sysctl -n hw.pagesize vm.page_free_count vm.page_pageable_external_count vm.page_purgeable_count | awk '{ v[NR] = $1 } END { printf "%.0f\n", (v[2] + v[3] + v[4]) * v[1] }'
-  else
-    awk '/^MemAvailable:/ {printf "%.0f\n", $2 * 1024}' /proc/meminfo
-  fi
-}
-
 alive() {
   [ -f "$dir/pid" ] || return 1
   { read -r pid; read -r since; } < "$dir/pid"
@@ -85,10 +53,6 @@ setup() {
       return 1
     fi
   fi
-}
-
-claude_status() {
-  printf '\033]7501;state=%s:app=claude-code\033\\\033]2;Claude Code\007' "$1"
 }
 
 begin() {
@@ -121,7 +85,6 @@ case $command in
     setup=$1
     shift
     begin
-    claude_status working
     {
       if setup "$setup"; then
         "$@" < "$dir/prompt"
@@ -130,7 +93,6 @@ case $command in
         echo "setup failed" > "$dir/status"
       fi
     } 2>&1 | tee "$dir/log" | render | tee "$dir/view"
-    if [ "$(cat "$dir/status" 2>/dev/null)" = "exit 0" ]; then claude_status "done"; else claude_status "error"; fi
     finish
     ;;
   session)
@@ -187,7 +149,7 @@ case $command in
     printf '%s\n' "$result"
     ;;
   reserve | room)
-    kind=$1 max=$2 min=$3
+    kind=$1 max=$2 min=$3 claude=$4
     lock=$HOME/.magi/tasks/.lock
     mkdir -p "$HOME/.magi/tasks"
     i=0
@@ -203,14 +165,14 @@ case $command in
     echo "$$" > "$lock/pid"
     trap 'rm -rf "$lock"' EXIT
     if [ "$max" -gt 0 ] && { [ "$kind" = delegate ] || [ "$kind" = session ]; }; then
-      n=$(working)
+      n=$(working "$claude") || exit
       if [ "$n" -ge "$max" ]; then
         echo "$n agents are already running there (Claude sessions in a turn, and magi's delegates and sessions), its budget is $max" >&2
         exit 11
       fi
     fi
     if [ "$min" -gt 0 ]; then
-      free=$(available)
+      free=$(load | awk 'NR == 3 { printf "%.0f\n", $2 }')
       if [ "$free" -lt "$min" ]; then
         awk -v free="$free" -v min="$min" 'BEGIN { printf "%.1f GB of memory is free there, its budget needs %.1f GB\n", free / 1073741824, min / 1073741824 }' >&2
         exit 11
@@ -232,9 +194,5 @@ case $command in
       echo "some of $dir couldn't be removed; files a container wrote there as root need sudo or the container to delete" >&2
       exit 1
     fi
-    ;;
-  *)
-    echo "task.sh: unknown command $command" >&2
-    exit 2
     ;;
 esac

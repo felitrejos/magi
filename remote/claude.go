@@ -62,6 +62,7 @@ type liveSession struct {
 	Status     string `json:"status"`
 	WaitingFor string `json:"waitingFor"`
 	Name       string `json:"name"`
+	StatusAt   int64  `json:"statusUpdatedAt"`
 	fromRegistry
 }
 
@@ -128,21 +129,23 @@ func clock(m sh.Machine) (time.Time, error) {
 	return time.Unix(seconds, 0), nil
 }
 
-func waitForRemoteControl(m sh.Machine, sessionID string, launchedAt time.Time) error {
+const remoteControlLink = "https://claude.ai/code/"
+
+func waitForRemoteControl(m sh.Machine, sessionID string, launchedAt time.Time) (string, error) {
 	notBefore := launchedAt.Add(-10 * time.Second).UnixMilli()
 	for {
 		sessions, err := liveSessions(m)
 		if err != nil && m.Context().Err() == nil {
-			return err
+			return "", err
 		}
 		for _, s := range sessions {
 			if s.SessionID == sessionID && s.StartedAt >= notBefore && s.BridgeSessionID != nil {
-				return nil
+				return remoteControlLink + *s.BridgeSessionID, nil
 			}
 		}
 		select {
 		case <-m.Context().Done():
-			return fmt.Errorf("the session did not come up with Remote Control on %s in time", m.Name())
+			return "", fmt.Errorf("the session did not come up with Remote Control on %s in time", m.Name())
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
@@ -166,12 +169,23 @@ func clearMoved(m sh.Machine, sessionID string) error {
 	return err
 }
 
-func stopSession(m sh.Machine, sessionID string, codex bool) error {
-	script := sessionScript
-	if codex {
-		script = codexScript
-	}
-	_, err := sh.Run(m, script, "kill", sessionID)
+func retireTranscript(m sh.Machine, path, host string) error {
+	_, err := sh.Run(m, `[ ! -e "$1" ] || mv -- "$1" "$1.handed-off-to-$2" || [ ! -e "$1" ]`, path, host)
+	return err
+}
+
+func claudeTranscript(home, dir, sessionID string) (string, error) {
+	project, err := claudeProject(home, dir)
+	return project + "/" + sessionID + ".jsonl", err
+}
+
+func claudeProject(home, dir string) (string, error) {
+	slug, err := projectSlug(dir)
+	return home + "/.claude/projects/" + slug, err
+}
+
+func stopSession(m sh.Machine, sessionID string) error {
+	_, err := sh.Run(m, sessionScript, "kill", sessionID)
 	return err
 }
 
@@ -252,20 +266,14 @@ type Prompt struct {
 	Note                     string
 	Sidecar                  string
 	Project                  string
-	Codex                    bool
 }
 
 func handoffPrompt(p Prompt) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[magi] This session was just handed off from %s to %s. The project is now at %s (it was %s on %s). ", p.From, p.To, p.NewDir, p.OldDir, p.From)
-	switch {
-	case p.Git && p.Codex:
-		b.WriteString("Branch, commits, staged and unstaged changes and secret files were synced. ")
-	case p.Git:
+	if p.Git {
 		b.WriteString("Branch, commits, staged and unstaged changes, secret files and project memory were synced. ")
-	case p.Codex:
-		b.WriteString("The folder's files were copied. ")
-	default:
+	} else {
 		b.WriteString("The folder's files and project memory were copied. ")
 	}
 	b.WriteString("Earlier messages mention the old paths: use the new ones from now on, and read a file again before editing it here. ")

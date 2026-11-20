@@ -3,17 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 )
 
-const (
-	tailLines     = 80
-	keepCollected = 7 * 24 * time.Hour
-)
+const tailLines = 80
 
 func tail(text string) string {
 	text = strings.ToValidUTF8(text, "�")
@@ -57,7 +53,7 @@ func describeStarted(s *started, why string) string {
 	t := s.Task
 	var b strings.Builder
 	fmt.Fprintf(&b, "Started task %s (%s) on %s: %s.\n", t.ID, t.Kind, t.Host, why)
-	fmt.Fprintf(&b, "It runs in its own copy of the project at %s there, %s, tab %q.\n", t.RunDir, t.Where, t.tabLabel())
+	fmt.Fprintf(&b, "It runs in its own copy of the project at %s there, %s, tab %q.\n", t.RunDir, t.Where, t.Label)
 	if len(s.ShownOn) > 0 {
 		fmt.Fprintf(&b, "It's open in %s.\n", strings.Join(s.ShownOn, ", "))
 	}
@@ -73,13 +69,6 @@ func describeStarted(s *started, why string) string {
 	return b.String()
 }
 
-func (t *Task) tabLabel() string {
-	if t.Label != "" {
-		return t.Label
-	}
-	return taskTabLabel(t.Name, t.Kind, t.ID)
-}
-
 func describeReport(r *taskReport) string {
 	t, st := r.Task, r.State
 	var b strings.Builder
@@ -89,7 +78,7 @@ func describeReport(r *taskReport) string {
 	}
 	switch st.State {
 	case "running":
-		fmt.Fprintf(&b, "%s\nStill running, %s, tab %q.\n", head, t.Where, t.tabLabel())
+		fmt.Fprintf(&b, "%s\nStill running, %s, tab %q.\n", head, t.Where, t.Label)
 		if t.Kind == kindRun || t.Kind == kindDelegate {
 			fmt.Fprintf(&b, "Latest output:\n%s", fence(tail(st.Tail)))
 		}
@@ -230,14 +219,10 @@ func describeMachines(view fleetView, needs needsInput) string {
 	return b.String()
 }
 
-func printTasks(w io.Writer) error {
+func describeTasks() (string, error) {
 	tasks, err := listTasks()
-	if err != nil {
-		return err
-	}
-	if len(tasks) == 0 {
-		fmt.Fprintln(w, "No tasks yet.")
-		return nil
+	if err != nil || len(tasks) == 0 {
+		return "No tasks yet.\n", err
 	}
 	states := make([]string, len(tasks))
 	var wg sync.WaitGroup
@@ -253,9 +238,6 @@ func printTasks(w io.Writer) error {
 			if err == nil {
 				var st taskState
 				if st, err = probeTask(r, t); err == nil {
-					err = t.noteState(st.State)
-				}
-				if err == nil {
 					states[i] = st.State
 					if st.State == "done" {
 						states[i] = "finished (" + st.Exit + "), not collected"
@@ -267,10 +249,11 @@ func printTasks(w io.Writer) error {
 		})
 	}
 	wg.Wait()
+	var b strings.Builder
 	for i, t := range tasks {
-		fmt.Fprintf(w, "%s  %-8s  %-10s  %-16s  %s\n    %s\n", t.ID, t.Kind, t.Host, ago(t.Created), t.summary(), firstLine(states[i]))
+		fmt.Fprintf(&b, "%s  %-8s  %-10s  %-16s  %s\n    %s\n", t.ID, t.Kind, t.Host, ago(t.Created), t.summary(), firstLine(states[i]))
 	}
-	return nil
+	return b.String(), nil
 }
 
 func firstLine(s string) string {
@@ -279,49 +262,4 @@ func firstLine(s string) string {
 		line = string([]rune(line)[:157]) + "..."
 	}
 	return line
-}
-
-func cleanTasks(w io.Writer) error {
-	tasks, err := listTasks()
-	if err != nil {
-		return err
-	}
-	cleaned := 0
-	for _, t := range tasks {
-		if t.Outcome != nil {
-			continue
-		}
-		r, err := collectTask(t.ID, false)
-		if err != nil {
-			fmt.Fprintf(w, "%s: %v\n", t.ID, err)
-			continue
-		}
-		if r.Task.Outcome != nil {
-			cleaned++
-			fmt.Fprintf(w, "%s: collected (%s)\n", t.ID, outcomeState(r.Task.Outcome))
-		}
-	}
-	pruned, closed := 0, 0
-	for _, t := range tasks {
-		if t.Outcome != nil && t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies {
-			done, err := closeIdleCopy(t.ID)
-			if err != nil {
-				fmt.Fprintf(w, "%s: %v\n", t.ID, err)
-				continue
-			}
-			if done {
-				closed++
-			}
-			continue
-		}
-		if t.Outcome != nil && !t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCollected {
-			if err := t.forget(); err != nil {
-				fmt.Fprintf(w, "%s: %v\n", t.ID, err)
-				continue
-			}
-			pruned++
-		}
-	}
-	fmt.Fprintf(w, "Collected %d finished task(s); running ones were left alone. Removed %d delegate copies idle for a day, and forgot %d tasks collected more than a week ago.\n", cleaned, closed, pruned)
-	return nil
 }

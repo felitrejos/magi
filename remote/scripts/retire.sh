@@ -1,7 +1,7 @@
 #!/bin/sh
-pid=$1 transcript=$2 host=$3 session_id=$4 tmux_pane=$5
+pid=$1 transcript=$2 host=$3 session_id=$4 tmux_pane=$5 journal=$6 delay=$7
 if [ -n "$pid" ]; then
-  sleep 1
+  sleep "$delay"
   kill -TERM "$pid" 2>/dev/null
   i=0
   while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 300 ]; do sleep 0.2; i=$((i + 1)); done
@@ -16,3 +16,4 @@ if [ -f "$record" ]; then
 elif [ -n "$tmux_pane" ]; then
   tmux kill-pane -t "$tmux_pane"
 fi
+rm -f -- "$journal"

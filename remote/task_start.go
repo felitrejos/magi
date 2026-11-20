@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -30,34 +31,19 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err != nil {
 		return nil, err
 	}
-	ws, err := readWorkspace(local, spec.Dir, host.Secrets, host.Exclude)
+	ws, err := sourceWorkspace(local, local.Name(), spec.Dir, host.Secrets, host.Exclude)
 	if err != nil {
-		return nil, err
-	}
-	home, err := homeDir(local)
-	if err != nil {
-		return nil, err
-	}
-	if err := refuseHome(ws, home, local.Name()); err != nil {
 		return nil, err
 	}
 	remote, err := newRemote(ctx, host)
 	if err != nil {
 		return nil, err
 	}
-	remoteHome, err := homeDir(remote)
-	if err != nil {
-		return nil, err
-	}
-	group := localGroup(ws.MainRoot, host.LocalRoots)
+	group := groupOf(ws.MainRoot, host.LocalRoots, local.Home())
 	id := store.NewTaskID()
-	label, parentID := taskTabLabel(ws.Name, spec.Kind, id), ""
-	delegator, err := delegatingSession(spec.Caller, ws.Name)
+	label, err := delegatorLabel(spec.Caller, ws.Name)
 	if err != nil {
 		return nil, err
-	}
-	if delegator != nil {
-		label, parentID = delegator.tabLabel(), delegator.ID
 	}
 	t := &Task{
 		ID:       id,
@@ -65,18 +51,15 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		Host:     spec.Host,
 		Created:  time.Now(),
 		Project:  ws.Root,
-		Name:     ws.Name,
 		Git:      ws.Git != nil,
 		Subs:     len(ws.Submodules) > 0,
 		Command:  spec.Command,
 		Starting: true,
 		Prompt:   spec.Prompt,
-		Dir:      remoteHome + "/.magi/tasks/" + id,
-		Label:    label,
-		Parent:   parentID,
+		Dir:      remote.Home() + "/.magi/tasks/" + id,
+		Label:    cmp.Or(label, fmt.Sprintf("%s · %s %s", ws.Name, spec.Kind, id)),
 		Turn:     1,
 		Keep:     spec.Keep,
-		State:    "starting",
 	}
 	t.Checkout = t.Dir + "/checkout/" + ws.Name
 	t.RunDir = filepath.Join(t.Checkout, ws.Subdir)
@@ -91,12 +74,9 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, c := range clones {
-			if sameRepository(c, ws) {
-				clone = c.Dir
-				group = serverGroup(clone, host.Roots, remoteHome)
-				break
-			}
+		if found := clonesOf(clones, ws); len(found) > 0 {
+			clone = found[0]
+			group = groupOf(clone, host.Roots, remote.Home())
 		}
 	}
 	t.Group = group
@@ -104,7 +84,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		return nil, err
 	}
 	removeCopy := func(err error) error {
-		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cleanup, cancel := context.WithTimeout(context.Background(), cleanupBudget)
 		defer cancel()
 		if _, rmErr := sh.Run(remote.With(cleanup), taskScript, "remove", t.Dir); rmErr != nil {
 			return fmt.Errorf("%w; removing the task's copy at %s on %s also failed: %v", err, t.Dir, spec.Host, rmErr)
@@ -139,9 +119,9 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 			return nil, removeCopy(err)
 		}
 		t.Session, t.Claude = store.NewSessionID(), spec.Claude
-		command = t.delegateCommand(host, setup, false)
+		command = t.delegateCommand(remote.Claude(), setup, false)
 	case kindSession:
-		claude := []string{expandHome(host.Claude, remoteHome), "--remote-control", ws.Name + " task " + id}
+		claude := []string{remote.Claude(), "--remote-control", ws.Name + " task " + id}
 		if spec.Prompt != "" {
 			claude = append(claude, "--", spec.Prompt)
 		}
@@ -149,18 +129,18 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	}
 
 	launcher := sh.Tmux{Machine: remote}
-	tab, err := launcher.Start(group, t.Label, t.RunDir, withParent(t.Parent, command), spec.Kind == kindSession)
+	tab, err := launcher.Start(group, t.Label, t.RunDir, command, spec.Kind == kindSession)
 	if err != nil {
-		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
+		return nil, removeCopy(err)
 	}
 	tab.SessionCreated = false
 	if err := waitForTask(remote, t.Dir); err != nil {
 		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
 	}
-	t.Tab, t.Where, t.Starting, t.State = tab, launcher.Where(group), false, "running"
+	t.Tab, t.Where, t.Starting = tab, launcher.Where(group), false
 	if spec.Kind == kindSession {
 		if trusted, err := isTrusted(remote, t.RunDir); err == nil && !trusted {
-			res.Notes = append(res.Notes, fmt.Sprintf("Claude there first asks whether to trust the copy's folder; the user answers Yes in that tab. To skip that for later sessions, the user can run claude once in %s/.magi/tasks on %s and trust it", remoteHome, spec.Host))
+			res.Notes = append(res.Notes, fmt.Sprintf("Claude there first asks whether to trust the copy's folder; the user answers Yes in that tab. To skip that for later sessions, the user can run claude once in %s/.magi/tasks on %s and trust it", remote.Home(), spec.Host))
 		}
 		var showErr error
 		if res.ShownOn, showErr = launcher.Show(tab); showErr != nil {
@@ -168,7 +148,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		}
 	}
 	if err := t.save(); err != nil {
-		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cleanup, cancel := context.WithTimeout(context.Background(), cleanupBudget)
 		defer cancel()
 		launcher.Machine = remote.With(cleanup)
 		_, cancelErr := sh.Run(launcher.Machine, taskScript, "cancel", t.Dir)
@@ -198,16 +178,12 @@ func waitForTask(m sh.Machine, dir string) error {
 	}
 }
 
-func taskTabLabel(name, kind, id string) string {
-	return fmt.Sprintf("%s · %s %s", name, kind, id)
-}
-
 func checkRoom(remote *sh.Remote, host Host, t *Task, action string) error {
 	b, _ := host.budget()
 	if reason := b.noRoom(time.Now(), nil, false); reason != "" {
 		return &noRoomError{Host: t.Host, Reason: reason}
 	}
-	_, err := sh.Run(remote, taskScript, action, t.Dir, t.Kind, strconv.Itoa(b.MaxAgents), fmt.Sprintf("%.0f", b.MinFree))
+	_, err := sh.Run(remote, taskScript, action, t.Dir, t.Kind, strconv.Itoa(b.MaxAgents), fmt.Sprintf("%.0f", b.MinFree), remote.Claude())
 	var ce *sh.Error
 	if sh.ExitCode(err) == sh.ExitNoRoom && errors.As(err, &ce) {
 		return &noRoomError{Host: t.Host, Reason: ce.Stderr}

@@ -10,7 +10,7 @@ import (
 )
 
 func machineFor(name, os, arch string, cpu float64, tools ...string) fleetMachine {
-	return fleetMachine{Name: name, OS: os, Arch: arch, Load: []float64{cpu * 8}, Cores: 8, Tools: tools}
+	return fleetMachine{Name: name, OS: os, Arch: arch, Load: cpu * 8, Cores: 8, Tools: tools}
 }
 
 func TestALinuxBuildGoesToTheLinuxMachineBeforeAContainerOnTheMac(t *testing.T) {
@@ -104,7 +104,7 @@ func TestAMachineWhoseLoadCantBeReadSaysSo(t *testing.T) {
 
 func TestAMachineReportsItsLoadOverSSH(t *testing.T) {
 	m := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\ndocker go\n8\n3.20 2.10 1.00\n16000000000 4000000000\n2\n")
-	if !m.measured() || m.Cores != 8 || m.Load[0] != 3.2 || m.MemoryUsed != 12e9 || m.Working != 2 {
+	if !m.measured() || m.Cores != 8 || m.Load != 3.2 || m.MemoryUsed != 12e9 || m.Working != 2 {
 		t.Fatalf("parsed %+v", m)
 	}
 	if got := m.describe(); got != "load 3.20 on 8 cores, memory 11.2 GB of 14.9 GB, 2 Claude sessions working" {
@@ -154,7 +154,7 @@ func TestAMacsAvailableMemoryIsItsFreeCachedAndPurgeablePages(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := parsePlatform("mac", string(out))
-	if m.OS != "macOS 27.2" || m.Cores != 10 || m.Load[0] != 2.56 {
+	if m.OS != "macOS 27.2" || m.Cores != 10 || m.Load != 2.56 {
 		t.Fatalf("parsed %+v from %q", m, out)
 	}
 	if available := m.MemoryTotal - m.MemoryUsed; m.MemoryTotal != 16<<30 || available != (12520+180728+5018)*16384 {

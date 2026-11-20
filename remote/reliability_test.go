@@ -35,7 +35,7 @@ func tmuxWindows() string {
 func TestWhenTheOriginalCantBeClosedTheNewCopyIsStoppedAndNothingIsParked(t *testing.T) {
 	f := newFixture(t)
 	h := f.handoffToServer("0f0f0f0f-1111-2222-3333-555555555551")
-	h.Retire = func() error { return errors.New("no shell") }
+	h.Retire = func() (int, error) { return 0, errors.New("no shell") }
 	_, err := h.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "the copy on server was stopped") {
 		t.Fatalf("err = %v", err)
@@ -70,11 +70,7 @@ func TestAHandoffIsRefusedWhenTheSessionAlreadyRunsThere(t *testing.T) {
 	f := newFixture(t)
 	id := "0f0f0f0f-1111-2222-3333-555555555553"
 	h := f.handoffToServer(id)
-	running := exec.Command("sh", "-c", "sleep 30; :", "claude", "--resume", id)
-	if err := running.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { running.Process.Kill(); running.Wait() })
+	runProgram(t, "claude", "--resume", id)
 	_, err := h.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already running on server") {
 		t.Fatalf("err = %v", err)
@@ -103,7 +99,7 @@ func TestASessionThatMovedRefusesNewInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	var reply map[string]string
-	if err := json.Unmarshal([]byte(out.String()), &reply); err != nil || reply["decision"] != "block" || !strings.Contains(reply["reason"], "magi pull server") {
+	if err := json.Unmarshal([]byte(out.String()), &reply); err != nil || reply["decision"] != "block" || !strings.Contains(reply["reason"], "ask it to move session 0f0f0f0f here") {
 		t.Fatalf("reply = %q, %v", out.String(), err)
 	}
 	if err := clearMoved(local, id); err != nil {
@@ -115,25 +111,6 @@ func TestASessionThatMovedRefusesNewInput(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.home, ".magi", "moved", id)); !os.IsNotExist(err) {
 		t.Errorf("the marker is still there: %v", err)
-	}
-}
-
-func TestACopyLeftByAFailedHandoffIsStoppedByStatus(t *testing.T) {
-	f := newFixture(t)
-	f.taskHost()
-	id := "0f0f0f0f-1111-2222-3333-555555555555"
-	if err := saveStray(id, Stray{Host: "server", Tab: sh.Tab{Session: "gone", Window: "@999"}}); err != nil {
-		t.Fatal(err)
-	}
-	var out strings.Builder
-	if err := status(&out); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "0f0f0f0f on server, stopped now") {
-		t.Errorf("status said:\n%s", out.String())
-	}
-	if strays, err := loadStrays(); err != nil || len(strays) != 0 {
-		t.Errorf("strays left = %v, %v", strays, err)
 	}
 }
 
@@ -153,12 +130,13 @@ func TestEveryHandoffStepFitsInsideTheHooksTimeLimit(t *testing.T) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		t.Fatal(err)
 	}
+	const hookLimit = 200 * time.Second
 	stop := config.Hooks["Stop"][0].Hooks[0]
-	if stop.Command != "magi hook stop" || time.Duration(stop.Timeout)*time.Second != hookLimit {
-		t.Fatalf("the Stop hook is %+v, want magi hook stop with %s", stop, hookLimit)
+	if stop.Command != `"${CLAUDE_PLUGIN_ROOT}/bin/magi" hook stop` || time.Duration(stop.Timeout)*time.Second != hookLimit {
+		t.Fatalf("the Stop hook is %+v, want the plugin's magi hook stop with %s", stop, hookLimit)
 	}
-	worst := prepareBudget + launchBudget + 10*time.Second + projectPanesLimit + 15*time.Second
-	if worst >= hookLimit {
+	worst := recoverBudget + prepareBudget + launchBudget + finishBudget + projectPanesLimit + cleanupBudget
+	if worst > hookLimit-5*time.Second {
 		t.Errorf("a handoff can take %s, more than the hook's %s", worst, hookLimit)
 	}
 }
@@ -224,7 +202,7 @@ func TestRetireClosesTheRecordedTabWhenItsSessionPaneClosesFirst(t *testing.T) {
 	}
 	transcript := filepath.Join(f.home, "s.jsonl")
 	f.write(f.home, "s.jsonl", "{}")
-	if err := retire(armed{Host: "laptop", PID: pid}, id, transcript); err != nil {
+	if _, err := retire(f.machine(), "laptop", id, transcript, pid); err != nil {
 		t.Fatal(err)
 	}
 	if !waitForFile(t, transcript+".handed-off-to-laptop", 10*time.Second) {
@@ -259,7 +237,7 @@ func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sh.Run(local, retireScript, fields[1], transcript, "server", "0f0f0f0f-1111-2222-3333-555555555556", fields[0]); err != nil {
+	if _, err := sh.Run(local, retireScript, fields[1], transcript, "server", "0f0f0f0f-1111-2222-3333-555555555556", fields[0], filepath.Join(f.home, "journal"), "0"); err != nil {
 		t.Fatal(err)
 	}
 	if panes, _ := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id}").Output(); strings.Contains(string(panes), fields[0]) {
@@ -267,24 +245,6 @@ func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
 	}
 	if _, err := os.Stat(transcript + ".handed-off-to-server"); err != nil {
 		t.Errorf("the transcript wasn't marked as handed off: %v", err)
-	}
-}
-
-func TestAPullOpensATmuxWindow(t *testing.T) {
-	f := newFixture(t)
-	f.taskHost()
-	f.tool("claude", fakeClaude+"exec sleep 60\n")
-	local, err := sh.NewLocal(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	res := Pulled{Session: "0f0f0f0f-1111-2222-3333-555555555557", Name: "acme", ProjectRoot: f.local}
-	res.ToDir = f.local
-	if err := openPulledTab(local, &res, "back here"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(tmuxWindows(), "acme · claude") {
-		t.Errorf("tmux windows = %q", tmuxWindows())
 	}
 }
 
@@ -305,7 +265,7 @@ func TestSessionsAndTheirDiffsAreReadOverSSH(t *testing.T) {
 	if _, _, err := findAnySession(all, "fix login"); err == nil || !strings.Contains(err.Error(), "more than one") {
 		t.Errorf("the same session on both fixture machines should be ambiguous, got %v", err)
 	}
-	m, s, err := findAnySession(all[:1], "0f0f0f0f")
+	m, s, err := findAnySession(all[1:], "0f0f0f0f")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,6 +275,10 @@ func TestSessionsAndTheirDiffsAreReadOverSSH(t *testing.T) {
 	}
 	if !strings.Contains(diff, "+changed") || !strings.Contains(diff, "new file: brand-new.txt") {
 		t.Errorf("diff = %q", diff)
+	}
+	f.config("[hosts")
+	if _, err := everySession(context.Background()); err == nil {
+		t.Error("a broken config was read as no other machines")
 	}
 }
 

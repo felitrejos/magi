@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,72 +11,24 @@ import (
 	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
-func expandHome(path, home string) string {
-	if path == "~" {
-		return home
-	}
-	if rest, ok := strings.CutPrefix(path, "~/"); ok {
-		return home + "/" + rest
-	}
-	return path
-}
-
-func localGroup(projectRoot string, localRoots []string) string {
-	for _, root := range localRoots {
-		if group, ok := groupUnderLocal(root, projectRoot); ok {
-			return group
-		}
-	}
-	return baseName(projectRoot)
-}
-
-func groupUnderLocal(root, path string) (string, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", false
-	}
-	rootInfo, err := os.Stat(expandHome(root, home))
-	if err != nil {
-		return "", false
-	}
-	for child, parent := path, filepath.Dir(path); child != parent; child, parent = parent, filepath.Dir(parent) {
-		if info, err := os.Stat(parent); err == nil && os.SameFile(info, rootInfo) {
-			return filepath.Base(child), true
-		}
-	}
-	return "", false
-}
-
-func serverGroup(clone string, roots []string, home string) string {
+func groupOf(dir string, roots []string, home string) string {
 	for _, root := range roots {
-		if group, ok := groupUnder(expandHome(root, home), clone); ok {
-			return group
+		rel, err := filepath.Rel(sh.ExpandHome(root, home), dir)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return strings.Split(rel, string(filepath.Separator))[0]
 		}
 	}
-	return baseName(filepath.Dir(clone))
-}
-
-func groupUnder(root, path string) (string, bool) {
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-		return "", false
-	}
-	return strings.Split(rel, string(filepath.Separator))[0], true
+	return baseName(filepath.Dir(dir))
 }
 
 type Placement struct {
-	Home      string
 	Root      string
 	Group     string
 	NewFolder string
 }
 
 func place(target sh.Machine, ws Workspace, roots []string, groupIfNew string, exclude []string) (Placement, error) {
-	home, err := homeDir(target)
-	if err != nil {
-		return Placement{}, err
-	}
-	p := Placement{Home: home}
+	var p Placement
 	if ws.Git != nil {
 		clones, err := listClones(target, roots)
 		if err != nil {
@@ -87,12 +38,12 @@ func place(target sh.Machine, ws Workspace, roots []string, groupIfNew string, e
 			return p, err
 		}
 		if p.Root != "" {
-			p.Group = serverGroup(p.Root, roots, home)
+			p.Group = groupOf(p.Root, roots, target.Home())
 			return p, nil
 		}
 	}
 	p.Group = groupIfNew
-	p.Root = expandHome(roots[0], home) + "/" + groupIfNew + "/" + ws.Name
+	p.Root = sh.ExpandHome(roots[0], target.Home()) + "/" + groupIfNew + "/" + ws.Name
 	f, err := folderState(target, p.Root)
 	if err != nil {
 		return p, err
@@ -117,11 +68,6 @@ type Clone struct {
 	Origin     string
 	OriginKey  string
 	RootCommit string
-}
-
-func homeDir(m sh.Machine) (string, error) {
-	out, err := sh.Run(m, `printf '%s' "$HOME"`)
-	return string(out), err
 }
 
 func listClones(m sh.Machine, roots []string) ([]Clone, error) {
@@ -164,13 +110,18 @@ func sameRepository(c Clone, ws Workspace) bool {
 	return c.Origin == "" && ws.Git.RootCommit != "" && c.RootCommit == ws.Git.RootCommit
 }
 
-func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
-	var matches []string
+func clonesOf(clones []Clone, ws Workspace) []string {
+	var dirs []string
 	for _, c := range clones {
 		if sameRepository(c, ws) {
-			matches = append(matches, c.Dir)
+			dirs = append(dirs, c.Dir)
 		}
 	}
+	return dirs
+}
+
+func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
+	matches := clonesOf(clones, ws)
 	switch len(matches) {
 	case 0:
 		return "", nil
@@ -214,9 +165,4 @@ func prefetchOrigin(m sh.Machine, dir string) {
 	ctx, cancel := context.WithTimeout(m.Context(), prefetchLimit)
 	defer cancel()
 	sh.Run(m.With(ctx), `GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10' git -C "$1" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 fetch --quiet origin`, dir)
-}
-
-func removeFolder(m sh.Machine, dir string) error {
-	_, err := sh.Run(m, `rm -rf -- "$1"`, dir)
-	return err
 }

@@ -2,170 +2,65 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
 	"slices"
 	"strconv"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
 	"github.com/felitrejos/magi/remote/internal/store"
 )
 
-const (
-	hookLimit     = 200 * time.Second
-	moveHookLimit = hookLimit + 10*time.Second
-)
-
-var moveHookGrace = 5 * time.Second
-
-type moveReport struct {
-	Event   string `json:"event"`
-	OK      bool   `json:"ok"`
-	Session string `json:"session"`
-	Host    string `json:"host"`
-	Message string `json:"message"`
-	ToDir   string `json:"to_dir,omitempty"`
-	Took    string `json:"took,omitempty"`
-	Step    string `json:"step,omitempty"`
-	Seconds string `json:"seconds,omitempty"`
-	Ports   []int  `json:"ports,omitempty"`
-}
-
 type mover struct {
 	session string
 	host    string
-	json    bool
 	out     io.Writer
 }
 
-func (m mover) report(r moveReport) {
-	r.Session, r.Host = m.session, m.host
-	if m.json {
-		json.NewEncoder(m.out).Encode(r)
-		return
-	}
-	fmt.Fprintln(m.out, r.Message)
-}
-
-func (m mover) fail(err error) error {
-	m.report(moveReport{Event: "failed", Message: err.Error()})
-	return errReported
-}
-
-var errReported = errors.New("reported")
-
-func moveCommand(args []string, out io.Writer) error {
-	m := mover{out: out}
-	var rest []string
-	for _, a := range args {
-		if a == "--json" {
-			m.json = true
-		} else {
-			rest = append(rest, a)
-		}
-	}
-	if len(rest) != 2 {
-		return m.fail(errors.New("usage: magi move <session-id> <host> [--json]"))
-	}
-	m.session, m.host = rest[0], rest[1]
-	return m.run()
+func busyError(session string) error {
+	id := store.ShortID(session)
+	return fmt.Errorf("session %s is in the middle of a turn or waiting on the user, so it wasn't moved; run magi wait %s as a background shell command, then move it if that says it's idle, or ask the user to answer it first if that says it's waiting on them", id, id)
 }
 
 func (m mover) run() error {
 	if !store.SessionIDPattern.MatchString(m.session) {
-		return m.fail(fmt.Errorf("%q is not a session id", m.session))
+		return fmt.Errorf("%q is not a session id", m.session)
 	}
 	host, err := loadHost(m.host)
 	if err != nil {
-		return m.fail(err)
+		return err
 	}
 	unlock, err := lockMove(m.session)
 	if err != nil {
-		return m.fail(err)
+		return err
 	}
 	defer unlock()
-	if err := cleanStrayFor(m.session); err != nil {
-		return m.fail(err)
+	if err := recoverBefore(m.session, true); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	local, err := sh.NewLocal(ctx)
 	if err != nil {
-		return m.fail(err)
+		return err
 	}
 	s, err := findLocalSession(local, m.session)
 	if err != nil {
-		return m.fail(err)
+		return err
 	}
-	if s.Codex {
-		return m.codex(local, host, s)
-	}
-	stopped := false
-	if s.Live != nil {
-		_, err := sh.Run(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since(), local.Claude())
-		if sh.ExitCode(err) == sh.ExitBusy {
-			unlock()
-			return m.whenTurnEnds(s)
-		}
-		if err != nil {
-			return m.fail(err)
-		}
-		stopped = true
-	}
-	return m.now(local, host, s, stopped)
-}
-
-func (m mover) codex(local *sh.Local, host Host, s remoteSession) error {
-	if host.Codex == "" {
-		return m.fail(fmt.Errorf("session %s is a Codex session; set codex to the path of codex on %s under [hosts.%s] in magi's config to move it there", store.ShortID(s.ID), m.host, tomlKey(m.host)))
-	}
-	if err := s.refuseUnsure(local); err != nil {
-		return m.fail(err)
-	}
-	if err := refuseOpenCodex(local, s.ID, s.Running); err != nil {
-		return m.fail(err)
-	}
-	remote, err := newRemote(local.Context(), host)
-	if err != nil {
-		return m.fail(err)
-	}
-	if err := refuseOpenCodex(remote, s.ID, nil); err != nil {
-		return m.fail(err)
-	}
-	if len(s.Running) == 0 {
+	if s.Live == nil {
 		return m.now(local, host, s, false)
 	}
-	local = local.With(context.Background()).(*sh.Local)
-	interrupted := make(chan os.Signal, 1)
-	signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(interrupted)
-	for told := false; ; told = true {
-		err := stopCodex(local, s)
-		if sh.ExitCode(err) != sh.ExitBusy {
-			if err != nil {
-				return m.fail(err)
-			}
-			return m.now(local, host, s, true)
-		}
-		if !told {
-			m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", store.ShortID(s.ID), m.host)})
-		}
-		if !slices.ContainsFunc(s.Running, func(pid int) bool { return syscall.Kill(pid, 0) == nil }) {
-			return m.fail(errors.New("the session ended before its turn did, so it didn't move"))
-		}
-		select {
-		case <-interrupted:
-			return m.fail(errors.New("cancelled; the session keeps running here"))
-		case <-time.After(500 * time.Millisecond):
-		}
+	_, err = sh.Run(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since(), local.Claude())
+	if sh.ExitCode(err) == sh.ExitBusy {
+		return busyError(s.ID)
 	}
+	if err != nil {
+		return err
+	}
+	return m.now(local, host, s, true)
 }
 
 func lockMove(sessionID string) (func(), error) {
@@ -184,158 +79,22 @@ func findLocalSession(local *sh.Local, id string) (remoteSession, error) {
 	if live, _ := liveSessions(local); slices.ContainsFunc(live, func(l liveSession) bool { return l.SessionID == id }) {
 		return s, fmt.Errorf("session %s hasn't started a conversation yet, so there's nothing to move", store.ShortID(id))
 	}
-	return s, fmt.Errorf("no Claude Code or Codex session %s on %s", id, local.Name())
+	return s, fmt.Errorf("no Claude Code session %s on %s", id, local.Name())
 }
 
 func (m mover) now(local *sh.Local, host Host, s remoteSession, stopped bool) error {
-	m.report(moveReport{Event: "moving", OK: true, Message: fmt.Sprintf("Moving session %s to %s...", store.ShortID(s.ID), m.host)})
 	progress := func(step string) {
-		m.report(moveReport{Event: "step", OK: true, Step: step, Message: fmt.Sprintf("Moving session %s to %s: %s", store.ShortID(s.ID), m.host, step)})
+		fmt.Fprintf(m.out, "Moving session %s to %s: %s\n", store.ShortID(s.ID), m.host, step)
 	}
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Codex: s.Codex, Rollout: s.Rollout}.Run(context.Background())
-	if res.Stray != nil {
-		res.note(saveStray(s.ID, *res.Stray))
+	closeHere := func() (int, error) {
+		finish, cancel := context.WithTimeout(context.Background(), finishBudget)
+		defer cancel()
+		return retire(local.With(finish), m.host, s.ID, s.Transcript, 0)
 	}
-	if err != nil {
-		if stopped {
-			err = fmt.Errorf("%w. The session was stopped here; to carry on here instead, run %s in %s", err, resumeHint(s), s.Cwd)
-		}
-		return m.fail(err)
-	}
-	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	here := local.With(finish)
-	res.note(markMoved(here, s.ID, m.host))
-	if _, err := sh.Run(here, retireScript, "", s.Transcript, m.host, s.ID, ""); err != nil && !sh.TabGone(err) {
-		res.note(fmt.Errorf("retiring the session here failed: %w", err))
-	}
-	res.note(appendLog(logEntry{Time: time.Now(), Kind: "push", Session: s.ID, From: res.From, To: m.host, FromDir: res.FromDir, ToDir: res.ToDir}))
-	m.report(movedReport(s.ID, m.host, res))
-	return nil
-}
-
-func movedReport(sessionID, host string, res Result) moveReport {
-	where := "running " + res.Where
-	if len(res.ShownOn) > 0 {
-		where = "open in " + strings.Join(res.ShownOn, ", ")
-	}
-	msg := fmt.Sprintf("Moved session %s to %s in %s. It's %s", store.ShortID(sessionID), host, res.Summary(), where)
-	if res.NewFolder != "" {
-		msg += fmt.Sprintf(". %s didn't have the project yet, so it now lives at %s", host, res.NewFolder)
-	}
-	if forwarded := res.Forwarded(); forwarded != "" {
-		msg += ". " + forwarded
-	}
-	if len(res.Notes) > 0 {
-		msg += ". Notes: " + res.Noted()
-	}
-	return moveReport{Event: "moved", OK: true, Message: msg + ".", ToDir: res.ToDir, Took: res.Summary(), Seconds: fmt.Sprintf("%.1f", res.Total().Seconds()), Ports: res.Ports}
-}
-
-func (m mover) whenTurnEnds(s remoteSession) error {
-	path, err := store.SessionPath("armed", s.ID, ".json")
-	if err != nil {
-		return m.fail(err)
-	}
-	result, err := store.SessionPath("armed", s.ID, ".result.json")
-	if err != nil {
-		return m.fail(err)
-	}
-	if err := os.Remove(result); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return m.fail(err)
-	}
-	err = writeArmed(path, armed{Host: m.host, PID: s.Live.PID, Notify: true}, os.O_EXCL)
-	if errors.Is(err, os.ErrExist) {
-		return m.fail(errors.New("the session is already armed to move when its turn ends"))
-	}
-	disarm := func(err error) error {
-		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			err = fmt.Errorf("%w; removing %s also failed: %v", err, path, rmErr)
-		}
-		return m.fail(err)
-	}
-	if err != nil {
-		return disarm(fmt.Errorf("arming the session failed: %w", err))
-	}
-	m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", store.ShortID(s.ID), m.host)})
-
-	interrupted := make(chan os.Signal, 1)
-	signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(interrupted)
-	local, err := sh.NewLocal(context.Background())
-	if err != nil {
-		return disarm(err)
-	}
-	var idleSince, takenAt time.Time
-	for {
-		data, err := os.ReadFile(result)
-		if err == nil {
-			if err := os.Remove(result); err != nil {
-				return m.fail(err)
-			}
-			var r moveReport
-			if err := json.Unmarshal(data, &r); err != nil {
-				return m.fail(fmt.Errorf("unreadable result from the Stop hook: %w", err))
-			}
-			m.report(r)
-			if !r.OK {
-				return errReported
-			}
-			return nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return m.fail(err)
-		}
-		armedStill, err := exists(path)
-		if err != nil {
-			return m.fail(err)
-		}
-		if !armedStill && takenAt.IsZero() {
-			takenAt = time.Now()
-		}
-		if !takenAt.IsZero() && time.Since(takenAt) > moveHookLimit {
-			return m.fail(errors.New("the Stop hook took the handoff but never reported back; check magi status"))
-		}
-		if armedStill {
-			sessions, err := liveSessions(local)
-			if err != nil {
-				return disarm(err)
-			}
-			i := slices.IndexFunc(sessions, func(l liveSession) bool { return l.PID == s.Live.PID })
-			if i < 0 {
-				return disarm(errors.New("the session ended before its turn did, so it didn't move"))
-			}
-			if sessions[i].Status != "idle" {
-				idleSince = time.Time{}
-			} else if idleSince.IsZero() {
-				idleSince = time.Now()
-			} else if time.Since(idleSince) > moveHookGrace {
-				return disarm(errors.New("the session's turn ended but magi's Stop hook didn't run; install the magi Claude Code plugin on this machine"))
-			}
-		}
-		select {
-		case <-interrupted:
-			if os.Remove(path) == nil {
-				return m.fail(errors.New("cancelled; the session keeps running here"))
-			}
-			return m.fail(errors.New("cancelled, but the handoff had already started; check magi status"))
-		case <-time.After(300 * time.Millisecond):
-		}
-	}
-}
-
-func exists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
-func writeMoveResult(sessionID string, r moveReport) error {
-	path, err := store.SessionPath("armed", sessionID, ".result.json")
+	res, err := Move{Kind: "push", HostName: m.host, Host: host, Session: s, Stopped: stopped, Out: m.out, Progress: progress, Retire: closeHere}.Run(context.Background())
 	if err != nil {
 		return err
 	}
-	return store.WriteJSON(path, r)
+	fmt.Fprintln(m.out, res.Report())
+	return nil
 }

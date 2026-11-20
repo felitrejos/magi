@@ -1,7 +1,7 @@
 {
   "name": "magi",
   "description": "Move a live Claude Code session to another machine and back, and have Claude send work to your other machines that comes back by itself",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "author": {
     "name": "felitrejos",
     "url": "https://github.com/felitrejos"
@@ -11,7 +11,7 @@
   "icon": ".claude-plugin/icon.png",
   "mcpServers": {
     "magi": {
-      "command": "magi",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/magi",
       "args": [
         "mcp"
       ]

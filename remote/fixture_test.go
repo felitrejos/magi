@@ -1,8 +1,8 @@
 package main
 
 import (
+	"cmp"
 	"context"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const fakeSSH = `#!/bin/sh
@@ -31,7 +32,15 @@ while [ $# -gt 0 ]; do
     *) if [ -z "$host" ]; then host=$1; shift; else break; fi ;;
   esac
 done
-if [ -n "$MAGI_TEST_REMOTE_CODEX_HOME" ]; then export CODEX_HOME="$MAGI_TEST_REMOTE_CODEX_HOME"; fi
+if [ -s "$HOME/ssh-down" ]; then
+  cat "$HOME/ssh-down" >&2
+  exit 255
+fi
+if [ -e "$HOME/ssh-down" ]; then
+  echo "ssh: connect to host $host port 22: Network is unreachable" >&2
+  exit 255
+fi
+if [ -n "$MAGI_TEST_REMOTE_HOME" ]; then export HOME="$MAGI_TEST_REMOTE_HOME"; fi
 exec "${MAGI_TEST_LOGIN_SHELL:-sh}" -c "$*"
 `
 
@@ -40,6 +49,8 @@ type fixture struct {
 	home   string
 	local  string
 	remote string
+	answer string
+	asked  []string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -62,13 +73,11 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("MAGI_FAKE_CLAUDE_VERSION", builtin.Claude.Max)
-	t.Setenv("MAGI_FAKE_CODEX_VERSION", builtin.Codex.Max)
-	url := testedURL
-	testedURL = ""
-	t.Cleanup(func() { testedURL = url })
+	t.Setenv("MAGI_FAKE_CLAUDE_VERSION", builtin.Max)
+	f.write(filepath.Join(home, ".magi"), "tested.json", string(builtinTested))
 	f.tool("claude", fakeClaude)
-	f.tool("codex", fakeCodex)
+	f.tool("launchctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
+	f.tool("systemctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -126,7 +135,7 @@ func (f *fixture) remoteHost() *sh.Remote {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	f.t.Cleanup(cancel)
-	r, err := newRemote(ctx, Host{SSH: "fakehost", Claude: "claude", Codex: "codex"})
+	r, err := newRemote(ctx, Host{SSH: "fakehost", Claude: "claude"})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -222,68 +231,15 @@ fi
 
 const fakeClaude = "#!/bin/sh\n" + fakeAgents
 
-const fakeClaudeThatStarts = "#!/bin/sh\n" + fakeAgents + `mkdir -p "$HOME/.claude/sessions"
+const fakeStart = `mkdir -p "$HOME/.claude/sessions"
 printf '{"pid":%s,"sessionId":"%s","cwd":"%s","startedAt":%s000,"bridgeSessionId":"bridge"}' $$ "$2" "$PWD" "$(date +%s)" > "$HOME/.claude/sessions/$$.json"
+`
+
+const fakeClaudeThatStarts = "#!/bin/sh\n" + fakeAgents + fakeStart + "exec sleep 60\n"
+
+const fakeClaudeThatAnswers = "#!/bin/sh\n" + fakeAgents + fakeStart + `sleep 1
+printf '%s\n' '{"type":"user","message":{"content":"[magi] This session was just handed off"}}' '{"type":"assistant","message":{"content":"on server"}}' >> "$HOME/.claude/projects/$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-/g')/$2.jsonl"
 exec sleep 60
-`
-
-const fakeCodex = `#!/bin/sh
-if [ "$1" = --version ]; then echo "codex-cli $MAGI_FAKE_CODEX_VERSION"; exit; fi
-codex_home=${CODEX_HOME:-$HOME/.codex}
-config=$codex_home/config.toml
-if [ "$1" = app-server ]; then
-  mkdir -p "$codex_home"
-  while read -r line; do
-    printf '%s\n' "$line" >> "$codex_home/app-server-calls"
-    id=${line#'{"id":'}
-    id=${id%%,*}
-    case $line in
-      *'"method":"initialize"'*) printf '{"id":0,"result":{"codexHome":"%s"}}\n' "$codex_home" ;;
-      *'"method":"thread/read"'*)
-        thread=${line##*'"threadId":"'}
-        thread=${thread%%'"'*}
-        f=$(find "$codex_home/sessions" -name "rollout-*-$thread.jsonl*" 2>/dev/null | head -n 1)
-        if [ -z "$f" ]; then
-          printf '{"id":%s,"error":{"code":-32600,"message":"thread not loaded: %s"}}\n' "$id" "$thread"
-          continue
-        fi
-        cwd=$(grep -E '"type":"(session_meta|turn_context)"' "$f" | tail -n 1 | sed 's/.*"cwd":"\([^"]*\)".*/\1/')
-        f=${f%%.jsonl*}.jsonl
-        printf '{"method":"thread/status/changed","params":{}}\n{"id":%s,"result":{"thread":{"id":"%s","name":null,"path":"%s","cwd":"%s","status":{"type":"notLoaded"}}}}\n' "$id" "$thread" "$f" "$cwd"
-        ;;
-      *'"method":"config/read"'*)
-        projects=$(awk '/^\[/ { key = "" } /^\[projects\./ { key = substr($0, 11, length($0) - 11) } /^trust_level/ && key != "" { printf "%s%s:{\"trust_level\":%s}", sep, key, $3; sep = "," }' "$config" 2>/dev/null)
-        printf '{"id":%s,"result":{"config":{"projects":{%s}},"layers":[{"name":{"type":"user"},"version":"%s"}]}}\n' "$id" "$projects" "$(cksum 2>/dev/null < "$config")"
-        ;;
-      *'"method":"config/value/write"'*)
-        expected=${line##*'"expectedVersion":"'}
-        expected=${expected%%'"'*}
-        if [ "$expected" != "$(cksum 2>/dev/null < "$config")" ]; then
-          printf '{"id":%s,"error":{"code":-32600,"data":{"config_write_error_code":"configVersionConflict"},"message":"Configuration was modified since last read. Fetch latest version and retry."}}\n' "$id"
-          continue
-        fi
-        key=${line#*'"keyPath":"projects.'}
-        key=$(printf '%s' "${key%%.trust_level*}" | sed 's/\\"/"/g')
-        printf '\n[projects.%s]\ntrust_level = "trusted"\n' "$key" >> "$config"
-        printf '{"id":%s,"result":{"status":"ok"}}\n' "$id"
-        ;;
-    esac
-  done
-  exit
-fi
-printf '%s\n' "$@" > "$HOME/codex-args"
-while [ $# -gt 0 ] && [ "$1" != resume ]; do shift; done
-f=$(find "$codex_home/sessions" -name "rollout-*-$2.jsonl")
-printf '%s\n' '{"timestamp":"t","type":"event_msg","payload":{"type":"task_started"}}' '{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete"}}' >> "$f"
-sleep 60
-`
-
-const fakeClaudeCLI = `#!/bin/sh
-case "$1" in
-  --version) echo "$MAGI_FAKE_CLAUDE_VERSION (Claude Code)" ;;
-  auth) echo '{"loggedIn":true,"authMethod":"claude.ai"}' ;;
-  plugin) if [ -n "$MAGI_FAKE_PLUGINS" ]; then echo "$MAGI_FAKE_PLUGINS"; else echo '[{"id":"magi@magi","enabled":true}]'; fi ;;
-esac
 `
 
 func (f *fixture) tool(name, body string) string {
@@ -294,13 +250,6 @@ func (f *fixture) tool(name, body string) string {
 		f.t.Fatal(err)
 	}
 	return path
-}
-
-func (f *fixture) magiOnLoginPath() {
-	f.t.Helper()
-	f.tool("magi", "#!/bin/sh\n")
-	f.t.Setenv("SHELL", "/bin/sh")
-	f.write(f.home, ".profile", "PATH=\"$HOME/bin:$PATH\"\n")
 }
 
 func (f *fixture) config(body string) {
@@ -334,12 +283,47 @@ func (f *fixture) isolatedTmux() {
 
 func (f *fixture) allow(dir string) {
 	f.t.Helper()
-	if err := allowProject(dir, strings.NewReader("y\n"), io.Discard); err != nil {
+	p, err := readProject(dir)
+	if err != nil {
 		f.t.Fatal(err)
+	}
+	if text, failed := f.call("allow_project", map[string]any{"dir": dir, "sha256": p.Hash}); failed {
+		f.t.Fatal(text)
 	}
 }
 
-func (f *fixture) handoffToServer(id string) Handoff {
+func (f *fixture) call(tool string, args map[string]any) (string, bool) {
+	f.t.Helper()
+	serverSide, clientSide := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := newMCPServer().Connect(ctx, serverSide, nil); err != nil {
+		f.t.Fatal(err)
+	}
+	ask := func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		f.asked = append(f.asked, req.Params.Message)
+		return &mcp.ElicitResult{Action: cmp.Or(f.answer, "accept")}, nil
+	}
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, &mcp.ClientOptions{ElicitationHandler: ask}).Connect(ctx, clientSide, nil)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer session.Close()
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return res.Content[0].(*mcp.TextContent).Text, res.IsError
+}
+
+func (f *fixture) serverHome() string {
+	f.t.Helper()
+	server := filepath.Join(f.home, "server")
+	f.t.Setenv("MAGI_TEST_REMOTE_HOME", server)
+	f.remote = filepath.Join(server, "developer", "acme", "api")
+	return server
+}
+
+func (f *fixture) handoffToServer(id string) Move {
 	f.t.Helper()
 	f.isolatedTmux()
 	claude := f.tool("claude", fakeClaudeThatStarts)
@@ -349,11 +333,41 @@ func (f *fixture) handoffToServer(id string) Handoff {
 	}
 	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
 	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
-	return Handoff{
-		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
-		SessionID:      id,
-		TranscriptPath: transcript,
-		Cwd:            f.local,
+	return Move{
+		Kind:     "push",
+		HostName: "server",
+		Host:     Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
+		Session:  remoteSession{ID: id, Transcript: transcript, Cwd: f.local},
+		Retire:   func() (int, error) { return 0, nil },
 	}
+}
+
+func runProgram(t *testing.T, name string, args ...string) <-chan error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(path, args...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); close(done) }()
+	t.Cleanup(func() { cmd.Process.Kill(); <-done })
+	return done
+}
+
+func TestMain(m *testing.M) {
+	retireDelay = 0
+	if args := os.Getenv("MAGI_TEST_RUN"); args != "" {
+		os.Args = append([]string{"magi"}, strings.Fields(args)...)
+		if os.Args[1] == "pull" {
+			pullHere(os.Args[2], os.Args[3], os.Stdout, false)
+		} else {
+			main()
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
 }

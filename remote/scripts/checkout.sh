@@ -1,6 +1,7 @@
 #!/bin/sh
 set -e
 mode=$1 repo=$2 H=$3 W=$4 I=$5 B=$6
+shift 6
 parked=refs/worktree/magi/parked
 
 cd -- "$repo"
@@ -26,18 +27,29 @@ fi
 
 [ "$mode" = apply ] || [ -e .git ] || exit 0
 
+clean() {
+  n=$#
+  for e; do set -- "$@" -e "$e"; done
+  shift "$n"
+  git clean -fdq "$@"
+}
+
 tree_now() {
   t=$(mktemp -d)
   index=$(git rev-parse --path-format=absolute --git-path index)
-  if [ -f "$index" ]; then cp "$index" "$t/index"; fi
-  GIT_INDEX_FILE="$t/index" git add -A >/dev/null
+  if [ -f "$index" ]; then cp -p "$index" "$t/index"; fi
+  GIT_INDEX_FILE="$t/index" git add -u >/dev/null
+  n=$#
+  for e; do set -- "$@" ":(exclude,glob)**/$e" ":(exclude,glob)**/$e/**"; done
+  shift "$n"
+  GIT_INDEX_FILE="$t/index" git add -A -- . "$@" >/dev/null
   GIT_INDEX_FILE="$t/index" git write-tree
   rm -rf "$t"
 }
 
 force=
 if [ -n "$(git status --porcelain --untracked-files=all --ignore-submodules=none)" ]; then
-  now=$(tree_now)
+  now=$(tree_now "$@")
   if [ "$now" = "$(git rev-parse -q --verify "$parked^{tree}" || :)" ] || [ "$now" = "$(git rev-parse -q --verify "$W^{tree}" || :)" ]; then
     force=1
   else
@@ -63,7 +75,7 @@ ahead() {
 if [ -z "$H" ]; then
   if git rev-parse --verify --quiet "refs/heads/$B" >/dev/null; then ahead; fi
   git symbolic-ref HEAD "refs/heads/$B"
-  if [ -n "$force" ]; then git clean -fdq; fi
+  if [ -n "$force" ]; then clean "$@"; fi
   git read-tree --reset -u "$W"
 else
   if [ -n "$B" ] && git rev-parse --verify --quiet "refs/heads/$B" >/dev/null; then
@@ -80,7 +92,7 @@ else
     fi
   fi
   git checkout --quiet ${force:+--force} --detach "$H"
-  if [ -n "$force" ]; then git clean -fdq; fi
+  if [ -n "$force" ]; then clean "$@"; fi
   git read-tree -m -u HEAD "$W"
   if [ -n "$B" ]; then git checkout --quiet -B "$B"; fi
 fi

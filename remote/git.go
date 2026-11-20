@@ -20,11 +20,16 @@ type Workspace struct {
 	Subdir     string
 	Git        *GitState
 	Secrets    []string
+	Untracked  []string `json:"-"`
+	LeftOut    []string `json:"-"`
+	Size       int64    `json:"-"`
+	Changed    int
 	LFS        []string
 	LFSStore   string
 	LFSObjects []string
 	Submodules []Workspace
 	Subpath    string
+	Exclude    []string
 }
 
 type GitState struct {
@@ -54,7 +59,7 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 	if outermost {
 		climb = "1"
 	}
-	out, err := sh.Run(m, inspectScript, cwd, climb)
+	out, err := sh.Run(m, inspectScript, append([]string{cwd, climb}, exclude...)...)
 	switch sh.ExitCode(err) {
 	case sh.ExitConflicts:
 		return Workspace{}, errors.New("the repository has unresolved merge conflicts; resolve them before handing off")
@@ -65,7 +70,7 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 		return Workspace{}, err
 	}
 	fields := strings.Split(string(out), "\x00")
-	var ws Workspace
+	ws := Workspace{Exclude: exclude}
 	var real string
 	g := &GitState{}
 	for i := 0; i+1 < len(fields); i += 2 {
@@ -93,7 +98,15 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 			g.Index = value
 		case "lfsstore":
 			ws.LFSStore = value
-		case "attrs", "lfsobjects":
+		case "changed":
+			if ws.Changed, err = strconv.Atoi(value); err != nil {
+				return Workspace{}, fmt.Errorf("unexpected changed count from %s", m.Name())
+			}
+		case "size":
+			if ws.Size, err = strconv.ParseInt(value, 10, 64); err != nil {
+				return Workspace{}, fmt.Errorf("unexpected size from %s", m.Name())
+			}
+		case "attrs", "untracked", "leftout", "lfsobjects":
 			n, err := strconv.Atoi(value)
 			if err != nil || i+2+n > len(fields) {
 				return Workspace{}, fmt.Errorf("unexpected %s list from %s", key, m.Name())
@@ -107,6 +120,10 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 						ws.LFS = append(ws.LFS, items[j])
 					}
 				}
+			case "untracked":
+				ws.Untracked = items
+			case "leftout":
+				ws.LeftOut = items
 			case "lfsobjects":
 				ws.LFSObjects = items
 			}
@@ -208,7 +225,7 @@ func park(m sh.Machine, repo string, ws Workspace) error {
 }
 
 func checkoutAccepts(m sh.Machine, repo string, ws Workspace) error {
-	if _, err := sh.Run(m, checkoutScript, "check", repo, "", ws.Git.Worktree, "", ""); err != nil {
+	if _, err := sh.Run(m, checkoutScript, append([]string{"check", repo, "", ws.Git.Worktree, "", ""}, ws.Exclude...)...); err != nil {
 		return err
 	}
 	for _, sub := range ws.Submodules {
@@ -271,7 +288,7 @@ func syncGit(from, to sh.Machine, ws Workspace, repo, mode string, send sendObje
 		return errors.Join(err, dropRefs(to, repo))
 	}
 	g := ws.Git
-	if _, err := sh.Run(to, checkoutScript, mode, repo, g.Head, g.Worktree, g.Index, g.Branch); err != nil {
+	if _, err := sh.Run(to, checkoutScript, append([]string{mode, repo, g.Head, g.Worktree, g.Index, g.Branch}, ws.Exclude...)...); err != nil {
 		return errors.Join(err, dropRefs(to, repo))
 	}
 	if err := finishGit(from, to, ws, repo, mode, send); err != nil {
@@ -400,4 +417,20 @@ func normalizeRemote(raw string) string {
 		return s
 	}
 	return strings.ToLower(host) + "/" + strings.TrimPrefix(path, "/")
+}
+
+func unparkRepo(m sh.Machine, repo string) error {
+	if err := deleteRefs(m, repo, parkedRef); err != nil {
+		return err
+	}
+	links, err := gitlinks(m, repo)
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
+		if err := unparkRepo(m, repo+"/"+link); err != nil {
+			return err
+		}
+	}
+	return nil
 }

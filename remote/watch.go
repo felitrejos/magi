@@ -2,16 +2,20 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
@@ -30,12 +34,41 @@ type wanted struct {
 	Note string `json:"note"`
 }
 
+func wantedNote(m sh.Machine, sessionID string) (string, error) {
+	out, err := sh.Run(m, `f="$HOME/.magi/wanted/$1.json"; [ ! -f "$f" ] || cat "$f"`, sessionID)
+	if err != nil || len(out) == 0 {
+		return "", err
+	}
+	var w wanted
+	if err := json.Unmarshal(out, &w); err != nil {
+		return "", fmt.Errorf("the request to take session %s back is unreadable on %s: %w", store.ShortID(sessionID), m.Name(), err)
+	}
+	return w.Note, nil
+}
+
 func writeWanted(sessionID string, w wanted) error {
 	path, err := store.SessionPath("wanted", sessionID, ".json")
 	if err != nil {
 		return err
 	}
 	return store.WriteJSON(path, w)
+}
+
+type copies struct {
+	Secrets []string `json:"secrets"`
+	Exclude []string `json:"exclude"`
+}
+
+func takerCopies(name string) (Host, error) {
+	path, err := store.Dir(filepath.Join("watchers", name))
+	if err != nil {
+		return Host{}, err
+	}
+	var c copies
+	if err := store.ReadJSON(path, &c); err != nil {
+		return Host{}, fmt.Errorf("%s doesn't say which files it copies when it takes a session back (%v); update magi there", name, err)
+	}
+	return Host{Secrets: c.Secrets, Exclude: c.Exclude}, nil
 }
 
 func watchers() ([]string, error) {
@@ -65,15 +98,12 @@ func waitForPull(input stopInput, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
+	var w wanted
+	err = store.ReadJSON(path, &w)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return err
-	}
-	var w wanted
-	if err := json.Unmarshal(data, &w); err != nil {
 		return err
 	}
 	w.Note = stillRunning(w.Note, input.BackgroundTasks)
@@ -97,11 +127,7 @@ func reportWanted(w io.Writer) error {
 	fmt.Fprintln(w, "Waiting to be taken back:")
 	for _, path := range paths {
 		var request wanted
-		data, err := os.ReadFile(path)
-		if err == nil {
-			err = json.Unmarshal(data, &request)
-		}
-		if err != nil {
+		if err := store.ReadJSON(path, &request); err != nil {
 			return err
 		}
 		fmt.Fprintf(w, "  %s  by %s\n", store.ShortID(strings.TrimSuffix(filepath.Base(path), ".json")), request.To)
@@ -129,34 +155,144 @@ func watch() error {
 		return err
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
+	quit := func() { stopWatching(append([]string{local.Name()}, cfg.Order...), logger) }
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-signals
+		quit()
+	}()
+	go heartbeat(logger, quit)
 	var wg sync.WaitGroup
+	wg.Go(func() {
+		watchHost(newWatcher(local.Name(), nil, logger, ""), "", func() (sh.Machine, error) { return local, nil })
+	})
 	for _, name := range cfg.Order {
-		wg.Go(func() { watchHost(name, cfg.Hosts[name], local.Name(), logger) })
+		host := cfg.host(name)
+		said, err := json.Marshal(copies{Secrets: host.Secrets, Exclude: host.Exclude})
+		if err != nil {
+			return err
+		}
+		wg.Go(func() {
+			watchHost(newWatcher(name, nil, logger, string(said)), local.Name(), func() (sh.Machine, error) {
+				return newRemote(context.Background(), host)
+			})
+		})
 	}
 	wg.Wait()
 	return nil
 }
 
-func watchHost(name string, host Host, me string, logger *log.Logger) {
+var heartbeatEvery = time.Minute
+
+var taking sync.RWMutex
+
+func heartbeat(logger *log.Logger, restart func()) {
+	link, err := magiLink()
+	if err != nil {
+		logger.Print(err)
+		return
+	}
+	path, err := configPath()
+	if err != nil {
+		logger.Print(err)
+		return
+	}
+	self, _ := filepath.EvalSymlinks(link)
+	config, _ := os.ReadFile(path)
+	for range time.Tick(heartbeatEvery) {
+		moves, err := sweepMoves()
+		if err != nil {
+			logger.Printf("checking interrupted moves failed: %v", err)
+		}
+		for _, r := range moves {
+			if r.settled {
+				logger.Print(r.report)
+			}
+		}
+		changed := ""
+		if now, err := filepath.EvalSymlinks(link); err == nil && now != self {
+			changed = "magi was updated to " + now
+		}
+		if now, _ := os.ReadFile(path); !bytes.Equal(now, config) {
+			changed = "magi's machines changed"
+		}
+		if changed != "" {
+			logger.Printf("%s; restarting once no session is being taken back", changed)
+			taking.Lock()
+			restart()
+		}
+	}
+}
+
+func watchHost(w *watcher, me string, connect func() (sh.Machine, error)) {
 	wait := time.Second
 	for {
 		started := time.Now()
-		err := followRequests(context.Background(), name, host, me, logger)
+		m, err := connect()
+		if err == nil {
+			w.m = m
+			err = w.follow(me)
+		}
 		if time.Since(started) > watchBackoff {
 			wait = time.Second
 		}
-		logger.Printf("%s: watching stopped (%v); trying again in %s", name, err, wait)
+		w.logger.Printf("%s: watching stopped (%v); trying again in %s", w.name, err, wait)
 		time.Sleep(wait)
 		wait = min(wait*2, watchBackoff)
 	}
 }
 
-func followRequests(ctx context.Context, name string, host Host, me string, logger *log.Logger) error {
-	remote, err := newRemote(ctx, host)
-	if err != nil {
-		return err
-	}
-	cmd := remote.Command(watchScript, me)
+type watcher struct {
+	name   string
+	m      sh.Machine
+	copies string
+	logger *log.Logger
+	live   liveMachine
+	block  []string
+	usage  map[int]use
+}
+
+type liveMachine struct {
+	Answering bool        `json:"answering"`
+	Heard     time.Time   `json:"heard,omitzero"`
+	Cores     int         `json:"cores"`
+	Load      float64     `json:"load"`
+	Memory    space       `json:"memory"`
+	Disk      space       `json:"disk"`
+	Sessions  []liveEntry `json:"sessions"`
+}
+
+type space struct {
+	UsedMB  int `json:"usedMB"`
+	TotalMB int `json:"totalMB"`
+}
+
+type liveEntry struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Folder    string    `json:"folder"`
+	State     string    `json:"state"`
+	WaitingOn string    `json:"waitingOn,omitempty"`
+	Since     time.Time `json:"since,omitzero"`
+	CPU       int       `json:"cpu"`
+	MemoryMB  int       `json:"memoryMB"`
+	pid       int
+}
+
+type use struct {
+	seconds       float64
+	at            time.Time
+	cpu, memoryMB int
+}
+
+func newWatcher(name string, m sh.Machine, logger *log.Logger, copies string) *watcher {
+	return &watcher{name: name, m: m, copies: copies, logger: logger, live: liveMachine{Sessions: []liveEntry{}}}
+}
+
+func (w *watcher) follow(me string) error {
+	w.block = nil
+	cmd := w.m.Command(watchScript, me, w.m.Claude(), w.copies)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -166,30 +302,140 @@ func followRequests(ctx context.Context, name string, host Host, me string, logg
 	}
 	tried := map[string]time.Time{}
 	lines := bufio.NewScanner(stdout)
+	lines.Buffer(nil, math.MaxInt)
 	for lines.Scan() {
-		id := lines.Text()
-		if !store.SessionIDPattern.MatchString(id) || time.Since(tried[id]) < watchRetry {
+		line := lines.Text()
+		if !store.SessionIDPattern.MatchString(line) {
+			w.hear(line, time.Now())
 			continue
 		}
-		tried[id] = time.Now()
-		go take(name, remote, id, logger)
+		if time.Since(tried[line]) < watchRetry {
+			continue
+		}
+		tried[line] = time.Now()
+		go take(w.name, w.m, line, w.logger)
 	}
-	return cmd.Wait()
+	err = cmd.Wait()
+	w.live.Answering = false
+	return errors.Join(err, w.save())
 }
 
-func take(name string, remote *sh.Remote, id string, logger *log.Logger) {
-	data, err := sh.Run(remote, `cat "$HOME/.magi/wanted/$1.json"`, id)
+func (w *watcher) hear(line string, now time.Time) {
+	kind, rest, _ := strings.Cut(line, " ")
+	switch kind {
+	case "claude", "waiting":
+		w.block = append(w.block, line)
+		return
+	case "sessions":
+		w.sessions()
+	case "stats":
+		if err := w.stats(rest, now); err != nil {
+			w.logger.Printf("%s: unreadable stats %q: %v", w.name, rest, err)
+			return
+		}
+	}
+	w.live.Answering, w.live.Heard = true, now
+	if err := w.save(); err != nil {
+		w.logger.Printf("%s: writing what it runs failed: %v", w.name, err)
+	}
+}
+
+func (w *watcher) sessions() {
+	var sessions []liveSession
+	waiting := map[int]string{}
+	for _, line := range w.block {
+		kind, rest, _ := strings.Cut(line, " ")
+		switch kind {
+		case "claude":
+			var s liveSession
+			if json.Unmarshal([]byte(rest), &s) == nil {
+				sessions = append(sessions, s)
+			}
+		case "waiting":
+			var listed []liveSession
+			json.Unmarshal([]byte(rest), &listed)
+			for _, s := range listed {
+				waiting[s.PID] = s.WaitingFor
+			}
+		}
+	}
+	w.block = nil
+	entries := []liveEntry{}
+	for _, s := range sessions {
+		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], pid: s.PID}
+		if s.StatusAt > 0 {
+			e.Since = time.UnixMilli(s.StatusAt)
+		}
+		entries = append(entries, e)
+	}
+	w.live.Sessions = entries
+}
+
+func (w *watcher) stats(line string, now time.Time) error {
+	l := &w.live
+	if _, err := fmt.Sscan(line, &l.Cores, &l.Load, &l.Memory.UsedMB, &l.Memory.TotalMB, &l.Disk.UsedMB, &l.Disk.TotalMB); err != nil {
+		return err
+	}
+	usage := map[int]use{}
+	for _, field := range strings.Fields(line)[6:] {
+		var pid int
+		u := use{at: now}
+		if _, err := fmt.Sscanf(field, "%d:%g:%d", &pid, &u.seconds, &u.memoryMB); err != nil {
+			return err
+		}
+		if last, ok := w.usage[pid]; ok {
+			u.cpu = int(math.Round(max(0, (u.seconds-last.seconds)/now.Sub(last.at).Seconds()*100)))
+		}
+		usage[pid] = u
+	}
+	w.usage = usage
+	return nil
+}
+
+func (w *watcher) save() error {
+	for i := range w.live.Sessions {
+		s := &w.live.Sessions[i]
+		s.CPU, s.MemoryMB = w.usage[s.pid].cpu, w.usage[s.pid].memoryMB
+	}
+	path, err := livePath(w.name)
 	if err != nil {
-		logger.Printf("%s: reading the request for session %s failed: %v", name, store.ShortID(id), err)
-		return
+		return err
 	}
-	var w wanted
-	if err := json.Unmarshal(data, &w); err != nil {
-		logger.Printf("%s: the request for session %s is unreadable: %v", name, store.ShortID(id), err)
-		return
+	liveFiles.Lock()
+	defer liveFiles.Unlock()
+	return store.WriteJSON(path, w.live)
+}
+
+var liveFiles sync.Mutex
+
+func livePath(name string) (string, error) {
+	return store.Dir(filepath.Join("live", name+".json"))
+}
+
+func stopWatching(names []string, logger *log.Logger) {
+	liveFiles.Lock()
+	for _, name := range names {
+		var live liveMachine
+		path, err := livePath(name)
+		if err == nil {
+			err = store.ReadJSON(path, &live)
+		}
+		if err == nil {
+			live.Answering = false
+			err = store.WriteJSON(path, live)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Printf("%s: marking it as not watched failed: %v", name, err)
+		}
 	}
+	os.Exit(0)
+}
+
+func take(name string, remote sh.Machine, id string, logger *log.Logger) {
+	taking.RLock()
+	defer taking.RUnlock()
 	logger.Printf("%s: taking session %s back", name, store.ShortID(id))
-	pulled, err := pullHere(name, id, w.Note, logger.Writer(), true)
+	message, err := pullHere(name, id, logger.Writer(), true)
 	if err != nil {
 		logger.Printf("%s: taking session %s back failed: %v", name, store.ShortID(id), err)
 		return
@@ -197,5 +443,5 @@ func take(name string, remote *sh.Remote, id string, logger *log.Logger) {
 	if _, err := sh.Run(remote, `rm -f "$HOME/.magi/wanted/$1.json"`, id); err != nil {
 		logger.Printf("%s: removing the request for session %s failed: %v", name, store.ShortID(id), err)
 	}
-	logger.Print(pulled.message)
+	logger.Print(message)
 }

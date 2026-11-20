@@ -10,7 +10,6 @@
       "name": "magi",
       "description": "Say \"hand this off to my homelab\" and the session continues there with its conversation and uncommitted work, then hand it back the same way",
       "source": "./plugin",
-      "version": "0.9.1",
       "category": "productivity",
       "tags": [
         "remote",

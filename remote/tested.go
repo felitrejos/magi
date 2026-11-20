@@ -10,6 +10,8 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
@@ -31,36 +33,30 @@ type testedRange struct {
 	Broken []string `json:"broken"`
 }
 
-type testedVersions struct {
-	Claude testedRange `json:"claude"`
-	Codex  testedRange `json:"codex"`
-}
-
-func parseTested(data []byte) (testedVersions, error) {
-	var t testedVersions
+func parseTested(data []byte) (testedRange, error) {
+	var t struct {
+		Claude testedRange `json:"claude"`
+	}
 	if err := json.Unmarshal(data, &t); err != nil {
-		return t, err
+		return t.Claude, err
 	}
-	for _, r := range []testedRange{t.Claude, t.Codex} {
-		if _, ok := parseVersion(r.Min); !ok {
-			return t, fmt.Errorf("unreadable tested version %q", r.Min)
-		}
-		if _, ok := parseVersion(r.Max); !ok {
-			return t, fmt.Errorf("unreadable tested version %q", r.Max)
+	for _, v := range []string{t.Claude.Min, t.Claude.Max} {
+		if _, ok := parseVersion(v); !ok {
+			return t.Claude, fmt.Errorf("unreadable tested version %q", v)
 		}
 	}
-	return t, nil
+	return t.Claude, nil
 }
 
-func loadTested() (testedVersions, error) {
+func loadTested() (testedRange, error) {
 	path, err := store.Dir("tested.json")
 	if err != nil {
-		return testedVersions{}, err
+		return testedRange{}, err
 	}
-	if info, err := os.Stat(path); testedURL != "" && (err != nil || time.Since(info.ModTime()) > testedFresh) {
+	if info, err := os.Stat(path); err != nil || time.Since(info.ModTime()) > testedFresh {
 		if data, err := fetchTested(); err == nil {
 			if err := store.WriteAtomic(path, data); err != nil {
-				return testedVersions{}, err
+				return testedRange{}, err
 			}
 		}
 	}
@@ -68,7 +64,7 @@ func loadTested() (testedVersions, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		data = builtinTested
 	} else if err != nil {
-		return testedVersions{}, err
+		return testedRange{}, err
 	}
 	return parseTested(data)
 }
@@ -91,48 +87,65 @@ func fetchTested() ([]byte, error) {
 	return data, err
 }
 
-func (r testedRange) refuse(tool, where, version string) error {
+func (r testedRange) refuse(where, version string) error {
 	v, ok := parseVersion(version)
 	low, _ := parseVersion(r.Min)
 	high, _ := parseVersion(r.Max)
 	switch {
 	case !ok:
-		return fmt.Errorf("couldn't read the %s version on %s, so magi can't tell whether it was tested", tool, where)
+		return fmt.Errorf("couldn't read the Claude Code version on %s, so magi can't tell whether it was tested", where)
 	case compareVersions(v, low) < 0:
-		return fmt.Errorf("%s on %s is %s, older than magi supports; update it to %s or newer", tool, where, version, r.Min)
+		return fmt.Errorf("%s has Claude Code %s, older than magi supports; update it to %s or newer", where, version, r.Min)
 	case slices.Contains(r.Broken, version):
-		return fmt.Errorf("%s %s on %s fails magi's tests, so magi doesn't move sessions with it; update it", tool, version, where)
+		return fmt.Errorf("%s has Claude Code %s, which fails magi's tests, so magi doesn't move sessions with it; update it", where, version)
 	case compareVersions(v, high) > 0:
-		return fmt.Errorf("%s %s on %s hasn't passed magi's nightly tests yet (tested up to %s); a new version usually passes within a day, so try again later", tool, version, where, r.Max)
+		return fmt.Errorf("%s has Claude Code %s, which hasn't passed magi's nightly tests yet (tested up to %s); a new version usually passes within a day, so try again later", where, version, r.Max)
 	}
 	return nil
 }
 
-func toolVersion(m sh.Machine, program string) (string, error) {
-	out, err := sh.Run(m, `"$1" --version`, program)
-	return versionPattern.FindString(string(out)), err
-}
-
-func refuseUntested(codex bool, local sh.Machine, remote sh.Machine, remoteProgram string) error {
-	t, err := loadTested()
+func refuseUntested(machines ...sh.Machine) error {
+	tested, err := loadTested()
 	if err != nil {
 		return fmt.Errorf("reading which versions magi was tested with failed: %w", err)
 	}
-	tool, r, localProgram := "Claude Code", t.Claude, local.Claude()
-	if codex {
-		tool, r, localProgram = "Codex", t.Codex, local.Codex()
-	}
-	for _, m := range []struct {
-		machine sh.Machine
-		program string
-	}{{local, localProgram}, {remote, remoteProgram}} {
-		version, err := toolVersion(m.machine, m.program)
+	for _, m := range machines {
+		out, err := sh.Run(m, `"$1" --version`, m.Claude())
 		if err != nil {
-			return fmt.Errorf("reading the %s version on %s failed: %w", tool, m.machine.Name(), err)
+			return fmt.Errorf("reading the Claude Code version on %s failed: %w", m.Name(), err)
 		}
-		if err := r.refuse(tool, m.machine.Name(), version); err != nil {
+		if err := tested.refuse(m.Name(), versionPattern.FindString(string(out))); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func parseVersion(text string) ([3]int, bool) {
+	var v [3]int
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return v, false
+	}
+	parts := strings.SplitN(words[0], ".", 3)
+	if len(parts) != 3 {
+		return v, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return v, false
+		}
+		v[i] = n
+	}
+	return v, true
+}
+
+func compareVersions(a, b [3]int) int {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] - b[i]
+		}
+	}
+	return 0
 }

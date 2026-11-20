@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -26,7 +27,6 @@ type Config struct {
 type Host struct {
 	SSH           string   `toml:"ssh"`
 	Claude        string   `toml:"claude"`
-	Codex         string   `toml:"codex,omitempty"`
 	Roots         []string `toml:"roots"`
 	Secrets       []string `toml:"secrets"`
 	MaxAgents     int      `toml:"max_agents,omitempty"`
@@ -47,30 +47,39 @@ func configPath() (string, error) {
 	return filepath.Join(home, ".config", "magi", "config.toml"), nil
 }
 
-func (h Host) program(codex bool) string {
-	if codex {
-		return h.Codex
-	}
-	return h.Claude
+func newRemote(ctx context.Context, h Host) (*sh.Remote, error) {
+	return sh.NewRemote(ctx, h.SSH, h.Claude)
 }
 
-func newRemote(ctx context.Context, h Host) (*sh.Remote, error) {
-	return sh.NewRemote(ctx, h.SSH, h.Claude, h.Codex)
-}
+var errNoHost = errors.New("no host")
 
 func loadHost(name string) (Host, error) {
 	cfg, path, err := loadConfig()
 	if err != nil {
 		return Host{}, err
 	}
-	host, ok := cfg.Hosts[name]
-	if !ok {
+	if _, ok := cfg.Hosts[name]; !ok {
 		names := slices.Sorted(maps.Keys(cfg.Hosts))
-		return Host{}, fmt.Errorf("no host %q in %s; configured hosts: %s", name, path, strings.Join(names, ", "))
+		return Host{}, fmt.Errorf("%w %q in %s; configured hosts: %s", errNoHost, name, path, strings.Join(names, ", "))
 	}
-	host.LocalRoots = cfg.LocalRoots
-	host.Exclude = cfg.Exclude
+	host := cfg.host(name)
 	return host, host.validate(name)
+}
+
+func (c Config) host(name string) Host {
+	h := c.Hosts[name]
+	h.LocalRoots, h.Exclude = c.LocalRoots, c.Exclude
+	return h.withDefaults()
+}
+
+func (h Host) withDefaults() Host {
+	if len(h.Secrets) == 0 {
+		h.Secrets = []string{".env", ".env.*"}
+	}
+	if len(h.Exclude) == 0 {
+		h.Exclude = []string{"node_modules", ".venv", "dist", "build", "target"}
+	}
+	return h
 }
 
 func (h Host) validate(name string) error {
@@ -116,12 +125,24 @@ func loadConfig() (Config, string, error) {
 			cfg.Order = append(cfg.Order, key[1])
 		}
 	}
-	for _, name := range slices.Sorted(maps.Keys(cfg.Hosts)) {
-		if !slices.Contains(cfg.Order, name) {
-			cfg.Order = append(cfg.Order, name)
+	for _, name := range cfg.Order {
+		if err := checkHost(name, cfg.Hosts[name].SSH); err != nil {
+			return Config{}, path, fmt.Errorf("%s: %w", path, err)
 		}
 	}
 	return cfg, path, nil
+}
+
+var hostName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func checkHost(name, ssh string) error {
+	if !hostName.MatchString(name) {
+		return fmt.Errorf("%q isn't a machine name; use letters, digits, dots, dashes and underscores", name)
+	}
+	if strings.HasPrefix(ssh, "-") {
+		return fmt.Errorf("host %q: the ssh destination %q starts with a dash, which ssh reads as an option", name, ssh)
+	}
+	return nil
 }
 
 var bareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -130,21 +151,7 @@ func tomlKey(name string) string {
 	if bareKey.MatchString(name) {
 		return name
 	}
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range name {
-		switch {
-		case r == '"' || r == '\\':
-			b.WriteByte('\\')
-			b.WriteRune(r)
-		case r < 0x20 || r == 0x7f:
-			fmt.Fprintf(&b, "\\u%04X", r)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
+	return `"` + name + `"`
 }
 
 func writeConfig(path string, cfg Config) error {

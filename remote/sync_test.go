@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -221,7 +220,6 @@ func TestAFolderThatAppearsDuringAHandoffIsNeverRemoved(t *testing.T) {
 	if !errors.Is(err, errFolderAppeared) {
 		t.Fatalf("err = %v, want the folder to be reported as appeared", err)
 	}
-	undoSync(err, r, ws, where, false)
 	if got := f.read(where.NewFolder, "mine.md"); got != "made by hand meanwhile" {
 		t.Errorf("the folder that appeared was touched: mine.md = %q", got)
 	}
@@ -262,8 +260,8 @@ func TestUnparkClearsSubmodulesToo(t *testing.T) {
 	if err := park(f.machine(), ws.Root, ws); err != nil {
 		t.Fatal(err)
 	}
-	if err := unpark(f.local, io.Discard); err != nil {
-		t.Fatal(err)
+	if text, failed := f.call("unpark", map[string]any{"dir": f.local}); failed {
+		t.Fatal(text)
 	}
 	for _, dir := range []string{f.local, filepath.Join(f.local, "vendor/lib")} {
 		if out, _ := exec.Command("git", "-C", dir, "rev-parse", "-q", "--verify", parkedRef).Output(); len(out) > 0 {
@@ -292,6 +290,27 @@ func TestReadWorkspaceHandlesACheckoutWithoutAnIndex(t *testing.T) {
 	ws := f.workspace(bare)
 	if ws.Git == nil || ws.Git.Worktree == "" {
 		t.Fatalf("workspace = %+v, want a snapshot", ws)
+	}
+}
+
+func TestASameSizeEditMadeInTheSameSecondAsTheIndexIsInTheSnapshot(t *testing.T) {
+	f := newFixture(t)
+	f.git(f.local, "config", "core.trustctime", "false")
+	edited, index := filepath.Join(f.local, "edited.txt"), filepath.Join(f.local, ".git", "index")
+	then := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(edited, then, then); err != nil {
+		t.Fatal(err)
+	}
+	f.git(f.local, "update-index", "--refresh")
+	f.write(f.local, "edited.txt", "v2")
+	for _, path := range []string{edited, index} {
+		if err := os.Chtimes(path, then, then); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws := f.workspace(f.local)
+	if got := f.git(f.local, "show", ws.Git.Worktree+":edited.txt"); got != "v2" || ws.Changed != 1 {
+		t.Errorf("snapshot has %q and %d changed files, want the edit", got, ws.Changed)
 	}
 }
 
@@ -640,8 +659,8 @@ func TestUnparkExplainsThatPlainFoldersAreNeverParked(t *testing.T) {
 	f := newFixture(t)
 	notes := filepath.Join(f.home, "notes")
 	f.write(notes, "todo.md", "x")
-	if err := unpark(notes, io.Discard); err == nil || !strings.Contains(err.Error(), "isn't a git checkout") {
-		t.Errorf("unpark on a plain folder gave %v", err)
+	if text, failed := f.call("unpark", map[string]any{"dir": notes}); !failed || !strings.Contains(text, "isn't a git checkout") {
+		t.Errorf("unpark on a plain folder gave %q", text)
 	}
 }
 
@@ -659,15 +678,7 @@ func TestSecretsInsideIgnoredFoldersComeAlongButNotFromExcludedOnes(t *testing.T
 	}
 }
 
-func TestAnOriginMatchesByItsRawURLEvenWhenEachMachineResolvesItDifferently(t *testing.T) {
-	ws := Workspace{Git: &GitState{Origin: "git@gitea:acme/api.git", OriginKey: "homelab.tailnet/acme/api"}}
-	clones := []Clone{{Dir: "/srv/api", Origin: "git@gitea:acme/api", OriginKey: "localhost/acme/api"}}
-	if got, err := matchClone(clones, ws, "server"); err != nil || got != "/srv/api" {
-		t.Errorf("matchClone = %q, %v", got, err)
-	}
-}
-
-func TestAnSSHAliasInTheRemoteMatchesTheSameRepositoryOverHTTPS(t *testing.T) {
+func TestAnOriginMatchesThroughAnSSHAliasOrByItsRawURL(t *testing.T) {
 	f := newFixture(t)
 	f.write(f.home, ".fake-ssh-hosts", "github-work github.com\n")
 	f.git(f.local, "remote", "set-url", "origin", "git@github-work:acme/api.git")
@@ -678,6 +689,11 @@ func TestAnSSHAliasInTheRemoteMatchesTheSameRepositoryOverHTTPS(t *testing.T) {
 	}
 	if got, err := matchClone(clones, f.workspace(f.local), r.Name()); err != nil || got != f.remote {
 		t.Errorf("matchClone = %q, %v; want %s", got, err, f.remote)
+	}
+	ws := Workspace{Git: &GitState{Origin: "git@gitea:acme/api.git", OriginKey: "homelab.tailnet/acme/api"}}
+	resolved := []Clone{{Dir: "/srv/api", Origin: "git@gitea:acme/api", OriginKey: "localhost/acme/api"}}
+	if got, err := matchClone(resolved, ws, "server"); err != nil || got != "/srv/api" {
+		t.Errorf("an origin each machine resolves differently: matchClone = %q, %v", got, err)
 	}
 }
 

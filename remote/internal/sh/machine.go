@@ -27,10 +27,6 @@ func quoteAll(args []string) string {
 	return strings.Join(quoted, " ")
 }
 
-func Exec(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return output(command(ctx, name, args...), name)
-}
-
 func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -69,12 +65,12 @@ func output(cmd *exec.Cmd, what string) ([]byte, error) {
 }
 
 const (
-	ExitExists     = 7
-	ExitConflicts  = 8
-	ExitInProgress = 9
-	ExitBusy       = 10
-	ExitGone       = 11
-	ExitNoRoom     = 11
+	ExitExists      = 7
+	ExitConflicts   = 8
+	ExitInProgress  = 9
+	ExitBusy        = 10
+	ExitNoRoom      = 11
+	ExitUnreachable = 255
 )
 
 func ExitCode(err error) int {
@@ -87,11 +83,21 @@ func ExitCode(err error) int {
 
 type Machine interface {
 	Name() string
+	Home() string
+	Claude() string
 	Context() context.Context
 	With(context.Context) Machine
 	Command(script string, args ...string) *exec.Cmd
-	Claude() string
-	Codex() string
+}
+
+func ExpandHome(path, home string) string {
+	if path == "~" {
+		return home
+	}
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		return home + "/" + rest
+	}
+	return path
 }
 
 func Run(m Machine, script string, args ...string) ([]byte, error) {
@@ -104,16 +110,33 @@ func RunInput(m Machine, script string, input []byte, args ...string) ([]byte, e
 		cmd.Stdin = bytes.NewReader(input)
 	}
 	out, err := output(cmd, "sh")
+	if stopped(m, err) {
+		return out, &stoppedError{host: m.Name(), err: err}
+	}
 	if err != nil {
 		return out, fmt.Errorf("on %s: %w", m.Name(), err)
 	}
 	return out, nil
 }
 
+type stoppedError struct {
+	host string
+	err  error
+}
+
+func (e *stoppedError) Error() string { return e.host + " stopped answering" }
+func (e *stoppedError) Unwrap() error { return e.err }
+
+func stopped(m Machine, err error) bool {
+	var exit *exec.ExitError
+	_, remote := m.(*Remote)
+	return remote && err != nil && (m.Context().Err() != nil || errors.As(err, &exit) && exit.ExitCode() == -1)
+}
+
 type Local struct {
-	ctx   context.Context
-	name  string
-	codex string
+	ctx  context.Context
+	name string
+	home string
 }
 
 func NewLocal(ctx context.Context) (*Local, error) {
@@ -121,14 +144,17 @@ func NewLocal(ctx context.Context) (*Local, error) {
 	if err != nil {
 		return nil, err
 	}
-	codex, _ := exec.LookPath("codex")
-	return &Local{ctx: ctx, name: strings.TrimSuffix(name, ".local"), codex: codex}, nil
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	return &Local{ctx: ctx, name: strings.TrimSuffix(name, ".local"), home: home}, nil
 }
 
 func (l *Local) Name() string             { return l.name }
-func (l *Local) Context() context.Context { return l.ctx }
+func (l *Local) Home() string             { return l.home }
 func (l *Local) Claude() string           { return "claude" }
-func (l *Local) Codex() string            { return l.codex }
+func (l *Local) Context() context.Context { return l.ctx }
 func (l *Local) With(ctx context.Context) Machine {
 	c := *l
 	c.ctx = ctx
@@ -142,11 +168,11 @@ type Remote struct {
 	ctx    context.Context
 	host   string
 	opts   []string
+	home   string
 	claude string
-	codex  string
 }
 
-func NewRemote(ctx context.Context, ssh, claude, codex string) (*Remote, error) {
+func NewRemote(ctx context.Context, ssh, claude string) (*Remote, error) {
 	sockets, err := store.Dir("ssh")
 	if err != nil {
 		return nil, err
@@ -154,11 +180,9 @@ func NewRemote(ctx context.Context, ssh, claude, codex string) (*Remote, error) 
 	if err := os.MkdirAll(sockets, 0o700); err != nil {
 		return nil, err
 	}
-	return &Remote{
-		ctx:    ctx,
-		host:   ssh,
-		claude: claude,
-		codex:  codex,
+	r := &Remote{
+		ctx:  ctx,
+		host: ssh,
 		opts: []string{
 			"-o", "BatchMode=yes",
 			"-o", "ConnectTimeout=10",
@@ -168,13 +192,19 @@ func NewRemote(ctx context.Context, ssh, claude, codex string) (*Remote, error) 
 			"-o", "ServerAliveInterval=15",
 			"-o", "ServerAliveCountMax=3",
 		},
-	}, nil
+	}
+	home, err := Run(r, `printf '%s' "$HOME"`)
+	if err != nil {
+		return nil, err
+	}
+	r.home, r.claude = string(home), ExpandHome(claude, string(home))
+	return r, nil
 }
 
 func (r *Remote) Name() string             { return r.host }
-func (r *Remote) Context() context.Context { return r.ctx }
+func (r *Remote) Home() string             { return r.home }
 func (r *Remote) Claude() string           { return r.claude }
-func (r *Remote) Codex() string            { return r.codex }
+func (r *Remote) Context() context.Context { return r.ctx }
 func (r *Remote) With(ctx context.Context) Machine {
 	c := *r
 	c.ctx = ctx
@@ -248,12 +278,21 @@ func Transfer(from Machine, fromDir string, a Archive, to Machine, toDir string)
 		}
 		return startErr
 	}
-	var errs []error
-	if err := unpack.Wait(); err != nil {
-		errs = append(errs, fmt.Errorf("unpacking on %s: %w", to.Name(), &Error{What: "tar", Stderr: strings.TrimSpace(unpackErr.String()), Err: err}))
+	unpacked, packed := unpack.Wait(), pack.Wait()
+	for _, side := range []struct {
+		m   Machine
+		err error
+	}{{to, unpacked}, {from, packed}} {
+		if stopped(side.m, side.err) {
+			return &stoppedError{host: side.m.Name(), err: side.err}
+		}
 	}
-	if err := pack.Wait(); err != nil {
-		errs = append(errs, fmt.Errorf("packing on %s: %w", from.Name(), &Error{What: "tar", Stderr: strings.TrimSpace(packErr.String()), Err: err}))
+	var errs []error
+	if unpacked != nil {
+		errs = append(errs, fmt.Errorf("unpacking on %s: %w", to.Name(), &Error{What: "tar", Stderr: strings.TrimSpace(unpackErr.String()), Err: unpacked}))
+	}
+	if packed != nil {
+		errs = append(errs, fmt.Errorf("packing on %s: %w", from.Name(), &Error{What: "tar", Stderr: strings.TrimSpace(packErr.String()), Err: packed}))
 	}
 	return errors.Join(errs...)
 }
