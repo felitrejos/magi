@@ -14,18 +14,16 @@ load() {
   else
     getconf _NPROCESSORS_ONLN
     cut -d ' ' -f 1-3 /proc/loadavg
-    awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } /^SwapTotal:/ { st = $2 } /^SwapFree:/ { sf = $2 }
+    awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } /^SwapTotal:/ { st = $2 } /^SwapFree:/ { sf = $2 } /^btime / { booted = $2 }
       END {
         print t * 1024, a * 1024
-        getline uptime < "/proc/uptime"
-        srand()
-        printf "%.0f %.0f %.0f", (st - sf) / 1024, st / 1024, srand() - uptime
+        printf "%.0f %.0f %s", (st - sf) / 1024, st / 1024, booted
         if ((getline psi < "/proc/pressure/memory") > 0) {
           split(psi, f, /[ =]/)
           printf " %s", (f[5] >= 30 ? "critical" : f[5] >= 10 ? "warning" : "normal")
         }
         print ""
-      }' /proc/meminfo
+      }' /proc/meminfo /proc/stat
   fi
 }
 
