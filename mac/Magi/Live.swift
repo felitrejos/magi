@@ -16,6 +16,7 @@ struct Machine: Decodable {
     let bootedAt: Date?
     let battery: Battery?
     let relayed: Bool?
+    let history: [Reading]?
 
     func answers(at now: Date) -> Bool {
         guard answering, let heard else { return false }
@@ -55,26 +56,18 @@ struct Session: Decodable {
     let since: Date?
     let cpu: Int
     let memoryMB: Int
+    let cpuHistory: [CPUReading]?
 }
 
-struct Move: Decodable {
-    let time: Date
-    let from: String
-    let to: String
-    let toDir: String
-    let note: String?
-    let bytes: Int64?
-    let seconds: Double?
+struct Reading: Decodable {
+    let at: TimeInterval
+    let load: Double
+    let memoryMB: Int
+}
 
-    var speed: String? {
-        guard let bytes, let seconds, seconds > 0 else { return nil }
-        let rate = Int64((Double(bytes) / seconds).rounded())
-        return "\(bytes.formatted(.byteCount(style: .file))) at \(rate.formatted(.byteCount(style: .file)))/s"
-    }
-
-    static func recent(in data: Data) -> [Move] {
-        data.split(separator: UInt8(ascii: "\n")).suffix(5).reversed().compactMap { try? JSONDecoder.magi.decode(Move.self, from: $0) }
-    }
+struct CPUReading: Decodable {
+    let at: TimeInterval
+    let cpu: Int
 }
 
 struct Row: Identifiable {

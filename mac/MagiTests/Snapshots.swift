@@ -32,6 +32,34 @@ struct Snapshots {
         try await shot("show-borders-scope", full, .light, environment: { AnyView($0.environment(\._accessibilityShowButtonShapes, true)) }, act: { right($0, times: 2) })
     }
 
+    @Test func tiles() async throws {
+        let store = try await store(machines(sessions: true, critical: true))
+        let names = ["homelab", "laptop", "box"]
+        let states = ["at rest", "hovered", "pressed", "selected"]
+        for scheme in [ColorScheme.light, .dark] {
+            let grid = VStack(alignment: .leading, spacing: 6) {
+                ForEach(1...3, id: \.self) { count in
+                    ForEach(states, id: \.self) { state in
+                        Text("\(count) machine\(count == 1 ? "" : "s"), first \(state)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            ForEach(names.prefix(count), id: \.self) { name in
+                                Tile(name: name, machine: store.machines[name]!, answers: true, selected: state == "selected" && name == names[0], hovered: state == "hovered" && name == names[0], delay: 0, now: now)
+                                    .environment(\.pressed, state == "pressed" && name == names[0])
+                            }
+                        }
+                        .frame(width: count == 1 ? 150 : 344)
+                    }
+                }
+            }
+            .padding(12)
+            .background(scheme == .light ? Color(white: 0.97) : Color(white: 0.14))
+            .ignoresSafeArea()
+            try await render("tiles-\(scheme == .light ? "light" : "dark")", grid, scheme)
+        }
+    }
+
     @Test func settings() async throws {
         let full = try await store(machines(sessions: true))
         for scheme in [ColorScheme.light, .dark] {
@@ -140,38 +168,30 @@ struct Snapshots {
     private func store(_ machines: [String: [String: Any]]) async throws -> Store {
         let home = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let store = Store(home: home)
-        for (name, machine) in machines {
-            for step in (0..<45).reversed() where name == "homelab" || step == 0 {
-                var machine = machine
-                let wave = sin(Double(step) / 5)
-                machine["heard"] = stamp(now.addingTimeInterval(-Double(step) * 30 - 3))
-                if step > 0 {
-                    machine["load"] = max(0.2, 3.4 + 2.6 * wave)
-                    machine["sessions"] = (machine["sessions"] as! [[String: Any]]).enumerated().map { index, session in
-                        var session = session
-                        session["cpu"] = Int(max(0, 40 + 38 * sin(Double(step + index * 7) / 3)))
-                        if session["state"] as? String == "waiting", step > 22 {
-                            session["state"] = "busy"
-                        }
-                        return session
-                    }
-                }
-                let data = try JSONSerialization.data(withJSONObject: machine)
-                let temp = home.appending(path: "live/\(name).json.1")
-                try data.write(to: temp)
-                rename(temp.path, home.appending(path: "live/\(name).json").path)
-                let heard = try JSONDecoder.magi.decode(Machine.self, from: data).heard
-                for await met in Observations({ store.machines[name]?.heard == heard }) where met {
-                    break
-                }
+        for (index, (name, machine)) in machines.sorted(by: { $0.key < $1.key }).enumerated() {
+            var machine = machine
+            let load = machine["load"] as! Double
+            let used = (machine["memory"] as! [String: Int])["usedMB"]!
+            machine["heard"] = stamp(now.addingTimeInterval(-3))
+            machine["history"] = (0..<120).map { step -> [String: Any] in
+                let wave = sin(Double(step + index * 17) / 9) + 0.4 * sin(Double(step) / 2.3)
+                return ["at": now.timeIntervalSince1970 - Double(119 - step) * 30, "load": max(0.05, load * (1 + 0.4 * wave)), "memoryMB": Int(Double(used) * (0.94 + 0.04 * wave))]
             }
+            machine["sessions"] = (machine["sessions"] as! [[String: Any]]).enumerated().map { number, session in
+                var session = session
+                let busy = session["state"] as? String != "idle"
+                session["cpuHistory"] = (0..<120).map { step -> [String: Any] in
+                    ["at": now.timeIntervalSince1970 - Double(119 - step) * 30, "cpu": busy ? Int(max(0, 40 + 38 * sin(Double(step + number * 7) / 4))) : step % 9 == 0 ? 3 : 0]
+                }
+                return session
+            }
+            let temp = home.appending(path: "live/\(name).json.1")
+            try JSONSerialization.data(withJSONObject: machine).write(to: temp)
+            rename(temp.path, home.appending(path: "live/\(name).json").path)
         }
-        let moves = [
-            #"{"time":"\#(stamp(now.addingTimeInterval(-3_400)))","kind":"push","from":"laptop","to":"homelab","to_dir":"/home/sam/code/shop","bytes":1240000000,"seconds":26}"#,
-            #"{"time":"\#(stamp(now.addingTimeInterval(-900)))","kind":"pull","from":"homelab","to":"laptop","to_dir":"/Users/sam/code/blog","bytes":38000000,"seconds":2.1}"#,
-        ]
-        try Data(moves.joined(separator: "\n").appending("\n").utf8).write(to: home.appending(path: "handoffs.jsonl"))
-        try await Task.sleep(for: .milliseconds(200))
+        for await met in Observations({ store.machines.count == machines.count }) where met {
+            break
+        }
         return store
     }
 

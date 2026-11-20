@@ -1,118 +1,138 @@
 import Charts
 import SwiftUI
 
-private let window: TimeInterval = 30 * 60
-
 struct ScopeCaption: View {
     let machine: Machine
+    let answers: Bool
+    let now: Date
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            Text([machine.heard.map { "heard \(Duration.seconds(max(0, context.date.timeIntervalSince($0).rounded())).formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow, maximumUnitCount: 1))) ago" }, machine.bootedAt.map { "up \(span(context.date.timeIntervalSince($0)))" }].compactMap(\.self).joined(separator: ", "))
-                .font(.subheadline)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-        }
+        Text(facts.joined(separator: " \u{00B7} "))
+            .font(.subheadline)
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+    }
+
+    private var facts: [String] {
+        [
+            answers ? nil : machine.quiet(now: now),
+            machine.bootedAt.map { "up \(span(now.timeIntervalSince($0)))" },
+            machine.battery.flatMap { $0.onBattery ? "on battery \($0.percent)%" : nil },
+            machine.relayed == true ? "relayed" : nil,
+        ].compactMap(\.self)
     }
 }
 
 struct ScopeSummary: View {
     let name: String
     let machine: Machine
-    let samples: [Sample]
     let now: Date
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("\(machine.load.formatted(.number.precision(.fractionLength(1)))) load, \(machine.cores) cores")
-                .font(.subheadline.weight(.semibold))
-                .monospacedDigit()
-                .contentTransition(reduceMotion ? .opacity : .numericText(value: machine.load))
-                .animation(.snappy(duration: 0.35), value: machine.load)
-            if samples.count >= 3 {
-                LoadChart(name: name, samples: samples, cores: machine.cores, color: machine.health, now: now)
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Load")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text("\(machine.load.formatted(.number.precision(.fractionLength(1)))) on \(machine.cores) cores")
+                        .font(.footnote)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .contentTransition(reduceMotion ? .opacity : .numericText(value: machine.load))
+                        .animation(.snappy(duration: 0.3), value: machine.load)
+                }
+                LoadChart(name: name, machine: machine, now: now)
             }
-            Capacity(label: "Memory", space: machine.memory, pressure: machine.pressure ?? .normal)
-            Capacity(label: "Disk", space: machine.disk, pressure: machine.disk.pressure)
-            if let swap = machine.swap {
-                Text("Swap \(gigabytes(swap))")
-                    .font(.footnote)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
+            Capacity(label: "Memory", space: machine.memory, pressure: machine.pressure ?? .normal, points: trend((machine.history ?? []).map { ($0.at, Double($0.memoryMB)) }, top: Double(machine.memory.totalMB), now: now), note: memoryNote)
+            Capacity(label: "Disk", space: machine.disk, pressure: machine.disk.pressure, points: nil, note: nil)
         }
         .padding(8)
+    }
+
+    private var memoryNote: String {
+        let pressure = "pressure \((machine.pressure ?? .normal).rawValue)"
+        guard let swap = machine.swap, swap.totalMB > 0 else { return pressure }
+        return "\(pressure) \u{00B7} swap \(gigabytes(swap))"
     }
 }
 
 struct LoadChart: View {
     let name: String
-    let samples: [Sample]
-    let cores: Int
-    let color: Color
+    let machine: Machine
     let now: Date
     @State private var drawn = false
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var top: Double {
-        max(Double(cores), samples.map(\.value).max() ?? 0)
+    private var readings: [Reading] {
+        machine.history ?? []
     }
 
     var body: some View {
         Chart {
-            ForEach(samples, id: \.time) { sample in
-                AreaMark(x: .value("Time", sample.time), y: .value("Load", sample.value))
-                    .foregroundStyle(color.opacity(0.18))
+            ForEach(readings, id: \.at) { reading in
+                AreaMark(x: .value("Time", Date(timeIntervalSince1970: reading.at)), y: .value("Load", reading.load))
+                    .foregroundStyle(machine.health.opacity(0.18))
                     .interpolationMethod(.monotone)
-                LineMark(x: .value("Time", sample.time), y: .value("Load", sample.value))
-                    .foregroundStyle(color)
+                LineMark(x: .value("Time", Date(timeIntervalSince1970: reading.at)), y: .value("Load", reading.load))
+                    .foregroundStyle(machine.health)
                     .lineStyle(StrokeStyle(lineWidth: contrast == .increased ? 2.5 : 1.5))
                     .interpolationMethod(.monotone)
             }
-            RuleMark(y: .value("Cores", cores))
+            RuleMark(y: .value("Cores", machine.cores))
                 .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
                 .lineStyle(StrokeStyle(lineWidth: contrast == .increased ? 1.5 : 0.75, dash: [3, 3]))
                 .annotation(position: .bottom, alignment: .trailing, spacing: 2) {
-                    Text("\(cores) cores")
+                    Text("\(machine.cores) cores")
                         .font(.footnote)
                         .foregroundStyle(.tertiary)
                 }
         }
-        .chartXScale(domain: now.addingTimeInterval(-window)...now)
-        .chartYScale(domain: 0...top)
-        .chartXAxis(.hidden)
+        .chartXScale(domain: now.addingTimeInterval(-historyWindow)...now)
+        .chartYScale(domain: 0...machine.peak)
+        .chartXAxis {
+            AxisMarks(values: [now.addingTimeInterval(-historyWindow), now.addingTimeInterval(-historyWindow / 2)]) { value in
+                AxisValueLabel(anchor: .topLeading) {
+                    if let date = value.as(Date.self) {
+                        Text("\(Int((now.timeIntervalSince(date) / 60).rounded())) min ago")
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+            }
+        }
         .chartYAxis(.hidden)
         .chartPlotStyle { plot in
             plot.mask(alignment: .leading) {
                 Rectangle().scaleEffect(x: drawn || reduceMotion ? 1 : 0, anchor: .leading)
             }
         }
-        .frame(height: 72)
+        .frame(height: 84)
         .onAppear {
             withAnimation(.smooth(duration: 0.5)) {
                 drawn = true
             }
         }
-        .accessibilityChartDescriptor(LoadDescriptor(name: name, samples: samples, cores: cores, top: top, now: now))
+        .accessibilityChartDescriptor(LoadDescriptor(name: name, readings: readings, cores: machine.cores, top: machine.peak, now: now))
     }
 }
 
 struct LoadDescriptor: AXChartDescriptorRepresentable {
     let name: String
-    let samples: [Sample]
+    let readings: [Reading]
     let cores: Int
     let top: Double
     let now: Date
 
     func makeChartDescriptor() -> AXChartDescriptor {
-        let minutes = AXNumericDataAxisDescriptor(title: "Minutes ago", range: -window / 60...0, gridlinePositions: []) { "\(Int(-$0)) minutes ago" }
+        let minutes = AXNumericDataAxisDescriptor(title: "Minutes ago", range: -historyWindow / 60...0, gridlinePositions: []) { "\(Int(-$0)) minutes ago" }
         let load = AXNumericDataAxisDescriptor(title: "Load", range: 0...top, gridlinePositions: [Double(cores)]) { "load \($0.formatted(.number.precision(.fractionLength(1))))" }
-        let points = samples.map { AXDataPoint(x: $0.time.timeIntervalSince(now) / 60, y: $0.value) }
+        let points = readings.map { AXDataPoint(x: ($0.at - now.timeIntervalSince1970) / 60, y: $0.load) }
         return AXChartDescriptor(
-            title: "Load on \(name), last 30 minutes",
-            summary: "Between \(samples.map(\.value).min()?.formatted() ?? "0") and \(samples.map(\.value).max()?.formatted() ?? "0"), on \(cores) cores",
+            title: "Load on \(name), last hour",
+            summary: "Between \(readings.map(\.load).min()?.formatted() ?? "0") and \(readings.map(\.load).max()?.formatted() ?? "0"), on \(cores) cores",
             xAxis: minutes,
             yAxis: load,
             additionalAxes: [],
@@ -125,17 +145,24 @@ struct Capacity: View {
     let label: String
     let space: Space
     let pressure: Pressure
+    let points: [CGPoint]?
+    let note: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
                 Text(label)
+                    .font(.subheadline.weight(.semibold))
+                if let points {
+                    Trend(points: points, color: pressure.tint, delay: 0.1)
+                        .frame(width: 44, height: 12)
+                }
                 Spacer()
                 Text(gigabytes(space))
+                    .font(.footnote)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            .font(.footnote)
             Capsule()
                 .fill(.quaternary)
                 .frame(height: 5)
@@ -146,48 +173,32 @@ struct Capacity: View {
                             .frame(width: proxy.size.width * min(space.fraction, 1))
                     }
                 }
+            if let note {
+                Text(note)
+                    .font(.footnote)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(label), \(gigabytes(space)), pressure \(pressure.rawValue)")
-    }
-}
-
-struct History {
-    let cpu: [Sample]
-    let states: [Transition]
-    let now: Date
-
-    var waits: [ClosedRange<Date>] {
-        zip(states, states.dropFirst().map(\.time) + [now]).filter { $0.0.state == "waiting" }.map { max($0.0.time, now.addingTimeInterval(-window))...max($0.1, $0.0.time) }
+        .accessibilityLabel("\(label), \(gigabytes(space)), pressure \(pressure.rawValue)\(note.map { ", \($0)" } ?? "")")
     }
 }
 
 struct Usage: View {
     let session: Session
-    let history: History
-    @Environment(\.colorSchemeContrast) private var contrast
+    let now: Date
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var readings: [CPUReading] {
+        session.cpuHistory ?? []
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            Chart {
-                ForEach(history.waits, id: \.lowerBound) { wait in
-                    RectangleMark(xStart: .value("Start", wait.lowerBound), xEnd: .value("End", wait.upperBound))
-                        .foregroundStyle(Color(nsColor: .quaternaryLabelColor))
-                }
-                ForEach(history.cpu, id: \.time) { sample in
-                    LineMark(x: .value("Time", sample.time), y: .value("CPU", sample.value))
-                        .lineStyle(StrokeStyle(lineWidth: contrast == .increased ? 2 : 1.25))
-                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
-                }
-            }
-            .chartXScale(domain: history.now.addingTimeInterval(-window)...history.now)
-            .chartYScale(domain: 0...max(100, history.cpu.map(\.value).max() ?? 0))
-            .chartXAxis(.hidden)
-            .chartYAxis(.hidden)
-            .chartLegend(.hidden)
-            .frame(width: 44, height: 16)
-            .accessibilityLabel("CPU \(session.cpu)%, peak \(Int(history.cpu.map(\.value).max() ?? 0))% in the last 30 minutes")
+            Trend(points: trend(readings.map { ($0.at, Double($0.cpu)) }, top: max(100, Double(readings.map(\.cpu).max() ?? 0)), now: now), color: Color(nsColor: .secondaryLabelColor), delay: 0.1)
+                .frame(width: 44, height: 16)
+                .accessibilityLabel("CPU \(session.cpu)%, peak \(readings.map(\.cpu).max() ?? 0)% in the last hour")
             VStack(alignment: .trailing, spacing: 0) {
                 Text("\(session.cpu)%")
                     .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(session.cpu)))
@@ -199,25 +210,6 @@ struct Usage: View {
             .monospacedDigit()
             .frame(width: 56, alignment: .trailing)
         }
-    }
-}
-
-struct Moves: View {
-    let moves: [Move]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(moves, id: \.time) { move in
-                if let note = move.note {
-                    Text(note).lineLimit(2)
-                } else {
-                    Text("\(URL(filePath: move.toDir).lastPathComponent) to \(move.to), \(move.time.formatted(.relative(presentation: .named)))\(move.speed.map { ", \($0)" } ?? "")")
-                }
-            }
-        }
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

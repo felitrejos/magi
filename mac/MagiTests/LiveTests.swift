@@ -22,14 +22,6 @@ struct LiveTests {
         #expect(machine.sessions[1].waitingOn == nil)
     }
 
-    @Test func readsTheMovesInHandoffs() throws {
-        let moves = Move.recent(in: try fixture("handoffs.jsonl"))
-        #expect(moves.count == 4)
-        #expect(moves[3].note?.hasPrefix("Moving session 3fce93f1 to box was interrupted.") == true)
-        #expect(moves[0].from == "laptop" && moves[0].to == "box" && moves[0].toDir == "/home/sam/code/shop" && moves[0].note == nil)
-        #expect(abs(moves[0].time.timeIntervalSince1970 - 1795192998.75481) < 0.000_001)
-    }
-
     @Test func stopsAnsweringWhenQuietForFortySecondsOrSaysSo() throws {
         let laptop = try JSONDecoder.magi.decode(Machine.self, from: fixture("live/laptop.json"))
         let box = try JSONDecoder.magi.decode(Machine.self, from: fixture("live/box.json"))
@@ -48,12 +40,9 @@ struct LiveTests {
         #expect(laptop.battery?.percent == 64 && laptop.battery?.charging == false && laptop.battery?.onBattery == true)
         #expect(laptop.relayed == nil && box.relayed == true)
         #expect(box.pressure == nil && box.swap == nil && box.bootedAt == nil && box.battery == nil)
-    }
-
-    @Test func measuresAMoveInMegabytesPerSecond() throws {
-        let moves = Move.recent(in: try fixture("handoffs.jsonl"))
-        #expect(moves[0].speed?.hasSuffix(" GB at 48 MB/s") == true)
-        #expect(moves[1].speed == nil)
+        #expect(laptop.history?.first.map { [$0.at, $0.load, Double($0.memoryMB)] } == [1795189563, 1.82, 12210])
+        #expect(laptop.history?.count == 3 && laptop.sessions[1].cpuHistory?.map(\.cpu) == [4, 6])
+        #expect(box.history == nil && box.sessions[0].cpuHistory == nil)
     }
 
     @Test func tintsMemoryByItsPressureAndDiskFromNinetyPercent() {
@@ -64,7 +53,7 @@ struct LiveTests {
 
     @Test func coloursAMachineGreenUnderSeventyPercentLoadOrangeFromThereOrUnderPressureRedWhenCritical() {
         func machine(load: Double, pressure: Pressure? = nil, disk: Int = 100) -> Machine {
-            Machine(answering: true, heard: nil, ssh: nil, cores: 10, load: load, memory: Space(usedMB: 1, totalMB: 2), disk: Space(usedMB: disk, totalMB: 1000), sessions: [], pressure: pressure, swap: nil, bootedAt: nil, battery: nil, relayed: nil)
+            Machine(answering: true, heard: nil, ssh: nil, cores: 10, load: load, memory: Space(usedMB: 1, totalMB: 2), disk: Space(usedMB: disk, totalMB: 1000), sessions: [], pressure: pressure, swap: nil, bootedAt: nil, battery: nil, relayed: nil, history: nil)
         }
         #expect(machine(load: 6.9).health == .green)
         #expect(machine(load: 7).health == .orange)
@@ -75,7 +64,7 @@ struct LiveTests {
 
     @Test func putsWaitingFirstLongestWaitingFirstThenBusyThenIdleAndKeepsAFrozenOrder() {
         func row(_ machine: String, _ id: String, _ state: String, _ since: TimeInterval) -> Row {
-            Row(machine: machine, session: Session(id: id, title: id, folder: "/", state: state, waitingOn: nil, since: Date(timeIntervalSince1970: since), cpu: 0, memoryMB: 0))
+            Row(machine: machine, session: Session(id: id, title: id, folder: "/", state: state, waitingOn: nil, since: Date(timeIntervalSince1970: since), cpu: 0, memoryMB: 0, cpuHistory: nil))
         }
         let rows = [row("a", "idle", "idle", 1), row("a", "busy", "busy", 2), row("a", "late", "waiting", 9), row("b", "early", "waiting", 3), row("b", "busy", "busy", 1)]
         let urgent = Row.urgent(rows)
