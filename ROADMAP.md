@@ -41,7 +41,8 @@ never types into a session.
 The bar for polish is Henrik Ruscon's apps,
 [Alcove](https://tryalcove.com), [Klack](https://tryklack.com) and
 [Canapé](https://trycanape.com). The app runs on macOS 26 and later, and
-uses macOS 27 APIs where they are better. It uses public APIs only.
+uses macOS 27 APIs where they are better. It uses public APIs only. It
+ships without notarization, and magi installs and updates it.
 
 #### Architecture
 
@@ -71,7 +72,7 @@ uses macOS 27 APIs where they are better. It uses public APIs only.
     waiting count in the bar, and sounds.
   - Notifications.
   - Machines, a read-only list.
-  - About and updates.
+  - About, with the version. Updates come through magi.
 - **Data.** One `@Observable` store, fed by a `DispatchSource` watch on
   the `~/.magi/live` directory. When a file changes the store reads that
   file again. magi writes by atomic rename, and
@@ -190,21 +191,43 @@ apps.
 
 ### Shipping the menu bar app
 
-- **Signing.** Signed with Developer ID, with the Hardened Runtime, in a
-  [notarized](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
-  and stapled DMG.
-- **Unsandboxed.** The app reads `~/.magi` and opens terminals.
-- **Updates.** Sparkle 2 with an EdDSA-signed appcast, plus a cask in the
-  project's own Homebrew tap.
-- **Why notarize.** The old plan to ship unnotarized no longer works.
-  Since macOS Sequoia,
-  [Control-click and Open doesn't bypass Gatekeeper](https://developer.apple.com/news/?id=saqachfa).
-  [Homebrew 6.0](https://brew.sh/2026/06/11/homebrew-6.0.0/) said casks
-  that fail Gatekeeper would be disabled from September 2026.
-- **XProtect.** Test on macOS 27 that XProtect doesn't block the app from
-  reading files that another team's binary wrote.
-- **Open, the owner's decision.** Notarizing needs the Apple Developer
-  Program, which costs US$99 a year.
+The app ships without notarization. magi installs it and keeps it up to
+date, the same way the plugin's launcher installs the `magi` binary.
+
+- **Install.** You ask Claude to install the menu bar app, or
+  `setup_machine` offers it on a Mac. magi downloads the `.app` that
+  matches the plugin's version from the project's GitHub release, checks
+  its SHA-256 against the release's checksums like the launcher does, and
+  puts it in `/Applications`.
+- **Updates.** The app's version follows the plugin's. When the plugin
+  updates, magi fetches the matching app. The app has no updater of its
+  own.
+- **Why this needs no notarization.** Gatekeeper only checks files that
+  carry the quarantine attribute. Browsers and AirDrop add it and `curl`
+  doesn't, which is also why the unnotarized `magi` binary runs without a
+  prompt today.
+- **Signing.** On Apple Silicon an app still needs a signature, and the
+  ad-hoc signature the build makes is enough.
+- **Unsandboxed.** The app reads `~/.magi` and opens terminals. The
+  Hardened Runtime is on or off as the build needs.
+- **What this gives up.**
+  - Someone who downloads the DMG with a browser gets blocked once and has
+    to use System Settings > Privacy & Security > Open Anyway. Since macOS
+    Sequoia,
+    [Control-click and Open doesn't bypass Gatekeeper](https://developer.apple.com/news/?id=saqachfa).
+    The README points people to asking Claude instead.
+  - Some managed Macs block unsigned apps entirely.
+- **Later.** Notarizing stays possible without changing the app.
+
+Open points, to verify on macOS 27 before relying on this.
+
+- **Permissions across updates.** macOS ties some permissions to the code
+  signature, and an ad-hoc signature changes with every build. Check that
+  notification permission, which is keyed by bundle id, survives an
+  update. Check whether launch at login through `SMAppService` needs
+  approval again after one.
+- **XProtect.** Check that XProtect doesn't block the app from reading
+  `~/.magi`, which another binary wrote.
 
 ### Order of work
 
@@ -213,7 +236,7 @@ apps.
 3. The design pass. Layout, the icon and its states, motion, Settings and
    first run.
 4. Notifications and opening sessions.
-5. Shipping. Signing, notarization, Sparkle and the tap.
+5. Shipping. The release build, and the install and update through magi.
 6. A council review, a week of real use, and the measured budget.
 
 ### Not in 1.0
@@ -237,3 +260,6 @@ apps.
 - **Polling SSH from the app.** `magi watch` already holds one connection
   per machine and writes what it hears to the live files.
 - **Hiding the menu bar icon.** The icon is the app.
+- **Notarizing for 1.0.** magi installs the app itself, so Gatekeeper
+  never sees it. Notarizing would need a paid developer account and only
+  helps browser downloads.
