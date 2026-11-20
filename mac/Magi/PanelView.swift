@@ -513,7 +513,14 @@ func span(_ seconds: TimeInterval) -> String {
 
 func trend(_ readings: [(at: TimeInterval, value: Double)], top: Double, now: Date) -> [CGPoint] {
     let end = latest(readings.last?.at, now: now).timeIntervalSince1970
-    return readings.map { CGPoint(x: 1 - (end - $0.at) / historyWindow, y: $0.value / top) }
+    let width = window(from: readings.first?.at, to: end)
+    let points = readings.map { CGPoint(x: 1 - (end - $0.at) / width, y: $0.value / top) }
+    guard points.count == 1, let only = points.first else { return points }
+    return [CGPoint(x: 0, y: only.y), CGPoint(x: 1, y: only.y)]
+}
+
+func window(from first: TimeInterval?, to end: TimeInterval) -> TimeInterval {
+    min(historyWindow, max(60, end - (first ?? end)))
 }
 
 func latest(_ reading: TimeInterval?, now: Date) -> Date {

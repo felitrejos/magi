@@ -68,12 +68,23 @@ struct LoadChart: View {
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var readings: [Reading] {
-        machine.history ?? []
+    private var end: Date {
+        latest(machine.history?.last?.at, now: now)
     }
 
-    private var end: Date {
-        latest(readings.last?.at, now: now)
+    private var start: Date {
+        end.addingTimeInterval(-window(from: machine.history?.first?.at, to: end.timeIntervalSince1970))
+    }
+
+    private var readings: [Reading] {
+        let history = machine.history ?? []
+        guard history.count < 2 else { return history }
+        let load = history.first?.load ?? machine.load
+        return [start, end].map { Reading(at: $0.timeIntervalSince1970, load: load, memoryMB: 0) }
+    }
+
+    private var marks: [Date] {
+        end.timeIntervalSince(start) < 10 * 60 ? [start] : [start, start.addingTimeInterval(end.timeIntervalSince(start) / 2)]
     }
 
     var body: some View {
@@ -96,13 +107,13 @@ struct LoadChart: View {
                         .foregroundStyle(.tertiary)
                 }
         }
-        .chartXScale(domain: end.addingTimeInterval(-historyWindow)...end)
+        .chartXScale(domain: start...end)
         .chartYScale(domain: 0...machine.peak)
         .chartXAxis {
-            AxisMarks(values: [end.addingTimeInterval(-historyWindow), end.addingTimeInterval(-historyWindow / 2)]) { value in
+            AxisMarks(values: marks) { value in
                 AxisValueLabel(anchor: .topLeading) {
                     if let date = value.as(Date.self) {
-                        Text("\(Int((end.timeIntervalSince(date) / 60).rounded())) min ago")
+                        Text("\(max(1, Int((end.timeIntervalSince(date) / 60).rounded()))) min ago")
                     }
                 }
                 .font(.caption2)
@@ -121,7 +132,7 @@ struct LoadChart: View {
                 drawn = true
             }
         }
-        .accessibilityChartDescriptor(LoadDescriptor(name: name, readings: readings, cores: machine.cores, top: machine.peak, end: end))
+        .accessibilityChartDescriptor(LoadDescriptor(name: name, readings: machine.history ?? [], cores: machine.cores, top: machine.peak, end: end))
     }
 }
 
