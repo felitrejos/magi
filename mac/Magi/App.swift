@@ -3,11 +3,12 @@ import SwiftUI
 
 @main
 @MainActor
-final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class App: NSObject, NSApplicationDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let panel = Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let menu = NSMenu()
     private let store = Store(home: .homeDirectory.appending(path: ".magi"))
+    private var monitor: Any?
 
     static func main() {
         let app = App()
@@ -30,7 +31,6 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.level = .popUpMenu
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.delegate = self
     }
 
     @objc private func clicked(_ button: NSStatusBarButton) {
@@ -45,6 +45,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.setContentSize(view.fittingSize)
         panel.setFrameTopLeftPoint(NSPoint(x: min(window.frame.minX, screen.visibleFrame.maxX - panel.frame.width), y: window.frame.minY))
         panel.makeKeyAndOrderFront(nil)
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in self?.close() }
     }
 
     private func close() {
@@ -56,12 +57,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func hide() {
+        monitor.map(NSEvent.removeMonitor)
+        monitor = nil
         panel.orderOut(nil)
         panel.contentView = nil
-    }
-
-    func windowDidResignKey(_ notification: Notification) {
-        if panel.isVisible { close() }
     }
 }
 
