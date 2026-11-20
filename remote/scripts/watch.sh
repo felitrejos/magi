@@ -13,7 +13,7 @@ battery() {
   if [ "$os" = Darwin ]; then
     pmset -g batt
   else
-    grep -s . /dev/null /sys/class/power_supply/*/type /sys/class/power_supply/*/scope /sys/class/power_supply/*/capacity /sys/class/power_supply/*/status /sys/class/power_supply/*/online
+    grep -s . /dev/null /sys/class/power_supply/*/type /sys/class/power_supply/*/scope /sys/class/power_supply/*/capacity /sys/class/power_supply/*/status
   fi
 }
 usage() {
@@ -76,8 +76,8 @@ while :; do
         for (i = 1; i <= n; i++) s = s * (i == 2 && t ~ /-/ ? 24 : 60) + p[i]
         return s
       }
-      /^Now drawing from / { mains = !/Battery Power/; next }
-      /^ -InternalBattery/ { split($0, b, /\t|; /); battery = sprintf("%d:%d", b[2], b[3] == "charging" || b[3] == "finishing charge"); next }
+      /^Now drawing from / { discharging = /Battery Power/; next }
+      /^ -InternalBattery/ { split($0, b, /\t|; /); battery = b[2] + 0; next }
       /^\/sys\/class\/power_supply\// { split($0, f, /[\/:]/); supply[f[5], f[6]] = f[7]; if (f[6] == "type") type[f[5]] = f[7]; next }
       NR == 1 { cores = $1 }
       NR == 2 { load = $1 }
@@ -87,8 +87,7 @@ while :; do
       NR > 6 { parent[$1] = $2; cpu[$1] = seconds($3); rss[$1] = $4 }
       END {
         for (s in type) {
-          if (type[s] == "Mains" && supply[s, "online"] != 0) mains = 1
-          if (type[s] == "Battery" && supply[s, "scope"] != "Device") battery = sprintf("%d:%d", supply[s, "capacity"], supply[s, "status"] == "Charging")
+          if (type[s] == "Battery" && supply[s, "scope"] != "Device") { battery = supply[s, "capacity"] + 0; discharging = supply[s, "status"] == "Discharging" }
         }
         n = split(roots, r, " ")
         for (i = 1; i <= n; i++) root[r[i]] = 1
@@ -99,7 +98,7 @@ while :; do
         }
         printf "%s %s %.0f %.0f %s %s %s", cores, load, used / 1048576, total / 1048576, disk, swap, booted
         if (pressure != "") printf " pressure=%s", pressure
-        if (battery != "") printf " battery=%s:%d", battery, !mains
+        if (battery != "") printf " battery=%d:%d", battery, discharging
         for (i = 1; i <= n; i++) printf " %s:%.2f:%.0f", r[i], c[r[i]], m[r[i]] / 1024
         print ""
       }')"

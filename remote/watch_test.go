@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -195,42 +195,27 @@ func TestAMacReportsItsMemoryPressureSwapBootTimeAndBattery(t *testing.T) {
 
 func TestALinuxMachineReportsItsMemoryPressureSwapBootTimeAndBattery(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("reads this machine's /proc")
+		t.Skip("reads /proc/loadavg")
 	}
 	f := newFixture(t)
+	f.tool("cat", `#!/bin/sh
+[ "$1" = /proc/meminfo ] || exec /bin/cat "$@"
+printf 'MemTotal: 16000000 kB\nMemAvailable: 8000000 kB\nSwapTotal: 2097152 kB\nSwapFree: 1048576 kB\nbtime 1794928938\n'
+`)
 	f.tool("grep", `#!/bin/sh
-printf '%s\n' /sys/class/power_supply/AC/type:Mains /sys/class/power_supply/AC/online:1 /sys/class/power_supply/BAT0/type:Battery /sys/class/power_supply/BAT0/capacity:64 /sys/class/power_supply/BAT0/status:Charging /sys/class/power_supply/hidpp_battery_0/type:Battery /sys/class/power_supply/hidpp_battery_0/scope:Device /sys/class/power_supply/hidpp_battery_0/capacity:10
+case $* in
+*/proc/pressure/memory) echo 'some avg10=45.00 avg60=12.50 avg300=3.00 total=1' ;;
+*) printf '%s\n' /sys/class/power_supply/AC/type:Mains /sys/class/power_supply/BAT0/type:Battery /sys/class/power_supply/BAT0/capacity:64 /sys/class/power_supply/BAT0/status:Discharging /sys/class/power_supply/hidpp_battery_0/type:Battery /sys/class/power_supply/hidpp_battery_0/scope:Device /sys/class/power_supply/hidpp_battery_0/capacity:10 /sys/class/power_supply/hidpp_battery_0/status:Charging ;;
+esac
 `)
 	w := newWatcher("linux", "", nil, log.New(io.Discard, "", 0), "")
 	w.hear(firstStats(t, f.machine()), time.Now())
 	live := readLive(t, "linux")
-	var swapKB, uptime float64
-	meminfo, _ := os.ReadFile("/proc/meminfo")
-	for _, line := range strings.Split(string(meminfo), "\n") {
-		fmt.Sscanf(line, "SwapTotal: %g kB", &swapKB)
+	if live.Pressure != "warning" || live.Swap != (space{UsedMB: 1024, TotalMB: 2048}) || !live.BootedAt.Equal(time.Unix(1794928938, 0)) {
+		t.Errorf("pressure %q, swap %+v, booted at %s; want warning from avg60, 1024 of 2048 MB, %s", live.Pressure, live.Swap, live.BootedAt, time.Unix(1794928938, 0))
 	}
-	up, _ := os.ReadFile("/proc/uptime")
-	fmt.Sscan(string(up), &uptime)
-	pressure := ""
-	if psi, err := os.ReadFile("/proc/pressure/memory"); err == nil {
-		var avg10, avg60 float64
-		fmt.Sscanf(string(psi), "some avg10=%g avg60=%g", &avg10, &avg60)
-		pressure = "normal"
-		if avg60 >= 10 {
-			pressure = "warning"
-		}
-		if avg60 >= 30 {
-			pressure = "critical"
-		}
-	}
-	if booted := time.Now().Add(-time.Duration(uptime * float64(time.Second))); live.BootedAt.Sub(booted).Abs() > 2*time.Second {
-		t.Errorf("booted at %s, want about %s", live.BootedAt, booted)
-	}
-	if live.Swap.TotalMB != int(math.Round(swapKB/1024)) || live.Swap.UsedMB > live.Swap.TotalMB || live.Pressure != pressure {
-		t.Errorf("swap %+v and pressure %q, want %.0f MB of swap and pressure %q", live.Swap, live.Pressure, swapKB/1024, pressure)
-	}
-	if live.Battery == nil || *live.Battery != (battery{Percent: 64, Charging: true}) {
-		t.Errorf("battery = %+v, want the system battery at 64%%, charging, on mains", live.Battery)
+	if live.Battery == nil || *live.Battery != (battery{Percent: 64, OnBattery: true}) {
+		t.Errorf("battery = %+v, want the system battery at 64%% and discharging", live.Battery)
 	}
 }
 
@@ -258,28 +243,69 @@ func TestTheLiveFileKeepsTheLastHourOfLoadMemoryAndSessionCPU(t *testing.T) {
 	}
 }
 
-func TestARestartedWatcherKeepsTheHistoryInTheLiveFile(t *testing.T) {
-	newFixture(t)
+func TestARestartedWatcherKeepsWhatTheLiveFileSaysUntilItHearsStats(t *testing.T) {
+	f := newFixture(t)
+	f.serverHome()
 	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
 	w.live.Sessions = []liveEntry{{ID: "a", pid: 42}}
 	hourOfStats(w, time.Unix(1_800_000_000, 0))
-	restarted := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
-	if fmt.Sprint(restarted.live.History) != fmt.Sprint(w.live.History) || fmt.Sprint(restarted.cpu) != fmt.Sprint(w.cpu) {
-		t.Errorf("a restarted watcher has history %+v and CPU %+v, want %+v and %+v", restarted.live.History, restarted.cpu, w.live.History, w.cpu)
+	kept := readLive(t, "server")
+	restarted := newWatcher("server", "me@server", f.remoteHost(), log.New(io.Discard, "", 0), "")
+	restarted.hear("sessions", time.Now())
+	if live := readLive(t, "server"); !reflect.DeepEqual(live, kept) {
+		t.Errorf("before its first stats a restarted watcher wrote %+v", live)
+	}
+	f.write(f.home, "ssh-down", "")
+	restarted.follow("")
+	kept.SSH, kept.Answering, kept.Sessions = "me@server", false, []liveEntry{}
+	if live := readLive(t, "server"); !reflect.DeepEqual(live, kept) || fmt.Sprint(restarted.cpu) != fmt.Sprint(w.cpu) {
+		t.Errorf("a restarted watcher that never connected wrote %+v with CPU %+v, want %+v with %+v", live, restarted.cpu, kept, w.cpu)
+	}
+}
+
+func TestASessionInTwoProcessesIsOneEntryWithTheLatestState(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	id := "0f0f0f0f-1111-2222-3333-555555555561"
+	start := time.Unix(1_800_000_000, 0)
+	for _, line := range []string{
+		`claude {"pid":42,"sessionId":"` + id + `","cwd":"/srv/api","status":"busy","statusUpdatedAt":2000}`,
+		`claude {"pid":41,"sessionId":"` + id + `","cwd":"/srv/api","status":"idle","statusUpdatedAt":1000}`,
+		"sessions",
+		"stats 10 1 100 200 300 400 0 0 1794928938 41:1:100 42:1:200",
+	} {
+		w.hear(line, start)
+	}
+	w.hear("stats 10 1 100 200 300 400 0 0 1794928938 41:31:100 42:4:200", start.Add(30*time.Second))
+	live := readLive(t, "server")
+	if len(live.Sessions) != 1 || live.Sessions[0].State != "busy" || live.Sessions[0].MemoryMB != 200 || fmt.Sprint(live.Sessions[0].CPUHistory) != fmt.Sprint([]cpuReading{{At: start.Unix() + 30, CPU: 10}}) {
+		t.Errorf("live sessions = %+v, want one busy entry with only its own process's CPU", live.Sessions)
 	}
 }
 
 func TestAMachineReachedThroughATailscaleRelayIsMarkedRelayed(t *testing.T) {
 	f := newFixture(t)
+	t.Cleanup(func() { tailnet.peers = nil })
 	f.tool("tailscale", `#!/bin/sh
-[ "$*" = "status --json" ] && echo '{"Peer":{"nodekey:1":{"HostName":"homelab","DNSName":"homelab.tail1.ts.net.","CurAddr":""},"nodekey:2":{"HostName":"Studio","DNSName":"studio.tail1.ts.net.","CurAddr":"192.168.1.20:41641"}}}'
+[ "$*" = "status --json" ] && echo '{"Peer":{
+"nodekey:1":{"HostName":"homelab","DNSName":"homelab.tail1.ts.net.","TailscaleIPs":["100.64.0.1"],"CurAddr":"","Relay":"fra","Online":true},
+"nodekey:2":{"HostName":"Studio","DNSName":"studio.tail1.ts.net.","TailscaleIPs":["100.64.0.2"],"CurAddr":"192.168.1.20:41641","Relay":"fra","Online":true},
+"nodekey:3":{"HostName":"pi","DNSName":"pi.tail1.ts.net.","TailscaleIPs":["100.64.0.3"],"CurAddr":"","Relay":"fra","Online":false}}}'
 `)
-	for ssh, want := range map[string]bool{"me@homelab": true, "homelab.tail1.ts.net": true, "studio": false, "Studio": false, "elsewhere": false} {
-		w := newWatcher(ssh, ssh, nil, log.New(io.Discard, "", 0), "")
+	var logged strings.Builder
+	logger := log.New(&logged, "", 0)
+	readTailnet(logger)
+	for ssh, want := range map[string]bool{"me@homelab": true, "homelab.tail1.ts.net": true, "100.64.0.1": true, "studio": false, "Studio": false, "pi": false, "elsewhere": false} {
+		w := newWatcher(ssh, ssh, nil, logger, "")
 		w.hear("stats 10 1.5 100 200 300 400 0 0 1794928938", time.Now())
 		if got := readLive(t, ssh).Relayed; got != want {
 			t.Errorf("%s reads as relayed %t, want %t", ssh, got, want)
 		}
+	}
+	f.tool("tailscale", "#!/bin/sh\necho '{\"Peer\":'\n")
+	readTailnet(logger)
+	if relayed("homelab") || !strings.Contains(logged.String(), "tailscale's status is unreadable") {
+		t.Errorf("after unreadable JSON homelab reads as relayed %t and the log says %q", relayed("homelab"), logged.String())
 	}
 }
 
@@ -341,30 +367,6 @@ func TestTheLiveFileSaysHowToOpenASession(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
 	server := f.serverHome()
-	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{pane_pid} #{window_id}", "sleep 60").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, window, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
-	f.write(filepath.Join(server, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"0f0f0f0f-1111-2222-3333-555555555559","cwd":"/srv/api","status":"idle","bridgeSessionId":"session_42"}`)
-	go newWatcher("server", "me@server", f.remoteHost(), log.New(io.Discard, "", 0), "").follow("")
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		if live := readLive(t, "server"); len(live.Sessions) == 1 {
-			if s := live.Sessions[0]; s.RemoteControl != "https://claude.ai/code/session_42" || s.Tmux != window || live.SSH != "me@server" {
-				t.Errorf("the session opens through %q and tmux window %q (want %s), the machine over ssh %q", s.RemoteControl, s.Tmux, window, live.SSH)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the session never reached the live file")
-		}
-	}
-}
-
-func TestASessionSeveralProcessesBelowItsPaneGetsTheWindow(t *testing.T) {
-	f := newFixture(t)
-	f.isolatedTmux()
-	server := f.serverHome()
 	started := filepath.Join(t.TempDir(), "pid")
 	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{window_id}", `sh -c 'sleep 60 & echo $! > "$0"; wait' `+started+`; :`).Output()
 	if err != nil {
@@ -376,12 +378,12 @@ func TestASessionSeveralProcessesBelowItsPaneGetsTheWindow(t *testing.T) {
 	}
 	data, _ := os.ReadFile(started)
 	pid := strings.TrimSpace(string(data))
-	f.write(filepath.Join(server, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"0f0f0f0f-1111-2222-3333-555555555560","cwd":"/srv/api","status":"idle"}`)
+	f.write(filepath.Join(server, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"0f0f0f0f-1111-2222-3333-555555555559","cwd":"/srv/api","status":"idle","bridgeSessionId":"session_42"}`)
 	go newWatcher("server", "me@server", f.remoteHost(), log.New(io.Discard, "", 0), "").follow("")
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
 		if live := readLive(t, "server"); len(live.Sessions) == 1 {
-			if s := live.Sessions[0]; s.Tmux != window {
-				t.Errorf("a session two processes below its pane has tmux window %q, want %s", s.Tmux, window)
+			if s := live.Sessions[0]; s.RemoteControl != "https://claude.ai/code/session_42" || s.Tmux != window || live.SSH != "me@server" {
+				t.Errorf("a session two processes below its pane opens through %q and tmux window %q (want %s), the machine over ssh %q", s.RemoteControl, s.Tmux, window, live.SSH)
 			}
 			return
 		}

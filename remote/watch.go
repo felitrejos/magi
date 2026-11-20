@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ const (
 	watchRetry    = time.Minute
 	watchBackoff  = time.Minute
 	tailscaleWait = 5 * time.Second
+	tailnetEvery  = 30 * time.Second
 )
 
 type wanted struct {
@@ -167,6 +169,7 @@ func watch() error {
 		quit()
 	}()
 	go heartbeat(logger, quit)
+	go followTailnet(logger)
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		watchHost(newWatcher(local.Name(), "", nil, logger, ""), "", func() (sh.Machine, error) { return local, nil })
@@ -248,14 +251,15 @@ func watchHost(w *watcher, me string, connect func() (sh.Machine, error)) {
 }
 
 type watcher struct {
-	name   string
-	m      sh.Machine
-	copies string
-	logger *log.Logger
-	live   liveMachine
-	block  []string
-	usage  map[int]use
-	cpu    map[string][]cpuReading
+	name     string
+	m        sh.Machine
+	copies   string
+	logger   *log.Logger
+	live     liveMachine
+	block    []string
+	measured bool
+	usage    map[int]use
+	cpu      map[string][]cpuReading
 }
 
 type liveMachine struct {
@@ -293,7 +297,6 @@ type space struct {
 
 type battery struct {
 	Percent   int  `json:"percent"`
-	Charging  bool `json:"charging"`
 	OnBattery bool `json:"onBattery"`
 }
 
@@ -319,14 +322,14 @@ type use struct {
 }
 
 func newWatcher(name, ssh string, m sh.Machine, logger *log.Logger, copies string) *watcher {
-	w := &watcher{name: name, m: m, copies: copies, logger: logger, live: liveMachine{SSH: ssh, Sessions: []liveEntry{}}, cpu: map[string][]cpuReading{}}
-	var kept liveMachine
-	if path, err := livePath(name); err == nil && store.ReadJSON(path, &kept) == nil {
-		w.live.History = kept.History
-		for _, s := range kept.Sessions {
-			w.cpu[s.ID] = s.CPUHistory
-		}
+	w := &watcher{name: name, m: m, copies: copies, logger: logger, cpu: map[string][]cpuReading{}}
+	if path, err := livePath(name); err == nil {
+		store.ReadJSON(path, &w.live)
 	}
+	for _, s := range w.live.Sessions {
+		w.cpu[s.ID] = s.CPUHistory
+	}
+	w.live.SSH, w.live.Answering, w.live.Sessions = ssh, false, []liveEntry{}
 	return w
 }
 
@@ -339,7 +342,7 @@ func recent[T any](readings []T, at func(T) int64, now time.Time) []T {
 }
 
 func (w *watcher) follow(me string) error {
-	w.block = nil
+	w.block, w.measured = nil, false
 	cmd := w.m.Command(watchScript, me, w.m.Claude(), w.copies)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -381,6 +384,10 @@ func (w *watcher) hear(line string, now time.Time) {
 			w.logger.Printf("%s: unreadable stats %q: %v", w.name, rest, err)
 			return
 		}
+		w.measured = true
+	}
+	if !w.measured {
+		return
 	}
 	w.live.Answering, w.live.Heard = true, now
 	if err := w.save(); err != nil {
@@ -414,11 +421,19 @@ func (w *watcher) sessions() {
 	}
 	w.block = nil
 	entries := []liveEntry{}
+	at := map[string]int{}
 	for _, s := range sessions {
 		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], RemoteControl: s.remoteControl(), Tmux: windows[s.PID], pid: s.PID}
 		if s.StatusAt > 0 {
 			e.Since = time.UnixMilli(s.StatusAt)
 		}
+		if i, ok := at[e.ID]; ok {
+			if e.Since.After(entries[i].Since) {
+				entries[i] = e
+			}
+			continue
+		}
+		at[e.ID] = len(entries)
 		entries = append(entries, e)
 	}
 	w.live.Sessions = entries
@@ -431,7 +446,7 @@ func (w *watcher) stats(line string, now time.Time) error {
 		return err
 	}
 	l.BootedAt, l.Pressure, l.Battery = time.Unix(booted, 0), "", nil
-	l.Relayed = l.SSH != "" && relayed(l.SSH)
+	l.Relayed = relayed(l.SSH)
 	l.History = recent(append(l.History, reading{At: now.Unix(), Load: l.Load, MemoryMB: l.Memory.UsedMB}), func(r reading) int64 { return r.At }, now)
 	ids := map[int]string{}
 	cpu := map[string][]cpuReading{}
@@ -447,7 +462,7 @@ func (w *watcher) stats(line string, now time.Time) error {
 		}
 		if charge, ok := strings.CutPrefix(field, "battery="); ok {
 			l.Battery = &battery{}
-			if _, err := fmt.Sscanf(charge, "%d:%t:%t", &l.Battery.Percent, &l.Battery.Charging, &l.Battery.OnBattery); err != nil {
+			if _, err := fmt.Sscanf(charge, "%d:%t", &l.Battery.Percent, &l.Battery.OnBattery); err != nil {
 				return err
 			}
 			continue
@@ -472,19 +487,45 @@ func (w *watcher) stats(line string, now time.Time) error {
 	return nil
 }
 
-func relayed(ssh string) bool {
-	var status struct {
-		Peer map[string]struct{ HostName, DNSName, CurAddr string }
+type peer struct {
+	HostName, DNSName, CurAddr, Relay string
+	TailscaleIPs                      []string
+	Online                            bool
+}
+
+var tailnet struct {
+	sync.Mutex
+	peers map[string]peer
+}
+
+func followTailnet(logger *log.Logger) {
+	for {
+		readTailnet(logger)
+		time.Sleep(tailnetEvery)
 	}
+}
+
+func readTailnet(logger *log.Logger) {
+	var status struct{ Peer map[string]peer }
 	ctx, cancel := context.WithTimeout(context.Background(), tailscaleWait)
 	defer cancel()
 	if out, err := exec.CommandContext(ctx, "tailscale", "status", "--json").Output(); err == nil {
-		json.Unmarshal(out, &status)
+		if err := json.Unmarshal(out, &status); err != nil {
+			logger.Printf("tailscale's status is unreadable: %v", err)
+		}
 	}
+	tailnet.Lock()
+	defer tailnet.Unlock()
+	tailnet.peers = status.Peer
+}
+
+func relayed(ssh string) bool {
 	host := ssh[strings.LastIndex(ssh, "@")+1:]
-	for _, p := range status.Peer {
-		if p.HostName == host || strings.HasPrefix(p.DNSName, host+".") {
-			return p.CurAddr == ""
+	tailnet.Lock()
+	defer tailnet.Unlock()
+	for _, p := range tailnet.peers {
+		if p.HostName == host || strings.HasPrefix(p.DNSName, host+".") || slices.Contains(p.TailscaleIPs, host) {
+			return p.Online && p.CurAddr == "" && p.Relay != ""
 		}
 	}
 	return false
