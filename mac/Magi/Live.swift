@@ -5,11 +5,17 @@ struct Machine: Decodable {
 
     let answering: Bool
     let heard: Date?
+    let ssh: String?
     let cores: Int
     let load: Double
     let memory: Space
     let disk: Space
     let sessions: [Session]
+    let pressure: Pressure?
+    let swap: Space?
+    let bootedAt: Date?
+    let battery: Battery?
+    let relayed: Bool?
 
     func answers(at now: Date) -> Bool {
         guard answering, let heard else { return false }
@@ -20,9 +26,27 @@ struct Machine: Decodable {
 struct Space: Decodable {
     let usedMB: Int
     let totalMB: Int
+
+    var fraction: Double {
+        Double(usedMB) / Double(totalMB)
+    }
+
+    var pressure: Pressure {
+        fraction < 0.9 ? .normal : .warning
+    }
 }
 
-struct Session: Decodable, Identifiable {
+enum Pressure: String, Decodable {
+    case normal, warning, critical
+}
+
+struct Battery: Decodable {
+    let percent: Int
+    let charging: Bool
+    let onBattery: Bool
+}
+
+struct Session: Decodable {
     let id: String
     let title: String
     let folder: String
@@ -39,9 +63,44 @@ struct Move: Decodable {
     let to: String
     let toDir: String
     let note: String?
+    let bytes: Int64?
+    let seconds: Double?
+
+    var speed: String? {
+        guard let bytes, let seconds, seconds > 0 else { return nil }
+        let rate = Int64((Double(bytes) / seconds).rounded())
+        return "\(bytes.formatted(.byteCount(style: .file))) at \(rate.formatted(.byteCount(style: .file)))/s"
+    }
 
     static func recent(in data: Data) -> [Move] {
         data.split(separator: UInt8(ascii: "\n")).suffix(5).reversed().compactMap { try? JSONDecoder.magi.decode(Move.self, from: $0) }
+    }
+}
+
+struct Row: Identifiable {
+    let machine: String
+    let session: Session
+
+    var id: String {
+        "\(machine)/\(session.id)"
+    }
+
+    private var rank: Int {
+        ["waiting", "busy"].firstIndex(of: session.state) ?? 2
+    }
+
+    static func urgent(_ rows: [Row]) -> [Row] {
+        rows.sorted {
+            guard $0.rank == $1.rank else { return $0.rank < $1.rank }
+            guard $0.rank == 0 else { return ($0.session.title, $0.id) < ($1.session.title, $1.id) }
+            return ($0.session.since ?? .distantFuture, $0.id) < ($1.session.since ?? .distantFuture, $1.id)
+        }
+    }
+
+    static func ordered(_ rows: [Row], keeping order: [String]?) -> [Row] {
+        guard let order else { return rows }
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        return order.compactMap { byID[$0] } + rows.filter { !order.contains($0.id) }
     }
 }
 
