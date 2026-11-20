@@ -6,7 +6,7 @@ if [ -n "$name" ]; then
   printf '%s\n' "$copies" > "$HOME/.magi/.watcher-$name" && mv -f "$HOME/.magi/.watcher-$name" "$HOME/.magi/watchers/$name"
   ps -A -o pid= -o ppid= -o args= | loop="set -- \\047$name\\047 " awk '
     index($0, ENVIRON["loop"]) && index($0, ".magi/watchers") { parent[$1] = $2 }
-    END { for (p in parent) { top = p; while (parent[top] in parent) top = parent[top]; if (parent[top] == "1") print p } }' | while read -r pid; do kill "$pid"; done
+    END { for (p in parent) { top = p; while (parent[top] in parent) top = parent[top]; if (parent[top] + 0 <= 1) print p } }' | while read -r pid; do kill "$pid"; done
 fi
 tick=0 registry=-
 usage() {
