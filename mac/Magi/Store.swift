@@ -5,6 +5,7 @@ import Observation
 @Observable
 final class Store {
     private(set) var machines: [String: Machine] = [:]
+    private(set) var rows: [Row] = []
     private(set) var answering: Set<String> = []
 
     @ObservationIgnored private let live: URL
@@ -23,10 +24,6 @@ final class Store {
         read()
     }
 
-    var rows: [Row] {
-        Row.urgent(machines.flatMap { name, machine in machine.sessions.map { Row(machine: name, session: $0) } })
-    }
-
     private func read() {
         guard let files = try? FileManager.default.contentsOfDirectory(at: live, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
         let dated = files.filter { $0.pathExtension == "json" }.reduce(into: [String: (URL, Date)]()) { dated, file in
@@ -38,6 +35,7 @@ final class Store {
             machines[name] = modified[name] == date ? self.machines[name] : try? JSONDecoder.magi.decode(Machine.self, from: Data(contentsOf: file))
         }
         modified = dated.mapValues(\.1)
+        rows = Row.urgent(machines.flatMap { name, machine in machine.sessions.map { Row(machine: name, session: $0) } })
         evaluate()
     }
 

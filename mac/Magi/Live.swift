@@ -32,8 +32,8 @@ struct Space: Decodable {
         Double(usedMB) / Double(totalMB)
     }
 
-    var pressure: Pressure {
-        fraction < 0.9 ? .normal : .warning
+    var nearlyFull: Bool {
+        fraction >= 0.9
     }
 }
 
@@ -43,7 +43,6 @@ enum Pressure: String, Decodable {
 
 struct Battery: Decodable {
     let percent: Int
-    let charging: Bool
     let onBattery: Bool
 }
 
@@ -93,7 +92,8 @@ struct Row: Identifiable {
     static func ordered(_ rows: [Row], keeping order: [String]?) -> [Row] {
         guard let order else { return rows }
         let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
-        return order.compactMap { byID[$0] } + rows.filter { !order.contains($0.id) }
+        let kept = Set(order)
+        return order.compactMap { byID[$0] } + rows.filter { !kept.contains($0.id) }
     }
 }
 
@@ -101,7 +101,6 @@ extension JSONDecoder {
     static let magi = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         return decoder
     }()
 }

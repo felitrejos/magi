@@ -7,8 +7,10 @@ import Testing
 struct Snapshots {
     let out = URL(filePath: ProcessInfo.processInfo.environment["SNAPSHOTS"] ?? "")
     let now = Date.now
+    let home = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
 
     @Test func panel() async throws {
+        defer { try? FileManager.default.removeItem(at: home) }
         let full = try await store(machines(sessions: true))
         let quiet = try await store(machines(sessions: false))
         let bare = try await store([:])
@@ -33,9 +35,10 @@ struct Snapshots {
     }
 
     @Test func tiles() async throws {
+        defer { try? FileManager.default.removeItem(at: home) }
         let store = try await store(machines(sessions: true, critical: true))
         let names = ["homelab", "laptop", "box"]
-        let states = ["at rest", "hovered", "pressed", "selected"]
+        let states = ["at rest", "selected"]
         for scheme in [ColorScheme.light, .dark] {
             let grid = VStack(alignment: .leading, spacing: 6) {
                 ForEach(1...3, id: \.self) { count in
@@ -45,8 +48,7 @@ struct Snapshots {
                             .foregroundStyle(.secondary)
                         HStack(spacing: 6) {
                             ForEach(names.prefix(count), id: \.self) { name in
-                                Tile(name: name, machine: store.machines[name]!, answers: true, selected: state == "selected" && name == names[0], hovered: state == "hovered" && name == names[0], delay: 0, now: now)
-                                    .environment(\.pressed, state == "pressed" && name == names[0])
+                                Tile(name: name, machine: store.machines[name]!, answers: true, selected: state == "selected" && name == names[0], delay: 0, now: now)
                             }
                         }
                         .frame(width: count == 1 ? 150 : 344)
@@ -61,7 +63,10 @@ struct Snapshots {
     }
 
     @Test func settings() async throws {
+        defer { try? FileManager.default.removeItem(at: home) }
         let full = try await store(machines(sessions: true))
+        let bare = try await store([:])
+        let quiet = try await store(machines(sessions: false).mapValues { $0.merging(["answering": false]) { $1 } })
         for scheme in [ColorScheme.light, .dark] {
             let suffix = scheme == .light ? "light" : "dark"
             for pane in Pane.allCases {
@@ -78,7 +83,9 @@ struct Snapshots {
                 window.makeFirstResponder(field(window.contentView!.superview!))
                 (window.firstResponder as! NSTextView).insertText("badge", replacementRange: NSRange(location: NSNotFound, length: 0))
             }
-            try await render("first-run-\(suffix)", Welcome(store: full).background(SettingsColor.content), scheme)
+            for (name, store) in [("first-run", full), ("first-run-not-set-up", bare), ("first-run-quiet", quiet)] {
+                try await render("\(name)-\(suffix)", Welcome(store: store).background(SettingsColor.content), scheme)
+            }
         }
         UserDefaults.standard.removeObject(forKey: "pane")
     }
@@ -89,7 +96,7 @@ struct Snapshots {
         let scale: CGFloat = 4
         let cell = CGSize(width: 44, height: 24)
         for dark in [false, true] {
-            let size = CGSize(width: cell.width * 6, height: cell.height)
+            let size = CGSize(width: cell.width * 4, height: cell.height)
             let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
             rep.size = size
             NSGraphicsContext.saveGraphicsState()
@@ -99,7 +106,7 @@ struct Snapshots {
             let ink = dark ? NSColor.white : NSColor.black
             let tinted = config.applying(.init(paletteColors: [ink]))
             let dotted = config.applying(.init(paletteColors: [ink, .systemOrange]))
-            let symbols = [("orbit", tinted), ("orbit.badge", tinted), ("orbit.badge", dotted), ("orbit.slash", tinted)].map { NSImage(symbolName: $0.0, bundle: bundle, variableValue: 0)!.withSymbolConfiguration($0.1)! } + ["wifi", "battery.75percent"].map { NSImage(systemSymbolName: $0, accessibilityDescription: nil)!.withSymbolConfiguration(tinted)! }
+            let symbols = [("orbit", tinted), ("orbit.badge", tinted), ("orbit.badge", dotted), ("orbit.slash", tinted)].map { NSImage(symbolName: $0.0, bundle: bundle, variableValue: 0)!.withSymbolConfiguration($0.1)! }
             for (column, image) in symbols.enumerated() {
                 let x = CGFloat(column) * cell.width + (cell.width - image.size.width) / 2
                 image.draw(in: CGRect(x: x, y: (cell.height - image.size.height) / 2, width: image.size.width, height: image.size.height))
@@ -166,7 +173,7 @@ struct Snapshots {
     }
 
     private func store(_ machines: [String: [String: Any]]) async throws -> Store {
-        let home = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let home = home.appending(path: UUID().uuidString)
         let store = Store(home: home)
         for (index, (name, machine)) in machines.sorted(by: { $0.key < $1.key }).enumerated() {
             var machine = machine
@@ -185,13 +192,9 @@ struct Snapshots {
                 }
                 return session
             }
-            let temp = home.appending(path: "live/\(name).json.1")
-            try JSONSerialization.data(withJSONObject: machine).write(to: temp)
-            rename(temp.path, home.appending(path: "live/\(name).json").path)
+            try publish(JSONSerialization.data(withJSONObject: machine), as: name, in: home)
         }
-        for await met in Observations({ store.machines.count == machines.count }) where met {
-            break
-        }
+        await until { store.machines.count == machines.count }
         return store
     }
 
@@ -205,7 +208,7 @@ struct Snapshots {
             "laptop": [
                 "answering": true, "ssh": "", "cores": 10, "load": 2.4, "pressure": "warning",
                 "memory": ["usedMB": 13100, "totalMB": 16384], "disk": ["usedMB": 282192, "totalMB": 471482], "swap": ["usedMB": 1536, "totalMB": 4096],
-                "bootedAt": stamp(now.addingTimeInterval(-3 * 86_400)), "battery": ["percent": 64, "charging": false, "onBattery": true],
+                "bootedAt": stamp(now.addingTimeInterval(-3 * 86_400)), "battery": ["percent": 64, "onBattery": true],
                 "sessions": sessions ? [
                     session("Shop checkout fix", "/Users/sam/code/shop", "waiting", 4, cpu: 0, memory: 229, waitingOn: "Allow Bash to run npm test in the shop folder?"),
                     session("magi README demo videos", "/Users/sam/code/magi", "busy", 12, cpu: 34, memory: 547),
@@ -213,7 +216,7 @@ struct Snapshots {
                 ] : [],
             ],
             "homelab": [
-                "answering": true, "ssh": "homelab", "cores": 12, "load": 3.1, "pressure": "normal", "relayed": true,
+                "answering": true, "ssh": "homelab", "cores": 12, "load": 3.1, "relayed": true,
                 "memory": ["usedMB": 6450, "totalMB": 15384], "disk": ["usedMB": 1212000, "totalMB": 1875626], "swap": ["usedMB": 0, "totalMB": 2048],
                 "bootedAt": stamp(now.addingTimeInterval(-6 * 60)),
                 "sessions": sessions ? [

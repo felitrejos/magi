@@ -8,8 +8,6 @@ struct PanelView: View {
     let close: () -> Void
     @State private var scope: String?
     @State private var highlight: String?
-    @State private var hoveredTile: String?
-    @State private var hovering = false
     @State private var order: [String]?
     @State private var shown = false
     @FocusState private var focused: Bool
@@ -48,7 +46,7 @@ struct PanelView: View {
                             .padding([.horizontal, .bottom], 16)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else if !rows.isEmpty || scope != nil {
-                        list(now: context.date)
+                        SessionList(rows: rows, scope: scope, machine: scope.flatMap { store.machines[$0] }, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order)
                     }
                     if names.count > 1 {
                         strip(now: context.date)
@@ -72,11 +70,6 @@ struct PanelView: View {
             }
             .onMoveCommand { move($0, proxy) }
             .onExitCommand { scope == nil ? close() : (scope = nil) }
-            .task(id: hovering || highlight != nil) {
-                guard !hovering, highlight == nil else { return order = order ?? rows.map(\.id) }
-                try? await Task.sleep(for: .seconds(1))
-                order = nil
-            }
         }
     }
 
@@ -110,37 +103,6 @@ struct PanelView: View {
         .padding(.vertical, scope == nil ? 0 : 4)
     }
 
-    private func list(now: Date) -> some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                if let scope, let machine = store.machines[scope] {
-                    ScopeSummary(name: scope, machine: machine, now: now)
-                        .padding(.bottom, 8)
-                        .transition(.opacity)
-                }
-                ForEach(rows) { row in
-                    SessionRow(row: row, showsMachine: scope == nil && names.count > 1, highlighted: highlight == row.id, usage: scope != nil, now: now)
-                        .id(row.id)
-                        .transition(.blurReplace)
-                        .onHover { inside in
-                            if inside {
-                                highlight = row.id
-                            } else if highlight == row.id {
-                                highlight = nil
-                            }
-                        }
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
-            .animation(reduceMotion ? nil : .snappy(duration: 0.35), value: rows.map(\.id))
-            .animation(.easeOut(duration: 0.15), value: highlight)
-        }
-        .scrollBounceBehavior(.basedOnSize)
-        .scrollEdgeEffectStyle(.hard, for: .bottom)
-        .onHover { hovering = $0 }
-    }
-
     private func strip(now: Date) -> some View {
         HStack(spacing: 6) {
             ForEach(Array(names.enumerated()), id: \.element) { order, name in
@@ -157,16 +119,9 @@ struct PanelView: View {
             scope = scope == name ? nil : name
             highlight = nil
         } label: {
-            Tile(name: name, machine: machine, answers: store.answering.contains(name), selected: scope == name, hovered: hoveredTile == name, delay: 0.08 + 0.03 * Double(order), now: now)
+            Tile(name: name, machine: machine, answers: store.answering.contains(name), selected: scope == name, delay: 0.08 + 0.03 * Double(order), now: now)
         }
         .buttonStyle(Press())
-        .onHover { inside in
-            if inside {
-                hoveredTile = name
-            } else if hoveredTile == name {
-                hoveredTile = nil
-            }
-        }
     }
 
     private func move(_ direction: MoveCommandDirection, _ proxy: ScrollViewProxy) {
@@ -187,13 +142,61 @@ struct PanelView: View {
     }
 }
 
+struct SessionList: View {
+    let rows: [Row]
+    let scope: String?
+    let machine: Machine?
+    let showsMachine: Bool
+    let now: Date
+    @Binding var highlight: String?
+    @Binding var order: [String]?
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                if let scope, let machine {
+                    ScopeSummary(name: scope, machine: machine, now: now)
+                        .padding(.bottom, 8)
+                        .transition(.opacity)
+                }
+                ForEach(rows) { row in
+                    SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now)
+                        .id(row.id)
+                        .transition(.blurReplace)
+                        .onHover { inside in
+                            if inside {
+                                highlight = row.id
+                            } else if highlight == row.id {
+                                highlight = nil
+                            }
+                        }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.35), value: rows.map(\.id))
+            .animation(.easeOut(duration: 0.15), value: highlight)
+        }
+        .scrollIndicators(.never)
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollEdgeEffectStyle(.hard, for: .bottom)
+        .onHover { hovering = $0 }
+        .task(id: hovering || highlight != nil) {
+            guard !hovering, highlight == nil else { return order = order ?? rows.map(\.id) }
+            guard (try? await Task.sleep(for: .seconds(1))) != nil else { return }
+            order = nil
+        }
+    }
+}
+
 struct SessionRow: View {
     let row: Row
     let showsMachine: Bool
     let highlighted: Bool
     let usage: Bool
     let now: Date
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var waiting: Bool {
         row.session.state == "waiting"
@@ -203,8 +206,8 @@ struct SessionRow: View {
         URL(filePath: row.session.folder).lastPathComponent
     }
 
-    private var elapsed: String {
-        guard let since = row.session.since, now.timeIntervalSince(since) >= 60 else { return "now" }
+    private var elapsed: String? {
+        guard let since = row.session.since, now.timeIntervalSince(since) >= 60 else { return nil }
         return span(now.timeIntervalSince(since))
     }
 
@@ -231,12 +234,12 @@ struct SessionRow: View {
             if usage {
                 Usage(session: row.session, now: now)
             } else {
-                Text(elapsed)
+                Text(elapsed ?? "now")
                     .font(.subheadline)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
-                    .animation(.snappy(duration: 0.3), value: elapsed)
+                    .contentTransition(.opacity)
+                    .animation(.easeOut(duration: 0.2), value: elapsed)
             }
         }
         .padding(.horizontal, 8)
@@ -255,7 +258,8 @@ struct SessionRow: View {
 
     private var accessibility: String {
         let state = waiting ? "waiting on you" + (row.session.waitingOn.map { ": \($0)" } ?? "") : row.session.state
-        return "\(row.session.title), \(state), \(folder) on \(row.machine), for \(elapsed)"
+        let detail = usage ? "CPU \(row.session.cpu)%, memory \(row.session.memory)" : elapsed.map { "for \($0)" }
+        return [row.session.title, state, "\(folder) on \(row.machine)", detail].compactMap(\.self).joined(separator: ", ")
     }
 }
 
@@ -330,7 +334,7 @@ final class SpinnerView: NSView {
     private let spoke = CALayer()
 
     init() {
-        super.init(frame: CGRect(x: 0, y: 0, width: 13, height: 13))
+        super.init(frame: .zero)
         wantsLayer = true
         spokes.instanceCount = 8
         spokes.instanceTransform = CATransform3DMakeRotation(-.pi / 4, 0, 0, 1)
@@ -365,13 +369,14 @@ final class SpinnerView: NSView {
 }
 
 struct Press: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.environment(\.pressed, configuration.isPressed)
-    }
-}
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-extension EnvironmentValues {
-    @Entry var pressed = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .opacity(configuration.isPressed && reduceMotion ? 0.7 : 1)
+            .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.2, bounce: 0.3), value: configuration.isPressed)
+    }
 }
 
 struct Tile: View {
@@ -379,16 +384,15 @@ struct Tile: View {
     let machine: Machine
     let answers: Bool
     let selected: Bool
-    let hovered: Bool
     let delay: Double
     let now: Date
-    @Environment(\.pressed) private var pressed
+    @State private var hovered = false
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityShowBorders) private var showBorders
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var percent: Int {
-        Int((machine.load / Double(max(machine.cores, 1)) * 100).rounded())
+        Int((machine.load / Double(machine.cores) * 100).rounded())
     }
 
     private var heading: some View {
@@ -400,7 +404,7 @@ struct Tile: View {
                 .font(.subheadline.weight(.semibold))
                 .truncationMode(.middle)
             if let battery = machine.battery, battery.onBattery {
-                Image(systemName: "battery.\(min(battery.percent / 25 * 25, 100))percent")
+                Image(systemName: "battery.\(battery.percent / 25 * 25)percent")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
             }
@@ -416,34 +420,23 @@ struct Tile: View {
         if answers {
             HStack(spacing: 6) {
                 Trend(points: machine.loadPoints(now: now), color: machine.health, delay: delay)
-                    .frame(minWidth: 36, maxHeight: 12)
-                ViewThatFits {
-                    figure("\(percent)% load")
-                    figure("\(percent)%")
-                }
-                .layoutPriority(1)
+                    .frame(maxHeight: 12)
+                Text("\(percent)% load")
+                    .font(.footnote)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(percent)))
+                    .animation(.snappy(duration: 0.3), value: percent)
+                    .layoutPriority(1)
             }
         } else {
             ViewThatFits {
-                Text(quiet)
+                Text(machine.quiet(now: now))
                 Text("not answering")
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
         }
-    }
-
-    private func figure(_ text: String) -> some View {
-        Text(text)
-            .font(.footnote)
-            .monospacedDigit()
-            .foregroundStyle(.secondary)
-            .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(percent)))
-            .animation(.snappy(duration: 0.3), value: percent)
-    }
-
-    private var quiet: String {
-        machine.quiet(now: now)
     }
 
     var body: some View {
@@ -456,24 +449,18 @@ struct Tile: View {
         .frame(height: 44)
         .background { plate }
         .opacity(answers ? 1 : 0.6)
-        .scaleEffect(pressed && !reduceMotion ? 0.97 : 1)
-        .opacity(pressed && reduceMotion ? 0.7 : 1)
-        .animation(press, value: pressed)
         .animation(.easeOut(duration: 0.15), value: hovered)
         .animation(.smooth(duration: 0.3), value: selected)
         .contentShape(.rect)
+        .onHover { hovered = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
         .accessibilityHint(selected ? "Shows all sessions" : "Shows details")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private var press: Animation {
-        reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.2, bounce: 0.3)
-    }
-
     private var label: String {
-        answers ? "\(name), load \(percent)%" : "\(name), \(quiet)"
+        answers ? "\(name), load \(percent)%" : "\(name), \(machine.quiet(now: now))"
     }
 
     private var plate: some View {
@@ -536,7 +523,12 @@ func span(_ seconds: TimeInterval) -> String {
 }
 
 func trend(_ readings: [(at: TimeInterval, value: Double)], top: Double, now: Date) -> [CGPoint] {
-    readings.map { CGPoint(x: 1 - (now.timeIntervalSince1970 - $0.at) / historyWindow, y: min($0.value / top, 1)) }
+    let end = latest(readings.last?.at, now: now).timeIntervalSince1970
+    return readings.map { CGPoint(x: 1 - (end - $0.at) / historyWindow, y: $0.value / top) }
+}
+
+func latest(_ reading: TimeInterval?, now: Date) -> Date {
+    max(now, Date(timeIntervalSince1970: reading ?? 0))
 }
 
 let historyWindow: TimeInterval = 60 * 60
@@ -544,7 +536,7 @@ let historyWindow: TimeInterval = 60 * 60
 extension Machine {
     var health: Color {
         if pressure == .critical { return .red }
-        if load >= 0.7 * Double(cores) || pressure == .warning || disk.pressure == .warning { return .orange }
+        if load >= 0.7 * Double(cores) || pressure == .warning || disk.nearlyFull { return .orange }
         return .green
     }
 

@@ -10,10 +10,10 @@ struct StoreTests {
     @Test func showsALiveFileChangeWithinASecond() async throws {
         defer { try? FileManager.default.removeItem(at: home) }
         let store = Store(home: home)
-        try publish(fixture("live/laptop.json"), as: "laptop")
+        try publish(fixture("live/laptop.json"), as: "laptop", in: home)
         await until { store.machines["laptop"]?.cores == 10 }
         let start = ContinuousClock.now
-        try publish(fixture("live/box.json"), as: "laptop")
+        try publish(fixture("live/box.json"), as: "laptop", in: home)
         await until { store.machines["laptop"]?.cores == 12 }
         let latency = ContinuousClock.now - start
         print("A live file change reached the store in \(latency.formatted(.units(allowed: [.milliseconds], fractionalPart: .show(length: 2))))")
@@ -25,22 +25,22 @@ struct StoreTests {
         let store = Store(home: home)
         let heard = Date(timeIntervalSince1970: (Date.now.timeIntervalSince1970 - 39).rounded(.up))
         let live = String(decoding: try fixture("live/laptop.json"), as: UTF8.self).replacing("2026-11-20T17:45:33.936688+01:00", with: heard.formatted(.iso8601))
-        try publish(Data(live.utf8), as: "laptop")
+        try publish(Data(live.utf8), as: "laptop", in: home)
         await until { store.answering.contains("laptop") }
         await until { !store.answering.contains("laptop") }
         #expect(Date.now.timeIntervalSince(heard) >= Machine.quietAfter)
     }
+}
 
-    private func publish(_ data: Data, as name: String) throws {
-        let live = home.appending(path: "live")
-        let temp = live.appending(path: "\(name).json.1")
-        try data.write(to: temp)
-        #expect(rename(temp.path, live.appending(path: "\(name).json").path) == 0)
-    }
+func publish(_ data: Data, as name: String, in home: URL) throws {
+    let live = home.appending(path: "live")
+    let temp = live.appending(path: "\(name).json.1")
+    try data.write(to: temp)
+    #expect(rename(temp.path, live.appending(path: "\(name).json").path) == 0)
+}
 
-    private func until(_ condition: @escaping @MainActor () -> Bool) async {
-        for await met in Observations(condition) where met {
-            return
-        }
+@MainActor func until(_ condition: @escaping @MainActor () -> Bool) async {
+    for await met in Observations(condition) where met {
+        return
     }
 }

@@ -36,7 +36,7 @@ struct ScopeSummary: View {
                     Text("Load")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
-                    Text("\(machine.load.formatted(.number.precision(.fractionLength(1)))) on \(machine.cores) cores")
+                    Text("\(tenths(machine.load)) on \(machine.cores) cores")
                         .font(.footnote)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
@@ -45,16 +45,18 @@ struct ScopeSummary: View {
                 }
                 LoadChart(name: name, machine: machine, now: now)
             }
-            Capacity(label: "Memory", space: machine.memory, pressure: machine.pressure ?? .normal, points: trend((machine.history ?? []).map { ($0.at, Double($0.memoryMB)) }, top: Double(machine.memory.totalMB), now: now), note: memoryNote)
-            Capacity(label: "Disk", space: machine.disk, pressure: machine.disk.pressure, points: nil, note: nil)
+            Capacity(label: "Memory", space: machine.memory, tint: machine.pressure?.tint ?? .secondary, points: trend((machine.history ?? []).map { ($0.at, Double($0.memoryMB)) }, top: Double(machine.memory.totalMB), now: now), note: memoryNote, alert: nil)
+            Capacity(label: "Disk", space: machine.disk, tint: machine.disk.nearlyFull ? .orange : .secondary, points: nil, note: nil, alert: machine.disk.nearlyFull ? "nearly full" : nil)
         }
         .padding(8)
     }
 
-    private var memoryNote: String {
-        let pressure = "pressure \((machine.pressure ?? .normal).rawValue)"
-        guard let swap = machine.swap, swap.totalMB > 0 else { return pressure }
-        return "\(pressure) \u{00B7} swap \(gigabytes(swap))"
+    private var memoryNote: String? {
+        let notes = [
+            machine.pressure.map { "pressure \($0.rawValue)" },
+            machine.swap.flatMap { $0.totalMB > 0 ? "swap \(gigabytes($0))" : nil },
+        ].compactMap(\.self)
+        return notes.isEmpty ? nil : notes.joined(separator: " \u{00B7} ")
     }
 }
 
@@ -68,6 +70,10 @@ struct LoadChart: View {
 
     private var readings: [Reading] {
         machine.history ?? []
+    }
+
+    private var end: Date {
+        latest(readings.last?.at, now: now)
     }
 
     var body: some View {
@@ -90,13 +96,13 @@ struct LoadChart: View {
                         .foregroundStyle(.tertiary)
                 }
         }
-        .chartXScale(domain: now.addingTimeInterval(-historyWindow)...now)
+        .chartXScale(domain: end.addingTimeInterval(-historyWindow)...end)
         .chartYScale(domain: 0...machine.peak)
         .chartXAxis {
-            AxisMarks(values: [now.addingTimeInterval(-historyWindow), now.addingTimeInterval(-historyWindow / 2)]) { value in
+            AxisMarks(values: [end.addingTimeInterval(-historyWindow), end.addingTimeInterval(-historyWindow / 2)]) { value in
                 AxisValueLabel(anchor: .topLeading) {
                     if let date = value.as(Date.self) {
-                        Text("\(Int((now.timeIntervalSince(date) / 60).rounded())) min ago")
+                        Text("\(Int((end.timeIntervalSince(date) / 60).rounded())) min ago")
                     }
                 }
                 .font(.caption2)
@@ -115,7 +121,7 @@ struct LoadChart: View {
                 drawn = true
             }
         }
-        .accessibilityChartDescriptor(LoadDescriptor(name: name, readings: readings, cores: machine.cores, top: machine.peak, now: now))
+        .accessibilityChartDescriptor(LoadDescriptor(name: name, readings: readings, cores: machine.cores, top: machine.peak, end: end))
     }
 }
 
@@ -124,15 +130,15 @@ struct LoadDescriptor: AXChartDescriptorRepresentable {
     let readings: [Reading]
     let cores: Int
     let top: Double
-    let now: Date
+    let end: Date
 
     func makeChartDescriptor() -> AXChartDescriptor {
         let minutes = AXNumericDataAxisDescriptor(title: "Minutes ago", range: -historyWindow / 60...0, gridlinePositions: []) { "\(Int(-$0)) minutes ago" }
-        let load = AXNumericDataAxisDescriptor(title: "Load", range: 0...top, gridlinePositions: [Double(cores)]) { "load \($0.formatted(.number.precision(.fractionLength(1))))" }
-        let points = readings.map { AXDataPoint(x: ($0.at - now.timeIntervalSince1970) / 60, y: $0.load) }
+        let load = AXNumericDataAxisDescriptor(title: "Load", range: 0...top, gridlinePositions: [Double(cores)]) { "load \(tenths($0))" }
+        let points = readings.map { AXDataPoint(x: ($0.at - end.timeIntervalSince1970) / 60, y: $0.load) }
         return AXChartDescriptor(
             title: "Load on \(name), last hour",
-            summary: "Between \(readings.map(\.load).min()?.formatted() ?? "0") and \(readings.map(\.load).max()?.formatted() ?? "0"), on \(cores) cores",
+            summary: "Load between \(tenths(readings.map(\.load).min() ?? 0)) and \(tenths(readings.map(\.load).max() ?? 0)) on \(cores) cores",
             xAxis: minutes,
             yAxis: load,
             additionalAxes: [],
@@ -144,9 +150,10 @@ struct LoadDescriptor: AXChartDescriptorRepresentable {
 struct Capacity: View {
     let label: String
     let space: Space
-    let pressure: Pressure
+    let tint: Color
     let points: [CGPoint]?
     let note: String?
+    let alert: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -154,7 +161,7 @@ struct Capacity: View {
                 Text(label)
                     .font(.subheadline.weight(.semibold))
                 if let points {
-                    Trend(points: points, color: pressure.tint, delay: 0.1)
+                    Trend(points: points, color: tint, delay: 0.1)
                         .frame(width: 44, height: 12)
                 }
                 Spacer()
@@ -169,8 +176,8 @@ struct Capacity: View {
                 .overlay(alignment: .leading) {
                     GeometryReader { proxy in
                         Capsule()
-                            .fill(pressure.tint)
-                            .frame(width: proxy.size.width * min(space.fraction, 1))
+                            .fill(tint)
+                            .frame(width: proxy.size.width * space.fraction)
                     }
                 }
             if let note {
@@ -181,7 +188,7 @@ struct Capacity: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(label), \(gigabytes(space)), pressure \(pressure.rawValue)\(note.map { ", \($0)" } ?? "")")
+        .accessibilityLabel([label, gigabytes(space), note, alert].compactMap(\.self).joined(separator: ", "))
     }
 }
 
@@ -198,12 +205,11 @@ struct Usage: View {
         HStack(spacing: 8) {
             Trend(points: trend(readings.map { ($0.at, Double($0.cpu)) }, top: max(100, Double(readings.map(\.cpu).max() ?? 0)), now: now), color: Color(nsColor: .secondaryLabelColor), delay: 0.1)
                 .frame(width: 44, height: 16)
-                .accessibilityLabel("CPU \(session.cpu)%, peak \(readings.map(\.cpu).max() ?? 0)% in the last hour")
             VStack(alignment: .trailing, spacing: 0) {
                 Text("\(session.cpu)%")
                     .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(session.cpu)))
                     .animation(.snappy(duration: 0.3), value: session.cpu)
-                Text(Int64(session.memoryMB << 20).formatted(.byteCount(style: .memory)))
+                Text(session.memory)
                     .foregroundStyle(.secondary)
             }
             .font(.subheadline)
@@ -221,6 +227,16 @@ extension Pressure {
         case .critical: .red
         }
     }
+}
+
+extension Session {
+    var memory: String {
+        Int64(memoryMB << 20).formatted(.byteCount(style: .memory))
+    }
+}
+
+func tenths(_ value: Double) -> String {
+    value.formatted(.number.precision(.fractionLength(1)))
 }
 
 func gigabytes(_ space: Space) -> String {

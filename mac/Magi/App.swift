@@ -12,10 +12,12 @@ final class App: NSObject, NSApplicationDelegate {
     private let menu = NSMenu()
     private let store: Store
     private let scenes: NSHostingSceneRepresentation<Scenes>
-    private lazy var settings = NSWindow.settings { [scenes] in scenes.environment.openWindow(id: "welcome") }
+    private lazy var settings = NSWindow.settings { [scenes] in scenes.environment.openWindow(id: Welcome.id, value: Welcome.id) }
+    private let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
     private var host: Host?
     private var monitor: Any?
     private var shown: Glance?
+    private var dotted: Bool?
 
     override init() {
         let store = Store(home: .homeDirectory.appending(path: ".magi"))
@@ -73,45 +75,47 @@ final class App: NSObject, NSApplicationDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.settings = { [weak self] in self?.openSettings() }
         Task { [store] in
-            for await glance in Observations({ Glance(store: store) }) {
+            for await glance in Observations({ Glance(store: store) }) where glance != shown {
                 show(glance)
             }
         }
-        for key in ["showsCount", "dot"] {
-            UserDefaults.standard.addObserver(self, forKeyPath: key, context: nil)
+        Task {
+            for await _ in NotificationCenter.default.notifications(named: UserDefaults.didChangeNotification) {
+                shown.map(show)
+            }
         }
         if !UserDefaults.standard.bool(forKey: "welcomed") {
             NSApp.activate()
-            scenes.environment.openWindow(id: "welcome")
+            scenes.environment.openWindow(id: Welcome.id, value: Welcome.id)
         }
     }
 
     private func show(_ glance: Glance) {
-        let symbol = glance.waiting.isEmpty ? glance.answering.isEmpty ? "orbit.slash" : "orbit" : "orbit.badge"
-        let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
-        icon.symbolConfiguration = UserDefaults.standard.bool(forKey: "dot") && !glance.waiting.isEmpty ? plain.applying(.init(paletteColors: [.labelColor, .systemOrange])) : plain
-        icon.image = NSImage(symbolName: symbol, bundle: .main, variableValue: 0)
+        let dotted = UserDefaults.standard.bool(forKey: "dot") && !glance.waiting.isEmpty
+        if dotted != self.dotted {
+            icon.symbolConfiguration = dotted ? plain.applying(.init(paletteColors: [.labelColor, .systemOrange])) : plain
+            self.dotted = dotted
+        }
+        if glance.symbol != shown?.symbol {
+            icon.image = NSImage(symbolName: glance.symbol, bundle: .main, variableValue: 0)
+        }
         if let shown {
             let started = glance.waiting.filter { shown.waiting[$0.key] == nil }
-            if !started.isEmpty, UserDefaults.standard.bool(forKey: "chimes") {
+            if !started.isEmpty, UserDefaults.standard.bool(forKey: "playsSound") {
                 Chime.play()
             }
             for line in started.values.sorted() + shown.answering.subtracting(glance.answering).sorted().map({ "\($0) stopped answering" }) {
                 NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
             }
         }
-        let digits = NSAttributedString(string: "\(glance.waiting.count)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)])
-        count.image = NSImage(size: digits.size(), flipped: false) { _ in digits.draw(at: .zero); return true }
-        count.image?.isTemplate = true
+        if glance.waiting.count != shown?.waiting.count {
+            let digits = NSAttributedString(string: "\(glance.waiting.count)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)])
+            count.image = NSImage(size: digits.size(), flipped: false) { _ in digits.draw(at: .zero); return true }
+            count.image?.isTemplate = true
+        }
         count.isHidden = !UserDefaults.standard.bool(forKey: "showsCount") || glance.waiting.isEmpty
         item.button?.setAccessibilityLabel(glance.label)
         shown = glance
-    }
-
-    override nonisolated func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
-        MainActor.assumeIsolated {
-            shown.map(show)
-        }
     }
 
     @objc private func clicked(_ button: NSStatusBarButton) {
@@ -141,9 +145,10 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func fit(animate: Bool) {
         guard let host, let window = item.button?.window, let screen = window.screen else { return }
-        let height = min(host.fittingSize.height, 560, screen.visibleFrame.height * 0.7)
-        let x = min(window.frame.minX, screen.visibleFrame.maxX - host.fittingSize.width)
-        let frame = NSRect(x: x, y: window.frame.minY - height, width: host.fittingSize.width, height: height)
+        let size = host.fittingSize
+        let height = min(size.height, 560, screen.visibleFrame.height * 0.7)
+        let frame = NSRect(x: min(window.frame.minX, screen.visibleFrame.maxX - size.width), y: window.frame.minY - height, width: size.width, height: height)
+        guard frame != panel.frame else { return }
         guard animate, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             panel.setFrame(frame, display: true)
             return panel.invalidateShadow()
@@ -194,10 +199,14 @@ extension App: @MainActor NSStatusItemExpandedInterfaceDelegate {
     }
 }
 
-struct Glance {
+struct Glance: Equatable {
     let waiting: [String: String]
     let answering: Set<String>
     let hasMachines: Bool
+
+    var symbol: String {
+        waiting.isEmpty ? answering.isEmpty ? "orbit.slash" : "orbit" : "orbit.badge"
+    }
 
     @MainActor init(store: Store) {
         waiting = Dictionary(uniqueKeysWithValues: store.rows.filter { $0.session.state == "waiting" }.map { ($0.id, "\($0.session.title) on \($0.machine) is waiting on you") })
@@ -216,10 +225,11 @@ struct Scenes: Scene {
     let store: Store
 
     var body: some Scene {
-        WindowGroup("Welcome to magi", id: "welcome") {
+        WindowGroup("Welcome to magi", id: Welcome.id, for: String.self) { _ in
             Welcome(store: store)
         }
         .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
     }
 }
 

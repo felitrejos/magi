@@ -8,7 +8,7 @@ enum Chime {
     static let names = ((try? FileManager.default.contentsOfDirectory(atPath: "/System/Library/Sounds")) ?? []).map { ($0 as NSString).deletingPathExtension }.sorted()
 
     @MainActor static func play() {
-        let sound = NSSound(named: UserDefaults.standard.string(forKey: "chime") ?? name)
+        let sound = NSSound(named: UserDefaults.standard.string(forKey: "sound") ?? name)
         sound?.volume = Float(UserDefaults.standard.object(forKey: "volume") as? Double ?? volume)
         sound?.play()
     }
@@ -29,7 +29,6 @@ enum SettingsColor {
     static let separator = Color(light: 0xE6E6E8, dark: 0x1F1F21)
     static let selection = Color(light: 0xE0E0E2, dark: 0x272729)
     static let control = Color(light: 0xE9E9EB, dark: 0x303032)
-    static let pill = Color(light: 0xDCDCDE, dark: 0x444446)
 }
 
 private let rowFont = Font.system(size: 13.5)
@@ -80,16 +79,16 @@ enum Pane: String, CaseIterable, Identifiable {
 }
 
 enum Setting: CaseIterable {
-    case tutorial, login, count, dot, chimes, chime, volume
+    case tutorial, login, count, dot, playsSound, sound, volume
 
     var title: String {
         switch self {
         case .tutorial: "Get Started with magi"
         case .login: "Open at Login"
         case .count: "Show Waiting Count"
-        case .dot: "Colour the Badge"
-        case .chimes: "Play a Sound"
-        case .chime: "Sound"
+        case .dot: "Color the Badge"
+        case .playsSound: "Play a Sound"
+        case .sound: "Sound"
         case .volume: "Volume"
         }
     }
@@ -98,7 +97,7 @@ enum Setting: CaseIterable {
         switch self {
         case .tutorial, .login: .general
         case .count, .dot: .menuBar
-        case .chimes, .chime, .volume: .sound
+        case .playsSound, .sound, .volume: .sound
         }
     }
 }
@@ -310,12 +309,6 @@ struct SettingRow<Trailing: View>: View {
     }
 }
 
-extension SettingRow {
-    init(_ item: Setting, subtitle: String? = nil, @ViewBuilder trailing: () -> Trailing) {
-        self.init(title: item.title, subtitle: subtitle, trailing: trailing)
-    }
-}
-
 struct SettingSwitch: View {
     @Binding var isOn: Bool
 
@@ -377,9 +370,10 @@ struct General: View {
 
 struct LoginItem: View {
     @State private var status = SMAppService.mainApp.status
+    @State private var failure: String?
 
     var body: some View {
-        SettingRow(.login, subtitle: status == .requiresApproval ? "macOS needs your approval in Login Items." : nil) {
+        SettingRow(title: Setting.login.title, subtitle: failure ?? (status == .requiresApproval ? "macOS needs your approval in Login Items." : nil)) {
             if status == .requiresApproval {
                 Button("Open Login Items") {
                     SMAppService.openSystemSettingsLoginItems()
@@ -387,10 +381,18 @@ struct LoginItem: View {
                 .buttonStyle(FillButton())
             } else {
                 SettingSwitch(isOn: Binding(get: { status == .enabled }, set: { on in
-                    try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                    do {
+                        try on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                        failure = nil
+                    } catch {
+                        failure = error.localizedDescription
+                    }
                     status = SMAppService.mainApp.status
                 }))
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            status = SMAppService.mainApp.status
         }
     }
 }
@@ -401,10 +403,10 @@ struct MenuBar: View {
 
     var body: some View {
         SettingCard {
-            SettingRow(.count, subtitle: "The number of sessions waiting on you, next to the icon.") {
+            SettingRow(title: Setting.count.title, subtitle: "The number of sessions waiting on you, next to the icon.") {
                 SettingSwitch(isOn: $showsCount)
             }
-            SettingRow(.dot, subtitle: "A coloured dot instead of a cutout, so it stands out.") {
+            SettingRow(title: Setting.dot.title, subtitle: "A colored dot instead of a cutout, so it stands out.") {
                 SettingSwitch(isOn: $dot)
             }
         }
@@ -412,18 +414,18 @@ struct MenuBar: View {
 }
 
 struct Sound: View {
-    @AppStorage("chimes") private var chimes = false
-    @AppStorage("chime") private var chime = Chime.name
+    @AppStorage("playsSound") private var playsSound = false
+    @AppStorage("sound") private var sound = Chime.name
     @AppStorage("volume") private var volume = Chime.volume
 
     var body: some View {
         SettingCard {
-            SettingRow(.chimes, subtitle: "Once, each time a session starts waiting on you.") {
-                SettingSwitch(isOn: $chimes)
+            SettingRow(title: Setting.playsSound.title, subtitle: "Once, each time a session starts waiting on you.") {
+                SettingSwitch(isOn: $playsSound)
             }
-            SettingRow(.chime) {
+            SettingRow(title: Setting.sound.title) {
                 Menu {
-                    Picker(Setting.chime.title, selection: $chime) {
+                    Picker(Setting.sound.title, selection: $sound) {
                         ForEach(Chime.names, id: \.self) { name in
                             Text(name).tag(name)
                         }
@@ -431,7 +433,7 @@ struct Sound: View {
                     .pickerStyle(.inline)
                 } label: {
                     HStack(spacing: 12) {
-                        Text(chime)
+                        Text(sound)
                             .font(rowFont)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
@@ -443,12 +445,12 @@ struct Sound: View {
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .onChange(of: chime) {
+                .onChange(of: sound) {
                     Chime.play()
                 }
             }
-            .disabled(!chimes)
-            SettingRow(.volume) {
+            .disabled(!playsSound)
+            SettingRow(title: Setting.volume.title) {
                 HStack(spacing: 10) {
                     Slider(value: $volume, in: 0...1) { editing in
                         if !editing {
@@ -463,16 +465,24 @@ struct Sound: View {
                         .frame(minWidth: 40, alignment: .trailing)
                 }
             }
-            .disabled(!chimes)
+            .disabled(!playsSound)
         }
     }
 }
 
 struct Welcome: View {
+    static let id = "welcome"
+
     let store: Store
     @State private var step = 0
     @AppStorage("welcomed") private var welcomed = false
-    @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.dismiss) private var dismiss
+
+    private var status: String {
+        if store.machines.isEmpty { return "Ask Claude to \u{201C}set up magi with my homelab\u{201D}." }
+        if store.answering.isEmpty { return "No machine is answering. Ask Claude to \u{201C}check magi on this Mac\u{201D}." }
+        return "magi is set up here."
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 15) {
@@ -488,10 +498,12 @@ struct Welcome: View {
             }
             SettingCard {
                 if step == 0 {
-                    SettingRow(title: "Machines Answering", subtitle: store.answering.isEmpty ? "Ask Claude to \u{201C}set up magi with my homelab\u{201D}, and this step checks itself." : "magi is set up here.") {
-                        Text("\(store.answering.count) of \(store.machines.count)")
-                            .font(rowFont)
-                            .monospacedDigit()
+                    SettingRow(title: "Machines answering", subtitle: status) {
+                        if !store.machines.isEmpty {
+                            Text("\(store.answering.count) of \(store.machines.count)")
+                                .font(rowFont)
+                                .monospacedDigit()
+                        }
                     }
                 } else {
                     LoginItem()
@@ -504,8 +516,7 @@ struct Welcome: View {
                     if step == 0 {
                         step = 1
                     } else {
-                        welcomed = true
-                        dismissWindow(id: "welcome")
+                        dismiss()
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -514,5 +525,8 @@ struct Welcome: View {
         .padding(20)
         .frame(width: 480, height: 320)
         .containerBackground(SettingsColor.content, for: .window)
+        .onDisappear {
+            welcomed = true
+        }
     }
 }
