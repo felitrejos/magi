@@ -31,7 +31,7 @@ struct ScopeSummary: View {
                 .contentTransition(reduceMotion ? .opacity : .numericText(value: machine.load))
                 .animation(.snappy(duration: 0.35), value: machine.load)
             if samples.count >= 3 {
-                LoadChart(name: name, samples: samples, cores: machine.cores, now: now)
+                LoadChart(name: name, samples: samples, cores: machine.cores, color: machine.health, now: now)
             }
             Capacity(label: "Memory", space: machine.memory, pressure: machine.pressure ?? .normal)
             Capacity(label: "Disk", space: machine.disk, pressure: machine.disk.pressure)
@@ -50,8 +50,11 @@ struct LoadChart: View {
     let name: String
     let samples: [Sample]
     let cores: Int
+    let color: Color
     let now: Date
+    @State private var drawn = false
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var top: Double {
         max(Double(cores), samples.map(\.value).max() ?? 0)
@@ -61,17 +64,17 @@ struct LoadChart: View {
         Chart {
             ForEach(samples, id: \.time) { sample in
                 AreaMark(x: .value("Time", sample.time), y: .value("Load", sample.value))
-                    .foregroundStyle(.tint.opacity(0.18))
+                    .foregroundStyle(color.opacity(0.18))
                     .interpolationMethod(.monotone)
                 LineMark(x: .value("Time", sample.time), y: .value("Load", sample.value))
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(color)
                     .lineStyle(StrokeStyle(lineWidth: contrast == .increased ? 2.5 : 1.5))
                     .interpolationMethod(.monotone)
             }
             RuleMark(y: .value("Cores", cores))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
                 .lineStyle(StrokeStyle(lineWidth: contrast == .increased ? 1.5 : 0.75, dash: [3, 3]))
-                .annotation(position: .top, alignment: .trailing, spacing: 2) {
+                .annotation(position: .bottom, alignment: .trailing, spacing: 2) {
                     Text("\(cores) cores")
                         .font(.footnote)
                         .foregroundStyle(.tertiary)
@@ -81,7 +84,17 @@ struct LoadChart: View {
         .chartYScale(domain: 0...top)
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
+        .chartPlotStyle { plot in
+            plot.mask(alignment: .leading) {
+                Rectangle().scaleEffect(x: drawn || reduceMotion ? 1 : 0, anchor: .leading)
+            }
+        }
         .frame(height: 72)
+        .onAppear {
+            withAnimation(.smooth(duration: 0.5)) {
+                drawn = true
+            }
+        }
         .accessibilityChartDescriptor(LoadDescriptor(name: name, samples: samples, cores: cores, top: top, now: now))
     }
 }
@@ -153,18 +166,19 @@ struct Usage: View {
     let session: Session
     let history: History
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 8) {
             Chart {
                 ForEach(history.waits, id: \.lowerBound) { wait in
                     RectangleMark(xStart: .value("Start", wait.lowerBound), xEnd: .value("End", wait.upperBound))
-                        .foregroundStyle(.tint.opacity(0.2))
+                        .foregroundStyle(Color(nsColor: .quaternaryLabelColor))
                 }
                 ForEach(history.cpu, id: \.time) { sample in
                     LineMark(x: .value("Time", sample.time), y: .value("CPU", sample.value))
                         .lineStyle(StrokeStyle(lineWidth: contrast == .increased ? 2 : 1.25))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                 }
             }
             .chartXScale(domain: history.now.addingTimeInterval(-window)...history.now)
@@ -176,6 +190,8 @@ struct Usage: View {
             .accessibilityLabel("CPU \(session.cpu)%, peak \(Int(history.cpu.map(\.value).max() ?? 0))% in the last 30 minutes")
             VStack(alignment: .trailing, spacing: 0) {
                 Text("\(session.cpu)%")
+                    .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(session.cpu)))
+                    .animation(.snappy(duration: 0.3), value: session.cpu)
                 Text(Int64(session.memoryMB << 20).formatted(.byteCount(style: .memory)))
                     .foregroundStyle(.secondary)
             }

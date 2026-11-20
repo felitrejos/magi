@@ -123,7 +123,7 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     @objc private func clicked(_ button: NSStatusBarButton) {
-        guard let event = NSApp.currentEvent, event.type == .rightMouseUp else { return panel.isVisible ? close() : open() }
+        guard let event = NSApp.currentEvent, event.type == .rightMouseUp else { return host == nil ? open() : close() }
         NSMenu.popUpContextMenu(menu, with: event, for: button)
     }
 
@@ -139,7 +139,11 @@ final class App: NSObject, NSApplicationDelegate {
         glass.contentView = host
         self.host = host
         fit(animate: false)
+        panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
+        NSAnimationContext.animate(.easeOut(duration: 0.18)) {
+            panel.animator().alphaValue = 1
+        }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in self?.close() }
     }
 
@@ -148,35 +152,53 @@ final class App: NSObject, NSApplicationDelegate {
         let height = min(host.fittingSize.height, 560, screen.visibleFrame.height * 0.7)
         let x = min(window.frame.minX, screen.visibleFrame.maxX - host.fittingSize.width)
         let frame = NSRect(x: x, y: window.frame.minY - height, width: host.fittingSize.width, height: height)
-        panel.setFrame(frame, display: true, animate: animate && panel.frame != frame && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-        panel.invalidateShadow()
+        guard animate, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            panel.setFrame(frame, display: true)
+            return panel.invalidateShadow()
+        }
+        NSAnimationContext.animate(.smooth(duration: 0.4)) {
+            panel.animator().setFrame(frame, display: true)
+        } completion: { [panel] in
+            panel.invalidateShadow()
+        }
     }
 
     private func close() {
         if #available(macOS 27, *), let session = item.expandedInterfaceSession {
             session.cancel()
         } else {
-            hide()
+            hide(animated: true)
         }
     }
 
-    private func hide() {
+    private func hide(animated: Bool) {
         monitor.map(NSEvent.removeMonitor)
         monitor = nil
+        host = nil
+        guard animated else { return remove() }
+        NSAnimationContext.animate(.easeIn(duration: 0.12)) {
+            panel.animator().alphaValue = 0
+        } completion: { [weak self] in
+            if self?.host == nil {
+                self?.remove()
+            }
+        }
+    }
+
+    private func remove() {
         panel.orderOut(nil)
         glass.contentView = nil
-        host = nil
     }
 }
 
 @available(macOS 27, *)
 extension App: @MainActor NSStatusItemExpandedInterfaceDelegate {
     func statusItem(_ statusItem: NSStatusItem, didBegin session: NSStatusItemExpandedInterfaceSession) {
-        panel.isVisible ? session.cancel() : open()
+        host == nil ? open() : session.cancel()
     }
 
     func statusItemDidEndExpandedInterfaceSession(_ statusItem: NSStatusItem, animated: Bool) {
-        hide()
+        hide(animated: animated)
     }
 }
 

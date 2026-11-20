@@ -12,6 +12,7 @@ struct Snapshots {
         let full = try await store(machines(sessions: true))
         let quiet = try await store(machines(sessions: false))
         let bare = try await store([:])
+        let strained = try await store(machines(sessions: true, critical: true))
         for scheme in [ColorScheme.light, .dark] {
             let suffix = scheme == .light ? "light" : "dark"
             try await shot("main-\(suffix)", full, scheme)
@@ -21,8 +22,9 @@ struct Snapshots {
             try await shot("scope-\(suffix)", full, scheme, act: { right($0, times: 2) })
             try await shot("empty-\(suffix)", quiet, scheme)
             try await shot("not-set-up-\(suffix)", bare, scheme)
+            try await shot("health-\(suffix)", strained, scheme)
+            try await shot("reduce-motion-\(suffix)", full, scheme, environment: { AnyView($0.environment(\._accessibilityReduceMotion, true)) })
         }
-        try await shot("reduce-motion", full, .light, environment: { AnyView($0.environment(\._accessibilityReduceMotion, true)) })
         try await shot("reduce-transparency", full, .light, opaque: true, environment: { AnyView($0.environment(\._accessibilityReduceTransparency, true)) })
         try await shot("increase-contrast", full, .light, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) })
         try await shot("increase-contrast-dark", full, .dark, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) })
@@ -154,7 +156,7 @@ struct Snapshots {
         return store
     }
 
-    private func machines(sessions: Bool) -> [String: [String: Any]] {
+    private func machines(sessions: Bool, critical: Bool = false) -> [String: [String: Any]] {
         func session(_ title: String, _ folder: String, _ state: String, _ minutes: Double, cpu: Int, memory: Int, waitingOn: String? = nil) -> [String: Any] {
             var session: [String: Any] = ["id": UUID().uuidString, "title": title, "folder": folder, "state": state, "since": stamp(now.addingTimeInterval(-minutes * 60)), "cpu": cpu, "memoryMB": memory]
             session["waitingOn"] = waitingOn
@@ -173,7 +175,7 @@ struct Snapshots {
             ],
             "homelab": [
                 "answering": true, "ssh": "homelab", "cores": 12, "load": 3.1, "pressure": "normal", "relayed": true,
-                "memory": ["usedMB": 6450, "totalMB": 15384], "disk": ["usedMB": 1712000, "totalMB": 1875626], "swap": ["usedMB": 0, "totalMB": 2048],
+                "memory": ["usedMB": 6450, "totalMB": 15384], "disk": ["usedMB": 1212000, "totalMB": 1875626], "swap": ["usedMB": 0, "totalMB": 2048],
                 "bootedAt": stamp(now.addingTimeInterval(-6 * 60)),
                 "sessions": sessions ? [
                     session("Nightly backup audit with a long title that runs out of room", "/home/sam/ops/backups/nightly", "waiting", 11, cpu: 0, memory: 310, waitingOn: "Which retention policy should I keep for the nightly snapshots, 30 days or 90 days?"),
@@ -182,7 +184,7 @@ struct Snapshots {
                 ] : [],
             ],
             "box": [
-                "answering": false, "ssh": "box", "cores": 8, "load": 0.1,
+                "answering": critical, "ssh": "box", "cores": 8, "load": critical ? 5.2 : 0.1, "pressure": critical ? "critical" : "normal",
                 "memory": ["usedMB": 1698, "totalMB": 15384], "disk": ["usedMB": 24380, "totalMB": 975626],
                 "sessions": sessions ? [session("scratch", "/home/sam/scratch", "idle", 130, cpu: 0, memory: 120)] : [],
             ],

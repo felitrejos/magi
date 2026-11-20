@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 
 func fixture(_ path: String) throws -> Data {
@@ -59,6 +60,17 @@ struct LiveTests {
         #expect(Space(usedMB: 899, totalMB: 1000).pressure == .normal)
         #expect(Space(usedMB: 900, totalMB: 1000).pressure == .warning)
         #expect([Pressure.normal, .warning, .critical].map(\.tint) == [.secondary, .orange, .red])
+    }
+
+    @Test func coloursAMachineGreenUnderSeventyPercentLoadOrangeFromThereOrUnderPressureRedWhenCritical() {
+        func machine(load: Double, pressure: Pressure? = nil, disk: Int = 100) -> Machine {
+            Machine(answering: true, heard: nil, ssh: nil, cores: 10, load: load, memory: Space(usedMB: 1, totalMB: 2), disk: Space(usedMB: disk, totalMB: 1000), sessions: [], pressure: pressure, swap: nil, bootedAt: nil, battery: nil, relayed: nil)
+        }
+        #expect(machine(load: 6.9).health == .green)
+        #expect(machine(load: 7).health == .orange)
+        #expect(machine(load: 1, pressure: .warning).health == .orange)
+        #expect(machine(load: 1, disk: 900).health == .orange)
+        #expect(machine(load: 12, pressure: .critical).health == .red)
     }
 
     @Test func putsWaitingFirstLongestWaitingFirstThenBusyThenIdleAndKeepsAFrozenOrder() {

@@ -9,6 +9,7 @@ struct PanelView: View {
     @State private var highlight: String?
     @State private var hovering = false
     @State private var order: [String]?
+    @State private var shown = false
     @FocusState private var focused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -52,12 +53,20 @@ struct PanelView: View {
             }
         }
         .frame(width: 360)
+        .scaleEffect(shown || reduceMotion ? 1 : 0.96, anchor: .top)
+        .blur(radius: shown || reduceMotion ? 0 : 6)
+        .opacity(shown ? 1 : 0)
         .containerShape(.rect(cornerRadius: PanelView.radius))
-        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .smooth(duration: 0.35), value: scope)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.4), value: scope)
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.3, bounce: 0.15)) {
+                shown = true
+            }
+        }
         .onMoveCommand(perform: move)
         .onExitCommand { scope == nil ? close() : (scope = nil) }
         .task(id: hovering || highlight != nil) {
@@ -80,7 +89,7 @@ struct PanelView: View {
             }
             Spacer(minLength: 0)
             if names.count == 1, let name = names.first, let machine = store.machines[name] {
-                tile(name, machine, now: now)
+                tile(name, machine, order: 0, now: now)
                     .frame(width: 150)
             }
         }
@@ -101,6 +110,7 @@ struct PanelView: View {
                     ForEach(rows) { row in
                         SessionRow(row: row, showsMachine: scope == nil && names.count > 1, highlighted: highlight == row.id, history: scope == nil ? nil : History(cpu: store.cpu[row.id] ?? [], states: store.states[row.id] ?? [], now: now), now: now)
                             .id(row.id)
+                            .transition(.blurReplace)
                             .onHover { inside in
                                 if inside {
                                     highlight = row.id
@@ -133,23 +143,23 @@ struct PanelView: View {
 
     private func strip(now: Date) -> some View {
         HStack(spacing: 6) {
-            ForEach(names, id: \.self) { name in
+            ForEach(Array(names.enumerated()), id: \.element) { order, name in
                 if let machine = store.machines[name] {
-                    tile(name, machine, now: now)
+                    tile(name, machine, order: order, now: now)
                 }
             }
         }
         .padding(8)
     }
 
-    private func tile(_ name: String, _ machine: Machine, now: Date) -> some View {
+    private func tile(_ name: String, _ machine: Machine, order: Int, now: Date) -> some View {
         Button {
             scope = scope == name ? nil : name
             highlight = nil
         } label: {
-            Tile(name: name, machine: machine, answers: store.answering.contains(name), selected: scope == name, now: now)
+            Tile(name: name, machine: machine, answers: store.answering.contains(name), selected: scope == name, delay: 0.08 + 0.03 * Double(order), now: now)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(Press())
     }
 
     private func move(_ direction: MoveCommandDirection) {
@@ -175,6 +185,7 @@ struct SessionRow: View {
     let highlighted: Bool
     let history: History?
     let now: Date
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var waiting: Bool {
         row.session.state == "waiting"
@@ -230,6 +241,8 @@ struct SessionRow: View {
                     .font(.subheadline)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                    .animation(.snappy(duration: 0.3), value: elapsed)
             }
         }
         .padding(.horizontal, 8)
@@ -254,26 +267,48 @@ struct SessionRow: View {
 
 struct StateSymbol: View {
     let state: String
+    @State private var arrivals = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    private var symbol: String {
+        switch state {
+        case "waiting": "hand.raised.fill"
+        case "busy": "progress.indicator"
+        default: "circle"
+        }
+    }
+
+    private var color: Color? {
+        switch state {
+        case "waiting": .orange
+        case "busy": .blue
+        default: nil
+        }
+    }
 
     var body: some View {
-        Group {
-            switch state {
-            case "waiting":
-                Image(systemName: "hand.raised.fill").foregroundStyle(.tint)
-            case "busy":
-                TimelineView(.animation(minimumInterval: 1.0 / 12, paused: reduceMotion)) { context in
-                    Image(systemName: "progress.indicator", variableValue: 0.7)
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees((context.date.timeIntervalSinceReferenceDate * 12).rounded(.down).truncatingRemainder(dividingBy: 8) * 45))
+        Image(systemName: symbol)
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(color.map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
+            .font(.system(size: 11, weight: .semibold))
+            .contentTransition(reduceMotion ? .opacity : .symbolEffect(.replace.magic(fallback: .downUp.byLayer)))
+            .symbolEffect(.variableColor.iterative.dimInactiveLayers.nonReversing, options: .repeat(.continuous), isActive: state == "busy" && !reduceMotion)
+            .symbolEffect(.bounce.up.byLayer, options: .nonRepeating, value: arrivals)
+            .frame(width: 22, height: 22)
+            .background((color ?? .clear).opacity(contrast == .increased ? 0.32 : 0.18), in: .circle)
+            .overlay {
+                if contrast == .increased, let color {
+                    Circle().strokeBorder(color)
                 }
-            default:
-                Image(systemName: "circle").foregroundStyle(.tertiary)
             }
-        }
-        .font(.system(size: 13, weight: .medium))
-        .frame(width: 16, height: 16)
-        .accessibilityHidden(true)
+            .animation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.3), value: state)
+            .onChange(of: state) {
+                if state == "waiting", !reduceMotion {
+                    arrivals += 1
+                }
+            }
+            .accessibilityHidden(true)
     }
 }
 
@@ -305,6 +340,7 @@ struct Tile: View {
     let machine: Machine
     let answers: Bool
     let selected: Bool
+    let delay: Double
     let now: Date
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityShowBorders) private var showBorders
@@ -338,7 +374,7 @@ struct Tile: View {
                         .foregroundStyle(.secondary)
                         .accessibilityLabel("On battery, \(battery.percent)%")
                 }
-                Ring(fraction: machine.load / Double(max(machine.cores, 1)), dashed: !answers)
+                Ring(fraction: machine.load / Double(max(machine.cores, 1)), color: machine.health, dashed: !answers, delay: delay)
                     .accessibilityLabel(answers ? "Load \(machine.load.formatted()) on \(machine.cores) cores" : "Not answering")
             }
         }
@@ -368,8 +404,12 @@ struct Tile: View {
 
 struct Ring: View {
     let fraction: Double
+    let color: Color
     let dashed: Bool
+    let delay: Double
+    @State private var drawn = false
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let width: CGFloat = contrast == .increased ? 3 : 2
@@ -378,12 +418,28 @@ struct Ring: View {
                 .stroke(dashed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.quaternary), style: StrokeStyle(lineWidth: width, dash: dashed ? [2.4, 2.3] : []))
             if !dashed {
                 Circle()
-                    .trim(from: 0, to: min(fraction, 1))
-                    .stroke(fraction > 1 ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary), style: StrokeStyle(lineWidth: width, lineCap: .round))
+                    .trim(from: 0, to: drawn || reduceMotion ? min(fraction, 1) : 0)
+                    .stroke(color, style: StrokeStyle(lineWidth: width, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
         }
         .frame(width: 12, height: 12)
+        .onAppear {
+            withAnimation(.spring(duration: 0.6, bounce: 0.15).delay(delay)) {
+                drawn = true
+            }
+        }
+    }
+}
+
+struct Press: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .opacity(configuration.isPressed && reduceMotion ? 0.7 : 1)
+            .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.2, bounce: 0.3), value: configuration.isPressed)
     }
 }
 
@@ -392,6 +448,12 @@ func span(_ seconds: TimeInterval) -> String {
 }
 
 extension Machine {
+    var health: Color {
+        if pressure == .critical { return .red }
+        if load >= 0.7 * Double(cores) || pressure == .warning || disk.pressure == .warning { return .orange }
+        return .green
+    }
+
     var device: String {
         if battery != nil { return "macbook" }
         return ssh?.isEmpty ?? true ? "desktopcomputer" : "server.rack"
