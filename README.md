@@ -42,7 +42,7 @@ you run it again to add a machine. `magi doctor` checks both ends.
 If your laptop takes no incoming SSH, run `magi watch install` on it as
 well, and again after you add a machine. It keeps `magi watch` running
 from login, so sessions on your other machines can be handed back to the
-laptop.
+laptop, and it keeps a live view of each machine for the menu bar app.
 
 ## Hand off and back
 

@@ -97,7 +97,19 @@ case $command in
     ;;
   opened)
     for lock in "$codex_home"/thread-writer-locks/*.lock; do
-      if [ -n "$(holders "$lock")" ]; then id=${lock##*/}; echo "${id%.lock}"; fi
+      pids=$(holders "$lock" | tr '\n' ,)
+      if [ -n "$pids" ]; then
+        id=${lock##*/}
+        id=${id%.lock}
+        printf '%s %s %s\n' "$id" "${pids%,}" "$(find "$sessions" -name "rollout-*-$id.jsonl" | head -n 1)"
+      fi
+    done
+    ;;
+  states)
+    while read -r id pids rollout; do
+      state=idle
+      if busy "$rollout"; then state=busy; fi
+      echo "codex $id $state $pids"
     done
     ;;
   app)

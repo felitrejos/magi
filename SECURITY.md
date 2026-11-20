@@ -127,11 +127,12 @@ If the block can't be built, magi says so and the move goes on.
 
 ## The watcher
 
-`magi watch` is for a laptop that takes no incoming SSH.
+`magi watch` is for a laptop that takes no incoming SSH. It also keeps a
+live view of each machine, described under "What the watcher reads".
 
 - It keeps one outgoing SSH connection to each machine in your config. On
   each it runs a small loop that refreshes `~/.magi/watchers/<laptop name>`
-  every second and prints the ids of hand-back requests addressed to the
+  every 2 seconds and prints the ids of hand-back requests addressed to the
   laptop.
 - A request is the file `~/.magi/wanted/<session-id>.json` on the far
   machine. `magi arm` writes it there when you ask a session to go back to
@@ -153,6 +154,59 @@ If the block can't be built, magi says so and the move goes on.
   the output of a project's `setup` command and the block of what comes
   back, with its branch and file names. magi writes no conversation text
   to it.
+
+### What the watcher reads
+
+The same loop also reports what runs on each machine. `magi watch` runs it
+on this machine too, without SSH, and there it writes no watcher file and
+looks for no requests. The loop only reads. Every 2 seconds it does this.
+
+- It reads the first line of each `~/.claude/sessions/<pid>.json` whose
+  process is alive. That is Claude Code's own record of a session, with
+  its id, folder, name and state. The loop sends those lines whole, and
+  only when one of them changed. magi keeps the fields listed below.
+- When they changed and a session is waiting, it runs
+  `claude agents --json` once to learn what the session waits on, and
+  sends the output. It doesn't run that command otherwise.
+- Where Codex is configured, it lists the lock files in
+  `~/.codex/thread-writer-locks`, or under `CODEX_HOME`, and checks that
+  the processes it found holding them are alive. When that list changes,
+  it finds which processes hold each lock, with `lsof` on macOS or
+  `/proc` on Linux, and finds each thread's rollout file by name.
+- Every 6 seconds it reads the sizes of those rollout files with `wc -c`.
+  When a size changed, it reads the last turn event of each rollout to
+  tell busy from idle. It sends each thread's id, state and process ids.
+- When the set of open Codex threads changes, magi asks Codex on that
+  machine for each thread's name and folder, through `codex app-server`,
+  as the `sessions` tool does.
+
+About every 30 seconds the loop sends one line of numbers.
+
+- Cores, load average and memory, from `sysctl` on macOS or `/proc` on
+  Linux.
+- The used and total size of the disk your home folder is on, from
+  `df -Pk "$HOME"`.
+- For each session, CPU time and memory summed over its process and the
+  processes under it. This comes from one
+  `ps -A -o pid= -o ppid= -o time= -o rss=`. That lists every process on
+  the machine, by number, parent, CPU time and memory only. It reads no
+  command lines.
+
+magi writes what it heard to `~/.magi/live/<machine>.json` on the machine
+that runs `magi watch`. Only you can read the file, and each write
+replaces it whole. It holds these.
+
+- Whether the machine answers and when magi last heard from it. magi sets
+  "not answering" when the connection ends. If `magi watch` itself is
+  stopped, the file keeps its last content, so a reader must treat a
+  `heard` time older than about 40 seconds as the machine not answering.
+- Cores, load, and used and total memory and disk in MB.
+- For each session, its id, title, folder, whether it is Codex, its state
+  (busy, idle or waiting, and on what), since when, CPU as a percentage of
+  one core and memory in MB. The title is the session's name, or the name
+  of its folder when it has none.
+
+It holds no conversation text and no file contents.
 
 ## Sending work
 
@@ -237,6 +291,7 @@ Settings are in `~/.config/magi/config.toml`. State is in `~/.magi`.
 | `wanted/` | Hand-back requests waiting for a watcher |
 | `watchers/` | One file per laptop watching this machine |
 | `watch.lock` | Keeps a second `magi watch` from starting |
+| `live/` | One file per machine, written by `magi watch`, with whether it answers, its load, memory and disk, and its sessions with their state, CPU and memory |
 | `moved/` | Where each session that left went |
 | `handoffs.jsonl` | Time, session id, machines and folders of each handoff |
 | `moves/` | One journal per move in progress or cut off, kept until the move is settled |

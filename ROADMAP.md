@@ -102,17 +102,40 @@ workspace.
   doesn't move a session that is busy or waiting on you. `wait` is a
   command and not a tool, like `magi tasks wait`, because a tool call that
   blocks for minutes runs into MCP time limits.
-- **`magi watch` streams changes.** Today the watcher only takes sessions
-  back. Over the same SSH connection per machine it will also stream what
-  changes there. That is machine stats, sessions and their state, and the
-  CPU and memory each session uses, counting what it started. It reacts to
-  file changes rather than polling, and reads state the way `sessions`
-  does. Idle cost is measured on the
-  Mac and on Linux against a budget of 0.5% CPU and 30 MB.
-- **The menu bar app.** SwiftUI, Mac only, open source. It shows each
-  machine's CPU, memory, load, disk and whether it answers. For each session
-  it shows the project, the state, how long it's been in it, and its CPU and
-  memory. It also shows where sessions moved and background tasks. A badge
+- **`magi watch` streams changes.** What exists now is a watcher that,
+  over the one SSH connection per machine it already keeps for hand backs,
+  also streams what changes there. It runs the same loop for this machine.
+  Every 2 seconds the loop reads Claude Code's session registry files and
+  Codex's open-thread lock files, and it sends a snapshot only when
+  something changed. It runs `claude agents --json` only when a session is
+  waiting, to learn on what. About every 30 seconds it sends the machine's
+  cores, load, memory and home disk, and each session's CPU and memory
+  summed over its process tree, from one `ps`. magi writes
+  `~/.magi/live/<machine>.json` with whether the machine answers, when it
+  was last heard, those stats and each session's id, title, folder, state,
+  since when, CPU and memory. Hand backs and state changes show within
+  about 2 seconds, and Codex busy or idle within about 6. Idle cost was
+  measured on a Mac over 10 minutes against a budget of 0.5% of one core
+  and 30 MB. The loop on the watched machine used 0.30% to 0.45% and
+  2.8 MB at its peak. magi itself used 0.013% and 13.5 MB. Still open are
+  these.
+  - Idle cost isn't measured on Linux yet.
+  - CPU counts only the processes running at each sample. A child that
+    started and exited between two samples isn't counted.
+  - Whether the watcher notices an old Codex thread being reopened is
+    unverified.
+  - A reader of the live file must treat a `heard` time older than about
+    40 seconds as the machine not answering. The file keeps its last
+    content when `magi watch` itself stops. The menu bar app has to apply
+    that rule.
+- **The menu bar app.** SwiftUI, Mac only, open source. It reads the files
+  `magi watch` writes in `~/.magi/live`. It shows each machine's load
+  against its cores, memory, disk and whether it answers, which includes a
+  machine not heard from for about 40 seconds. For each session it shows
+  the project, the state, how long it's been in it, and its CPU and
+  memory. For a Codex session that time counts from when the watcher first
+  saw the state. It also shows where sessions moved and background tasks,
+  which the live files don't hold. A badge
   shows when a Claude Code session is waiting on you. A Codex approval
   wait shows only once `sessions` can see it. The only click opens a session
   where it lives, in Desktop or its tmux window. It doesn't answer prompts

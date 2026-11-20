@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -130,33 +132,88 @@ func watch() error {
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	var wg sync.WaitGroup
+	wg.Go(func() { watchHost(newWatcher(local.Name(), local, logger), "") })
 	for _, name := range cfg.Order {
-		wg.Go(func() { watchHost(name, cfg.Hosts[name], local.Name(), logger) })
+		remote, err := newRemote(context.Background(), cfg.Hosts[name])
+		if err != nil {
+			return err
+		}
+		wg.Go(func() { watchHost(newWatcher(name, remote, logger), local.Name()) })
 	}
 	wg.Wait()
 	return nil
 }
 
-func watchHost(name string, host Host, me string, logger *log.Logger) {
+func watchHost(w *watcher, me string) {
 	wait := time.Second
 	for {
 		started := time.Now()
-		err := followRequests(context.Background(), name, host, me, logger)
+		err := w.follow(me)
 		if time.Since(started) > watchBackoff {
 			wait = time.Second
 		}
-		logger.Printf("%s: watching stopped (%v); trying again in %s", name, err, wait)
+		w.logger.Printf("%s: watching stopped (%v); trying again in %s", w.name, err, wait)
 		time.Sleep(wait)
 		wait = min(wait*2, watchBackoff)
 	}
 }
 
-func followRequests(ctx context.Context, name string, host Host, me string, logger *log.Logger) error {
-	remote, err := newRemote(ctx, host)
-	if err != nil {
-		return err
+type watcher struct {
+	name     string
+	m        sh.Machine
+	logger   *log.Logger
+	live     liveMachine
+	block    []string
+	codexIDs string
+	codex    map[string]codexThread
+	usage    map[int]use
+}
+
+type liveMachine struct {
+	Answering bool        `json:"answering"`
+	Heard     time.Time   `json:"heard,omitzero"`
+	Cores     int         `json:"cores"`
+	Load      float64     `json:"load"`
+	Memory    space       `json:"memory"`
+	Disk      space       `json:"disk"`
+	Sessions  []liveEntry `json:"sessions"`
+}
+
+type space struct {
+	UsedMB  int `json:"usedMB"`
+	TotalMB int `json:"totalMB"`
+}
+
+type liveEntry struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Folder    string    `json:"folder"`
+	Codex     bool      `json:"codex,omitempty"`
+	State     string    `json:"state"`
+	WaitingOn string    `json:"waitingOn,omitempty"`
+	Since     time.Time `json:"since,omitzero"`
+	CPU       int       `json:"cpu"`
+	MemoryMB  int       `json:"memoryMB"`
+	pids      []int
+}
+
+type use struct {
+	seconds       float64
+	at            time.Time
+	cpu, memoryMB int
+}
+
+func newWatcher(name string, m sh.Machine, logger *log.Logger) *watcher {
+	return &watcher{name: name, m: m, logger: logger, live: liveMachine{Sessions: []liveEntry{}}}
+}
+
+func (w *watcher) follow(me string) error {
+	w.block = nil
+	codex := ""
+	if w.m.Codex() != "" {
+		codex = codexScript
 	}
-	cmd := remote.Command(watchScript, me)
+	cmd := w.m.Command(watchScript, me, w.m.Claude(), codex)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -166,18 +223,149 @@ func followRequests(ctx context.Context, name string, host Host, me string, logg
 	}
 	tried := map[string]time.Time{}
 	lines := bufio.NewScanner(stdout)
+	lines.Buffer(nil, math.MaxInt)
 	for lines.Scan() {
-		id := lines.Text()
-		if !store.SessionIDPattern.MatchString(id) || time.Since(tried[id]) < watchRetry {
+		line := lines.Text()
+		if !store.SessionIDPattern.MatchString(line) {
+			w.hear(line)
 			continue
 		}
-		tried[id] = time.Now()
-		go take(name, remote, id, logger)
+		if time.Since(tried[line]) < watchRetry {
+			continue
+		}
+		tried[line] = time.Now()
+		go take(w.name, w.m, line, w.logger)
 	}
-	return cmd.Wait()
+	err = cmd.Wait()
+	w.live.Answering = false
+	return errors.Join(err, w.save())
 }
 
-func take(name string, remote *sh.Remote, id string, logger *log.Logger) {
+func (w *watcher) hear(line string) {
+	kind, rest, _ := strings.Cut(line, " ")
+	switch kind {
+	case "claude", "waiting", "codex":
+		w.block = append(w.block, line)
+		return
+	case "sessions":
+		w.sessions()
+	case "stats":
+		if err := w.stats(rest); err != nil {
+			w.logger.Printf("%s: unreadable stats %q: %v", w.name, rest, err)
+			return
+		}
+	}
+	w.live.Answering, w.live.Heard = true, time.Now()
+	if err := w.save(); err != nil {
+		w.logger.Printf("%s: writing what it runs failed: %v", w.name, err)
+	}
+}
+
+func (w *watcher) sessions() {
+	var sessions []liveSession
+	var codex []liveEntry
+	var ids []string
+	waiting := map[int]string{}
+	for _, line := range w.block {
+		kind, rest, _ := strings.Cut(line, " ")
+		switch kind {
+		case "claude":
+			var s liveSession
+			if json.Unmarshal([]byte(rest), &s) == nil {
+				sessions = append(sessions, s)
+			}
+		case "waiting":
+			var listed []liveSession
+			json.Unmarshal([]byte(rest), &listed)
+			for _, s := range listed {
+				waiting[s.PID] = s.WaitingFor
+			}
+		case "codex":
+			id, rest, _ := strings.Cut(rest, " ")
+			state, list, _ := strings.Cut(rest, " ")
+			e := liveEntry{ID: id, Codex: true, State: state}
+			for _, pid := range strings.Split(list, ",") {
+				n, _ := strconv.Atoi(pid)
+				e.pids = append(e.pids, n)
+			}
+			codex = append(codex, e)
+			ids = append(ids, id)
+		}
+	}
+	w.block = nil
+	if seen := strings.Join(ids, " "); seen != w.codexIDs {
+		ctx, cancel := context.WithTimeout(w.m.Context(), reachWait)
+		threads, err := openCodexSessions(w.m.With(ctx))
+		cancel()
+		if err != nil {
+			w.logger.Printf("%s: reading its Codex sessions failed: %v", w.name, err)
+		} else {
+			w.codexIDs, w.codex = seen, map[string]codexThread{}
+			for _, t := range threads {
+				w.codex[t.ID] = t
+			}
+		}
+	}
+	entries := []liveEntry{}
+	for _, s := range sessions {
+		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], pids: []int{s.PID}}
+		if s.StatusAt > 0 {
+			e.Since = time.UnixMilli(s.StatusAt)
+		}
+		entries = append(entries, e)
+	}
+	for _, e := range codex {
+		t := w.codex[e.ID]
+		e.Title, e.Folder, e.Since = sessionTitle(codexSession(t)), t.Cwd, time.Now()
+		for _, old := range w.live.Sessions {
+			if old.ID == e.ID && old.State == e.State {
+				e.Since = old.Since
+			}
+		}
+		entries = append(entries, e)
+	}
+	w.live.Sessions = entries
+}
+
+func (w *watcher) stats(line string) error {
+	l := &w.live
+	if _, err := fmt.Sscan(line, &l.Cores, &l.Load, &l.Memory.UsedMB, &l.Memory.TotalMB, &l.Disk.UsedMB, &l.Disk.TotalMB); err != nil {
+		return err
+	}
+	now := time.Now()
+	usage := map[int]use{}
+	for _, field := range strings.Fields(line)[6:] {
+		var pid int
+		u := use{at: now}
+		if _, err := fmt.Sscanf(field, "%d:%g:%d", &pid, &u.seconds, &u.memoryMB); err != nil {
+			return err
+		}
+		if last, ok := w.usage[pid]; ok {
+			u.cpu = int(math.Round(max(0, (u.seconds-last.seconds)/now.Sub(last.at).Seconds()*100)))
+		}
+		usage[pid] = u
+	}
+	w.usage = usage
+	return nil
+}
+
+func (w *watcher) save() error {
+	for i := range w.live.Sessions {
+		s := &w.live.Sessions[i]
+		s.CPU, s.MemoryMB = 0, 0
+		for _, pid := range s.pids {
+			s.CPU += w.usage[pid].cpu
+			s.MemoryMB += w.usage[pid].memoryMB
+		}
+	}
+	path, err := store.Dir(filepath.Join("live", w.name+".json"))
+	if err != nil {
+		return err
+	}
+	return store.WriteJSON(path, w.live)
+}
+
+func take(name string, remote sh.Machine, id string, logger *log.Logger) {
 	data, err := sh.Run(remote, `cat "$HOME/.magi/wanted/$1.json"`, id)
 	if err != nil {
 		logger.Printf("%s: reading the request for session %s failed: %v", name, store.ShortID(id), err)

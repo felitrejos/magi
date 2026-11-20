@@ -124,7 +124,11 @@ func openCodexSessions(m sh.Machine) ([]codexThread, error) {
 	if err != nil {
 		return nil, err
 	}
-	ids := strings.Fields(string(out))
+	var ids []string
+	for line := range strings.Lines(string(out)) {
+		id, _, _ := strings.Cut(line, " ")
+		ids = append(ids, id)
+	}
 	if len(ids) == 0 {
 		return nil, nil
 	}
