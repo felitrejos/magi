@@ -21,17 +21,14 @@ struct PanelView: View {
         Row.ordered(store.rows.filter { scope == nil || $0.machine == scope }, keeping: order)
     }
 
-    private var waiting: Int {
-        store.rows.count { $0.session.state == "waiting" }
-    }
-
-    private var status: (count: Int?, words: String) {
-        if let scope { return (nil, scope) }
-        if store.machines.isEmpty { return (nil, "magi isn't set up here") }
-        if waiting > 0 { return (waiting, "waiting on you") }
-        if store.answering.isEmpty { return (nil, "No machine is answering") }
+    private var status: String {
+        if let scope { return scope }
+        if store.machines.isEmpty { return "magi isn't set up here" }
+        let waiting = store.rows.count { $0.session.state == "waiting" }
+        if waiting > 0 { return "\(waiting) waiting on you" }
+        if store.answering.isEmpty { return "No machine is answering" }
         let busy = store.rows.count { $0.session.state == "busy" }
-        return busy > 0 ? (busy, "working") : (nil, "All quiet")
+        return busy > 0 ? "\(busy) working" : "All quiet"
     }
 
     var body: some View {
@@ -76,18 +73,10 @@ struct PanelView: View {
     private func header(now: Date) -> some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    if let count = status.count {
-                        Text("\(count) ")
-                            .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(count)))
-                    }
-                    Text(status.words)
-                        .contentTransition(.opacity)
-                }
-                .font(.title3.weight(.semibold))
-                .animation(.snappy(duration: 0.35), value: status.count)
-                .animation(.snappy(duration: 0.35), value: status.words)
-                .accessibilityElement(children: .combine)
+                Text(status)
+                    .font(.title3.weight(.semibold))
+                    .contentTransition(.opacity)
+                    .animation(.snappy(duration: 0.35), value: status)
                 if let scope, let machine = store.machines[scope] {
                     ScopeCaption(machine: machine, answers: store.answering.contains(scope), now: now)
                 }
