@@ -397,9 +397,6 @@ struct About: View {
             Setting(title: "magi", detail: "Updates come through magi.") {
                 Text(version)
             }
-            Text("Claude is a trademark of Anthropic. magi is not affiliated with Anthropic.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
         }
         Section("Feedback") {
             HStack(spacing: 12) {

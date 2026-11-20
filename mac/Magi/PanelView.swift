@@ -49,9 +49,6 @@ struct PanelView: View {
                 if names.count > 1 {
                     strip(now: context.date)
                 }
-                if !names.isEmpty {
-                    footer
-                }
             }
         }
         .frame(width: 360)
@@ -153,20 +150,6 @@ struct PanelView: View {
             Tile(name: name, machine: machine, answers: store.answering.contains(name), selected: scope == name, now: now)
         }
         .buttonStyle(.plain)
-    }
-
-    private var footer: some View {
-        HStack(spacing: 12) {
-            Text("\u{23CE} Open")
-            Text("\u{2318}\u{23CE} Terminal")
-            Text("\u{2318}, Settings")
-        }
-        .font(.footnote)
-        .foregroundStyle(.tertiary)
-        .frame(maxWidth: .infinity, minHeight: 20)
-        .padding(.bottom, 4)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Return opens a session, Command-Return opens it in a terminal, Command-comma opens Settings")
     }
 
     private func move(_ direction: MoveCommandDirection) {
@@ -279,7 +262,11 @@ struct StateSymbol: View {
             case "waiting":
                 Image(systemName: "hand.raised.fill").foregroundStyle(.tint)
             case "busy":
-                Image(systemName: "progress.indicator").foregroundStyle(.secondary).symbolEffect(.variableColor.iterative, isActive: !reduceMotion)
+                TimelineView(.animation(minimumInterval: 1.0 / 12, paused: reduceMotion)) { context in
+                    Image(systemName: "progress.indicator", variableValue: 0.7)
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees((context.date.timeIntervalSinceReferenceDate * 12).rounded(.down).truncatingRemainder(dividingBy: 8) * 45))
+                }
             default:
                 Image(systemName: "circle").foregroundStyle(.tertiary)
             }
