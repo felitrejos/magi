@@ -65,11 +65,12 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
 	busySince := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
 	session := func(status string, at time.Time) {
-		f.write(filepath.Join(server, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"%s","cwd":"/srv/api","name":"api","status":"%s","statusUpdatedAt":%d}`, pid, id, status, at.UnixMilli()))
+		f.write(filepath.Join(server, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"%s","cwd":"/srv/api","name":"api","status":"%s","statusUpdatedAt":%d,"bridgeSessionId":"session_42"}`, pid, id, status, at.UnixMilli()))
 	}
 	session("busy", busySince)
+	f.write(filepath.Join(server, ".magi", "tabs"), id, "$3\n@7\nmagi\n")
 	r := f.remoteHost()
-	w := newWatcher("server", r, log.New(io.Discard, "", 0), "")
+	w := newWatcher("server", "me@server", r, log.New(io.Discard, "", 0), "")
 	cmd := r.Command(watchScript, "", "claude")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -117,6 +118,9 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	if s.ID != id || s.State != "busy" || !s.Since.Equal(busySince) || s.Title != "api" || s.Folder != "/srv/api" {
 		t.Errorf("live session = %+v, want %s busy since %s", s, id, busySince)
 	}
+	if s.RemoteControl != "https://claude.ai/code/session_42" || s.Tmux != "@7" || live.SSH != "me@server" {
+		t.Errorf("live session opens through %q and tmux window %q, machine over ssh %q", s.RemoteControl, s.Tmux, live.SSH)
+	}
 	if s.MemoryMB != 150 || s.CPU < 90 || s.CPU > 110 {
 		t.Errorf("session uses %d%% CPU and %d MB, want about 100%% and 150 MB", s.CPU, s.MemoryMB)
 	}
@@ -131,11 +135,11 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	}
 	var sessionLines []string
 	for _, line := range heard {
-		if !strings.HasPrefix(line, "stats") {
+		if strings.HasPrefix(line, "claude") {
 			sessionLines = append(sessionLines, line)
 		}
 	}
-	if len(sessionLines) != 4 || !strings.Contains(sessionLines[0], `"busy"`) || !strings.Contains(sessionLines[2], `"idle"`) {
+	if len(sessionLines) != 2 || !strings.Contains(sessionLines[0], `"busy"`) || !strings.Contains(sessionLines[1], `"idle"`) {
 		t.Errorf("session lines = %q, want one snapshot when busy and one when idle", sessionLines)
 	}
 }
@@ -178,7 +182,7 @@ func TestWatchMarksAMachineThatStopsAnswering(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopped := make(chan error)
-	go func() { stopped <- newWatcher("server", r, log.New(io.Discard, "", 0), "").follow("") }()
+	go func() { stopped <- newWatcher("server", "", r, log.New(io.Discard, "", 0), "").follow("") }()
 	for deadline := time.Now().Add(10 * time.Second); !readLive(t, "server").Answering; time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the machine was never marked as answering")

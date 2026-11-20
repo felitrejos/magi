@@ -42,6 +42,12 @@ while :; do
 "
     pids="$pids $pid"
   done
+  for f in "$HOME"/.magi/tabs/*; do
+    [ -f "$f" ] || continue
+    { read -r _; read -r window; } < "$f"
+    live="${live}tab ${f##*/} $window
+"
+  done
   if [ "$live" != "$registry" ]; then
     registry=$live
     case $live in *'"status":"waiting"'*) live="${live}waiting $("$cli" agents --json | tr -d '\n')

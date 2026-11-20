@@ -131,16 +131,19 @@ unit on Linux. It runs as you, never as root, and starts at login.
   writes on the far machine. It can only make the laptop pull a session
   from the machine the request is on.
 - Every 2 seconds the loop reads Claude Code's own record of each live
-  session in `~/.claude/sessions`, on the laptop too. When a session is
-  waiting, it runs `claude agents --json` once to learn on what.
+  session in `~/.claude/sessions`, on the laptop too, and magi's own record
+  in `~/.magi/tabs` of the tmux window each session it opened runs in.
+  When a session is waiting, it runs `claude agents --json` once to learn
+  on what.
 - About every 30 seconds it reads load, memory, the disk your home folder
   is on, and every process's number, parent, CPU time and memory.
 - When a loop starts, it lists every process with its command line once,
   to stop older copies of itself that lost their connection.
 - The watcher writes what it hears to `~/.magi/live/<machine>.json` on the
   laptop, readable only by you. That is whether the machine answers, its
-  load, memory and disk, and each session's id, title, folder, state, CPU
-  and memory. It holds no conversation text and no file contents.
+  SSH destination, load, memory and disk, and each session's id, title,
+  folder, state, CPU, memory, Remote Control link and tmux window. The
+  file holds no conversation text and no file contents.
 - Its log holds machine names, short session ids, folder paths, branch
   and file names, and errors.
 

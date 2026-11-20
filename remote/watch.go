@@ -165,7 +165,7 @@ func watch() error {
 	go heartbeat(logger, quit)
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		watchHost(newWatcher(local.Name(), nil, logger, ""), "", func() (sh.Machine, error) { return local, nil })
+		watchHost(newWatcher(local.Name(), "", nil, logger, ""), "", func() (sh.Machine, error) { return local, nil })
 	})
 	for _, name := range cfg.Order {
 		host := cfg.host(name)
@@ -174,7 +174,7 @@ func watch() error {
 			return err
 		}
 		wg.Go(func() {
-			watchHost(newWatcher(name, nil, logger, string(said)), local.Name(), func() (sh.Machine, error) {
+			watchHost(newWatcher(name, host.SSH, nil, logger, string(said)), local.Name(), func() (sh.Machine, error) {
 				return newRemote(context.Background(), host)
 			})
 		})
@@ -256,6 +256,7 @@ type watcher struct {
 type liveMachine struct {
 	Answering bool        `json:"answering"`
 	Heard     time.Time   `json:"heard,omitzero"`
+	SSH       string      `json:"ssh,omitempty"`
 	Cores     int         `json:"cores"`
 	Load      float64     `json:"load"`
 	Memory    space       `json:"memory"`
@@ -269,15 +270,17 @@ type space struct {
 }
 
 type liveEntry struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Folder    string    `json:"folder"`
-	State     string    `json:"state"`
-	WaitingOn string    `json:"waitingOn,omitempty"`
-	Since     time.Time `json:"since,omitzero"`
-	CPU       int       `json:"cpu"`
-	MemoryMB  int       `json:"memoryMB"`
-	pid       int
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Folder        string    `json:"folder"`
+	State         string    `json:"state"`
+	WaitingOn     string    `json:"waitingOn,omitempty"`
+	Since         time.Time `json:"since,omitzero"`
+	RemoteControl string    `json:"remoteControl,omitempty"`
+	Tmux          string    `json:"tmux,omitempty"`
+	CPU           int       `json:"cpu"`
+	MemoryMB      int       `json:"memoryMB"`
+	pid           int
 }
 
 type use struct {
@@ -286,8 +289,8 @@ type use struct {
 	cpu, memoryMB int
 }
 
-func newWatcher(name string, m sh.Machine, logger *log.Logger, copies string) *watcher {
-	return &watcher{name: name, m: m, copies: copies, logger: logger, live: liveMachine{Sessions: []liveEntry{}}}
+func newWatcher(name, ssh string, m sh.Machine, logger *log.Logger, copies string) *watcher {
+	return &watcher{name: name, m: m, copies: copies, logger: logger, live: liveMachine{SSH: ssh, Sessions: []liveEntry{}}}
 }
 
 func (w *watcher) follow(me string) error {
@@ -323,7 +326,7 @@ func (w *watcher) follow(me string) error {
 func (w *watcher) hear(line string, now time.Time) {
 	kind, rest, _ := strings.Cut(line, " ")
 	switch kind {
-	case "claude", "waiting":
+	case "claude", "waiting", "tab":
 		w.block = append(w.block, line)
 		return
 	case "sessions":
@@ -343,6 +346,7 @@ func (w *watcher) hear(line string, now time.Time) {
 func (w *watcher) sessions() {
 	var sessions []liveSession
 	waiting := map[int]string{}
+	windows := map[string]string{}
 	for _, line := range w.block {
 		kind, rest, _ := strings.Cut(line, " ")
 		switch kind {
@@ -357,12 +361,18 @@ func (w *watcher) sessions() {
 			for _, s := range listed {
 				waiting[s.PID] = s.WaitingFor
 			}
+		case "tab":
+			id, window, _ := strings.Cut(rest, " ")
+			windows[id] = window
 		}
 	}
 	w.block = nil
 	entries := []liveEntry{}
 	for _, s := range sessions {
-		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], pid: s.PID}
+		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], Tmux: windows[s.SessionID], pid: s.PID}
+		if s.BridgeSessionID != nil {
+			e.RemoteControl = remoteControlLink + *s.BridgeSessionID
+		}
 		if s.StatusAt > 0 {
 			e.Since = time.UnixMilli(s.StatusAt)
 		}
