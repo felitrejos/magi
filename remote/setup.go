@@ -116,6 +116,7 @@ func setupMachine(in setupInput) (string, error) {
 		return "", err
 	}
 	h.LocalRoots, h.Exclude = cfg.LocalRoots, cfg.Exclude
+	h = h.withDefaults()
 	var b strings.Builder
 	fmt.Fprintf(&b, "Saved %s to %s.\n", in.Host, path)
 	home, err := homeDir(remote)
