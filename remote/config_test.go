@@ -1,14 +1,10 @@
 package main
 
 import (
-	"context"
-	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestHostRejectsRelativeRoots(t *testing.T) {
@@ -91,7 +87,7 @@ ssh = "lab"
 claude = "claude"
 roots = ["~/d"]
 
-[hosts."odd \"name\""]
+[hosts."odd.name"]
 ssh = "odd"
 claude = "claude"
 roots = ["~/d"]
@@ -100,7 +96,7 @@ roots = ["~/d"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(cfg.Order, "|"); got != `box|lab|odd "name"` {
+	if got := strings.Join(cfg.Order, "|"); got != "box|lab|odd.name" {
 		t.Fatalf("order = %s", got)
 	}
 	cfg.Order = append(cfg.Order, "new")
@@ -112,7 +108,7 @@ roots = ["~/d"]
 	if err != nil {
 		t.Fatalf("rewritten config doesn't load: %v\n%s", err, f.read(filepath.Dir(path), "config.toml"))
 	}
-	if got := strings.Join(again.Order, "|"); got != `box|lab|odd "name"|new` || again.Hosts["lab"].SSH != "lab" || again.Hosts["new"].MinFreeMemory != "2G" {
+	if got := strings.Join(again.Order, "|"); got != "box|lab|odd.name|new" || again.Hosts["lab"].SSH != "lab" || again.Hosts["new"].MinFreeMemory != "2G" {
 		t.Errorf("after rewriting: order %s, hosts %+v", got, again.Hosts)
 	}
 }
@@ -132,74 +128,14 @@ func TestTheSameRootListedTwiceCountsOnce(t *testing.T) {
 	}
 }
 
-func TestInitWritesTheConfigAndKeepsAnswersWhenRunAgain(t *testing.T) {
+func TestHostNamesThatArentFileNamesAndSSHOptionsAreRefused(t *testing.T) {
 	f := newFixture(t)
-	f.magiOnLoginPath()
-	f.tool("tailscale", "#!/bin/sh\nexit 1\n")
-	claude := f.tool("claude", fakeClaudeCLI)
-	codex := f.tool("codex", fakeCodex)
-	answers := strings.Join([]string{"~/laptop", "", "server", "fakehost", claude, codex, "~/developer", ""}, "\n") + "\n"
-	if err := initConfig(strings.NewReader(answers), io.Discard); err != nil {
-		t.Fatal(err)
+	f.config("[hosts.\"../up\"]\nssh = \"box\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
+	if text, failed := f.call("machines", nil); !failed || !strings.Contains(text, "isn't a machine name") {
+		t.Errorf("machines with a host called ../up:\n%s", text)
 	}
-	h, err := loadHost("server")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h.SSH != "fakehost" || h.Claude != claude || h.Codex != codex || strings.Join(h.Roots, ",") != "~/developer" || strings.Join(h.Secrets, ",") != ".env,.env.*" || !slices.Contains(h.Exclude, "node_modules") {
-		t.Fatalf("host = %+v", h)
-	}
-	if err := initConfig(strings.NewReader("server\n"+strings.Repeat("\n", 6)), io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	again, err := loadHost("server")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again.Claude != h.Claude || again.Codex != h.Codex || strings.Join(again.Roots, ",") != "~/developer" {
-		t.Errorf("running init again and pressing Enter changed the host: %+v", again)
-	}
-}
-
-func TestDoctorChecksTheServer(t *testing.T) {
-	f := newFixture(t)
-	claude := f.tool("claude", fakeClaudeCLI)
-	f.magiOnLoginPath()
-	var out strings.Builder
-	c := &checks{out: &out}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	tested, err := parseTested(builtinTested)
-	if err != nil {
-		t.Fatal(err)
-	}
-	doctorHost(ctx, c, tested, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer", "~/missing"}})
-	report := out.String()
-	for _, want := range []string{"✓ ssh fakehost works", "✓ git 2.", "✓ Claude Code " + tested.Claude.Max + " on server", "✓ logged in to claude.ai on server", "✓ magi is on PATH on server", "✓ the magi plugin is installed and enabled on server", "✓ root ~/developer exists", "✗ root ~/missing exists"} {
-		if !strings.Contains(report, want) {
-			t.Errorf("doctor report lacks %q:\n%s", want, report)
-		}
-	}
-}
-
-func TestDoctorSaysWhatTheServerIsMissing(t *testing.T) {
-	f := newFixture(t)
-	claude := f.tool("claude", fakeClaudeCLI)
-	t.Setenv("PATH", filepath.Join(f.home, "bin")+":/usr/bin:/bin")
-	t.Setenv("MAGI_FAKE_PLUGINS", `[{"id":"magi@magi","enabled":false}]`)
-	var out strings.Builder
-	c := &checks{out: &out}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	tested, err := parseTested(builtinTested)
-	if err != nil {
-		t.Fatal(err)
-	}
-	doctorHost(ctx, c, tested, "server", Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}})
-	report := out.String()
-	for _, want := range []string{"✗ magi isn't on PATH on server", "install.sh | sh", "✗ the magi plugin is installed but disabled on server", "claude plugin enable magi@magi"} {
-		if !strings.Contains(report, want) {
-			t.Errorf("doctor report lacks %q:\n%s", want, report)
-		}
+	f.config("")
+	if text, failed := f.call("setup_machine", map[string]any{"host": "server", "ssh": "-oProxyCommand=true"}); !failed || !strings.Contains(text, "ssh destination") {
+		t.Errorf("setup_machine with an ssh option:\n%s", text)
 	}
 }

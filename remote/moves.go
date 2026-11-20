@@ -53,6 +53,15 @@ func (j *moveJournal) at(step string) error {
 	return store.WriteJSON(path, j)
 }
 
+func journaled(id string) bool {
+	path, err := movePath(id)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
 func forgetMove(id string) error {
 	path, err := movePath(id)
 	if err != nil {
@@ -219,7 +228,7 @@ func recoverMove(id string) recovered {
 	}
 	if j.Retirer > 0 {
 		if args, _ := exec.Command("ps", "-ww", "-o", "args=", "-p", strconv.Itoa(j.Retirer)).Output(); strings.Contains(string(args), path) {
-			return recovered{report: fmt.Sprintf("Session %s is still being closed here after its move to %s. Run magi status again in a minute.", store.ShortID(id), j.Host)}
+			return recovered{report: fmt.Sprintf("Session %s is still being closed here after its move to %s; magi finishes that on its own.", store.ShortID(id), j.Host)}
 		}
 	}
 	what := fmt.Sprintf("Moving session %s to %s was interrupted", store.ShortID(id), j.Host)
@@ -227,7 +236,7 @@ func recoverMove(id string) recovered {
 		what = fmt.Sprintf("Bringing session %s back from %s was interrupted", store.ShortID(id), j.Host)
 	}
 	failed := func(err error) recovered {
-		return recovered{report: fmt.Sprintf("%s, and checking it failed: %v. Run magi status again.", what, err)}
+		return recovered{report: fmt.Sprintf("%s, and checking it failed: %v. magi tries again on its own.", what, err)}
 	}
 	local, err := sh.NewLocal(context.Background())
 	if err != nil {
@@ -265,14 +274,14 @@ func recoverMove(id string) recovered {
 		if r.here.running() {
 			advice = "magi stopped neither. Quit the one you don't want"
 		}
-		return recovered{report: fmt.Sprintf("%s, and both copies have new turns since, so %s, then run magi status again. Here: %s. On %s: %s.", what, advice, r.next(r.here), j.Host, r.next(r.there))}
+		return recovered{report: fmt.Sprintf("%s, and both copies have new turns since, so %s; magi settles the rest on its own after that. Here: %s. On %s: %s.", what, advice, r.next(r.here), j.Host, r.next(r.there))}
 	case reach != nil && !live.here:
-		return recovered{report: fmt.Sprintf("%s, and magi can't reach %s (%v). The session is still on %s. Run magi status again once it answers; if it's gone for good, remove %s.", what, j.Host, reach, j.Host, path)}
+		return recovered{report: fmt.Sprintf("%s, and magi can't reach %s (%v). The session is still on %s, and magi finishes the move on its own once it answers; if it's gone for good, remove %s.", what, j.Host, reach, j.Host, path)}
 	case reach != nil:
 		if err := clearMoved(local, id); err != nil {
 			return failed(err)
 		}
-		return recovered{here: true, report: fmt.Sprintf("%s, and magi can't reach %s (%v). The copy here is the live one; continue it here: %s. Run magi status again once %s answers to finish cleaning up there; if it's gone for good, remove %s.", what, j.Host, reach, r.next(r.here), j.Host, path)}
+		return recovered{here: true, report: fmt.Sprintf("%s, and magi can't reach %s (%v). The copy here is the live one; continue it here: %s. magi cleans up there on its own once %s answers; if it's gone for good, remove %s.", what, j.Host, reach, r.next(r.here), j.Host, path)}
 	}
 	other, done := r.from, "closed the copy "+r.from.place()
 	if live == r.to {
@@ -288,12 +297,16 @@ func recoverMove(id string) recovered {
 		err = forgetMove(id)
 	}
 	if err != nil {
-		return recovered{report: fmt.Sprintf("%s. The copy %s is the live one, but cleaning up %s failed: %v. Run magi status again.", what, live.place(), other.place(), err)}
+		return recovered{report: fmt.Sprintf("%s. The copy %s is the live one, but cleaning up %s failed: %v. magi tries again on its own.", what, live.place(), other.place(), err)}
 	}
 	if other.used {
 		done += fmt.Sprintf(". The turns taken %s are kept in %s.handed-off-to-%s", other.place(), other.transcript, live.name)
 	}
-	return recovered{here: live.here, settled: true, report: fmt.Sprintf("%s. The copy %s is the live one, so magi %s. Continue it %s: %s.", what, live.place(), done, live.place(), r.next(live))}
+	report := fmt.Sprintf("%s. The copy %s is the live one, so magi %s. Continue it %s: %s.", what, live.place(), done, live.place(), r.next(live))
+	if err := appendLog(logEntry{Time: time.Now(), Kind: "settled", Session: id, Note: report}); err != nil {
+		report += fmt.Sprintf(" Recording this in magi's log failed: %v.", err)
+	}
+	return recovered{here: live.here, settled: true, report: report}
 }
 
 func (r *recovery) finish() error {
@@ -363,8 +376,10 @@ func (r *recovery) undo() (string, error) {
 
 func (r *recovery) next(c *sessionCopy) string {
 	switch {
+	case !c.running() && c.here:
+		return "it isn't running; the user can resume it in " + c.dir
 	case !c.running():
-		return fmt.Sprintf("run %s in %s", resumeHint(remoteSession{ID: r.j.Session, Codex: r.j.Codex}), c.dir)
+		return fmt.Sprintf("it isn't running; move_session with session %s brings it here", r.j.Session)
 	case c.here || r.j.Tab == nil:
 		return "it's still open, in " + c.dir
 	case r.j.Codex:
@@ -381,31 +396,40 @@ func recoverBefore(id string, here bool) error {
 	return errors.New(strings.TrimSuffix(rec.report, "."))
 }
 
-func reportMoves(w io.Writer) error {
+func sweepMoves() ([]recovered, error) {
 	dir, err := store.Dir("moves")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	paths, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var reports []string
+	var all []recovered
 	for _, path := range paths {
 		id := strings.TrimSuffix(filepath.Base(path), ".json")
 		unlock, err := lockMove(id)
 		if err != nil {
 			continue
 		}
-		reports = append(reports, recoverMove(id).report)
+		all = append(all, recoverMove(id))
 		unlock()
 	}
-	if len(reports) == 0 {
+	return all, nil
+}
+
+func reportMoves(w io.Writer) error {
+	all, err := sweepMoves()
+	if err != nil {
+		return err
+	}
+	all = slices.DeleteFunc(all, func(r recovered) bool { return r.settled })
+	if len(all) == 0 {
 		return nil
 	}
 	fmt.Fprintln(w, "Interrupted moves:")
-	for _, report := range reports {
-		fmt.Fprintf(w, "  %s\n", report)
+	for _, r := range all {
+		fmt.Fprintf(w, "  %s\n", r.report)
 	}
 	fmt.Fprintln(w)
 	return nil

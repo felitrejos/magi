@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"io"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -25,10 +24,11 @@ func TestAProjectFileTakesSetupServicesAndPortsOnly(t *testing.T) {
 		"services = [\"\"]\n":            "can't be empty",
 		"setup = [\n":                    projectFile,
 		"setup = \"  \"\n":               "setup can't be empty",
-		"setup = \"make\\u001b[2K\"\n":   "control characters",
-		"ports = [0]\n":                  "isn't a port",
-		"ports = [70000]\n":              "isn't a port",
-		"ports = [3000, 3000]\n":         "listed twice",
+		"setup = \"make\\u001b[2K\"\n":   "control",
+		"services = [\"rm -rf build \\u202e\"]\n": "format characters",
+		"ports = [0]\n":          "isn't a port",
+		"ports = [70000]\n":      "isn't a port",
+		"ports = [3000, 3000]\n": "listed twice",
 	} {
 		if _, err := parseProject([]byte(body)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("parseProject(%q) = %v, want an error about %q", body, err, want)
@@ -49,18 +49,30 @@ func TestAllowApprovesThatFileInThatProjectOnly(t *testing.T) {
 		}
 		return err == nil
 	}
-	if approved(f.local) {
-		t.Fatal("a new project file counted as approved")
+	p, err := readProject(f.local)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := allowProject(filepath.Join(f.local, "deep"), strings.NewReader("n\n"), io.Discard); err == nil {
-		t.Fatal("allow ran from a folder that doesn't exist")
+	if p, err := approvedProject(f.machine(), f.local); p != nil || err == nil || !strings.Contains(err.Error(), `It has setup "make".`) || !strings.Contains(err.Error(), "call allow_project with dir "+f.local+" and sha256 ") {
+		t.Fatalf("a new project file: %+v, %v", p, err)
 	}
-	if err := allowProject(f.local, strings.NewReader("n\n"), io.Discard); err != nil || approved(f.local) {
-		t.Fatalf("answering no still approved it: %v", err)
+	if text, failed := f.call("allow_project", map[string]any{"dir": filepath.Join(f.local, "deep"), "sha256": ""}); !failed {
+		t.Fatalf("allowed a folder that doesn't exist: %s", text)
 	}
+	if text, failed := f.call("allow_project", map[string]any{"dir": f.local, "sha256": strings.Repeat("0", 64)}); !failed || !strings.Contains(text, "isn't what the user saw") || approved(f.local) {
+		t.Fatalf("a wrong sha256: %s", text)
+	}
+	f.answer = "decline"
+	if text, failed := f.call("allow_project", map[string]any{"dir": f.local, "sha256": p.Hash}); failed || !strings.Contains(text, "didn't allow it") || approved(f.local) {
+		t.Fatalf("when the user declines: %s", text)
+	}
+	f.answer = "accept"
 	f.allow(f.local)
 	if !approved(f.local) {
-		t.Fatal("after magi allow it still wasn't approved")
+		t.Fatal("after allow_project it still wasn't approved")
+	}
+	if len(f.asked) != 2 || !strings.Contains(f.asked[1], `It has setup "make".`) {
+		t.Errorf("the user was asked %q", f.asked)
 	}
 	if approved(f.remote) {
 		t.Error("approving one project's file also approved the same file in another project")
@@ -83,7 +95,7 @@ func TestAnUnapprovedProjectFileRunsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.Noted(), "magi allow") {
+	if !strings.Contains(res.Noted(), "call allow_project with dir "+f.local) {
 		t.Errorf("notes = %q", res.Noted())
 	}
 	if waitForFile(t, filepath.Join(f.remote, "setup.txt"), 2*time.Second) {

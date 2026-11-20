@@ -157,36 +157,28 @@ func TestProjectSlugMatchesClaudeFolderNames(t *testing.T) {
 	}
 }
 
-func TestLogFindsTheLastSessionSentToAHost(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	if _, err := lastHandoffTo("server"); err == nil {
-		t.Fatal("found a session in an empty log")
-	}
-	for _, e := range []logEntry{
-		{Time: time.Now(), Kind: "push", Session: "11111111-0000-0000-0000-000000000000", From: "laptop", To: "server", FromDir: "/a", ToDir: "/b"},
-		{Time: time.Now(), Kind: "push", Session: "22222222-0000-0000-0000-000000000000", From: "laptop", To: "other", FromDir: "/a", ToDir: "/c"},
-		{Time: time.Now(), Kind: "push", Session: "33333333-0000-0000-0000-000000000000", From: "laptop", To: "server", FromDir: "/d", ToDir: "/e"},
-	} {
-		if err := appendLog(e); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := lastHandoffTo("server")
-	if err != nil || got != "33333333-0000-0000-0000-000000000000" {
-		t.Fatalf("lastHandoffTo = %q, %v", got, err)
-	}
-	if err := appendLog(logEntry{Time: time.Now(), Kind: "pull", Session: "33333333-0000-0000-0000-000000000000", From: "server", To: "laptop"}); err != nil {
+func TestStatusListsHandoffsParkedCheckoutsAndForwards(t *testing.T) {
+	f := newFixture(t)
+	if err := appendLog(logEntry{Time: time.Now(), Kind: "push", Session: "33333333-0000-0000-0000-000000000000", From: f.machine().Name(), To: "server", FromDir: f.local, ToDir: "/e"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lastHandoffTo("server"); err == nil || !strings.Contains(err.Error(), "already brought back") {
-		t.Errorf("after pulling it back, lastHandoffTo gave %v", err)
-	}
-	var out strings.Builder
-	if err := status(&out); err != nil {
+	ws := f.workspace(f.local)
+	if err := park(f.machine(), ws.Root, ws); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "33333333") || !strings.Contains(out.String(), "laptop:/d → server:/e") {
-		t.Errorf("status output:\n%s", out.String())
+	path, _ := store.SessionPath("forwards", "33333333-0000-0000-0000-000000000000", ".json")
+	if err := store.WriteJSON(path, forwardRecord{Session: "33333333-0000-0000-0000-000000000000", Host: "server", Ports: []int{3000}}); err != nil {
+		t.Fatal(err)
+	}
+	text, failed := f.call("status", nil)
+	if failed || !strings.Contains(text, "33333333") || !strings.Contains(text, ":"+f.local+" → server:/e") || !strings.Contains(text, "call unpark with its folder:\n  "+f.local+"\n") || !strings.Contains(text, "localhost:3000") {
+		t.Fatalf("status:\n%s", text)
+	}
+	if text, failed := f.call("unpark", map[string]any{"dir": f.local}); failed || !strings.Contains(text, "no longer parked") {
+		t.Fatalf("unpark: %s", text)
+	}
+	if text, _ := f.call("status", nil); strings.Contains(text, "call unpark") {
+		t.Errorf("after unpark:\n%s", text)
 	}
 }
 
@@ -337,7 +329,7 @@ func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
 	if err := os.Chtimes(heartbeat, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := arm("mac", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "magi pull") {
+	if err := arm("mac", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "set up magi with this machine") {
 		t.Errorf("arm with only a stale watcher gave %v", err)
 	}
 }

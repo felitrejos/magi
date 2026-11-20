@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -64,7 +63,7 @@ func TestClosingAForwardStopsItsRunnerAndEverythingItStarted(t *testing.T) {
 	if child == 0 {
 		t.Fatal("the runner's child never started")
 	}
-	if err := forwardsCommand([]string{"close", forwardSession[:8]}, io.Discard); err != nil {
+	if err := closeForwards(forwardSession); err != nil {
 		t.Fatal(err)
 	}
 	runner.Wait()

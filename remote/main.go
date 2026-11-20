@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -18,56 +18,15 @@ import (
 
 	"github.com/felitrejos/magi/remote/internal/sh"
 	"github.com/felitrejos/magi/remote/internal/store"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 var version = "dev"
 
-const usage = `magi moves a Claude Code or Codex session to another machine, or sends Claude work there.
-
-Usage:
-  magi init                          set up this machine and a machine to hand off to
-  magi try [host]                    set up if needed, check everything, then move a throwaway
-                                        session to <host> and back to prove it works
-  magi doctor [host...]              check that everything a handoff needs is in place
-  magi pull <host> [session-id]      bring a Claude Code or Codex session back from <host>
-                                        and continue it here
-  magi move <session-id> <host> [--json]
-                                        move a Claude Code or Codex session on this machine to
-                                        <host>, from outside it: now if it's idle, or when its
-                                        turn ends; Codex needs codex = "<path>" for <host>
-  magi wait <session>                wait until a Claude Code or Codex session on any machine
-                                        isn't busy, then print whether it's idle, waiting on
-                                        you or ended
-  magi status                        moves that were cut off, which it settles, then recent
-                                        handoffs and parked checkouts
-  magi watch                         take back sessions other machines hand back here, over SSH
-  magi watch install | uninstall     run magi watch in the background, starting at login
-  magi unpark [dir]                  stop treating a checkout as parked
-  magi allow [dir]                   let the project's .magi.toml run after handoffs
-  magi forwards                      ports this machine forwards to sessions that moved
-  magi forwards close <session-id>   stop forwarding a moved session's ports
-  magi tasks                         work sent to other machines, and its state
-  magi tasks wait <id>               wait until a task finishes, then print how it ended
-  magi tasks show <id>               a task's output; collects it if it's finished
-  magi tasks cancel <id>             stop a task and remove its copy
-  magi tasks clean                   collect finished tasks, drop day-idle copies and week-old tasks
-  magi version
-  magi help
-
-Used by the Claude Code plugin:
-  magi arm <host> <session-id> [-]   hand this session off when its turn ends;
-                                        with -, read a note on what was running from stdin
-  magi hook stop                     the plugin's Stop hook (reads the hook JSON on stdin)
-  magi hook prompt                   the plugin's prompt hook, which refuses input in a session that moved
-  magi mcp                           the plugin's tool server, on stdin and stdout
-  magi forward-run <session-id>      keeps a moved session's ports forwarded (started by a move)
-`
-
 type armed struct {
-	Host   string `json:"host"`
-	PID    int    `json:"pid"`
-	Note   string `json:"note"`
-	Notify bool   `json:"notify,omitempty"`
+	Host string `json:"host"`
+	PID  int    `json:"pid"`
+	Note string `json:"note"`
 }
 
 func main() {
@@ -83,73 +42,31 @@ func main() {
 		}
 	case len(args) == 1 && args[0] == "watch":
 		err = watch()
-	case len(args) == 2 && args[0] == "watch" && args[1] == "install":
-		err = installWatch(os.Stdout)
-	case len(args) == 2 && args[0] == "watch" && args[1] == "uninstall":
-		err = uninstallWatch(os.Stdout)
 	case len(args) == 2 && args[0] == "hook" && args[1] == "stop":
 		err = stopHook(os.Stdin, os.Stdout)
 	case len(args) == 2 && args[0] == "hook" && args[1] == "prompt":
 		err = promptHook(os.Stdin, os.Stdout)
-	case len(args) >= 1 && args[0] == "try":
-		err = tryCommand(args[1:], os.Stdin, os.Stdout)
-	case len(args) == 1 && args[0] == "init":
-		err = initConfig(os.Stdin, os.Stdout)
-	case len(args) >= 1 && args[0] == "doctor":
-		err = doctor(args[1:], os.Stdout)
-	case len(args) >= 2 && args[0] == "pull":
-		err = pullCommand(args[1:])
-	case len(args) <= 2 && len(args) >= 1 && args[0] == "allow":
-		dir := "."
-		if len(args) == 2 {
-			dir = args[1]
-		}
-		err = allowProject(dir, os.Stdin, os.Stdout)
-	case len(args) == 1 && args[0] == "status":
-		err = status(os.Stdout)
-	case len(args) <= 2 && len(args) >= 1 && args[0] == "unpark":
-		dir := "."
-		if len(args) == 2 {
-			dir = args[1]
-		}
-		err = unpark(dir, os.Stdout)
-	case len(args) >= 1 && args[0] == "forwards":
-		err = forwardsCommand(args[1:], os.Stdout)
 	case len(args) == 2 && args[0] == "forward-run":
 		err = runForwards(args[1])
-	case len(args) >= 1 && args[0] == "move":
-		err = moveCommand(args[1:], os.Stdout)
+	case len(args) == 3 && args[0] == "forwards" && args[1] == "close":
+		err = closeForwards(args[2])
 	case len(args) == 1 && args[0] == "mcp":
-		err = serveMCP(context.Background())
+		err = serveMCP(context.Background(), &mcp.StdioTransport{})
 	case len(args) == 2 && args[0] == "wait":
 		var text string
 		if text, err = waitSession(args[1], waitEvery); err == nil {
 			fmt.Println(text)
 		}
-	case len(args) == 1 && args[0] == "tasks":
-		err = printTasks(os.Stdout)
-	case len(args) == 2 && args[0] == "tasks" && args[1] == "clean":
-		err = cleanTasks(os.Stdout)
 	case len(args) == 3 && args[0] == "tasks" && args[1] == "wait":
 		var r *taskReport
 		if r, err = waitTask(args[2], waitEvery); err == nil {
 			fmt.Print(describeReport(r))
 		}
-	case len(args) == 3 && args[0] == "tasks" && (args[1] == "show" || args[1] == "cancel"):
-		var r *taskReport
-		if r, err = collectTask(args[2], args[1] == "cancel"); err == nil {
-			fmt.Print(describeReport(r))
-		}
-	case len(args) == 1 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h"):
-		fmt.Print(usage)
-	case len(args) == 1 && (args[0] == "version" || args[0] == "--version"):
+	case len(args) == 1 && args[0] == "version":
 		fmt.Println("magi", currentVersion())
 	default:
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Fprintln(os.Stderr, "magi runs through its Claude Code plugin; ask Claude for what you need")
 		os.Exit(2)
-	}
-	if errors.Is(err, errReported) {
-		os.Exit(1)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "magi:", err)
@@ -167,22 +84,6 @@ func currentVersion() string {
 	return version
 }
 
-func writeArmed(path string, a armed, flag int) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	data, err := json.Marshal(a)
-	if err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|flag, 0o600)
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(data)
-	return errors.Join(err, f.Close())
-}
-
 func arm(hostName, sessionID, note string, out io.Writer) error {
 	pid, err := strconv.Atoi(os.Getenv("CLAUDE_PID"))
 	if err != nil {
@@ -196,10 +97,10 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 		}
 		watcher := matchMachine(watching, hostName)
 		if watcher == "" && len(watching) > 0 {
-			return fmt.Errorf("%w, and no machine called %q runs magi watch for this one; these do: %s", err, hostName, strings.Join(watching, ", "))
+			return fmt.Errorf("%w, and no machine called %q takes sessions back from this one; these do: %s", err, hostName, strings.Join(watching, ", "))
 		}
 		if watcher == "" {
-			return fmt.Errorf("%w, and no machine called %q runs magi watch for this one, so bring the session back from there with magi pull", err, hostName)
+			return fmt.Errorf("%w, and no machine called %q takes sessions back from this one. That machine isn't set up to take sessions back; the user can set it up from there by asking Claude to set up magi with this machine", err, hostName)
 		}
 		if err := writeWanted(sessionID, wanted{To: watcher, PID: pid, Note: note}); err != nil {
 			return err
@@ -211,7 +112,7 @@ func arm(hostName, sessionID, note string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := writeArmed(path, armed{Host: hostName, PID: pid, Note: note}, os.O_TRUNC); err != nil {
+	if err := store.WriteJSON(path, armed{Host: hostName, PID: pid, Note: note}); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
@@ -270,9 +171,6 @@ func stopHook(in io.Reader, out io.Writer) error {
 		return err
 	}
 	if os.Getenv("CLAUDE_PID") != strconv.Itoa(a.PID) {
-		if a.Notify {
-			return writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: "the session that ended its turn wasn't the one armed to move"})
-		}
 		return nil
 	}
 	unlock, err := lockMove(input.SessionID)
@@ -281,9 +179,6 @@ func stopHook(in io.Reader, out io.Writer) error {
 		err = recoverBefore(input.SessionID, true)
 	}
 	if err != nil {
-		if a.Notify {
-			err = errors.Join(err, writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: "this handoff didn't start: " + err.Error()}))
-		}
 		return block(out, "This handoff didn't start: "+err.Error()+". Tell the user.")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -291,19 +186,10 @@ func stopHook(in io.Reader, out io.Writer) error {
 
 	res, err := handoff(ctx, a, input)
 	if err != nil {
-		reason := fmt.Sprintf("magi could not hand this session off to %s, so it is still running here: %v.", a.Host, err)
-		if a.Notify {
-			if writeErr := writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: fmt.Sprintf("the handoff to %s failed, so the session keeps running here: %v", a.Host, err)}); writeErr != nil {
-				reason += fmt.Sprintf(" Telling magi move about it also failed: %v.", writeErr)
-			}
-		}
-		return block(out, reason+" Tell the user what failed in plain words.")
-	}
-	if a.Notify {
-		res.note(writeMoveResult(input.SessionID, movedReport(input.SessionID, a.Host, res)))
+		return block(out, fmt.Sprintf("magi could not hand this session off to %s, so it is still running here: %v. Tell the user what failed in plain words.", a.Host, err))
 	}
 	return json.NewEncoder(out).Encode(map[string]string{
-		"systemMessage": movedReport(input.SessionID, a.Host, res).Message + " With Remote Control it's in every Claude app on your account. This copy is closing.",
+		"systemMessage": movedReport(input.SessionID, a.Host, res) + " With Remote Control it's in every Claude app on your account. This copy is closing.",
 	})
 }
 
@@ -327,7 +213,7 @@ func promptHook(in io.Reader, out io.Writer) error {
 		return err
 	}
 	to := strings.TrimSpace(string(host))
-	return block(out, fmt.Sprintf("This session moved to %s, so this copy takes no more messages. Continue it there, or bring it back here with magi pull %s.", to, to))
+	return block(out, fmt.Sprintf("This session moved to %s, so this copy takes no more messages. Continue it there, or start a new Claude session here and ask it to move session %s here.", to, store.ShortID(input.SessionID)))
 }
 
 func block(out io.Writer, reason string) error {
@@ -396,15 +282,8 @@ func retire(local sh.Machine, host, sessionID, transcript string, pid int) (int,
 }
 
 func runSetupHere(dir, setup string, out io.Writer) error {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-	interrupted := make(chan os.Signal, 1)
-	signal.Notify(interrupted, os.Interrupt)
-	defer signal.Stop(interrupted)
-	cmd := exec.Command(shell, "-lc", setup)
-	cmd.Dir, cmd.Stdin, cmd.Stdout, cmd.Stderr = dir, os.Stdin, out, out
+	cmd := exec.Command(cmp.Or(os.Getenv("SHELL"), "/bin/sh"), "-lc", setup)
+	cmd.Dir, cmd.Stdout, cmd.Stderr = dir, out, out
 	return cmd.Run()
 }
 
@@ -428,51 +307,22 @@ func setUpPulledProject(p *Project, root string, out io.Writer) string {
 	return b.String()
 }
 
-func pullCommand(args []string) error {
-	if len(args) > 2 {
-		return errors.New("usage: magi pull <host> [session-id]")
-	}
-	hostName, sessionID := args[0], ""
-	if len(args) == 2 {
-		sessionID = args[1]
-	}
-	pulled, err := pullHere(hostName, sessionID, "", os.Stdout, false)
-	if err != nil {
-		return err
-	}
-	if err := resumeHere(pulled.res.ToDir, pulled.res.Session, pulled.res.Name, pulled.prompt, pulled.res.Codex); err != nil {
-		return fmt.Errorf("the session is back in %s, but starting it failed (%w); continue it with %s", pulled.res.ToDir, err, resumeHint(remoteSession{ID: pulled.res.Session, Codex: pulled.res.Codex}))
-	}
-	return nil
-}
-
-type pulledHere struct {
-	res     Pulled
-	prompt  string
-	message string
-}
-
-func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pulledHere, error) {
+func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (string, error) {
 	host, err := loadHost(hostName)
 	if err != nil {
-		return pulledHere{}, err
-	}
-	if sessionID == "" {
-		if sessionID, err = lastHandoffTo(hostName); err != nil {
-			return pulledHere{}, err
-		}
+		return "", err
 	}
 	unlock, err := lockMove(sessionID)
 	if err != nil {
-		return pulledHere{}, err
+		return "", err
 	}
 	defer unlock()
 	if err := recoverBefore(sessionID, false); err != nil {
-		return pulledHere{}, err
+		return "", err
 	}
 	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Note: note, Out: out}.Run()
 	if err != nil {
-		return pulledHere{}, err
+		return "", err
 	}
 	fmt.Fprintf(out, "Pulled the session back from %s in %s.\n", hostName, res.Summary())
 	if res.NewFolder != "" {
@@ -486,7 +336,7 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 	if inTab {
 		before := len(res.Notes)
 		if err := openPulledTab(&res, prompt); err != nil {
-			return pulledHere{}, fmt.Errorf("the session is back in %s, but its tab didn't open (%w); continue it there with %s", res.ToDir, err, resumeHint(remoteSession{ID: res.Session, Codex: res.Codex}))
+			return "", fmt.Errorf("the session is back in %s, but its tab didn't open (%w); the user can resume it there", res.ToDir, err)
 		}
 		for _, note := range res.Notes[before:] {
 			fmt.Fprintf(out, "Note: %v\n", note)
@@ -496,7 +346,7 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (pull
 	if len(res.Notes) > 0 {
 		message += " (" + res.Noted() + ")"
 	}
-	return pulledHere{res: res, prompt: prompt, message: message}, nil
+	return message, nil
 }
 
 func openPulledTab(res *Pulled, prompt string) error {

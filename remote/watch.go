@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -124,6 +125,7 @@ func watch() error {
 		return err
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
+	go heartbeat(logger, func() { os.Exit(0) })
 	var wg sync.WaitGroup
 	wg.Go(func() { watchHost(newWatcher(local.Name(), local, logger), "") })
 	for _, name := range cfg.Order {
@@ -135,6 +137,48 @@ func watch() error {
 	}
 	wg.Wait()
 	return nil
+}
+
+var heartbeatEvery = time.Minute
+
+var taking sync.RWMutex
+
+func heartbeat(logger *log.Logger, restart func()) {
+	link, err := magiLink()
+	if err != nil {
+		logger.Print(err)
+		return
+	}
+	path, err := configPath()
+	if err != nil {
+		logger.Print(err)
+		return
+	}
+	self, _ := filepath.EvalSymlinks(link)
+	config, _ := os.ReadFile(path)
+	for range time.Tick(heartbeatEvery) {
+		moves, err := sweepMoves()
+		if err != nil {
+			logger.Printf("checking interrupted moves failed: %v", err)
+		}
+		for _, r := range moves {
+			if r.settled {
+				logger.Print(r.report)
+			}
+		}
+		changed := ""
+		if now, err := filepath.EvalSymlinks(link); err == nil && now != self {
+			changed = "magi was updated to " + now
+		}
+		if now, _ := os.ReadFile(path); !bytes.Equal(now, config) {
+			changed = "magi's machines changed"
+		}
+		if changed != "" {
+			logger.Printf("%s; restarting once no session is being taken back", changed)
+			taking.Lock()
+			restart()
+		}
+	}
 }
 
 func watchHost(w *watcher, me string) {
@@ -358,6 +402,8 @@ func (w *watcher) save() error {
 }
 
 func take(name string, remote sh.Machine, id string, logger *log.Logger) {
+	taking.RLock()
+	defer taking.RUnlock()
 	data, err := sh.Run(remote, `cat "$HOME/.magi/wanted/$1.json"`, id)
 	if err != nil {
 		logger.Printf("%s: reading the request for session %s failed: %v", name, store.ShortID(id), err)
@@ -369,7 +415,7 @@ func take(name string, remote sh.Machine, id string, logger *log.Logger) {
 		return
 	}
 	logger.Printf("%s: taking session %s back", name, store.ShortID(id))
-	pulled, err := pullHere(name, id, w.Note, logger.Writer(), true)
+	message, err := pullHere(name, id, w.Note, logger.Writer(), true)
 	if err != nil {
 		logger.Printf("%s: taking session %s back failed: %v", name, store.ShortID(id), err)
 		return
@@ -377,5 +423,5 @@ func take(name string, remote sh.Machine, id string, logger *log.Logger) {
 	if _, err := sh.Run(remote, `rm -f "$HOME/.magi/wanted/$1.json"`, id); err != nil {
 		logger.Printf("%s: removing the request for session %s failed: %v", name, store.ShortID(id), err)
 	}
-	logger.Print(pulled.message)
+	logger.Print(message)
 }

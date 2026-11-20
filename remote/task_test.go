@@ -127,7 +127,7 @@ func TestARunElsewhereTaskRunsOnACopyOfTheWorkingTreeAndReturnsItsOutput(t *test
 
 const fakeDelegateClaude = `#!/bin/sh
 prompt=$(cat)
-printf '%s\n' "$@" > "$HOME/claude-args"
+printf '%s\n' "$@" "MAGI_DELEGATE=$MAGI_DELEGATE" > "$HOME/claude-args"
 printf '{"type":"system","subtype":"init"}\n'
 printf 'claude was here\n' > claude.txt
 printf 'changed by claude\n' > kept.txt
@@ -188,7 +188,7 @@ func TestADelegatedTaskAppliesItsChangesHereAndKeepsThemOnABranch(t *testing.T) 
 		t.Errorf("what's staged changed:\n%s\nwas:\n%s", got, staged)
 	}
 	f.serverUntouched()
-	if claudeArgs := f.read(f.home, "claude-args"); !strings.Contains(claudeArgs, "--allowedTools\nBash(go test:*)") {
+	if claudeArgs := f.read(f.home, "claude-args"); !strings.Contains(claudeArgs, "--allowedTools\nBash(go test:*)") || !strings.Contains(claudeArgs, "MAGI_DELEGATE=1") {
 		t.Errorf("claude didn't get the task's arguments:\n%s", claudeArgs)
 	}
 	if text := describeReport(r); !strings.Contains(text, "have been applied to your working tree") || !strings.Contains(text, "git diff "+shortCommit(s.Task.Base)+" "+o.Branch) {
@@ -512,30 +512,37 @@ func TestADelegatedClaudeNeverBypassesPermissions(t *testing.T) {
 func TestTheToolServerOffersItsTools(t *testing.T) {
 	f := newFixture(t)
 	f.config(threeHosts)
-	serverSide, clientSide := mcp.NewInMemoryTransports()
-	ctx := context.Background()
-	if _, err := newMCPServer().Connect(ctx, serverSide, nil); err != nil {
-		t.Fatal(err)
+	connect := func() *mcp.ClientSession {
+		serverSide, clientSide := mcp.NewInMemoryTransports()
+		if _, err := newMCPServer().Connect(context.Background(), serverSide, nil); err != nil {
+			t.Fatal(err)
+		}
+		session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(context.Background(), clientSide, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { session.Close() })
+		return session
 	}
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientSide, nil)
-	if err != nil {
-		t.Fatal(err)
+	names := func(session *mcp.ClientSession) string {
+		tools, err := session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, tool := range tools.Tools {
+			names = append(names, tool.Name)
+		}
+		return strings.Join(names, " ")
 	}
-	defer session.Close()
+	session := connect()
 	if !strings.Contains(session.InitializeResult().Instructions, "run it here instead, or don't run it") {
 		t.Errorf("instructions = %q", session.InitializeResult().Instructions)
 	}
-	tools, err := session.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, tool := range tools.Tools {
-		names = append(names, tool.Name)
-	}
-	if got := strings.Join(names, " "); got != "cancel_task delegate diff machines move_session run_elsewhere session_elsewhere sessions task_reply task_result task_status" {
+	if got := names(session); got != "allow_project cancel_task delegate diff machines move_session run_elsewhere session_elsewhere sessions setup_machine status task_reply task_result task_status uninstall unpark" {
 		t.Errorf("tools = %s", got)
 	}
+	ctx := context.Background()
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "machines"})
 	if err != nil || res.IsError {
 		t.Fatalf("machines = %+v, %v", res, err)
@@ -546,6 +553,10 @@ func TestTheToolServerOffersItsTools(t *testing.T) {
 	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "task_result", Arguments: map[string]any{"task_id": "nope"}})
 	if err != nil || !res.IsError {
 		t.Errorf("task_result for a bad id = %+v, %v", res, err)
+	}
+	t.Setenv("MAGI_DELEGATE", "1")
+	if got := names(connect()); got != "diff machines sessions status task_status" {
+		t.Errorf("a delegated Claude is offered %s", got)
 	}
 }
 
@@ -781,7 +792,7 @@ func TestClosingIdleCopiesReportsWhatFailedAndSkipsOneAnotherMagiHolds(t *testin
 		t.Fatal(err)
 	}
 	defer unlock()
-	note := sweepIdleCopies()
+	note := sweepTasks()
 	if !strings.Contains(note, "task 0000000a") || strings.Contains(note, "0000000b") {
 		t.Errorf("note = %q", note)
 	}

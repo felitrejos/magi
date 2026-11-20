@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -261,8 +260,8 @@ func TestUnparkClearsSubmodulesToo(t *testing.T) {
 	if err := park(f.machine(), ws.Root, ws); err != nil {
 		t.Fatal(err)
 	}
-	if err := unpark(f.local, io.Discard); err != nil {
-		t.Fatal(err)
+	if text, failed := f.call("unpark", map[string]any{"dir": f.local}); failed {
+		t.Fatal(text)
 	}
 	for _, dir := range []string{f.local, filepath.Join(f.local, "vendor/lib")} {
 		if out, _ := exec.Command("git", "-C", dir, "rev-parse", "-q", "--verify", parkedRef).Output(); len(out) > 0 {
@@ -660,8 +659,8 @@ func TestUnparkExplainsThatPlainFoldersAreNeverParked(t *testing.T) {
 	f := newFixture(t)
 	notes := filepath.Join(f.home, "notes")
 	f.write(notes, "todo.md", "x")
-	if err := unpark(notes, io.Discard); err == nil || !strings.Contains(err.Error(), "isn't a git checkout") {
-		t.Errorf("unpark on a plain folder gave %v", err)
+	if text, failed := f.call("unpark", map[string]any{"dir": notes}); !failed || !strings.Contains(text, "isn't a git checkout") {
+		t.Errorf("unpark on a plain folder gave %q", text)
 	}
 }
 

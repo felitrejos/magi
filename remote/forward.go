@@ -70,7 +70,7 @@ func startForwards(session, host, ssh string, ports []int) error {
 	if err != nil {
 		return err
 	}
-	self, err := os.Executable()
+	self, err := magiLink()
 	if err != nil {
 		return err
 	}
@@ -241,27 +241,6 @@ func listForwards() ([]forwardRecord, error) {
 	return records, nil
 }
 
-func resolveForward(prefix string) (string, error) {
-	records, err := listForwards()
-	if err != nil {
-		return "", err
-	}
-	var found []string
-	for _, r := range records {
-		if strings.HasPrefix(r.Session, prefix) {
-			found = append(found, r.Session)
-		}
-	}
-	switch len(found) {
-	case 1:
-		return found[0], nil
-	case 0:
-		return "", fmt.Errorf("no forward for a session starting with %q", prefix)
-	default:
-		return "", fmt.Errorf("%q matches %d sessions; give more of the id", prefix, len(found))
-	}
-}
-
 func closeForwardsOn(m sh.Machine, session string) error {
 	if _, err := sh.Run(m, closeForwardsScript, session); err != nil {
 		return fmt.Errorf("%s was forwarding this session's ports and still is: %w", m.Name(), err)
@@ -269,32 +248,19 @@ func closeForwardsOn(m sh.Machine, session string) error {
 	return nil
 }
 
-func forwardsCommand(args []string, out io.Writer) error {
-	switch {
-	case len(args) == 0:
-		records, err := listForwards()
-		if err != nil {
-			return err
-		}
-		if len(records) == 0 {
-			fmt.Fprintln(out, "No ports are forwarded.")
-			return nil
-		}
-		for _, r := range records {
-			ports := make([]string, len(r.Ports))
-			for i, port := range r.Ports {
-				ports[i] = fmt.Sprintf("localhost:%d", port)
-			}
-			fmt.Fprintf(out, "%s  %s  %s  %s\n", store.ShortID(r.Session), r.Host, strings.Join(ports, ", "), r.State)
-		}
-		return nil
-	case len(args) == 2 && args[0] == "close":
-		session, err := resolveForward(args[1])
-		if err != nil {
-			return err
-		}
-		return closeForwards(session)
-	default:
-		return errors.New("usage: magi forwards [close <session-id>]")
+func reportForwards(w io.Writer) error {
+	records, err := listForwards()
+	if err != nil || len(records) == 0 {
+		return err
 	}
+	fmt.Fprintln(w, "Ports forwarded to sessions that moved away; each closes when its session moves on:")
+	for _, r := range records {
+		ports := make([]string, len(r.Ports))
+		for i, port := range r.Ports {
+			ports[i] = fmt.Sprintf("localhost:%d", port)
+		}
+		fmt.Fprintf(w, "  %s on %s  %s  %s\n", store.ShortID(r.Session), r.Host, strings.Join(ports, ", "), r.State)
+	}
+	fmt.Fprintln(w)
+	return nil
 }

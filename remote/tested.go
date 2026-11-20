@@ -10,6 +10,8 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
@@ -135,4 +137,33 @@ func refuseUntested(codex bool, local sh.Machine, remote sh.Machine, remoteProgr
 		}
 	}
 	return nil
+}
+
+func parseVersion(text string) ([3]int, bool) {
+	var v [3]int
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return v, false
+	}
+	parts := strings.SplitN(words[0], ".", 3)
+	if len(parts) != 3 {
+		return v, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return v, false
+		}
+		v[i] = n
+	}
+	return v, true
+}
+
+func compareVersions(a, b [3]int) int {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] - b[i]
+		}
+	}
+	return 0
 }

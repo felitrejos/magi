@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "magi hook stop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/magi\" hook stop",
             "timeout": 200
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "magi hook prompt",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/magi\" hook prompt",
             "timeout": 10
           }
         ]

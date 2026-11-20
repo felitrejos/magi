@@ -10,10 +10,7 @@ import (
 	"unicode/utf8"
 )
 
-const (
-	tailLines     = 80
-	keepCollected = 7 * 24 * time.Hour
-)
+const tailLines = 80
 
 func tail(text string) string {
 	text = strings.ToValidUTF8(text, "�")
@@ -269,49 +266,4 @@ func firstLine(s string) string {
 		line = string([]rune(line)[:157]) + "..."
 	}
 	return line
-}
-
-func cleanTasks(w io.Writer) error {
-	tasks, err := listTasks()
-	if err != nil {
-		return err
-	}
-	cleaned := 0
-	for _, t := range tasks {
-		if t.Outcome != nil {
-			continue
-		}
-		r, err := collectTask(t.ID, false)
-		if err != nil {
-			fmt.Fprintf(w, "%s: %v\n", t.ID, err)
-			continue
-		}
-		if r.Task.Outcome != nil {
-			cleaned++
-			fmt.Fprintf(w, "%s: collected (%s)\n", t.ID, outcomeState(r.Task.Outcome))
-		}
-	}
-	pruned, closed := 0, 0
-	for _, t := range tasks {
-		if t.Outcome != nil && t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies {
-			done, err := closeIdleCopy(t.ID)
-			if err != nil {
-				fmt.Fprintf(w, "%s: %v\n", t.ID, err)
-				continue
-			}
-			if done {
-				closed++
-			}
-			continue
-		}
-		if t.Outcome != nil && !t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCollected {
-			if err := t.forget(); err != nil {
-				fmt.Fprintf(w, "%s: %v\n", t.ID, err)
-				continue
-			}
-			pruned++
-		}
-	}
-	fmt.Fprintf(w, "Collected %d finished task(s); running ones were left alone. Removed %d delegate copies idle for a day, and forgot %d tasks collected more than a week ago.\n", cleaned, closed, pruned)
-	return nil
 }

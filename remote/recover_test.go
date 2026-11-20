@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,12 +16,17 @@ import (
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/store"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestMain(m *testing.M) {
 	if args := os.Getenv("MAGI_TEST_RUN"); args != "" {
 		os.Args = append([]string{"magi"}, strings.Fields(args)...)
-		main()
+		if os.Args[1] == "pull" {
+			pullHere(os.Args[2], os.Args[3], "", os.Stdout, false)
+		} else {
+			main()
+		}
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -123,11 +129,11 @@ func (f *fixture) answered(id string) {
 
 func (f *fixture) status() string {
 	f.t.Helper()
-	var out strings.Builder
-	if err := status(&out); err != nil {
-		f.t.Fatal(err)
+	text, failed := f.call("status", nil)
+	if failed {
+		f.t.Fatal(text)
 	}
-	return out.String()
+	return text
 }
 
 func (f *fixture) runsOnServer(id string) bool {
@@ -137,12 +143,6 @@ func (f *fixture) runsOnServer(id string) bool {
 		f.t.Fatal(err)
 	}
 	return slices.ContainsFunc(sessions, func(s liveSession) bool { return s.SessionID == id })
-}
-
-func journaled(id string) bool {
-	path, _ := movePath(id)
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 func stillOpen(exited <-chan struct{}) bool {
@@ -187,6 +187,29 @@ func TestStatusLeavesOneCopyWhereverTheStopHookWasKilled(t *testing.T) {
 	}
 }
 
+func TestACutOffMoveIsSettledWhenTheToolServerStarts(t *testing.T) {
+	f := newFixture(t)
+	id := "0f0f0f0f-1111-2222-3333-123456789013"
+	_, exited, hook := f.armedToMove(id)
+	f.cutOff(id, "sync", hook, "hook", "stop")
+	t.Cleanup(func() { callerPID = 0 })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverSide, _ := mcp.NewInMemoryTransports()
+	go serveMCP(ctx, serverSide)
+	for deadline := time.Now().Add(20 * time.Second); journaled(id); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("starting the tool server didn't settle the move")
+		}
+	}
+	if !stillOpen(exited) || f.runsOnServer(id) {
+		t.Error("the copy here should be the live one")
+	}
+	if out := f.status(); !strings.Contains(out, "The copy here is the live one") {
+		t.Errorf("status doesn't say how the move was settled:\n%s", out)
+	}
+}
+
 func TestAMoveWhoseUndoCantReachTheHostIsSettledOnceItAnswers(t *testing.T) {
 	f := newFixture(t)
 	f.serverHome()
@@ -205,16 +228,14 @@ func TestAMoveWhoseUndoCantReachTheHostIsSettledOnceItAnswers(t *testing.T) {
 	if out := f.status(); !strings.Contains(out, "magi can't reach server") || !journaled(id) || !strings.Contains(tmuxWindows(), "claude") {
 		t.Fatalf("with the network down:\n%s", out)
 	}
-	var moved strings.Builder
-	moveCommand([]string{id, "other", "--json"}, &moved)
-	if events := moveEvents(t, moved.String()); !strings.Contains(events[len(events)-1].Message, "magi can't reach server") || !journaled(id) {
-		t.Fatalf("a move to another host went ahead: %+v", events)
+	if err := (mover{session: id, host: "other", out: io.Discard}).run(); err == nil || !strings.Contains(err.Error(), "magi can't reach server") || !journaled(id) {
+		t.Fatalf("a move to another host went ahead: %v", err)
 	}
 	if err := os.Remove(down); err != nil {
 		t.Fatal(err)
 	}
 	out := f.status()
-	if journaled(id) || strings.Contains(tmuxWindows(), "claude") || !strings.Contains(out, "run claude --resume "+id+" in "+f.local) {
+	if journaled(id) || strings.Contains(tmuxWindows(), "claude") || !strings.Contains(out, "the user can resume it in "+f.local) {
 		t.Errorf("once the network is back, tmux has %q:\n%s", tmuxWindows(), out)
 	}
 }

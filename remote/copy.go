@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -58,26 +59,10 @@ func describeCopy(m sh.Machine, hostName string, host Host, ws Workspace, here, 
 		switch project, approved, err := readApproved(ws.Root); {
 		case err != nil:
 			lines = append(lines, "  "+err.Error())
+		case project != nil && !approved:
+			lines = append(lines, fmt.Sprintf("  from %s, nothing on this move: it isn't allowed here. It has %s. A Claude session here can let it run on later moves by calling allow_project with dir %s and sha256 %s.", projectFile, project.runs(), filepath.Dir(project.Path), project.Hash))
 		case project != nil:
-			var parts []string
-			if project.Setup != "" {
-				parts = append(parts, "setup")
-			}
-			if n := len(project.Services); n > 0 {
-				parts = append(parts, plural(n, "service")+" "+names(project.Services))
-			}
-			if n := len(project.Ports); n > 0 {
-				ports := make([]string, n)
-				for i, port := range project.Ports {
-					ports[i] = strconv.Itoa(port)
-				}
-				parts = append(parts, plural(n, "port")+" "+names(ports))
-			}
-			line := "  from " + projectFile + ": " + strings.Join(parts, ", ")
-			if !approved {
-				line += " (not allowed yet, run magi allow)"
-			}
-			lines = append(lines, line)
+			lines = append(lines, "  from "+projectFile+": "+project.runs())
 		}
 	}
 	if codex {

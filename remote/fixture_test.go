@@ -1,8 +1,8 @@
 package main
 
 import (
+	"cmp"
 	"context"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const fakeSSH = `#!/bin/sh
@@ -31,6 +32,10 @@ while [ $# -gt 0 ]; do
     *) if [ -z "$host" ]; then host=$1; shift; else break; fi ;;
   esac
 done
+if [ -s "$HOME/ssh-down" ]; then
+  cat "$HOME/ssh-down" >&2
+  exit 255
+fi
 if [ -e "$HOME/ssh-down" ]; then
   echo "ssh: connect to host $host port 22: Network is unreachable" >&2
   exit 255
@@ -45,6 +50,8 @@ type fixture struct {
 	home   string
 	local  string
 	remote string
+	answer string
+	asked  []string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -74,6 +81,8 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(func() { testedURL = url })
 	f.tool("claude", fakeClaude)
 	f.tool("codex", fakeCodex)
+	f.tool("launchctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
+	f.tool("systemctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -289,14 +298,6 @@ printf '%s\n' '{"timestamp":"t","type":"event_msg","payload":{"type":"task_start
 sleep 60
 `
 
-const fakeClaudeCLI = `#!/bin/sh
-case "$1" in
-  --version) echo "$MAGI_FAKE_CLAUDE_VERSION (Claude Code)" ;;
-  auth) echo '{"loggedIn":true,"authMethod":"claude.ai"}' ;;
-  plugin) if [ -n "$MAGI_FAKE_PLUGINS" ]; then echo "$MAGI_FAKE_PLUGINS"; else echo '[{"id":"magi@magi","enabled":true}]'; fi ;;
-esac
-`
-
 func (f *fixture) tool(name, body string) string {
 	f.t.Helper()
 	path := filepath.Join(f.home, "bin", name)
@@ -305,13 +306,6 @@ func (f *fixture) tool(name, body string) string {
 		f.t.Fatal(err)
 	}
 	return path
-}
-
-func (f *fixture) magiOnLoginPath() {
-	f.t.Helper()
-	f.tool("magi", "#!/bin/sh\n")
-	f.t.Setenv("SHELL", "/bin/sh")
-	f.write(f.home, ".profile", "PATH=\"$HOME/bin:$PATH\"\n")
 }
 
 func (f *fixture) config(body string) {
@@ -345,9 +339,36 @@ func (f *fixture) isolatedTmux() {
 
 func (f *fixture) allow(dir string) {
 	f.t.Helper()
-	if err := allowProject(dir, strings.NewReader("y\n"), io.Discard); err != nil {
+	p, err := readProject(dir)
+	if err != nil {
 		f.t.Fatal(err)
 	}
+	if text, failed := f.call("allow_project", map[string]any{"dir": dir, "sha256": p.Hash}); failed {
+		f.t.Fatal(text)
+	}
+}
+
+func (f *fixture) call(tool string, args map[string]any) (string, bool) {
+	f.t.Helper()
+	serverSide, clientSide := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := newMCPServer().Connect(ctx, serverSide, nil); err != nil {
+		f.t.Fatal(err)
+	}
+	ask := func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		f.asked = append(f.asked, req.Params.Message)
+		return &mcp.ElicitResult{Action: cmp.Or(f.answer, "accept")}, nil
+	}
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, &mcp.ClientOptions{ElicitationHandler: ask}).Connect(ctx, clientSide, nil)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer session.Close()
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return res.Content[0].(*mcp.TextContent).Text, res.IsError
 }
 
 func (f *fixture) serverHome() string {

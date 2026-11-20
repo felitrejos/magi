@@ -10,14 +10,17 @@ import (
 	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
-const keepCopies = 24 * time.Hour
+const (
+	keepCopies    = 24 * time.Hour
+	keepCollected = 7 * 24 * time.Hour
+)
 
 func (t *Task) remoteHome() string {
 	return strings.TrimSuffix(t.Dir, "/.magi/tasks/"+t.ID)
 }
 
 func (t *Task) delegateCommand(host Host, setup string, resume bool) []string {
-	claude := []string{expandHome(host.Claude, t.remoteHome())}
+	claude := []string{"env", delegateVar + "=1", expandHome(host.Claude, t.remoteHome())}
 	if t.RunDir != t.Checkout {
 		claude = append(claude, "--add-dir", t.Checkout)
 	}
@@ -57,18 +60,24 @@ func closeIdleCopy(id string) (bool, error) {
 	return true, t.closeCopy()
 }
 
-func sweepIdleCopies() string {
+func sweepTasks() string {
 	tasks, err := listTasks()
 	errs := []error{err}
 	for _, t := range tasks {
-		if t.Outcome != nil && t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies {
+		switch {
+		case t.Outcome == nil:
+		case t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies:
 			if _, err := closeIdleCopy(t.ID); err != nil && !errors.Is(err, errTaskBusy) {
+				errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
+			}
+		case !t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCollected:
+			if err := t.forget(); err != nil {
 				errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
 			}
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		return fmt.Sprintf("Note: closing idle task copies failed: %v\n", err)
+		return fmt.Sprintf("Note: tidying up old tasks failed: %v\n", err)
 	}
 	return ""
 }

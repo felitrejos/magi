@@ -7,6 +7,9 @@
   machines that comes back by itself.
 - **One program.** `magi` is a single Go program. It needs SSH, tmux on
   the machine that receives work, and the Claude Code or Codex CLI.
+- **Ask, don't type.** Nobody types magi commands. Installing the plugin
+  is the whole install, and everything after that is something you ask
+  Claude for.
 - **Reliable before new.** A handoff should be boring. Work on making moves
   safe and measured comes before anything else.
 - **Leave it to the tools.** What Claude Code, Codex, SSH or tmux already
@@ -14,10 +17,9 @@
 - **Suggest, don't act.** magi suggests machines but never moves or starts
   anything by itself. The one exception is `magi watch`, which takes back a
   session you asked to hand back. Beyond that it only cleans up after
-  itself. `magi status` and the next move of a session settle a move that
-  was cut off.
-- **A layer for other tools.** The CLI and `magi mcp` give scripts, other
-  orchestrators and Claude itself magi's actions. No tool types into
+  itself, which includes settling a move that was cut off.
+- **A layer for other tools.** `magi mcp` gives Claude and any other MCP
+  client magi's actions. No tool types into
   another live session. You answer a session in its own app, which is the
   Claude app through Remote Control or its terminal.
 
@@ -36,48 +38,71 @@ workspace.
   `remote/tested.json`, with the oldest supported version, the newest one
   the contract tests passed with and a list of versions that fail. A
   nightly job on a Linux server tests the newest releases and raises the
-  newest tested version when they pass. A hand off, a pull and
-  `magi doctor` refuse a version outside the list, and pick up a new list
-  within an hour without a magi update. Still open are these.
+  newest tested version when they pass. A move in either direction and
+  the checks in `setup_machine` refuse a version outside the list, and
+  pick up a new list within an hour without a magi update. Still open are these.
   - Nothing runs the contract tests on macOS. The list comes from the
     Linux nightly only, so a version can be marked tested without a pass
     on a Mac.
   - A failed night shows only in that server's journal and logs. Users see
-    it as a refusal in `magi doctor`, and nobody is told.
+    it as a refusal when they move a session, and nobody is told.
   - The list of failing versions is edited by hand.
   - The job depends on one server and on the accounts logged in there.
 - **Recovery anyone can follow.** When a move is cut off because SSH
-  drops, the machine sleeps or the hook is killed, `magi status` says which
-  copy is the live one, cleans up the other and prints the exact command to
-  continue. What exists now is a journal per move in `~/.magi/moves`,
-  written before the move changes anything and removed when it has fully
-  finished. `magi status` and the next move of that session read a journal
-  left behind and finish or undo the move. They never delete a folder, and
-  they stop nothing when they can't tell which copy is live. Tests that
-  kill the hook partway and take the network down run in the test suite.
+  drops, the machine sleeps or the hook is killed, magi works out which
+  copy is the live one and cleans up the other. What exists now is a
+  journal per move in `~/.magi/moves`, written before the move changes
+  anything and removed when it has fully finished. magi reads a journal
+  left behind and finishes or undoes the move, when a Claude Code session
+  starts, once a minute from the watcher and before the next move of that
+  session. It never deletes a folder, and it stops nothing when it can't
+  tell which copy is live. The `status` tool shows what was settled and
+  what still needs you. Tests that kill the hook partway and take the
+  network down run in the test suite.
   Still open are these.
   - The results of those tests aren't published alongside the round-trip
     numbers.
   - No test covers recovery of a Codex session.
 - **Show what gets copied.** Before a move, magi prints a short list of
-  what goes across. What exists now is that list for `magi arm`,
-  `magi move`, `magi pull` and `magi watch`. It has the branch and its
+  what goes across. What exists now is that list for a handoff, for
+  `move_session` in both directions and for `magi watch`. It has the branch and its
   changed files, files git doesn't track yet, the secret files by name and
   never by value, and the setup, services and ports in the project's
   `.magi.toml`. magi never turns SSH host key checks off. Still open are
   these.
-  - A busy session moved with `magi move` hands off from the Stop hook and
-    prints no list.
-  - The defaults for `exclude` and `secrets` are only suggestions in
-    `magi init`. A config written by hand gets none, and nothing applies
-    them when a move runs.
+  - The list is a notice. magi doesn't wait for an answer before it
+    copies.
+  - `setup_machine` writes defaults for `exclude` and `secrets` into a
+    config that has none. A config written by hand gets none, and nothing
+    applies them when a move runs.
   - Files git doesn't track and doesn't ignore travel even when their
     names are in `exclude`. The list shows them, and nothing leaves them
     out.
 - **A support matrix.** Mac to Linux and Linux to Linux are tested on every
   release. WSL is either tested end to end or marked unsupported, in the
-  docs and in `magi init`. A table shows what works for Claude Code and for
+  docs and in `setup_machine`. A table shows what works for Claude Code and for
   Codex, since Codex has no end-of-turn hook and moves differently.
+- **Agent native.** Done in the code, not released yet. The typed
+  commands and the install script are gone. You add the plugin in Claude Code,
+  and its launcher downloads the matching release binary and checks its
+  SHA-256. `setup_machine` checks SSH, installs the plugin on the other
+  machine, starts the watcher, checks both machines and runs a throwaway
+  round trip. `move_session` moves a session in both directions, a quit
+  one included. `status`, `unpark`, `allow_project` and `uninstall`
+  replace the rest. You approve a project's `.magi.toml` in Claude Code's
+  own dialog, and the approval holds for that file's SHA-256 only. A
+  delegated Claude doesn't get the tools that are your call. Still open
+  are these.
+  - It hasn't run against the homelab yet, so the Linux side of setup and
+    the launcher is unverified on a real machine.
+  - The 0.10.0 release isn't tagged. Until it is, the launcher has
+    nothing to download, and only a local build works.
+  - Whether the skill's `Bash(magi arm:*)` rule matches the plugin's
+    launcher without a permission prompt is unverified.
+  - Releases aren't signed. The launcher's checksum comes from the same
+    release as the binary.
+  - Codex can't call magi's tools. A Codex session moves when you ask
+    Claude to move it.
 - **Docs a stranger can use.** A five-minute tutorial that goes from one
   machine to a second one, a troubleshooting page, a short versioning policy
   that says what 1.x promises not to break, and a changelog.
@@ -96,12 +121,13 @@ workspace.
 - **Wait for a session, move another one.** What exists now is
   `magi wait`, which returns once a session on any machine isn't busy and
   says whether it's idle, waiting on you or ended. It follows a session
-  that is being handed off to another machine. The `move_session` MCP tool
-  moves a session on this machine, other than the one you're in, as
-  `magi move` does. Claude proposes the move and waits for your yes. It
-  doesn't move a session that is busy or waiting on you. `wait` is a
-  command and not a tool, like `magi tasks wait`, because a tool call that
-  blocks for minutes runs into MCP time limits.
+  that is being handed off to another machine. The `move_session` tool
+  moves a session other than the one you're in, between this machine and
+  another, in either direction. Claude proposes the move and waits for
+  your yes. It doesn't move a session that is busy or waiting on you.
+  `wait` is a command Claude runs in a background shell and not a tool,
+  like `magi tasks wait`, because a tool call that blocks for minutes
+  runs into MCP time limits.
 - **`magi watch` streams changes.** What exists now is a watcher that,
   over the one SSH connection per machine it already keeps for hand backs,
   also streams what changes there. It runs the same loop for this machine.

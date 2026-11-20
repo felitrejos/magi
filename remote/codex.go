@@ -14,13 +14,6 @@ import (
 	"github.com/felitrejos/magi/remote/internal/store"
 )
 
-func resumeHint(s remoteSession) string {
-	if s.Codex {
-		return "codex resume " + s.ID
-	}
-	return "claude --resume " + s.ID
-}
-
 var errNoSession = errors.New("no session")
 
 func findCodexSession(m sh.Machine, id string) (remoteSession, error) {

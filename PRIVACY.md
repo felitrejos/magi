@@ -9,9 +9,10 @@ crash reports.
 ## What magi copies, and where
 
 `magi` connects to machines you configured yourself, over SSH, with your
-own SSH keys and config. Besides that it makes one web request, described
-under "The tested versions list" below. The Claude Code plugin only runs
-`magi`, so the same goes for it.
+own SSH keys and config. Besides that it makes two kinds of web request,
+both to GitHub, described under "The tested versions list" and
+"Installing" below. The Claude Code plugin only runs `magi`, so the same
+goes for it.
 
 To move a session or send work, magi copies these to the machine you chose.
 
@@ -30,8 +31,8 @@ It doesn't send them anywhere else.
 To list machines and sessions, magi reads each configured machine's
 system, load and memory, and the list of Claude Code and Codex sessions
 running there with their titles, folders and state. The `diff` tool reads
-a session's uncommitted changes. The answers go to your terminal or to the
-Claude session that asked.
+a session's uncommitted changes. The answers go to the Claude session that
+asked.
 
 `magi watch` reads the same list every 2 seconds and, about every 30
 seconds, each machine's load, memory and disk and each session's CPU and
@@ -43,8 +44,8 @@ with no conversation text and no file contents.
 magi keeps its settings in `~/.config/magi/config.toml` and its state in
 `~/.magi` on each machine. That includes a log of handoffs with session
 ids, machine names and folder paths, and the output of tasks you sent to
-other machines. If you run `magi watch` as a service, it also writes a log
-on the laptop. magi sends none of it anywhere.
+other machines. The `magi watch` service that setup installs also writes a
+log on the laptop. magi sends none of it anywhere.
 [SECURITY.md](SECURITY.md) lists every file.
 
 ## The tested versions list
@@ -54,8 +55,8 @@ passed with. The list of those versions is a file in magi's repository on
 GitHub. magi fetches it with one HTTPS request to
 `raw.githubusercontent.com` and keeps a copy in `~/.magi/tested.json`.
 
-- It asks only when you move a session or run `magi doctor`, and only if
-  its copy is more than an hour old.
+- It asks only when a session moves or when you ask Claude to set up or
+  check a machine, and only if its copy is more than an hour old.
 - The request is a plain download. It sends nothing about you, your
   machines or your sessions. GitHub sees what any HTTP request carries,
   which is your IP address and a user agent.
@@ -64,9 +65,15 @@ GitHub. magi fetches it with one HTTPS request to
 
 ## Installing
 
-The install script downloads the release from GitHub
-([github.com/felitrejos/magi](https://github.com/felitrejos/magi) releases).
-That is GitHub's normal download and nothing extra.
+You install the plugin through Claude Code's plugin marketplace, which
+fetches it from
+[github.com/felitrejos/magi](https://github.com/felitrejos/magi). The
+first time the plugin runs on a machine, and after each plugin update, it
+downloads the magi program for that version and its checksums from the
+same repository's GitHub releases. Setting up another machine does both on
+that machine, over your SSH. These are plain downloads that send nothing
+about you, your machines or your sessions. GitHub sees your IP address
+and a user agent.
 
 ## Other services
 

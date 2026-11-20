@@ -27,10 +27,6 @@ func quoteAll(args []string) string {
 	return strings.Join(quoted, " ")
 }
 
-func Exec(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return output(command(ctx, name, args...), name)
-}
-
 func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

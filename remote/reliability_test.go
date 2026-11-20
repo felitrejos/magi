@@ -103,7 +103,7 @@ func TestASessionThatMovedRefusesNewInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	var reply map[string]string
-	if err := json.Unmarshal([]byte(out.String()), &reply); err != nil || reply["decision"] != "block" || !strings.Contains(reply["reason"], "magi pull server") {
+	if err := json.Unmarshal([]byte(out.String()), &reply); err != nil || reply["decision"] != "block" || !strings.Contains(reply["reason"], "ask it to move session 0f0f0f0f here") {
 		t.Fatalf("reply = %q, %v", out.String(), err)
 	}
 	if err := clearMoved(local, id); err != nil {
@@ -134,9 +134,10 @@ func TestEveryHandoffStepFitsInsideTheHooksTimeLimit(t *testing.T) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		t.Fatal(err)
 	}
+	const hookLimit = 200 * time.Second
 	stop := config.Hooks["Stop"][0].Hooks[0]
-	if stop.Command != "magi hook stop" || time.Duration(stop.Timeout)*time.Second != hookLimit {
-		t.Fatalf("the Stop hook is %+v, want magi hook stop with %s", stop, hookLimit)
+	if stop.Command != `"${CLAUDE_PLUGIN_ROOT}/bin/magi" hook stop` || time.Duration(stop.Timeout)*time.Second != hookLimit {
+		t.Fatalf("the Stop hook is %+v, want the plugin's magi hook stop with %s", stop, hookLimit)
 	}
 	worst := recoverBudget + prepareBudget + launchBudget + finishBudget + projectPanesLimit + cleanupBudget
 	if worst > hookLimit-5*time.Second {

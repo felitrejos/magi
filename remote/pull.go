@@ -6,13 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
@@ -60,7 +57,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	var st stepper
 	defer func() { res.Steps = st.steps }()
 	if len(p.Host.LocalRoots) == 0 {
-		return res, errors.New("set local_roots in the config so magi knows where projects go on this machine")
+		return res, errors.New("local_roots isn't set in magi's config, so magi doesn't know where projects go on this machine; call setup_machine with local_roots")
 	}
 	waitCtx, cancelWait := context.WithTimeout(context.Background(), pullWait)
 	defer cancelWait()
@@ -76,6 +73,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	var session remoteSession
 	var ws Workspace
 	var where Placement
+	var remoteHome string
 	if err := st.run("find", func() (err error) {
 		if session, err = findSession(remote, p.SessionID); err != nil {
 			return err
@@ -94,7 +92,6 @@ func (p Pull) Run() (res Pulled, err error) {
 				return err
 			}
 		}
-		var remoteHome string
 		if ws, remoteHome, err = sourceWorkspace(remote, p.HostName, session.Cwd, p.Host.Secrets, p.Host.Exclude); err != nil {
 			return err
 		}
@@ -135,7 +132,10 @@ func (p Pull) Run() (res Pulled, err error) {
 	defer cancel()
 	local, remote = local.With(ctx).(*sh.Local), remote.With(ctx).(*sh.Remote)
 	stopped := func(err error) error {
-		return fmt.Errorf("%w. The session is stopped on %s; to carry on there instead, run %s in %s on %s", err, p.HostName, resumeHint(session), session.Cwd, p.HostName)
+		if session.Live == nil && len(session.Running) == 0 {
+			return err
+		}
+		return reopen(remote, "on "+p.HostName, expandHome(p.Host.program(session.Codex), remoteHome), serverGroup(ws.MainRoot, p.Host.Roots, remoteHome), session, "Bringing this session to "+local.Name(), err)
 	}
 	if err := st.run("inspect", func() (err error) {
 		ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude)
@@ -277,21 +277,24 @@ func stopAtTurnEnd(r *sh.Remote, s remoteSession, out io.Writer) error {
 	}
 }
 
+func reopen(m sh.Machine, place, program, group string, s remoteSession, move string, err error) error {
+	if journaled(s.ID) {
+		return fmt.Errorf("%w. The session is stopped %s, and magi settles it on its own; status says where it carries on", err, place)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupBudget)
+	defer cancel()
+	name := baseName(s.Cwd)
+	command := resumeCommand(s.ID, name, fmt.Sprintf("[magi] %s failed (%v), so this session carries on here.", move, err), s.Codex)
+	command[0] = program
+	if _, openErr := (sh.Tmux{Machine: m.With(ctx)}).Start(group, tabLabel(name, s.Codex), s.Cwd, command, false); openErr != nil {
+		return fmt.Errorf("%w. The session is stopped %s, and reopening it failed (%v); the user can resume it in %s", err, place, openErr, s.Cwd)
+	}
+	return fmt.Errorf("%w. The session was stopped for the move, so magi reopened it %s in a tmux window", err, place)
+}
+
 func resumeCommand(sessionID, name, prompt string, codex bool) []string {
 	if codex {
 		return []string{"codex", "-c", "check_for_update_on_startup=false", "-c", `tui.resume_cwd="current"`, "resume", sessionID, prompt}
 	}
 	return []string{"claude", "--resume", sessionID, "--remote-control", name, prompt}
-}
-
-func resumeHere(dir, sessionID, name, prompt string, codex bool) error {
-	args := resumeCommand(sessionID, name, prompt, codex)
-	program, err := exec.LookPath(args[0])
-	if err != nil {
-		return err
-	}
-	if err := os.Chdir(dir); err != nil {
-		return err
-	}
-	return syscall.Exec(program, args, os.Environ())
 }

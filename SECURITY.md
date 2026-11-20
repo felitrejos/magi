@@ -1,21 +1,90 @@
 # Security
 
-magi is one program, `magi`, that you run on your own machines. It talks
-to your other machines only through your own `ssh`. Its one other
-connection is an HTTPS download of the tested versions list from GitHub,
-described below. It runs no server and opens no network listener, except
-the ports you ask it to forward, which listen on `127.0.0.1`.
+magi is one program, `magi`, that runs on your own machines. You don't
+type its commands. The Claude Code plugin runs it, and you ask Claude for
+what you need. It talks to your other machines only through your own
+`ssh`. Its other connections are two HTTPS downloads from GitHub, the
+release binary and the tested versions list, both described below. It runs
+no server and opens no network listener, except the ports you ask it to
+forward, which listen on `127.0.0.1`.
 
 ## What runs where
 
-- **The machine you start from** runs `magi` when you type a command, when
-  Claude Code runs the plugin's hooks and tools, and, if you installed it,
-  as the `magi watch` background service.
+- **The machine you start from** runs `magi` when Claude Code runs the
+  plugin's hooks, tools and skill, and as the `magi watch` background
+  service once you set a machine up.
 - **The other machine** runs short shell scripts that magi sends over SSH,
-  and the session or task itself in a tmux window. If the plugin is
-  installed there, Claude Code runs the same hooks on it.
-- **The plugin** adds the handoff skill, two hooks and the MCP server.
-  All of them only run `magi`.
+  and the session or task itself in a tmux window. Setup installs the
+  plugin there, so Claude Code runs the same hooks and tools on it.
+- **The plugin** adds the handoff skill, two hooks, the MCP server and a
+  launcher, `bin/magi`. All of them only run `magi`.
+- **Claude itself** runs three magi commands. The handoff skill runs
+  `magi arm`, and Claude runs `magi wait` and `magi tasks wait` as
+  background shell commands. Everything else is a tool call.
+
+## The launcher's download
+
+The plugin holds no binary. Its launcher, `plugin/bin/magi`, is a short
+shell script that every hook, tool and command goes through.
+
+- It reads the plugin's version from the plugin's own `plugin.json` and
+  runs `~/.magi/bin/magi-<version>`.
+- If that file is missing, it downloads `magi_<os>_<arch>.tar.gz` and
+  `checksums.txt` from the GitHub release `v<version>` of
+  `felitrejos/magi` with `curl`. It allows only HTTPS, also on redirects.
+- It computes the archive's SHA-256 and compares it with the line for
+  that archive in `checksums.txt`. If they differ, or the line is missing,
+  it installs nothing and stops.
+- It unpacks only `magi` from the archive, moves it into place and points
+  the link `~/.magi/bin/magi` at it. The watcher and port forwards run
+  that link.
+- The archive and its checksum come from the same release. The check
+  catches a damaged or swapped download. It doesn't protect you from a
+  bad release. What you trust is GitHub's TLS and whoever can write
+  releases to that repository. Releases aren't signed.
+- `MAGI_VERSION` and `MAGI_RELEASE_URL` in the environment change which
+  version it runs and where it downloads from. `make dev` uses the first
+  for a local build. With `MAGI_RELEASE_URL` it also accepts a `file://`
+  address, which the tests use.
+- The plugin reaches a machine through Claude Code's plugin marketplace,
+  from the same repository.
+
+## Setting up another machine
+
+The `setup_machine` tool runs when you ask Claude to set magi up with a
+machine. Claude says what it installs and waits for your yes. It does
+these in order.
+
+- It runs `ssh` to the machine with `true`. If that fails, it stops and
+  says what only you can do, such as accepting the host key or adding an
+  SSH key. It never accepts a host key for you.
+- It looks for `claude`, and `codex` if you asked for Codex, in the usual
+  install paths there.
+- It saves the machine in `~/.config/magi/config.toml` here, with the
+  project folders it found on both machines, `secrets` of `.env` and
+  `.env.*`, and a default `exclude` list, unless the config has them
+  already.
+- On the other machine it adds the marketplace `felitrejos/magi` with
+  `claude plugin marketplace add` and installs the plugin with
+  `claude plugin install magi@magi`. If the plugin
+  is there already, it turns it on or updates it when it is older than
+  the one here. Then it runs the plugin's launcher there once with
+  `version`, which makes the download described above on that machine.
+  It installs nothing else there and uses no `sudo`.
+- Here it installs the `magi watch` service described under "The
+  watcher".
+- It checks git, `tar`, tmux, the Claude Code and Codex versions, the
+  claude.ai login and the project folders on both machines. It reads the
+  login with `claude auth status`.
+- It creates a `magi-try-*` folder in your first local root, moves a
+  session in it to the other machine and back, then removes the folder
+  and its transcripts on both machines. That makes three Claude turns on
+  your account.
+
+The `uninstall` tool stops and removes the watcher service here and
+deletes `~/.magi/bin`. It keeps your config and the rest of `~/.magi`,
+and it changes nothing on other machines. You remove the plugin yourself
+with `/plugin`.
 
 ## SSH
 
@@ -31,8 +100,6 @@ the ports you ask it to forward, which listen on `127.0.0.1`.
   connection of its own.
 - Git objects travel with `git push` and `git fetch` over that connection.
   Files travel as a `tar` stream over it.
-- `magi init` runs `tailscale status --json` if Tailscale is installed,
-  only to suggest machine names.
 
 ## Moving a session
 
@@ -63,10 +130,6 @@ the ports you ask it to forward, which listen on `127.0.0.1`.
   200 seconds. The prompt hook (`magi hook prompt`) refuses new input in
   the copy a session left. It reads the session id from the hook's input
   and the marker in `~/.magi/moved`, and contacts nothing.
-- `magi try` creates a `magi-try-*` folder in your first local root and
-  moves it to the host's root. When it ends, it removes the folder and
-  its transcripts on both machines. It makes three Claude turns on your
-  account.
 
 ### What magi shows before a move
 
@@ -82,8 +145,9 @@ and the machine's name. It lists these.
 - For a folder that isn't a git repository, its file count and size
   without the names in `exclude`, and those names.
 - What the project's `.magi.toml` holds, as whether it has a `setup`
-  command, its `services` and its `ports`. An unapproved file is marked
-  "not allowed yet, run magi allow".
+  command, its `services` and its `ports`. For a file you haven't
+  approved here, it says that nothing in it runs on this move, and gives
+  the commands and the file's SHA-256.
 - The conversation and, for Claude Code, its project memory.
 - A last line on what doesn't go. That is anything running and, in a git
   repository, anything git ignores apart from the secret files.
@@ -92,12 +156,11 @@ Where you see it depends on how the move starts.
 
 - `magi arm`, which the handoff skill runs, prints it after "Armed".
   Claude passes it on to you, and the move starts when the turn ends.
-- `magi move` prints it after it has inspected the project. With `--json`
-  it is one `copy` event.
-- `magi pull` and `magi watch` print what comes back, read on the other
-  machine. They leave out the `.magi.toml` line.
-- A Claude Code session that is in the middle of a turn when you run
-  `magi move` hands off from the Stop hook, and no block is printed.
+- The `move_session` tool returns it to Claude with the result of the
+  move, for a session that goes from this machine to another.
+- When a session comes here, through `move_session` or the watcher, the
+  block says what comes back, read on the other machine. It leaves out
+  the `.magi.toml` line.
 - A hand back asked of a machine that runs `magi watch` prints nothing
   where you asked. The block goes to that machine's watcher log.
 
@@ -109,8 +172,14 @@ If the block can't be built, magi says so and the move goes on.
 - Every move writes a journal, `~/.magi/moves/<session-id>.json`, before
   it changes anything, and removes it as its last step. A journal whose
   move is no longer running belongs to a move that was cut off.
-  `magi status` and the next move of that session settle it. They contact
-  the other machine over SSH for at most 15 seconds.
+- magi settles those on its own. It checks every journal when the
+  plugin's MCP server starts, which is when a Claude Code session starts,
+  and once a minute from the watcher. The `status` tool and the next move
+  of that session check too. Each check contacts the other machine over
+  SSH for at most 15 seconds.
+- A settled move is written to `handoffs.jsonl` with what magi did, and
+  `status` shows it among the recent handoffs. The watcher also writes it
+  to its log.
 - The live copy is the one that took new prompts since the move started.
   If both did, it is the one still running. If neither did, it is the
   copy the session was leaving, unless the move had reached its last step.
@@ -124,15 +193,19 @@ If the block can't be built, magi says so and the move goes on.
 - Recovery never deletes a folder or a transcript. When the move created
   a folder that is still there, it tells you the path and leaves it.
 - If both copies took new prompts and both or neither is running, magi
-  stops nothing and tells you where each copy is.
+  stops nothing. `status` says where each copy is, and the choice is
+  yours.
 - If the other machine doesn't answer, magi changes nothing there and
-  keeps the journal. It prints the journal's path, which you remove
-  yourself if that machine is gone for good.
+  keeps the journal, and tries again on each check. `status` gives the
+  journal's path, which you remove yourself if that machine is gone for
+  good.
 
 ## The watcher
 
-`magi watch` is for a laptop that takes no incoming SSH. It also records
-what runs on each machine, described under "What the watcher reads".
+`magi watch` lets a laptop that takes no incoming SSH take sessions back.
+`setup_machine` installs it as a service on the machine you set up from.
+It also records what runs on each machine, described under "What the
+watcher reads".
 
 - It keeps one outgoing SSH connection to each machine in your config. On
   each it runs a small loop that refreshes `~/.magi/watchers/<laptop name>`
@@ -144,21 +217,26 @@ what runs on each machine, described under "What the watcher reads".
   watcher file in the last 15 seconds. It holds the laptop's name, the
   session's process id and the note on what was running.
 - The laptop then pulls the session over its own connection, the same way
-  `magi pull` does, opens it in a tmux window and removes the request. If
+  `move_session` does, opens it in a tmux window and removes the request. If
   the pull fails, it tries again each minute. A request can only make the
   laptop pull a session from the machine the request is on.
 - The loop deletes a request addressed to the laptop whose session process
   is gone.
-- `magi watch install` writes a launchd agent on macOS
+- The service is a launchd agent on macOS
   (`~/Library/LaunchAgents/magi-watch.plist`, log in
   `~/Library/Logs/magi-watch.log`) or a systemd user unit on Linux
   (`~/.config/systemd/user/magi-watch.service`, log in the journal). It
   runs as you, never as root, starts at login and restarts if it stops.
-  The service file holds the path of `magi` and a copy of your `PATH`.
-  `magi watch uninstall` stops it and removes the file.
+  The service file holds the path `~/.magi/bin/magi` and a copy of your
+  `PATH`. The `uninstall` tool stops it and removes the file.
+- Once a minute the watcher settles moves that were cut off. It also
+  checks whether `~/.magi/bin/magi` points at a newer build and whether
+  magi's config changed, for example after `setup_machine` added a
+  machine. If either did, the watcher exits once no session is being
+  taken back, and the service starts it again.
 - The log holds machine names, short session ids, folder paths, errors,
-  the output of a project's `setup` command and the block of what comes
-  back, with its branch and file names. magi writes no conversation text
+  the output of a project's `setup` command, what magi did to settle a
+  move, and the block of what comes back, with its branch and file names. magi writes no conversation text
   to it.
 
 ### What the watcher reads
@@ -226,6 +304,13 @@ It holds no conversation text and no file contents.
   `dontAsk` or `auto` when Claude asks for one. Other prompts are answered
   "no" unless you allowed the tool, and it never runs with permission
   checks bypassed.
+- magi starts a delegated Claude with `MAGI_DELEGATE` set. The magi MCP
+  server in that Claude then leaves out every tool that is your call.
+  Those are `setup_machine`, `move_session`, `allow_project`, `unpark`,
+  `run_elsewhere`, `delegate`, `session_elsewhere`, `task_reply`,
+  `task_result`, `cancel_task` and `uninstall`. It keeps `machines`,
+  `sessions`, `diff`, `status` and `task_status`. So a delegate can't
+  send work on, move a session or approve a project.
 - When a finished `delegate` is collected, its changes are written into
   your working tree here and kept as the branch `magi/task-<id>`. If they
   clash with edits made here since the task started, nothing is applied
@@ -257,15 +342,15 @@ It holds no conversation text and no file contents.
 - magi downloads that file from
   `https://raw.githubusercontent.com/felitrejos/magi/main/remote/tested.json`
   and keeps it in `~/.magi/tested.json`. It downloads again when that copy
-  is more than an hour old, and only for a hand off, a pull or
-  `magi doctor`. The request has a 5 second limit. A download magi can't
+  is more than an hour old, and only for a move in either direction or
+  the checks in `setup_machine`. The request has a 5 second limit. A download magi can't
   parse is thrown away. If the download fails, magi uses the copy it has, and
   with no copy the list built into the program.
-- Before a hand off or a pull copies anything, magi runs `claude --version`
-  on both machines, or `codex --version` for a Codex session. It refuses
-  when either version is older than the oldest supported, on the failing
-  list, or newer than the newest tested. `magi doctor` fails on the same
-  versions.
+- Before a move copies anything, magi runs `claude --version` on both
+  machines, or `codex --version` for a Codex session. It refuses when
+  either version is older than the oldest supported, on the failing
+  list, or newer than the newest tested. The checks in `setup_machine`
+  fail on the same versions.
 - The list only widens or narrows which versions magi allows. Someone who
   could change it on GitHub, or the copy in `~/.magi`, could block your
   moves or let an untested version through. It can do nothing else. magi
@@ -281,12 +366,28 @@ It holds no conversation text and no file contents.
 
 ## Project files and ports
 
-- A project's `.magi.toml` runs only after you approve that exact file with
-  `magi allow`. Any edit needs a new approval.
+- A project's `.magi.toml` runs nothing until you approve that exact
+  file on that machine. Its `setup` command, `services` and `ports` then
+  run after moves and before `run_elsewhere` and `delegate` tasks.
+- When magi meets a file you haven't approved, its note gives Claude the
+  file's commands and its SHA-256. Claude calls `allow_project` with the
+  folder and that hash.
+- `allow_project` reads the file again. If its SHA-256 isn't the one
+  Claude passed, it allows nothing. So Claude can't approve a file that
+  changed after magi described it.
+- Then magi asks you through MCP elicitation. Claude Code shows a dialog
+  of its own with the file's path, the machine and the exact `setup` and
+  `services` commands and ports. Claude can't answer that dialog. magi
+  records the approval only when you accept, and anything else allows
+  nothing.
+- The approval is the file's path and SHA-256 in `~/.magi/allowed`. Any
+  edit changes the hash, so the file needs a new approval.
+- A file is refused if it has unknown keys, or control or format
+  characters in a command, so the dialog shows what will run.
 - Its `ports` are forwarded from the machine a session left with
   `ssh -N -L`, bound to `127.0.0.1`, so other devices on that network
-  can't use them. `magi forwards` lists them, `magi forwards close` stops
-  one, and bringing the session back stops it too.
+  can't use them. The `status` tool lists them. A forward stops when the
+  session comes back or moves on.
 
 ## Files magi writes
 
@@ -295,13 +396,14 @@ when that is set. State is in `~/.magi`.
 
 | Path in `~/.magi` | What it holds |
 |---|---|
-| `armed/` | A session set to move when its turn ends, a lock while it moves, and the result the Stop hook leaves for `magi move` |
+| `bin/` | The magi binaries the launcher downloaded, one per version, and the link `magi` to the current one |
+| `armed/` | A session set to move when its turn ends, and a lock while it moves |
 | `wanted/` | Hand-back requests waiting for a watcher |
 | `watchers/` | One file per laptop watching this machine |
 | `watch.lock` | Keeps a second `magi watch` from starting |
 | `live/` | One file per machine, written by `magi watch`, with whether it answers, its load, memory and disk, and its sessions with their state, CPU and memory |
 | `moved/` | Where each session that left went |
-| `handoffs.jsonl` | Time, session id, machines and folders of each handoff |
+| `handoffs.jsonl` | Time, session id, machines and folders of each handoff, and what magi did to settle a move that was cut off |
 | `moves/` | One journal per move in progress or cut off, kept until the move is settled |
 | `forwards/` | Forwarded ports and the process forwarding them |
 | `tabs/`, `setup/` | The tmux window of a moved session and its setup state |
@@ -318,10 +420,11 @@ service file and log.
 ## Releases
 
 Release builds come from GitHub Actions with actions pinned to commit
-hashes. `install.sh` downloads over HTTPS and checks the archive's SHA-256
-before installing. It also deletes the service and the `magi-overview`
-and `magi-remote` binaries that earlier releases installed, if it finds
-them.
+hashes. A release runs when a `v*` tag is pushed, and it stops if the tag
+doesn't match the version in the plugin's `plugin.json`. It builds `magi`
+for macOS and Linux on arm64 and amd64, packs each in a `tar.gz` and
+writes their SHA-256 sums to `checksums.txt`. Those are the files the
+launcher downloads. There is no install script.
 
 ## Reporting a problem
 

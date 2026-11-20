@@ -7,15 +7,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"github.com/felitrejos/magi/remote/internal/sh"
 	"github.com/felitrejos/magi/remote/internal/store"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const projectFile = ".magi.toml"
@@ -56,8 +58,8 @@ func parseProject(data []byte) (*Project, error) {
 		seen[port] = true
 	}
 	for _, command := range append([]string{p.Setup}, p.Services...) {
-		if strings.ContainsFunc(command, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-			return nil, fmt.Errorf("%s: commands can't contain control characters", projectFile)
+		if strings.ContainsFunc(command, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
+			return nil, fmt.Errorf("%s: commands can't contain control or format characters", projectFile)
 		}
 	}
 	for _, s := range p.Services {
@@ -97,9 +99,31 @@ func approvedProject(local *sh.Local, root string) (*Project, error) {
 		return nil, err
 	}
 	if !approved {
-		return nil, fmt.Errorf("%s isn't approved on %s, so it didn't run; check it and run magi allow in %s", p.Path, local.Name(), filepath.Dir(p.Path))
+		return nil, fmt.Errorf("%s isn't allowed on %s yet, so it didn't run. %s", p.Path, local.Name(), p.toAllow())
 	}
 	return p, nil
+}
+
+func (p *Project) runs() string {
+	var runs []string
+	if p.Setup != "" {
+		runs = append(runs, fmt.Sprintf("setup %q", p.Setup))
+	}
+	for _, s := range p.Services {
+		runs = append(runs, fmt.Sprintf("service %q", s))
+	}
+	if len(p.Ports) > 0 {
+		ports := make([]string, len(p.Ports))
+		for i, port := range p.Ports {
+			ports[i] = strconv.Itoa(port)
+		}
+		runs = append(runs, plural(len(ports), "port")+" "+strings.Join(ports, ", "))
+	}
+	return strings.Join(runs, ", ")
+}
+
+func (p *Project) toAllow() string {
+	return fmt.Sprintf("It has %s. To let it run, call allow_project with dir %s and sha256 %s: magi shows the user these commands and allows them only if the user accepts.", p.runs(), filepath.Dir(p.Path), p.Hash)
 }
 
 func readApproved(root string) (*Project, bool, error) {
@@ -149,51 +173,48 @@ func writeApprovals(approvals map[string]string) error {
 	return store.WriteAtomic(path, []byte(b.String()))
 }
 
-func allowProject(dir string, in io.Reader, out io.Writer) error {
+func allowProject(dir, hash string, answers mcp.InputResponseMap) (*mcp.CallToolResult, error) {
 	local, err := sh.NewLocal(context.Background())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ws, err := readWorkspace(local, dir, nil, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	p, err := readProject(ws.Root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if p == nil {
-		return fmt.Errorf("no %s at %s, the project's root", projectFile, ws.Root)
+		return nil, fmt.Errorf("no %s at %s, the project's root", projectFile, ws.Root)
 	}
-	fmt.Fprintf(out, "%s runs this on the machine a session moves to:\n", p.Path)
-	if p.Setup != "" {
-		fmt.Fprintf(out, "  setup:   %s\n", p.Setup)
+	if p.Hash != hash {
+		return nil, fmt.Errorf("%s doesn't have sha256 %s, so it isn't what the user saw; nothing was allowed. %s", p.Path, hash, p.toAllow())
 	}
-	for _, s := range p.Services {
-		fmt.Fprintf(out, "  service: %s\n", s)
+	answer, asked := answers[p.Hash].(*mcp.ElicitResult)
+	if !asked {
+		return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{p.Hash: &mcp.ElicitParams{
+			Message:         fmt.Sprintf("Allow %s to run on %s? It has %s. magi runs these when a session of this project moves to another machine, and before run_elsewhere and delegate tasks. If the file changes, magi asks again.", p.Path, local.Name(), p.runs()),
+			RequestedSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		}}}, nil
 	}
-	for _, port := range p.Ports {
-		fmt.Fprintf(out, "  port:    %d, which the machine it leaves forwards to it\n", port)
-	}
-	fmt.Fprint(out, "Allow it? [y/N] ")
-	answer, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
-		fmt.Fprintln(out, "Not allowed.")
-		return nil
+	if answer.Action != "accept" {
+		return said(fmt.Sprintf("The user didn't allow it (%s), so nothing was allowed.", answer.Action)), nil
 	}
 	approvals, err := readApprovals()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	approvals[p.Path] = p.Hash
 	if err := writeApprovals(approvals); err != nil {
-		return err
+		return nil, err
 	}
-	fmt.Fprintln(out, "Allowed. Change the file and it needs allowing again.")
-	return nil
+	return said(fmt.Sprintf("Allowed %s on %s. If it changes, it needs allowing again.", p.Path, local.Name())), nil
+}
+
+func said(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
 func prepareSetupStatus(m sh.Machine, sessionID string) (string, error) {

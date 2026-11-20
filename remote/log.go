@@ -25,6 +25,7 @@ type logEntry struct {
 	To      string    `json:"to"`
 	FromDir string    `json:"from_dir"`
 	ToDir   string    `json:"to_dir"`
+	Note    string    `json:"note,omitempty"`
 }
 
 func appendLog(e logEntry) error {
@@ -66,25 +67,6 @@ func readLog() ([]logEntry, error) {
 	return entries, scanner.Err()
 }
 
-func lastHandoffTo(host string) (string, error) {
-	entries, err := readLog()
-	if err != nil {
-		return "", err
-	}
-	pulledBack := map[string]bool{}
-	for _, e := range slices.Backward(entries) {
-		switch {
-		case e.Kind == "pull" && e.From == host:
-			pulledBack[e.Session] = true
-		case e.Kind == "push" && e.To == host && pulledBack[e.Session]:
-			return "", fmt.Errorf("the last session handed off to %s (%s) was already brought back; pass the session id: magi pull %s <session-id>", host, store.ShortID(e.Session), host)
-		case e.Kind == "push" && e.To == host:
-			return e.Session, nil
-		}
-	}
-	return "", fmt.Errorf("no handoff to %s is recorded here; pass the session id: magi pull %s <session-id>", host, host)
-}
-
 func status(w io.Writer) error {
 	if err := reportMoves(w); err != nil {
 		return err
@@ -96,13 +78,20 @@ func status(w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := reportForwards(w); err != nil {
+		return err
+	}
 	if len(entries) == 0 {
 		fmt.Fprintln(w, "No handoffs yet.")
 		return nil
 	}
 	fmt.Fprintln(w, "Recent handoffs:")
 	for _, e := range slices.Backward(entries[max(0, len(entries)-15):]) {
-		fmt.Fprintf(w, "  %s  %-4s  %s  %s:%s → %s:%s\n", e.Time.Local().Format("2006-01-02 15:04"), e.Kind, store.ShortID(e.Session), e.From, e.FromDir, e.To, e.ToDir)
+		if e.Note != "" {
+			fmt.Fprintf(w, "  %s  %s\n", e.Time.Local().Format("2006-01-02 15:04"), e.Note)
+			continue
+		}
+		fmt.Fprintf(w, "  %s  %-4s  %s  %s:%s → %s:%s\n", e.Time.Local().Format("2006-01-02 15:04"), e.Kind, e.Session, e.From, e.FromDir, e.To, e.ToDir)
 	}
 	local, err := sh.NewLocal(context.Background())
 	if err != nil {
@@ -122,9 +111,9 @@ func status(w io.Writer) error {
 	if len(parked) == 0 {
 		return nil
 	}
-	fmt.Fprintln(w, "\nParked checkouts here (a session left them; it can come back, and they're refused if edited meanwhile):")
+	fmt.Fprintln(w, "\nParked checkouts here. A session left each one and can come back, and then its changes replace the uncommitted ones left here, unless they were edited meanwhile. To make a checkout's uncommitted changes count as the user's own, call unpark with its folder:")
 	for _, dir := range parked {
-		fmt.Fprintf(w, "  %s    unpark with: magi unpark %s\n", dir, sh.Quote(dir))
+		fmt.Fprintf(w, "  %s\n", dir)
 	}
 	return nil
 }

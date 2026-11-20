@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -136,5 +137,73 @@ func TestWatchMarksAMachineThatStopsAnswering(t *testing.T) {
 	<-stopped
 	if live := readLive(t, "server"); live.Answering || live.Heard.IsZero() {
 		t.Errorf("after the connection dropped the live file says %+v", live)
+	}
+}
+
+func TestTheWatcherRestartsForAnUpdateOnlyOnceNoSessionIsBeingTakenBack(t *testing.T) {
+	newFixture(t)
+	every := heartbeatEvery
+	heartbeatEvery = 10 * time.Millisecond
+	t.Cleanup(func() { heartbeatEvery = every })
+	link, err := magiLink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"magi-1", "magi-2"} {
+		if err := os.WriteFile(filepath.Join(filepath.Dir(link), name), nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("magi-1", link); err != nil {
+		t.Fatal(err)
+	}
+	taking.RLock()
+	restarted := make(chan struct{})
+	go heartbeat(log.New(io.Discard, "", 0), func() {
+		taking.Unlock()
+		close(restarted)
+		runtime.Goexit()
+	})
+	time.Sleep(50 * time.Millisecond)
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("magi-2", link); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-restarted:
+		t.Fatal("the watcher restarted while it was taking a session back")
+	case <-time.After(200 * time.Millisecond):
+	}
+	taking.RUnlock()
+	select {
+	case <-restarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watcher never restarted for the update")
+	}
+}
+
+func TestTheWatcherRestartsWhenAMachineIsAdded(t *testing.T) {
+	f := newFixture(t)
+	every := heartbeatEvery
+	heartbeatEvery = 10 * time.Millisecond
+	t.Cleanup(func() { heartbeatEvery = every })
+	f.config("local_roots = [\"/tmp\"]\n")
+	restarted := make(chan struct{})
+	go heartbeat(log.New(io.Discard, "", 0), func() {
+		taking.Unlock()
+		close(restarted)
+		runtime.Goexit()
+	})
+	time.Sleep(50 * time.Millisecond)
+	f.config("local_roots = [\"/tmp\"]\n[hosts.server]\nssh = \"server\"\n")
+	select {
+	case <-restarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watcher kept running without the new machine")
 	}
 }

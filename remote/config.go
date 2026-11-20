@@ -119,7 +119,24 @@ func loadConfig() (Config, string, error) {
 			cfg.Order = append(cfg.Order, key[1])
 		}
 	}
+	for _, name := range cfg.Order {
+		if err := checkHost(name, cfg.Hosts[name].SSH); err != nil {
+			return Config{}, path, fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	return cfg, path, nil
+}
+
+var hostName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func checkHost(name, ssh string) error {
+	if !hostName.MatchString(name) {
+		return fmt.Errorf("%q isn't a machine name; use letters, digits, dots, dashes and underscores", name)
+	}
+	if strings.HasPrefix(ssh, "-") {
+		return fmt.Errorf("host %q: the ssh destination %q starts with a dash, which ssh reads as an option", name, ssh)
+	}
+	return nil
 }
 
 var bareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -128,21 +145,7 @@ func tomlKey(name string) string {
 	if bareKey.MatchString(name) {
 		return name
 	}
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range name {
-		switch {
-		case r == '"' || r == '\\':
-			b.WriteByte('\\')
-			b.WriteRune(r)
-		case r < 0x20 || r == 0x7f:
-			fmt.Fprintf(&b, "\\u%04X", r)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
+	return `"` + name + `"`
 }
 
 func writeConfig(path string, cfg Config) error {

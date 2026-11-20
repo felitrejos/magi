@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -108,23 +107,6 @@ func (f *fixture) codexAppServer(codexHome, id string) {
 	time.Sleep(200 * time.Millisecond)
 }
 
-type lockedBuffer struct {
-	mu sync.Mutex
-	b  strings.Builder
-}
-
-func (l *lockedBuffer) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuffer) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
-}
-
 func TestRewritingARolloutMovesItsSettingsButNotTheConversation(t *testing.T) {
 	got, err := rewriteRollout([]byte(rollout("x", "/laptop/api", longAgo, false)), "/laptop/api", "/srv/acme/api")
 	if err != nil {
@@ -148,12 +130,8 @@ func TestMovingAnIdleCodexSessionReopensItThere(t *testing.T) {
 	codex := f.codexTUI(f.local, "resume", id)
 
 	var out strings.Builder
-	if err := moveCommand([]string{id, "server", "--json"}, &out); err != nil {
+	if err := (mover{session: id, host: "server", out: &out}).run(); err != nil || !strings.Contains(out.String(), "Moved session 01a1c7ca to server") {
 		t.Fatalf("move: %v\n%s", err, out.String())
-	}
-	events := moveEvents(t, out.String())
-	if last := events[len(events)-1]; events[0].Event != "moving" || last.Event != "moved" || !last.OK || last.ToDir != f.remote {
-		t.Fatalf("events = %+v", events)
 	}
 	if !codex.exitsWithin(5 * time.Second) {
 		t.Error("Codex wasn't stopped here")
@@ -178,48 +156,22 @@ func TestMovingAnIdleCodexSessionReopensItThere(t *testing.T) {
 	if got, want := f.git(f.remote, "status", "--porcelain"), f.git(f.local, "status", "--porcelain"); got != want {
 		t.Errorf("server status:\n%s\nwant:\n%s", got, want)
 	}
-	if last, err := lastHandoffTo("server"); err != nil || last != id {
-		t.Errorf("log = %q, %v", last, err)
+	if entries, err := readLog(); err != nil || len(entries) != 1 || entries[0].Session != id {
+		t.Errorf("log = %+v, %v", entries, err)
 	}
 }
 
-func TestMovingABusyCodexSessionWaitsForItsTurnToEnd(t *testing.T) {
+func TestABusyCodexSessionIsNotMoved(t *testing.T) {
 	f := newFixture(t)
 	f.codexHost(true)
 	id := "01a1c7ca-8144-7e23-82c1-87dc991d71d7"
-	local := f.codexRollout(filepath.Join(f.home, ".codex"), id, f.local, time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano), true)
+	f.codexRollout(filepath.Join(f.home, ".codex"), id, f.local, time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano), true)
 	codex := f.codexTUI(f.local, "resume", id)
-
-	var out lockedBuffer
-	done := make(chan error, 1)
-	go func() { done <- moveCommand([]string{id, "server", "--json"}, &out) }()
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(out.String(), `"event":"waiting"`) {
-		if time.Now().After(deadline) {
-			t.Fatalf("move didn't wait for the turn: %s", out.String())
-		}
-		time.Sleep(50 * time.Millisecond)
+	if err := (mover{session: id, host: "server", out: io.Discard}).run(); err == nil || !strings.Contains(err.Error(), "in the middle of a turn") {
+		t.Fatalf("err = %v", err)
 	}
-	time.Sleep(700 * time.Millisecond)
-	if len(moveEvents(t, out.String())) != 1 {
-		t.Fatalf("move went ahead mid-turn: %s", out.String())
-	}
-	fh, err := os.OpenFile(local, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fh.WriteString(`{"timestamp":"t","type":"event_msg","payload":{"type":"task_complete"}}` + "\n")
-	fh.Close()
-	select {
-	case err := <-done:
-		if events := moveEvents(t, out.String()); err != nil || events[len(events)-1].Event != "moved" {
-			t.Fatalf("move: %v\n%s", err, out.String())
-		}
-	case <-time.After(60 * time.Second):
-		t.Fatal("move didn't go ahead when the turn ended")
-	}
-	if !codex.exitsWithin(5 * time.Second) {
-		t.Error("Codex wasn't stopped here")
+	if codex.exitsWithin(300 * time.Millisecond) {
+		t.Error("the refused move stopped Codex")
 	}
 }
 
@@ -231,17 +183,13 @@ func TestACodexMoveIsRefusedWhenItCantTellWhatIsRunning(t *testing.T) {
 		codexPath bool
 		want      string
 	}{
-		{false, "set codex to the path of codex on server under [hosts.server]"},
+		{false, "server isn't set up for Codex; call setup_machine for server with codex set to true"},
 		{true, "can't tell whether it's session 01a1c7ca; quit Codex there"},
 	} {
 		f.codexHost(c.codexPath)
 		other := f.codexTUI(f.local)
-		var out strings.Builder
-		if err := moveCommand([]string{id, "server", "--json"}, &out); err != errReported {
-			t.Errorf("err = %v", err)
-		}
-		if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, c.want) {
-			t.Errorf("events = %+v, want %q", events, c.want)
+		if err := (mover{session: id, host: "server", out: io.Discard}).run(); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("err = %v, want %q", err, c.want)
 		}
 		if other.exitsWithin(300 * time.Millisecond) {
 			t.Error("the move stopped a Codex it couldn't place")
@@ -334,12 +282,8 @@ func TestATurnLeftOpenByAnEarlierCodexDoesntHoldUpTheMove(t *testing.T) {
 	id := "01a1c7ca-8144-7e23-82c1-87dc991d71db"
 	f.codexRollout(filepath.Join(f.home, ".codex"), id, f.local, longAgo, true)
 	codex := f.codexTUI(f.local, "resume", id)
-	var out strings.Builder
-	if err := moveCommand([]string{id, "server", "--json"}, &out); err != nil {
-		t.Fatalf("move: %v\n%s", err, out.String())
-	}
-	if events := moveEvents(t, out.String()); events[0].Event != "moving" || events[len(events)-1].Event != "moved" {
-		t.Errorf("events = %+v", events)
+	if err := (mover{session: id, host: "server", out: io.Discard}).run(); err != nil {
+		t.Fatalf("move: %v", err)
 	}
 	if !codex.exitsWithin(5 * time.Second) {
 		t.Error("Codex wasn't stopped here")
@@ -354,12 +298,8 @@ func TestACodexMoveIsRefusedWhileTheOtherMachineStillHasItOpen(t *testing.T) {
 	codex := f.codexTUI(f.local, "resume", id)
 	f.codexAppServer(f.remoteCodexHome(), id)
 
-	var out strings.Builder
-	if err := moveCommand([]string{id, "server", "--json"}, &out); err != errReported {
-		t.Fatalf("move: %v\n%s", err, out.String())
-	}
-	if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, "background server on fakehost") {
-		t.Errorf("events = %+v", events)
+	if err := (mover{session: id, host: "server", out: io.Discard}).run(); err == nil || !strings.Contains(err.Error(), "background server on fakehost") {
+		t.Errorf("err = %v", err)
 	}
 	if codex.exitsWithin(300 * time.Millisecond) {
 		t.Error("the refused move stopped Codex here")
@@ -376,12 +316,8 @@ func TestACodexMoveIsRefusedWhileTheAppHereHasItOpen(t *testing.T) {
 	local := f.codexRollout(filepath.Join(f.home, ".codex"), id, f.local, longAgo, false)
 	f.codexAppServer(filepath.Join(f.home, ".codex"), id)
 
-	var out strings.Builder
-	if err := moveCommand([]string{id, "server", "--json"}, &out); err != errReported {
-		t.Fatalf("move: %v\n%s", err, out.String())
-	}
-	if events := moveEvents(t, out.String()); !strings.Contains(events[len(events)-1].Message, "background server on "+f.machine().Name()) {
-		t.Errorf("events = %+v", events)
+	if err := (mover{session: id, host: "server", out: io.Discard}).run(); err == nil || !strings.Contains(err.Error(), "background server on "+f.machine().Name()) {
+		t.Errorf("err = %v", err)
 	}
 	if got := f.read(filepath.Dir(local), filepath.Base(local)); got != rollout(id, f.local, longAgo, false) {
 		t.Errorf("the rollout here changed: %q", got)

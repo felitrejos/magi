@@ -190,7 +190,7 @@ func chooseHosts(ctx context.Context, requested string, agents bool) ([]choice, 
 		return nil, nil, err
 	}
 	if len(cfg.Hosts) == 0 {
-		return nil, nil, fmt.Errorf("no hosts in %s; run magi init", path)
+		return nil, nil, fmt.Errorf("no hosts in %s yet; setup_machine adds one", path)
 	}
 	if requested != "" {
 		if _, err := loadHost(requested); err != nil {
