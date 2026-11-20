@@ -92,6 +92,9 @@ func TestSetupMachineSetsUpTheOtherMachineAndProvesARoundTrip(t *testing.T) {
 	if text, failed := f.call("setup_machine", setup); failed || !strings.Contains(text, "✗ magi watch couldn't start here") || !strings.Contains(text, "✓ tmux on server") {
 		t.Errorf("with the watcher failing to start:\n%s", text)
 	}
+	if saved := f.read(filepath.Join(f.home, ".config", "magi"), "config.toml"); strings.Contains(saved, "secrets") || strings.Contains(saved, "exclude") {
+		t.Errorf("setup froze the default secrets and exclude into the config:\n%s", saved)
+	}
 	h, err := loadHost("server")
 	if err != nil || h.SSH != "fakehost" || strings.Join(h.Roots, ",") != "~/code" || strings.Join(h.LocalRoots, ",") != "~/laptop" {
 		t.Errorf("host = %+v, %v", h, err)
@@ -152,5 +155,22 @@ func TestUninstallStopsTheWatcherAndRemovesTheBinariesOnly(t *testing.T) {
 	}
 	if calls := f.read(f.home, "service-calls"); !strings.Contains(calls, "bootout") && !strings.Contains(calls, "disable --now") {
 		t.Errorf("the watcher wasn't stopped: %q", calls)
+	}
+}
+
+func TestSetupMachineRefusesWSLOnEitherMachine(t *testing.T) {
+	f := newFixture(t)
+	server := f.serverHome()
+	f.tool("claude", fakeClaudeToSetUp)
+	f.tool("uname", "#!/bin/sh\nif [ \"$*\" = -r ] && [ \"$HOME\" = \"$MAGI_TEST_WSL_HOME\" ]; then echo 5.15.153.1-microsoft-standard-WSL2; exit; fi\nexec command -p uname \"$@\"\n")
+	for home, who := range map[string]string{f.home: "This machine", server: "server"} {
+		t.Setenv("MAGI_TEST_WSL_HOME", home)
+		text, failed := f.call("setup_machine", map[string]any{"host": "server", "ssh": "fakehost", "local_roots": []string{"~/laptop"}})
+		if failed || !strings.HasPrefix(text, who+" runs in WSL (kernel 5.15.153.1-microsoft-standard-WSL2), which magi doesn't support") {
+			t.Errorf("with WSL in %s:\n%s", home, text)
+		}
+		if _, err := loadHost("server"); err == nil {
+			t.Errorf("with WSL in %s the machine was saved", home)
+		}
 	}
 }

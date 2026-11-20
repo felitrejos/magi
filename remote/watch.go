@@ -11,10 +11,12 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
@@ -125,7 +127,14 @@ func watch() error {
 		return err
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	go heartbeat(logger, func() { os.Exit(0) })
+	quit := func() { stopWatching(append([]string{local.Name()}, cfg.Order...), logger) }
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-signals
+		quit()
+	}()
+	go heartbeat(logger, quit)
 	var wg sync.WaitGroup
 	wg.Go(func() { watchHost(newWatcher(local.Name(), local, logger), "") })
 	for _, name := range cfg.Order {
@@ -394,11 +403,38 @@ func (w *watcher) save() error {
 			s.MemoryMB += w.usage[pid].memoryMB
 		}
 	}
-	path, err := store.Dir(filepath.Join("live", w.name+".json"))
+	path, err := livePath(w.name)
 	if err != nil {
 		return err
 	}
+	liveFiles.Lock()
+	defer liveFiles.Unlock()
 	return store.WriteJSON(path, w.live)
+}
+
+var liveFiles sync.Mutex
+
+func livePath(name string) (string, error) {
+	return store.Dir(filepath.Join("live", name+".json"))
+}
+
+func stopWatching(names []string, logger *log.Logger) {
+	liveFiles.Lock()
+	for _, name := range names {
+		var live liveMachine
+		path, err := livePath(name)
+		if err == nil {
+			err = store.ReadJSON(path, &live)
+		}
+		if err == nil {
+			live.Answering = false
+			err = store.WriteJSON(path, live)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Printf("%s: marking it as not watched failed: %v", name, err)
+		}
+	}
+	os.Exit(0)
 }
 
 func take(name string, remote sh.Machine, id string, logger *log.Logger) {

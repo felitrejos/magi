@@ -101,10 +101,27 @@ func RunInput(m Machine, script string, input []byte, args ...string) ([]byte, e
 		cmd.Stdin = bytes.NewReader(input)
 	}
 	out, err := output(cmd, "sh")
+	if stopped(m, err) {
+		return out, &stoppedError{host: m.Name(), err: err}
+	}
 	if err != nil {
 		return out, fmt.Errorf("on %s: %w", m.Name(), err)
 	}
 	return out, nil
+}
+
+type stoppedError struct {
+	host string
+	err  error
+}
+
+func (e *stoppedError) Error() string { return e.host + " stopped answering" }
+func (e *stoppedError) Unwrap() error { return e.err }
+
+func stopped(m Machine, err error) bool {
+	var exit *exec.ExitError
+	_, remote := m.(*Remote)
+	return remote && err != nil && (m.Context().Err() != nil || errors.As(err, &exit) && exit.ExitCode() == -1)
 }
 
 type Local struct {
@@ -245,12 +262,21 @@ func Transfer(from Machine, fromDir string, a Archive, to Machine, toDir string)
 		}
 		return startErr
 	}
-	var errs []error
-	if err := unpack.Wait(); err != nil {
-		errs = append(errs, fmt.Errorf("unpacking on %s: %w", to.Name(), &Error{What: "tar", Stderr: strings.TrimSpace(unpackErr.String()), Err: err}))
+	unpacked, packed := unpack.Wait(), pack.Wait()
+	for _, side := range []struct {
+		m   Machine
+		err error
+	}{{to, unpacked}, {from, packed}} {
+		if stopped(side.m, side.err) {
+			return &stoppedError{host: side.m.Name(), err: side.err}
+		}
 	}
-	if err := pack.Wait(); err != nil {
-		errs = append(errs, fmt.Errorf("packing on %s: %w", from.Name(), &Error{What: "tar", Stderr: strings.TrimSpace(packErr.String()), Err: err}))
+	var errs []error
+	if unpacked != nil {
+		errs = append(errs, fmt.Errorf("unpacking on %s: %w", to.Name(), &Error{What: "tar", Stderr: strings.TrimSpace(unpackErr.String()), Err: unpacked}))
+	}
+	if packed != nil {
+		errs = append(errs, fmt.Errorf("packing on %s: %w", from.Name(), &Error{What: "tar", Stderr: strings.TrimSpace(packErr.String()), Err: packed}))
 	}
 	return errors.Join(errs...)
 }

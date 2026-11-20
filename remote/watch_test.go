@@ -8,18 +8,17 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/store"
 )
-
-const fakePS = `#!/bin/sh
-printf '%s 1 0:02.00 102400\n99999 %s 0:01.00 51200\n' "$MAGI_TEST_PID" "$MAGI_TEST_PID"
-`
 
 func readLive(t *testing.T, name string) liveMachine {
 	t.Helper()
@@ -33,12 +32,38 @@ func readLive(t *testing.T, name string) liveMachine {
 	return live
 }
 
+const burn = `i=0; while [ "$i" -lt 300000 ]; do i=$((i + 1)); done`
+
+func (f *fixture) worker(script string) int {
+	f.t.Helper()
+	done := filepath.Join(f.t.TempDir(), "done")
+	cmd := exec.Command("sh", "-c", script, "sh", done)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Cleanup(func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); cmd.Wait() })
+	if !waitForFile(f.t, done, 30*time.Second) {
+		f.t.Fatal("the worker never finished its work")
+	}
+	return cmd.Process.Pid
+}
+
+func usedBy(t *testing.T, stats string, pid int) (seconds float64, memoryMB int) {
+	t.Helper()
+	for _, field := range strings.Fields(stats) {
+		if _, err := fmt.Sscanf(field, fmt.Sprintf("%d:%%g:%%d", pid), &seconds, &memoryMB); err == nil {
+			return seconds, memoryMB
+		}
+	}
+	t.Fatalf("stats line %q lacks process %d", stats, pid)
+	return 0, 0
+}
+
 func TestWatchStreamsWhatChanges(t *testing.T) {
 	f := newFixture(t)
 	server := f.serverHome()
-	pid := startFakeClaude(t, "60").Process.Pid
-	t.Setenv("MAGI_TEST_PID", fmt.Sprint(pid))
-	f.tool("ps", fakePS)
+	pid := f.worker(`sh -c '` + burn + `; : > "$0"; exec sleep 60' "$1" & wait`)
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
 	busySince := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
 	session := func(status string, at time.Time) {
@@ -80,8 +105,8 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	}
 	await("sessions", 1)
 	await("stats", 1)
-	if tree := fmt.Sprintf(" %d:3.00:150", pid); !strings.HasSuffix(heard[len(heard)-1], tree) {
-		t.Errorf("stats line = %q, want the session's tree summed to %q", heard[len(heard)-1], tree)
+	if used, memory := usedBy(t, heard[len(heard)-1], pid); used < 0.1 || memory < 1 {
+		t.Errorf("stats line = %q, want the session's tree summed with its child's CPU and memory", heard[len(heard)-1])
 	}
 	now := time.Now()
 	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 %d:10:150", pid), now)
@@ -117,6 +142,34 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	}
 }
 
+func TestWatchCountsTheCPUOfChildrenThatExited(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only Linux shows other processes how much CPU their exited children used")
+	}
+	f := newFixture(t)
+	server := f.serverHome()
+	pid := f.worker(`(` + burn + `); : > "$1"; sleep 60; :`)
+	f.write(filepath.Join(server, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"0f0f0f0f-1111-2222-3333-555555555556","cwd":"/srv/api","status":"idle"}`, pid))
+	cmd := f.remoteHost().Command(watchScript, "", "claude", "")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	for lines := bufio.NewScanner(stdout); lines.Scan(); {
+		if strings.HasPrefix(lines.Text(), "stats") {
+			if used, _ := usedBy(t, lines.Text(), pid); used < 0.1 {
+				t.Errorf("stats line = %q, want the session's CPU to count its child that exited", lines.Text())
+			}
+			return
+		}
+	}
+	t.Fatal("the watcher never reported stats")
+}
+
 func TestWatchMarksAMachineThatStopsAnswering(t *testing.T) {
 	f := newFixture(t)
 	f.serverHome()
@@ -137,6 +190,78 @@ func TestWatchMarksAMachineThatStopsAnswering(t *testing.T) {
 	<-stopped
 	if live := readLive(t, "server"); live.Answering || live.Heard.IsZero() {
 		t.Errorf("after the connection dropped the live file says %+v", live)
+	}
+}
+
+func TestStoppingTheWatcherMarksEveryMachineAsNotAnswering(t *testing.T) {
+	f := newFixture(t)
+	f.serverHome()
+	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "MAGI_TEST_RUN=watch")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	names := []string{f.machine().Name(), "server"}
+	for deadline := time.Now().Add(15 * time.Second); !readLive(t, names[0]).Answering || !readLive(t, names[1]).Answering; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the machines were never marked as answering")
+		}
+	}
+	loops := descendants(cmd.Process.Pid)
+	t.Cleanup(func() {
+		for _, pid := range loops {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	cmd.Process.Signal(syscall.SIGTERM)
+	cmd.Wait()
+	for _, name := range names {
+		if readLive(t, name).Answering {
+			t.Errorf("after the watcher stopped, %s still reads as answering", name)
+		}
+	}
+}
+
+func TestANewWatchLoopStopsOrphanedLoopsForItsMachine(t *testing.T) {
+	f := newFixture(t)
+	f.serverHome()
+	r := f.remoteHost()
+	line := func(name string) string {
+		args := r.Command(`: "$HOME/.magi/watchers"; while :; do sleep 1; done`, name).Args
+		return args[len(args)-1]
+	}
+	orphan := func(name string) int {
+		out, err := exec.Command("sh", "-c", `sh -c "$1" >/dev/null 2>&1 & echo $!`, "sh", line(name)).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
+		return pid
+	}
+	old, other := orphan("laptop"), orphan("other")
+	connected := exec.Command("sh", "-c", line("laptop"))
+	if err := connected.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { connected.Process.Kill(); connected.Wait() })
+	cmd := r.Command(watchScript, "laptop", "claude", "")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	for deadline := time.Now().Add(10 * time.Second); syscall.Kill(old, 0) == nil; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the orphaned loop for this machine is still running")
+		}
+	}
+	if syscall.Kill(other, 0) != nil || syscall.Kill(connected.Process.Pid, 0) != nil {
+		t.Error("the new loop stopped a loop for another machine or one that still has its connection")
 	}
 }
 

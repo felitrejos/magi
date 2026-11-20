@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
 )
@@ -44,5 +46,25 @@ func TestRemoteScriptsReceiveEveryByteWhateverTheLoginShell(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAMachineThatStopsAnsweringSaysSo(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	hung, err := newRemote(ctx, Host{SSH: "fakehost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sh.Run(hung, "sleep 5"); err == nil || err.Error() != "fakehost stopped answering" {
+		t.Errorf("past the deadline err = %v", err)
+	}
+	f.tool("ssh", "#!/bin/sh\nkill -KILL $$\n")
+	if _, err := sh.Run(f.remoteHost(), "true"); err == nil || err.Error() != "fakehost stopped answering" {
+		t.Errorf("with ssh killed err = %v", err)
+	}
+	if err := sh.Transfer(f.machine(), f.local, sh.Archive{Paths: []string{"kept.txt"}}, f.remoteHost(), f.remote); err == nil || err.Error() != "fakehost stopped answering" {
+		t.Errorf("copying with ssh killed err = %v", err)
 	}
 }

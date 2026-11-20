@@ -61,6 +61,18 @@ func setupMachine(in setupInput) (string, error) {
 	if _, err := sh.Run(remote, "true"); err != nil {
 		return sshFailed(h.SSH, err), nil
 	}
+	for _, m := range []struct {
+		name string
+		sh.Machine
+	}{{"This machine", local}, {in.Host, remote}} {
+		out, err := sh.Run(m, `case $(uname -r) in *[Mm]icrosoft*) uname -r ;; esac`)
+		if err != nil {
+			return "", err
+		}
+		if kernel := strings.TrimSpace(string(out)); kernel != "" {
+			return fmt.Sprintf("%s runs in WSL (kernel %s), which magi doesn't support. Set magi up between macOS and Linux machines instead.\n", m.name, kernel), nil
+		}
+	}
 	found, err := sh.Run(remote, findClaudeScript)
 	if err != nil {
 		return "", err
@@ -82,9 +94,6 @@ func setupMachine(in setupInput) (string, error) {
 			return fmt.Sprintf("None of the usual project folders exist on %s. Ask the user where projects live there, then call setup_machine again with roots.\n", in.Host), nil
 		}
 	}
-	if len(h.Secrets) == 0 {
-		h.Secrets = []string{".env", ".env.*"}
-	}
 	if len(in.LocalRoots) > 0 {
 		cfg.LocalRoots = in.LocalRoots
 	}
@@ -92,9 +101,6 @@ func setupMachine(in setupInput) (string, error) {
 		if cfg.LocalRoots = existing(local, projectFolders); len(cfg.LocalRoots) == 0 {
 			return "None of the usual project folders exist on this machine. Ask the user where projects live here, then call setup_machine again with local_roots.\n", nil
 		}
-	}
-	if len(cfg.Exclude) == 0 {
-		cfg.Exclude = []string{"node_modules", ".venv", "dist", "build", "target"}
 	}
 	if err := h.validate(in.Host); err != nil {
 		return "", err
