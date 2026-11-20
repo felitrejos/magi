@@ -30,6 +30,18 @@ struct Snapshots {
         try await shot("show-borders-scope", full, .light, environment: { AnyView($0.environment(\._accessibilityShowButtonShapes, true)) }, act: { right($0, times: 2) })
     }
 
+    @Test func settings() async throws {
+        let full = try await store(machines(sessions: true))
+        for scheme in [ColorScheme.light, .dark] {
+            for pane in Pane.allCases {
+                UserDefaults.standard.set(pane.rawValue, forKey: "pane")
+                try await render("settings-\(pane.rawValue)-\(scheme == .light ? "light" : "dark")", SettingsView(store: full), scheme)
+            }
+            try await render("first-run-\(scheme == .light ? "light" : "dark")", Welcome(store: full), scheme)
+        }
+        UserDefaults.standard.removeObject(forKey: "pane")
+    }
+
     @Test func glyphs() throws {
         let bundle = Bundle(for: Marker.self)
         let candidates = ["trio", "orbit", "bridge"]
@@ -37,7 +49,7 @@ struct Snapshots {
         let scale: CGFloat = 4
         let cell = CGSize(width: 44, height: 24)
         for dark in [false, true] {
-            let size = CGSize(width: cell.width * 5 + 80, height: cell.height * CGFloat(candidates.count))
+            let size = CGSize(width: cell.width * 6 + 80, height: cell.height * CGFloat(candidates.count))
             let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
             rep.size = size
             NSGraphicsContext.saveGraphicsState()
@@ -49,9 +61,9 @@ struct Snapshots {
             for (row, name) in candidates.enumerated() {
                 let y = size.height - CGFloat(row + 1) * cell.height
                 NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: ink.withAlphaComponent(0.6)]).draw(at: CGPoint(x: 6, y: y + 7))
-                let symbols = [name, "\(name).badge", "\(name).slash"].map { NSImage(symbolName: $0, bundle: bundle, variableValue: 0)! } + ["wifi", "battery.75percent"].map { NSImage(systemSymbolName: $0, accessibilityDescription: nil)! }
-                for (column, symbol) in symbols.enumerated() {
-                    let image = symbol.withSymbolConfiguration(tinted)!
+                let dotted = config.applying(.init(paletteColors: [ink, .systemOrange]))
+                let symbols = [(name, tinted), ("\(name).badge", tinted), ("\(name).badge", dotted), ("\(name).slash", tinted)].map { NSImage(symbolName: $0.0, bundle: bundle, variableValue: 0)!.withSymbolConfiguration($0.1)! } + ["wifi", "battery.75percent"].map { NSImage(systemSymbolName: $0, accessibilityDescription: nil)!.withSymbolConfiguration(tinted)! }
+                for (column, image) in symbols.enumerated() {
                     let x = 80 + CGFloat(column) * cell.width + (cell.width - image.size.width) / 2
                     image.draw(in: CGRect(x: x, y: y + (cell.height - image.size.height) / 2, width: image.size.width, height: image.size.height))
                 }
@@ -78,6 +90,20 @@ struct Snapshots {
         try await Task.sleep(for: .milliseconds(900))
         window.setContentSize(CGSize(width: host.fittingSize.width, height: min(host.fittingSize.height, 560)))
         try await Task.sleep(for: .milliseconds(300))
+        let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+        host.cacheDisplay(in: host.bounds, to: rep)
+        try rep.representation(using: .png, properties: [:])!.write(to: out.appending(path: "\(name).png"))
+        window.orderOut(nil)
+    }
+
+    private func render(_ name: String, _ view: some View, _ scheme: ColorScheme) async throws {
+        let host = NSHostingView(rootView: view.environment(\.colorScheme, scheme))
+        let window = KeyWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: host.fittingSize), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titlebarAppearsTransparent = true
+        window.appearance = NSAppearance(named: scheme == .light ? .aqua : .darkAqua)
+        window.contentView = host
+        window.orderFrontRegardless()
+        try await Task.sleep(for: .milliseconds(800))
         let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
         host.cacheDisplay(in: host.bounds, to: rep)
         try rep.representation(using: .png, properties: [:])!.write(to: out.appending(path: "\(name).png"))

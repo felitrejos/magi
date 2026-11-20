@@ -6,7 +6,7 @@ import SwiftUI
 final class App: NSObject, NSApplicationDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let icon = NSImageView()
-    private let count = NSTextField(labelWithString: "")
+    private let count = NSImageView()
     private let panel = Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let glass = NSGlassEffectView()
     private let menu = NSMenu()
@@ -15,6 +15,7 @@ final class App: NSObject, NSApplicationDelegate {
     private var host: Host?
     private var monitor: Any?
     private var shown: Glance?
+    private var symbol: String?
 
     override init() {
         let store = Store(home: .homeDirectory.appending(path: ".magi"))
@@ -43,9 +44,7 @@ final class App: NSObject, NSApplicationDelegate {
         } else {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
-        icon.symbolConfiguration = .init(textStyle: .body, scale: .large)
         icon.setAccessibilityElement(false)
-        count.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         count.setAccessibilityElement(false)
         let stack = NSStackView(views: [icon, count])
         stack.spacing = 3
@@ -78,7 +77,9 @@ final class App: NSObject, NSApplicationDelegate {
                 show(glance)
             }
         }
-        NotificationCenter.default.addObserver(self, selector: #selector(defaultsChanged), name: UserDefaults.didChangeNotification, object: nil)
+        for key in ["glyph", "showsCount", "dot"] {
+            UserDefaults.standard.addObserver(self, forKeyPath: key, context: nil)
+        }
         if !UserDefaults.standard.bool(forKey: "welcomed") {
             NSApp.activate()
             scenes.environment.openWindow(id: "welcome")
@@ -87,12 +88,17 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func show(_ glance: Glance) {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let image = NSImage(symbolName: glance.symbol, bundle: .main, variableValue: 0)!
-        if shown == nil || reduceMotion {
+        let glyph = UserDefaults.standard.string(forKey: "glyph").flatMap(Glyph.init) ?? .trio
+        let symbol = glance.waiting.isEmpty ? glance.answering.isEmpty ? "\(glyph.rawValue).slash" : glyph.rawValue : "\(glyph.rawValue).badge"
+        let image = NSImage(symbolName: symbol, bundle: .main, variableValue: 0)!
+        let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
+        icon.symbolConfiguration = UserDefaults.standard.bool(forKey: "dot") && !glance.waiting.isEmpty ? plain.applying(.init(paletteColors: [.labelColor, .systemOrange])) : plain
+        if self.symbol == nil || reduceMotion {
             icon.image = image
-        } else if shown?.symbol != glance.symbol {
+        } else if self.symbol != symbol {
             icon.setSymbolImage(image, contentTransition: .replace.magic(fallback: .replace.downUp))
         }
+        self.symbol = symbol
         if let shown {
             let started = glance.waiting.filter { shown.waiting[$0.key] == nil }
             if !started.isEmpty, !reduceMotion {
@@ -102,14 +108,18 @@ final class App: NSObject, NSApplicationDelegate {
                 NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
             }
         }
-        count.stringValue = "\(glance.waiting.count)"
+        let digits = NSAttributedString(string: "\(glance.waiting.count)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)])
+        count.image = NSImage(size: digits.size(), flipped: false) { _ in digits.draw(at: .zero); return true }
+        count.image?.isTemplate = true
         count.isHidden = !UserDefaults.standard.bool(forKey: "showsCount") || glance.waiting.isEmpty
         item.button?.setAccessibilityLabel(glance.label)
         shown = glance
     }
 
-    @objc private func defaultsChanged() {
-        shown.map(show)
+    override nonisolated func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        MainActor.assumeIsolated {
+            shown.map(show)
+        }
     }
 
     @objc private func clicked(_ button: NSStatusBarButton) {
@@ -171,8 +181,6 @@ extension App: @MainActor NSStatusItemExpandedInterfaceDelegate {
 }
 
 struct Glance {
-    static let glyph = "trio"
-
     let waiting: [String: String]
     let answering: Set<String>
     let hasMachines: Bool
@@ -181,10 +189,6 @@ struct Glance {
         waiting = Dictionary(uniqueKeysWithValues: store.rows.filter { $0.session.state == "waiting" }.map { ($0.id, "\($0.session.title) on \($0.machine) is waiting on you") })
         answering = store.answering
         hasMachines = !store.machines.isEmpty
-    }
-
-    var symbol: String {
-        waiting.isEmpty ? answering.isEmpty ? "\(Glance.glyph).slash" : Glance.glyph : "\(Glance.glyph).badge"
     }
 
     var label: String {
@@ -199,7 +203,7 @@ struct SettingsScenes: Scene {
 
     var body: some Scene {
         Settings {
-            SettingsView()
+            SettingsView(store: store)
         }
         WindowGroup("Welcome to magi", id: "welcome") {
             Welcome(store: store)

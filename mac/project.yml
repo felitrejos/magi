@@ -30,6 +30,7 @@ targets:
       - Magi/Store.swift
       - Magi/PanelView.swift
       - Magi/Scope.swift
+      - Magi/Settings.swift
       - Magi/Assets.xcassets
     settings:
       base:

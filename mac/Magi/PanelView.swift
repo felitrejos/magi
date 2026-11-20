@@ -322,11 +322,6 @@ struct Tile: View {
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityShowBorders) private var showBorders
 
-    private var device: String {
-        if machine.battery != nil { return "macbook" }
-        return machine.ssh?.isEmpty ?? true ? "desktopcomputer" : "server.rack"
-    }
-
     var body: some View {
         HStack(spacing: 4) {
             VStack(alignment: .leading, spacing: 1) {
@@ -335,7 +330,7 @@ struct Tile: View {
                         .font(.subheadline.weight(.semibold))
                         .truncationMode(.middle)
                 } icon: {
-                    Image(systemName: device)
+                    Image(systemName: machine.device)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
@@ -407,4 +402,11 @@ struct Ring: View {
 
 func span(_ seconds: TimeInterval) -> String {
     Duration.seconds(max(seconds, 60)).formatted(.units(allowed: [.days, .hours, .minutes], width: .narrow, maximumUnitCount: 1))
+}
+
+extension Machine {
+    var device: String {
+        if battery != nil { return "macbook" }
+        return ssh?.isEmpty ?? true ? "desktopcomputer" : "server.rack"
+    }
 }
