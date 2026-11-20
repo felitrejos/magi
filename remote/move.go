@@ -7,7 +7,6 @@ import (
 	"io"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
@@ -92,35 +91,10 @@ func (m mover) now(local *sh.Local, host Host, s remoteSession, stopped bool) er
 		defer cancel()
 		return retire(local.With(finish), m.host, s.ID, s.Transcript, 0)
 	}
-	show := func(block string) { fmt.Fprintln(m.out, block) }
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Show: show, Retire: closeHere}.Run(context.Background())
-	if err != nil && stopped {
-		return reopen(local, "here", local.Claude(), groupOf(s.Cwd, host.LocalRoots, local.Home()), s, "Moving this session to "+m.host, err)
-	}
+	res, err := Move{Kind: "push", HostName: m.host, Host: host, Session: s, Stopped: stopped, Out: m.out, Progress: progress, Retire: closeHere}.Run(context.Background())
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(m.out, movedReport(s.ID, m.host, res))
+	fmt.Fprintln(m.out, res.Report())
 	return nil
-}
-
-func movedReport(sessionID, host string, res Result) string {
-	where := "running " + res.Where
-	if len(res.ShownOn) > 0 {
-		where = "open in " + strings.Join(res.ShownOn, ", ")
-	}
-	if res.Link != "" {
-		where += ", and in the Claude apps at " + res.Link
-	}
-	msg := fmt.Sprintf("Moved session %s to %s in %s. It's %s", store.ShortID(sessionID), host, res.Summary(), where)
-	if res.NewFolder != "" {
-		msg += fmt.Sprintf(". %s didn't have the project yet, so it now lives at %s", host, res.NewFolder)
-	}
-	if forwarded := res.Forwarded(); forwarded != "" {
-		msg += ". " + forwarded
-	}
-	if len(res.Notes) > 0 {
-		msg += ". Notes: " + res.Noted()
-	}
-	return msg + "."
 }

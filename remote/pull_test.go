@@ -36,11 +36,11 @@ func TestPullBringsTheSessionAndItsWorkBackFromTheServer(t *testing.T) {
 	id := "0f0f0f0f-1111-2222-3333-888888888888"
 	transcript := f.sessionLeftOnServer(f.home, id)
 
-	res, err := Pull{HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, SessionID: id, Out: io.Discard}.Run()
+	res, err := Move{Kind: "pull", HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}, Secrets: []string{".env"}}, Session: remoteSession{ID: id}, NoTab: true, Out: io.Discard}.Run(context.Background())
 	if err != nil {
 		t.Fatalf("pull failed after %s: %v", res.Summary(), err)
 	}
-	if res.ToDir != f.local || res.Session != id || !strings.Contains(handoffPrompt(res.PromptInfo), "handed off from server") {
+	if res.ToDir != f.local || res.Where != "" {
 		t.Errorf("pulled = %+v", res)
 	}
 	if got, want := f.git(f.local, "status", "--porcelain"), f.git(f.remote, "status", "--porcelain"); got != want {
@@ -81,22 +81,6 @@ func TestPullingASessionBackClosesItsTabOnTheServer(t *testing.T) {
 	}
 	if err := closeRecordedTab(f.remoteHost(), id); err != nil {
 		t.Errorf("closing an already closed tab: %v", err)
-	}
-}
-
-func TestPullRunsTheSetupHereAndTellsClaude(t *testing.T) {
-	f := newFixture(t)
-	dir := filepath.Join(f.home, "proj")
-	f.write(dir, "x", "")
-	note := setUpPulledProject(&Project{Setup: "echo here > setup.txt", Services: []string{"pnpm dev"}}, dir, io.Discard)
-	if got := strings.TrimSpace(f.read(dir, "setup.txt")); got != "here" {
-		t.Errorf("setup.txt = %q", got)
-	}
-	if !strings.Contains(note, "ran here") || !strings.Contains(note, "pnpm dev") {
-		t.Errorf("note = %q", note)
-	}
-	if note := setUpPulledProject(&Project{Setup: "exit 4"}, dir, io.Discard); !strings.Contains(note, "failed here") {
-		t.Errorf("a failed setup gave note %q", note)
 	}
 }
 
@@ -246,5 +230,18 @@ func TestAPullSucceedsWhenRemoteControlIsSlowToComeUp(t *testing.T) {
 	}
 	if f.read(filepath.Dir(there), filepath.Base(there)) != "<missing>" {
 		t.Error("the copy on the server wasn't retired")
+	}
+}
+
+func TestAPulledSessionRunsTheProjectsSetupInAPaneHere(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.local, projectFile, "setup = \"echo ready > setup.txt\"\n")
+	f.allow(f.local)
+	id, _ := f.sessionToTakeBack(fakeClaudeThatStarts)
+	if _, err := pullHere("server", id, io.Discard, true); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForFile(t, filepath.Join(f.local, "setup.txt"), 10*time.Second) {
+		t.Error("the project's setup didn't run here")
 	}
 }

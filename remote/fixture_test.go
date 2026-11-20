@@ -325,7 +325,7 @@ func (f *fixture) serverHome() string {
 	return server
 }
 
-func (f *fixture) handoffToServer(id string) Handoff {
+func (f *fixture) handoffToServer(id string) Move {
 	f.t.Helper()
 	f.isolatedTmux()
 	claude := f.tool("claude", fakeClaudeThatStarts)
@@ -335,13 +335,12 @@ func (f *fixture) handoffToServer(id string) Handoff {
 	}
 	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
 	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
-	return Handoff{
-		HostName:       "server",
-		Host:           Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
-		SessionID:      id,
-		TranscriptPath: transcript,
-		Cwd:            f.local,
-		Retire:         func() (int, error) { return 0, nil },
+	return Move{
+		Kind:     "push",
+		HostName: "server",
+		Host:     Host{SSH: "fakehost", Claude: claude, Roots: []string{"~/developer"}, Secrets: []string{".env"}, LocalRoots: []string{"~/laptop"}},
+		Session:  remoteSession{ID: id, Transcript: transcript, Cwd: f.local},
+		Retire:   func() (int, error) { return 0, nil },
 	}
 }
 

@@ -233,8 +233,8 @@ func TestAMoveThatFailsAfterStoppingTheSessionReopensItHere(t *testing.T) {
 }
 
 func TestAMoveReportKeepsTheRemoteControlLinkWhenTheTabIsShown(t *testing.T) {
-	res := Result{ShownOn: []string{"tmux on server (1 attached)"}, Where: "in tmux session acme on server", Link: "https://claude.ai/code/cse_1"}
-	if report := movedReport("0f0f0f0f-1111-2222-3333-444444444444", "server", res); !strings.Contains(report, "open in tmux on server (1 attached)") || !strings.Contains(report, "https://claude.ai/code/cse_1") {
+	res := Result{Session: "0f0f0f0f-1111-2222-3333-444444444444", To: "server", Where: "open in tmux on server (1 attached)", Link: "https://claude.ai/code/cse_1"}
+	if report := res.Report(); !strings.Contains(report, "open in tmux on server (1 attached)") || !strings.Contains(report, "https://claude.ai/code/cse_1") {
 		t.Errorf("report = %q", report)
 	}
 }

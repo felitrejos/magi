@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
 	"github.com/felitrejos/magi/remote/internal/store"
@@ -225,7 +223,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 		return block(out, fmt.Sprintf("magi could not hand this session off to %s, so it is still running here: %v. Tell the user what failed in plain words.", a.Host, err))
 	}
 	return json.NewEncoder(out).Encode(map[string]string{
-		"systemMessage": movedReport(input.SessionID, a.Host, res) + " With Remote Control it's in every Claude app on your account. This copy is closing.",
+		"systemMessage": res.Report() + " With Remote Control it's in every Claude app on your account. This copy is closing.",
 	})
 }
 
@@ -265,13 +263,12 @@ func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return Handoff{
-		HostName:       a.Host,
-		Note:           stillRunning(a.Note, input.BackgroundTasks),
-		Host:           host,
-		SessionID:      input.SessionID,
-		TranscriptPath: input.TranscriptPath,
-		Cwd:            input.Cwd,
+	return Move{
+		Kind:     "push",
+		HostName: a.Host,
+		Host:     host,
+		Session:  remoteSession{ID: input.SessionID, Transcript: input.TranscriptPath, Cwd: input.Cwd},
+		Note:     stillRunning(a.Note, input.BackgroundTasks),
 		Retire: func() (int, error) {
 			return retire(local, a.Host, input.SessionID, input.TranscriptPath, a.PID)
 		},
@@ -315,109 +312,4 @@ func retire(local sh.Machine, host, sessionID, transcript string, pid int) (int,
 		return 0, err
 	}
 	return cmd.Process.Pid, cmd.Process.Release()
-}
-
-func runSetupHere(dir, setup string, out io.Writer) error {
-	cmd := exec.Command(cmp.Or(os.Getenv("SHELL"), "/bin/sh"), "-lc", setup)
-	cmd.Dir, cmd.Stdout, cmd.Stderr = dir, out, out
-	return cmd.Run()
-}
-
-func setUpPulledProject(p *Project, root string, out io.Writer) string {
-	if p == nil {
-		return ""
-	}
-	var b strings.Builder
-	if p.Setup != "" {
-		fmt.Fprintf(out, "Running the project's setup: %s\n", p.Setup)
-		if err := runSetupHere(root, p.Setup, out); err != nil {
-			fmt.Fprintf(out, "Note: the setup failed (%v); the session continues anyway.\n", err)
-			fmt.Fprintf(&b, "The project's %s setup (%s) failed here before you continued (%v). ", projectFile, p.Setup, err)
-		} else {
-			fmt.Fprintf(&b, "The project's %s setup (%s) ran here before you continued. ", projectFile, p.Setup)
-		}
-	}
-	if len(p.Services) > 0 {
-		fmt.Fprintf(&b, "Its services (%s) aren't running here; start them if you need them. ", strings.Join(p.Services, "; "))
-	}
-	return b.String()
-}
-
-func pullHere(hostName, sessionID string, out io.Writer, inTab bool) (string, error) {
-	host, err := loadHost(hostName)
-	if err != nil {
-		return "", err
-	}
-	unlock, err := lockMove(sessionID)
-	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	if err := recoverBefore(sessionID, false); err != nil {
-		return "", err
-	}
-	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Out: out}.Run()
-	if err != nil {
-		return "", err
-	}
-	fmt.Fprintf(out, "Pulled the session back from %s in %s.\n", hostName, res.Summary())
-	if res.NewFolder != "" {
-		fmt.Fprintf(out, "This machine didn't have the project yet, so it now lives at %s.\n", res.NewFolder)
-	}
-	for _, note := range res.Notes {
-		fmt.Fprintf(out, "Note: %v\n", note)
-	}
-	res.PromptInfo.Project = setUpPulledProject(res.Project, res.ProjectRoot, out)
-	prompt := handoffPrompt(res.PromptInfo)
-	message := fmt.Sprintf("Brought session %s back from %s to %s", store.ShortID(res.Session), hostName, res.ToDir)
-	if inTab {
-		before := len(res.Notes)
-		where, err := openPulledTab(&res, prompt)
-		if err != nil {
-			return "", fmt.Errorf("the session is back in %s, but it didn't open there (%w); the user can resume it there", res.ToDir, err)
-		}
-		message += ". It's open " + where
-		for _, note := range res.Notes[before:] {
-			fmt.Fprintf(out, "Note: %v\n", note)
-		}
-	}
-	if len(res.Notes) > 0 {
-		message += " (" + res.Noted() + ")"
-	}
-	return message, nil
-}
-
-func openPulledTab(res *Pulled, prompt string) (string, error) {
-	cfg, _, err := loadConfig()
-	if err != nil {
-		return "", err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), launchBudget)
-	defer cancel()
-	local, err := sh.NewLocal(ctx)
-	if err != nil {
-		return "", err
-	}
-	command := resumeCommand(res.Session, res.Name, prompt)
-	program, err := exec.LookPath(command[0])
-	if err != nil {
-		return "", fmt.Errorf("%s isn't installed on %s", command[0], local.Name())
-	}
-	command[0] = program
-	launcher := sh.Tmux{Machine: local}
-	group := groupOf(res.ProjectRoot, cfg.LocalRoots, local.Home())
-	launched := time.Now()
-	tab, err := launcher.Start(group, tabLabel(res.Name), res.ToDir, command, true)
-	if err != nil {
-		return "", err
-	}
-	if _, err := launcher.Show(tab); err != nil {
-		res.note(fmt.Errorf("showing the new tab failed: %w", err))
-	}
-	link, err := waitForRemoteControl(local, res.Session, launched)
-	if err != nil {
-		res.note(fmt.Errorf("%w, so it isn't in the Claude apps yet", err))
-		return launcher.Where(group), nil
-	}
-	return launcher.Where(group) + ", and in the Claude apps at " + link, nil
 }
