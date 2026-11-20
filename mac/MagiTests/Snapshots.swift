@@ -35,11 +35,22 @@ struct Snapshots {
     @Test func settings() async throws {
         let full = try await store(machines(sessions: true))
         for scheme in [ColorScheme.light, .dark] {
+            let suffix = scheme == .light ? "light" : "dark"
             for pane in Pane.allCases {
                 UserDefaults.standard.set(pane.rawValue, forKey: "pane")
-                try await render("settings-\(pane.rawValue)-\(scheme == .light ? "light" : "dark")", SettingsView(store: full), scheme)
+                try await settings("settings-\(pane.rawValue)-\(suffix)", scheme)
             }
-            try await render("first-run-\(scheme == .light ? "light" : "dark")", Welcome(store: full), scheme)
+            try await settings("settings-search-\(suffix)", scheme) { window in
+                @MainActor func field(_ view: NSView) -> NSTextField? {
+                    if let field = view as? NSTextField, field.isEditable {
+                        return field
+                    }
+                    return view.subviews.compactMap(field).first
+                }
+                window.makeFirstResponder(field(window.contentView!.superview!))
+                (window.firstResponder as! NSTextView).insertText("badge", replacementRange: NSRange(location: NSNotFound, length: 0))
+            }
+            try await render("first-run-\(suffix)", Welcome(store: full).background(SettingsColor.content), scheme)
         }
         UserDefaults.standard.removeObject(forKey: "pane")
     }
@@ -96,6 +107,19 @@ struct Snapshots {
         host.cacheDisplay(in: host.bounds, to: rep)
         try rep.representation(using: .png, properties: [:])!.write(to: out.appending(path: "\(name).png"))
         window.orderOut(nil)
+    }
+
+    private func settings(_ name: String, _ scheme: ColorScheme, act: (NSWindow) -> Void = { _ in }) async throws {
+        let window = NSWindow.settings {}
+        window.appearance = NSAppearance(named: scheme == .light ? .aqua : .darkAqua)
+        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+        window.orderFrontRegardless()
+        try await Task.sleep(for: .milliseconds(500))
+        act(window)
+        try await Task.sleep(for: .milliseconds(500))
+        let capture = try Process.run(URL(filePath: "/usr/sbin/screencapture"), arguments: ["-o", "-x", "-l", "\(window.windowNumber)", out.appending(path: "\(name).png").path])
+        capture.waitUntilExit()
+        window.close()
     }
 
     private func render(_ name: String, _ view: some View, _ scheme: ColorScheme) async throws {

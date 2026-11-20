@@ -1,7 +1,6 @@
+import AppKit
 import ServiceManagement
 import SwiftUI
-
-private let repository = URL(string: "https://github.com/felitrejos/magi")!
 
 enum Glyph: String, CaseIterable {
     case trio, orbit, bridge
@@ -15,43 +14,42 @@ enum Glyph: String, CaseIterable {
     }
 }
 
-enum Pane: String, CaseIterable {
-    case general, menuBar, machines, sound, about
+enum Chime {
+    static let name = "Glass"
+    static let volume = 0.5
+    static let names = ((try? FileManager.default.contentsOfDirectory(atPath: "/System/Library/Sounds")) ?? []).map { ($0 as NSString).deletingPathExtension }.sorted()
 
-    static let groups: [[Pane]] = [[.general, .menuBar], [.machines, .sound], [.about]]
-
-    var title: String {
-        switch self {
-        case .general: "General"
-        case .menuBar: "Menu Bar"
-        case .machines: "Machines"
-        case .sound: "Sound"
-        case .about: "About"
-        }
+    @MainActor static func play() {
+        let sound = NSSound(named: UserDefaults.standard.string(forKey: "chime") ?? name)
+        sound?.volume = Float(UserDefaults.standard.object(forKey: "volume") as? Double ?? volume)
+        sound?.play()
     }
+}
 
-    var symbol: String {
-        switch self {
-        case .general: "gearshape"
-        case .menuBar: "menubar.rectangle"
-        case .machines: "server.rack"
-        case .sound: "speaker.wave.2"
-        case .about: "info.circle"
-        }
+extension Color {
+    init(light: UInt32, dark: UInt32) {
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            let value = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: CGFloat(value >> 16 & 255) / 255, green: CGFloat(value >> 8 & 255) / 255, blue: CGFloat(value & 255) / 255, alpha: 1)
+        })
     }
+}
 
-    var rows: [String] {
-        switch self {
-        case .general: ["Open magi at login", "Show the waiting count", "Colour the badge", "Setup steps"]
-        case .menuBar: ["Icon"]
-        case .machines: []
-        case .sound: ["Play a sound", "Sound", "Volume"]
-        case .about: ["Version", "GitHub Repository", "Report an Issue"]
-        }
-    }
+enum SettingsColor {
+    static let content = Color(light: 0xF2F2F4, dark: 0x131315)
+    static let card = Color(light: 0xFFFFFF, dark: 0x19191B)
+    static let separator = Color(light: 0xE6E6E8, dark: 0x1F1F21)
+    static let selection = Color(light: 0xE0E0E2, dark: 0x272729)
+    static let control = Color(light: 0xE9E9EB, dark: 0x303032)
+    static let pill = Color(light: 0xDCDCDE, dark: 0x444446)
+}
 
+private let rowFont = Font.system(size: 13.5)
+private let subtitleFont = Font.system(size: 11)
+
+extension String {
     func matches(_ query: String) -> Bool {
-        query.isEmpty || ([title] + rows).contains { $0.localizedStandardContains(query) }
+        query.isEmpty || localizedStandardContains(query)
     }
 }
 
@@ -59,46 +57,123 @@ extension EnvironmentValues {
     @Entry var query = ""
 }
 
+enum Pane: String, CaseIterable, Identifiable {
+    case general, menuBar, sound
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .menuBar: "Menu Bar"
+        case .sound: "Sound"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: "gearshape.fill"
+        case .menuBar: "menubar.rectangle"
+        case .sound: "speaker.wave.2.fill"
+        }
+    }
+
+    var colors: [Color] {
+        switch self {
+        case .general: [Color(white: 0.45), Color(white: 0.25)]
+        case .menuBar: [Color(red: 0.35, green: 0.6, blue: 1), Color(red: 0.1, green: 0.35, blue: 0.9)]
+        case .sound: [Color(red: 1, green: 0.4, blue: 0.5), Color(red: 0.85, green: 0.15, blue: 0.3)]
+        }
+    }
+
+    func matches(_ query: String) -> Bool {
+        title.matches(query) || Setting.allCases.contains { $0.pane == self && $0.title.matches(query) }
+    }
+}
+
+enum Setting: CaseIterable {
+    case tutorial, login, icon, count, dot, chimes, chime, volume
+
+    var title: String {
+        switch self {
+        case .tutorial: "Get Started with magi"
+        case .login: "Open at Login"
+        case .icon: "Icon"
+        case .count: "Show Waiting Count"
+        case .dot: "Colour the Badge"
+        case .chimes: "Play a Sound"
+        case .chime: "Sound"
+        case .volume: "Volume"
+        }
+    }
+
+    var pane: Pane {
+        switch self {
+        case .tutorial, .login: .general
+        case .icon, .count, .dot: .menuBar
+        case .chimes, .chime, .volume: .sound
+        }
+    }
+}
+
+extension NSWindow {
+    static func settings(welcome: @escaping () -> Void) -> NSWindow {
+        let host = NSHostingController(rootView: SettingsView(welcome: welcome))
+        host.sceneBridgingOptions = [.toolbars]
+        let window = NSWindow(contentViewController: host)
+        window.styleMask.insert(.fullSizeContentView)
+        window.title = "magi Settings"
+        window.setContentSize(NSSize(width: 806, height: 792))
+        window.center()
+        return window
+    }
+}
+
 struct SettingsView: View {
-    let store: Store
+    let welcome: () -> Void
     @AppStorage("pane") private var pane = Pane.general
     @State private var back: [Pane] = []
     @State private var forward: [Pane] = []
     @State private var query = ""
 
+    private var shown: Pane? {
+        pane.matches(query) ? pane : Pane.allCases.first { $0.matches(query) }
+    }
+
     var body: some View {
         NavigationSplitView {
-            List(selection: Binding(get: { pane }, set: { $0.map(go) })) {
-                Identity()
-                    .selectionDisabled()
-                ForEach(Pane.groups, id: \.self) { group in
-                    Section {
-                        ForEach(group.filter { $0.matches(query) }, id: \.self) { pane in
-                            Label {
-                                Text(pane.title)
-                            } icon: {
-                                Icon(symbol: pane.symbol, size: 24)
-                            }
-                            .tag(pane)
-                        }
-                    }
-                }
-            }
-            .searchable(text: $query, placement: .sidebar, prompt: "Search settings\u{2026}")
-            .navigationSplitViewColumnWidth(230)
-            .toolbar(removing: .sidebarToggle)
+            SettingsSidebar(shown: shown, query: $query, go: go)
         } detail: {
-            Form {
-                switch pane {
-                case .general: General()
-                case .menuBar: MenuBar()
-                case .machines: Machines(store: store)
-                case .sound: Sound()
-                case .about: About()
+            Group {
+                if let shown {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 15) {
+                            switch shown {
+                            case .general: General(welcome: welcome)
+                            case .menuBar: MenuBar()
+                            case .sound: Sound()
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 14)
+                        .padding(.bottom, 20)
+                    }
+                    .environment(\.query, shown.title.matches(query) ? "" : query)
+                    .scrollEdgeEffectHidden(true, for: .top)
+                    .mask {
+                        VStack(spacing: 0) {
+                            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                                .frame(height: 56)
+                            Color.black
+                        }
+                        .ignoresSafeArea()
+                    }
+                } else {
+                    ContentUnavailableView.search(text: query)
                 }
             }
-            .formStyle(.grouped)
-            .environment(\.query, query)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(SettingsColor.content)
             .toolbar {
                 ToolbarItemGroup(placement: .navigation) {
                     Button("Back", systemImage: "chevron.left") {
@@ -113,10 +188,9 @@ struct SettingsView: View {
                     .disabled(forward.isEmpty)
                 }
             }
+            .toolbar(removing: .title)
         }
-        .toolbar(removing: .title)
-        .tint(.accentColor)
-        .frame(width: 680, height: 600)
+        .frame(minWidth: 700, minHeight: 500)
     }
 
     private func go(_ next: Pane) {
@@ -127,243 +201,190 @@ struct SettingsView: View {
     }
 }
 
-struct Identity: View {
+struct SettingsSidebar: View {
+    let shown: Pane?
+    @Binding var query: String
+    let go: (Pane) -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
-        HStack(spacing: 10) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("magi")
-                    .font(.body.weight(.semibold))
-                Text(version)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+        List {
+            ForEach(Pane.allCases.filter { $0.matches(query) }) { pane in
+                Button {
+                    go(pane)
+                } label: {
+                    HStack(spacing: 10) {
+                        PaneTile(symbol: pane.symbol, colors: pane.colors)
+                        Text(pane.title)
+                            .font(rowFont)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .padding(.horizontal, 6)
+                    .background(shown == pane ? SettingsColor.selection : .clear, in: .rect(cornerRadius: 8, style: .continuous))
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 1, leading: -6, bottom: 1, trailing: -6))
+                .accessibilityAddTraits(shown == pane ? .isSelected : [])
             }
         }
-        .padding(.vertical, 6)
+        .listStyle(.sidebar)
+        .background {
+            if colorScheme == .dark {
+                SidebarMaterial()
+                    .overlay(.black.opacity(0.4))
+                    .ignoresSafeArea()
+            }
+        }
+        .searchable(text: $query, placement: .sidebar, prompt: "Search settings\u{2026}")
+        .toolbar(removing: .sidebarToggle)
+        .navigationSplitViewColumnWidth(232)
     }
 }
 
-struct Icon: View {
+struct SidebarMaterial: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+struct PaneTile: View {
     let symbol: String
-    let size: CGFloat
+    let colors: [Color]
+    var size: CGFloat = 20
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: size * 0.5, weight: .medium))
-            .foregroundStyle(.primary)
+            .font(.system(size: size * 0.55, weight: .semibold))
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(.white)
             .frame(width: size, height: size)
-            .background(.quaternary, in: .rect(cornerRadius: size * 0.3, style: .continuous))
+            .background(LinearGradient(colors: colors, startPoint: .top, endPoint: .bottom), in: .rect(cornerRadius: size * 0.26, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous).strokeBorder(.white.opacity(0.15), lineWidth: 0.5))
     }
 }
 
-struct Setting<Control: View>: View {
-    let title: String
-    var detail: String?
-    @ViewBuilder let control: Control
-    @Environment(\.query) private var query
+struct SettingCard<Content: View>: View {
+    @ViewBuilder let content: Content
 
     var body: some View {
-        if query.isEmpty || title.localizedStandardContains(query) {
-            LabeledContent {
-                control
-            } label: {
-                Text(title)
-                if let detail {
-                    Text(detail)
+        Group(subviews: content) { subviews in
+            if !subviews.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(subviews) { subview in
+                        if subview.id != subviews.first?.id {
+                            SettingsColor.separator
+                                .frame(height: 1)
+                                .padding(.horizontal, 12)
+                        }
+                        subview
+                    }
                 }
+                .background(SettingsColor.card, in: .rect(cornerRadius: 10, style: .continuous))
             }
-            .frame(minHeight: 34)
         }
+    }
+}
+
+struct SettingRow<Trailing: View>: View {
+    let title: String
+    var subtitle: String?
+    @ViewBuilder let trailing: Trailing
+    @Environment(\.query) private var query
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        if title.matches(query) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(rowFont)
+                        .foregroundStyle(isEnabled ? .primary : .secondary)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(subtitleFont)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 12)
+                trailing
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, subtitle == nil ? 11.5 : 13.5)
+            .frame(minHeight: 47)
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
+extension SettingRow {
+    init(_ item: Setting, subtitle: String? = nil, @ViewBuilder trailing: () -> Trailing) {
+        self.init(title: item.title, subtitle: subtitle, trailing: trailing)
+    }
+}
+
+struct SettingSwitch: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle("", isOn: $isOn)
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+    }
+}
+
+struct FillButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .padding(.horizontal, 12)
+            .frame(height: 24)
+            .background(SettingsColor.control, in: .rect(cornerRadius: 6, style: .continuous))
+            .opacity(configuration.isPressed ? 0.7 : 1)
     }
 }
 
 struct General: View {
-    @AppStorage("glyph") private var glyph = Glyph.trio
-    @AppStorage("showsCount") private var showsCount = false
-    @AppStorage("dot") private var dot = false
-    @Environment(\.openWindow) private var openWindow
-    @Environment(\.openURL) private var openURL
-
-    var body: some View {
-        Section {
-            HStack(spacing: 12) {
-                Image(glyph.resource)
-                    .font(.system(size: 22))
-                    .foregroundStyle(.white)
-                    .frame(width: 56, height: 40)
-                    .background(.black.opacity(0.85), in: .rect(cornerRadius: 9, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Get started with magi")
-                        .font(.body.weight(.semibold))
-                    Text("Move sessions between your machines and see what waits on you.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                Button("Open Tutorial") {
-                    openURL(repository.appending(path: "blob/main/docs/tutorial.md"))
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.vertical, 6)
-        }
-        Section("Startup") {
-            LoginItem()
-        }
-        Section("Menu bar") {
-            Setting(title: "Show the waiting count", detail: "The number of sessions waiting on you, next to the icon.") {
-                Toggle("", isOn: $showsCount).labelsHidden().toggleStyle(.switch)
-            }
-            Setting(title: "Colour the badge", detail: "A coloured dot instead of a cutout, so it stands out.") {
-                Toggle("", isOn: $dot).labelsHidden().toggleStyle(.switch)
-            }
-        }
-        Section("First run") {
-            Setting(title: "Setup steps", detail: "Check that magi is set up here and choose whether it opens at login.") {
-                Button("Show Again") {
-                    NSApp.activate()
-                    openWindow(id: "welcome")
-                }
-            }
-        }
-    }
-}
-
-struct MenuBar: View {
-    @AppStorage("glyph") private var glyph = Glyph.trio
+    let welcome: () -> Void
+    @AppStorage("glyph") private var glyph = Glyph.orbit
     @Environment(\.query) private var query
 
     var body: some View {
-        if query.isEmpty || "Icon".localizedStandardContains(query) {
-            Section("Appearance") {
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Icon")
-                        Text("How magi looks in the menu bar.")
-                            .font(.subheadline)
+        if Setting.tutorial.title.matches(query) {
+            SettingCard {
+                HStack(spacing: 12) {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(.black)
+                        .frame(width: 88, height: 49)
+                        .overlay {
+                            Image(glyph.resource)
+                                .font(.title)
+                                .foregroundStyle(.white)
+                        }
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(Setting.tutorial.title)
+                            .font(.system(size: 13, weight: .medium))
+                        Text("Check that magi is set up here and how it starts.")
+                            .font(subtitleFont)
                             .foregroundStyle(.secondary)
                     }
-                    Spacer(minLength: 0)
-                    ForEach(Glyph.allCases, id: \.self) { candidate in
-                        Button {
-                            glyph = candidate
-                        } label: {
-                            VStack(spacing: 8) {
-                                Image(candidate.resource)
-                                    .font(.system(size: 16))
-                                    .frame(width: 72, height: 30)
-                                    .background(.quaternary, in: .rect(cornerRadius: 8, style: .continuous))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .strokeBorder(glyph == candidate ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), lineWidth: 2)
-                                    }
-                                Text(candidate.rawValue.capitalized)
-                                    .font(.subheadline.weight(glyph == candidate ? .semibold : .regular))
-                                    .foregroundStyle(glyph == candidate ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 2)
-                                    .background(glyph == candidate ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), in: .capsule)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(candidate.rawValue.capitalized) icon")
-                        .accessibilityAddTraits(glyph == candidate ? .isSelected : [])
-                    }
+                    Spacer(minLength: 12)
+                    Button("Show Steps", action: welcome)
+                        .buttonStyle(FillButton())
                 }
-                .padding(.vertical, 6)
+                .padding(8)
             }
         }
-    }
-}
-
-struct Machines: View {
-    let store: Store
-
-    var body: some View {
-        Section {
-            if store.machines.isEmpty {
-                Text("No machines yet. Ask Claude to \u{201C}set up magi with my homelab\u{201D}.")
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(store.machines.keys.sorted(), id: \.self) { name in
-                if let machine = store.machines[name] {
-                    HStack(spacing: 10) {
-                        Icon(symbol: machine.device, size: 28)
-                        Setting(title: name, detail: machine.ssh?.isEmpty ?? true ? "This Mac" : "ssh \(machine.ssh ?? "")") {
-                            Label(store.answering.contains(name) ? "Answering" : "Not answering", systemImage: "circle.fill")
-                                .labelStyle(Dot(color: store.answering.contains(name) ? .green : .secondary))
-                        }
-                    }
-                }
-            }
-        } header: {
-            Text("Machines")
-        } footer: {
-            Text("magi adds a machine when you ask Claude to set it up.")
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct Dot: LabelStyle {
-    let color: Color
-
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 6) {
-            configuration.icon
-                .font(.system(size: 7))
-                .foregroundStyle(color)
-            configuration.title
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct Sound: View {
-    @AppStorage("chimes") private var chimes = false
-    @AppStorage("chime") private var chime = "Glass"
-    @AppStorage("volume") private var volume = 0.5
-
-    private var sounds: [String] {
-        ((try? FileManager.default.contentsOfDirectory(atPath: "/System/Library/Sounds")) ?? []).map { ($0 as NSString).deletingPathExtension }.sorted()
-    }
-
-    var body: some View {
-        Section("When a session starts waiting") {
-            Setting(title: "Play a sound", detail: "Once, each time a session starts waiting on you.") {
-                Toggle("", isOn: $chimes).labelsHidden().toggleStyle(.switch)
-            }
-            Setting(title: "Sound") {
-                Picker("", selection: $chime) {
-                    ForEach(sounds, id: \.self) { sound in
-                        Label(sound, systemImage: "speaker.wave.2").tag(sound)
-                    }
-                }
-                .labelsHidden()
-                .fixedSize()
-            }
-            .disabled(!chimes)
-            Setting(title: "Volume") {
-                HStack(spacing: 8) {
-                    Slider(value: $volume, in: 0...1)
-                        .frame(width: 150)
-                    Text(volume.formatted(.percent.precision(.fractionLength(0))))
-                        .font(.callout)
-                        .monospacedDigit()
-                        .frame(minWidth: 40)
-                        .padding(.vertical, 2)
-                        .background(.quaternary, in: .capsule)
-                    Button("Reset", systemImage: "arrow.counterclockwise") {
-                        volume = 0.5
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonBorderShape(.circle)
-                    .disabled(volume == 0.5)
-                }
-            }
-            .disabled(!chimes)
+        SettingCard {
+            LoginItem()
         }
     }
 }
@@ -372,46 +393,137 @@ struct LoginItem: View {
     @State private var status = SMAppService.mainApp.status
 
     var body: some View {
-        Setting(title: "Open magi at login", detail: status == .requiresApproval ? "macOS needs your approval in Login Items." : "magi stays in the menu bar and wakes only when a machine reports.") {
+        SettingRow(.login, subtitle: status == .requiresApproval ? "macOS needs your approval in Login Items." : nil) {
             if status == .requiresApproval {
                 Button("Open Login Items") {
                     SMAppService.openSystemSettingsLoginItems()
                 }
+                .buttonStyle(FillButton())
             } else {
-                Toggle("", isOn: Binding(get: { status == .enabled }, set: { on in
+                SettingSwitch(isOn: Binding(get: { status == .enabled }, set: { on in
                     try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
                     status = SMAppService.mainApp.status
                 }))
-                .labelsHidden()
-                .toggleStyle(.switch)
             }
         }
     }
 }
 
-struct About: View {
-    @Environment(\.openURL) private var openURL
+struct MenuBar: View {
+    @AppStorage("glyph") private var glyph = Glyph.orbit
+    @AppStorage("showsCount") private var showsCount = false
+    @AppStorage("dot") private var dot = false
+    @Environment(\.query) private var query
 
     var body: some View {
-        Section {
-            Setting(title: "magi", detail: "Updates come through magi.") {
-                Text(version)
+        if Setting.icon.title.matches(query) {
+            SettingCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(Setting.icon.title)
+                            .font(rowFont)
+                        Text("How magi looks in the menu bar.")
+                            .font(subtitleFont)
+                            .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 0) {
+                        ForEach(Glyph.allCases, id: \.self) { candidate in
+                            if candidate != Glyph.allCases.first {
+                                Spacer(minLength: 16)
+                            }
+                            Button {
+                                glyph = candidate
+                            } label: {
+                                VStack(spacing: 6) {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(LinearGradient(colors: [.indigo, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                        .frame(width: 147, height: 87)
+                                        .overlay {
+                                            Image(candidate.resource)
+                                                .font(.system(size: 30))
+                                                .foregroundStyle(.white)
+                                        }
+                                        .accessibilityHidden(true)
+                                    Text(candidate.rawValue.capitalized)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .padding(.horizontal, 10)
+                                        .frame(height: 22)
+                                        .background(glyph == candidate ? SettingsColor.pill : .clear, in: .capsule)
+                                }
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(glyph == candidate ? .isSelected : [])
+                        }
+                    }
+                }
+                .padding(12)
             }
         }
-        Section("Feedback") {
-            HStack(spacing: 12) {
-                Button {
-                    openURL(repository)
+        SettingCard {
+            SettingRow(.count, subtitle: "The number of sessions waiting on you, next to the icon.") {
+                SettingSwitch(isOn: $showsCount)
+            }
+            SettingRow(.dot, subtitle: "A coloured dot instead of a cutout, so it stands out.") {
+                SettingSwitch(isOn: $dot)
+            }
+        }
+    }
+}
+
+struct Sound: View {
+    @AppStorage("chimes") private var chimes = false
+    @AppStorage("chime") private var chime = Chime.name
+    @AppStorage("volume") private var volume = Chime.volume
+
+    var body: some View {
+        SettingCard {
+            SettingRow(.chimes, subtitle: "Once, each time a session starts waiting on you.") {
+                SettingSwitch(isOn: $chimes)
+            }
+            SettingRow(.chime) {
+                Menu {
+                    Picker(Setting.chime.title, selection: $chime) {
+                        ForEach(Chime.names, id: \.self) { name in
+                            Text(name).tag(name)
+                        }
+                    }
+                    .pickerStyle(.inline)
                 } label: {
-                    Text("GitHub Repository").frame(maxWidth: .infinity)
+                    HStack(spacing: 12) {
+                        Text(chime)
+                            .font(rowFont)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.trailing, 6)
                 }
-                Button {
-                    openURL(repository.appending(path: "issues/new"))
-                } label: {
-                    Text("Report an Issue").frame(maxWidth: .infinity)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .onChange(of: chime) {
+                    Chime.play()
                 }
             }
-            .controlSize(.large)
+            .disabled(!chimes)
+            SettingRow(.volume) {
+                HStack(spacing: 10) {
+                    Slider(value: $volume, in: 0...1) { editing in
+                        if !editing {
+                            Chime.play()
+                        }
+                    }
+                    .frame(width: 150)
+                    Text(volume, format: .percent.precision(.fractionLength(0)))
+                        .font(rowFont)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 40, alignment: .trailing)
+                }
+            }
+            .disabled(!chimes)
         }
     }
 }
@@ -423,33 +535,29 @@ struct Welcome: View {
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    HStack(spacing: 12) {
-                        Icon(symbol: step == 0 ? "checkmark.seal" : "power", size: 36)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(step == 0 ? "Is magi set up here?" : "Open magi at login?")
-                                .font(.title3.weight(.semibold))
-                            Text("Step \(step + 1) of 2. You can skip it and run it again from Settings.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 6)
-                }
-                Section {
-                    if step == 0 {
-                        Setting(title: "Machines answering", detail: store.answering.isEmpty ? "Ask Claude to \u{201C}set up magi with my homelab\u{201D}, and this step checks itself." : "magi is set up here.") {
-                            Text("\(store.answering.count) of \(store.machines.count)")
-                                .monospacedDigit()
-                        }
-                    } else {
-                        LoginItem()
-                    }
+        VStack(alignment: .leading, spacing: 15) {
+            HStack(spacing: 12) {
+                PaneTile(symbol: step == 0 ? "checkmark.seal.fill" : "power", colors: Pane.general.colors, size: 36)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(step == 0 ? "Is magi set up here?" : "Open magi at login?")
+                        .font(.title3.weight(.semibold))
+                    Text("Step \(step + 1) of 2. You can skip it and run it again from Settings.")
+                        .font(subtitleFont)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .formStyle(.grouped)
+            SettingCard {
+                if step == 0 {
+                    SettingRow(title: "Machines Answering", subtitle: store.answering.isEmpty ? "Ask Claude to \u{201C}set up magi with my homelab\u{201D}, and this step checks itself." : "magi is set up here.") {
+                        Text("\(store.answering.count) of \(store.machines.count)")
+                            .font(rowFont)
+                            .monospacedDigit()
+                    }
+                } else {
+                    LoginItem()
+                }
+            }
+            Spacer(minLength: 0)
             HStack {
                 Spacer()
                 Button(step == 1 ? "Done" : store.answering.isEmpty ? "Skip" : "Continue") {
@@ -462,12 +570,9 @@ struct Welcome: View {
                 }
                 .keyboardShortcut(.defaultAction)
             }
-            .padding([.horizontal, .bottom], 20)
         }
+        .padding(20)
         .frame(width: 480, height: 320)
+        .containerBackground(SettingsColor.content, for: .window)
     }
-}
-
-private var version: String {
-    "Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")"
 }

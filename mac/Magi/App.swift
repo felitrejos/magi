@@ -11,7 +11,8 @@ final class App: NSObject, NSApplicationDelegate {
     private let glass = NSGlassEffectView()
     private let menu = NSMenu()
     private let store: Store
-    private let scenes: NSHostingSceneRepresentation<SettingsScenes>
+    private let scenes: NSHostingSceneRepresentation<Scenes>
+    private lazy var settings = NSWindow.settings { [scenes] in scenes.environment.openWindow(id: "welcome") }
     private var host: Host?
     private var monitor: Any?
     private var shown: Glance?
@@ -20,7 +21,7 @@ final class App: NSObject, NSApplicationDelegate {
     override init() {
         let store = Store(home: .homeDirectory.appending(path: ".magi"))
         self.store = store
-        scenes = NSHostingSceneRepresentation { SettingsScenes(store: store) }
+        scenes = NSHostingSceneRepresentation { Scenes(store: store) }
         super.init()
     }
 
@@ -88,7 +89,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func show(_ glance: Glance) {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let glyph = UserDefaults.standard.string(forKey: "glyph").flatMap(Glyph.init) ?? .trio
+        let glyph = UserDefaults.standard.string(forKey: "glyph").flatMap(Glyph.init) ?? .orbit
         let symbol = glance.waiting.isEmpty ? glance.answering.isEmpty ? "\(glyph.rawValue).slash" : glyph.rawValue : "\(glyph.rawValue).badge"
         let image = NSImage(symbolName: symbol, bundle: .main, variableValue: 0)!
         let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
@@ -103,6 +104,9 @@ final class App: NSObject, NSApplicationDelegate {
             let started = glance.waiting.filter { shown.waiting[$0.key] == nil }
             if !started.isEmpty, !reduceMotion {
                 icon.addSymbolEffect(.bounce, options: .nonRepeating)
+            }
+            if !started.isEmpty, UserDefaults.standard.bool(forKey: "chimes") {
+                Chime.play()
             }
             for line in started.values.sorted() + shown.answering.subtracting(glance.answering).sorted().map({ "\($0) stopped answering" }) {
                 NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
@@ -130,7 +134,7 @@ final class App: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         close()
         NSApp.activate()
-        scenes.environment.openSettings()
+        settings.makeKeyAndOrderFront(nil)
     }
 
     private func open() {
@@ -220,13 +224,10 @@ struct Glance {
     }
 }
 
-struct SettingsScenes: Scene {
+struct Scenes: Scene {
     let store: Store
 
     var body: some Scene {
-        Settings {
-            SettingsView(store: store)
-        }
         WindowGroup("Welcome to magi", id: "welcome") {
             Welcome(store: store)
         }
