@@ -71,8 +71,8 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	}
 	session("busy", busySince)
 	r := f.remoteHost()
-	w := newWatcher("server", r, log.New(io.Discard, "", 0))
-	cmd := r.Command(watchScript, "", "claude", "")
+	w := newWatcher("server", r, log.New(io.Discard, "", 0), "")
+	cmd := r.Command(watchScript, "", "claude")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestWatchCountsTheCPUOfChildrenThatExited(t *testing.T) {
 	server := f.serverHome()
 	pid := f.worker(`(` + burn + `); : > "$1"; sleep 60; :`)
 	f.write(filepath.Join(server, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"0f0f0f0f-1111-2222-3333-555555555556","cwd":"/srv/api","status":"idle"}`, pid))
-	cmd := f.remoteHost().Command(watchScript, "", "claude", "")
+	cmd := f.remoteHost().Command(watchScript, "", "claude")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestWatchMarksAMachineThatStopsAnswering(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopped := make(chan error)
-	go func() { stopped <- newWatcher("server", r, log.New(io.Discard, "", 0)).follow("") }()
+	go func() { stopped <- newWatcher("server", r, log.New(io.Discard, "", 0), "").follow("") }()
 	for deadline := time.Now().Add(10 * time.Second); !readLive(t, "server").Answering; time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the machine was never marked as answering")
@@ -229,7 +229,7 @@ func TestANewWatchLoopStopsOrphanedLoopsForItsMachine(t *testing.T) {
 	f.serverHome()
 	r := f.remoteHost()
 	line := func(name string) string {
-		args := r.Command(`: "$HOME/.magi/watchers"; while :; do sleep 1; done`, name).Args
+		args := r.Command(`: "$HOME/.magi/watchers"; while :; do sleep 1; done`, name, "claude").Args
 		return args[len(args)-1]
 	}
 	orphan := func(name string) int {
@@ -250,7 +250,7 @@ func TestANewWatchLoopStopsOrphanedLoopsForItsMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { connected.Process.Kill(); connected.Wait() })
-	cmd := r.Command(watchScript, "laptop", "claude", "")
+	cmd := r.Command(watchScript, "laptop", "claude")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

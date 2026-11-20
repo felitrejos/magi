@@ -366,20 +366,26 @@ func newMCPServer() *mcp.Server {
 	}, func(context.Context, struct{}) (string, error) {
 		return uninstall()
 	})
-	if os.Getenv(delegateVar) != "" {
-		server.RemoveTools("setup_machine", "move_session", "allow_project", "unpark", "run_elsewhere", "delegate", "session_elsewhere", "task_reply", "task_result", "cancel_task", "uninstall")
+	if delegated() {
+		server.RemoveTools("setup_machine", "move_session", "allow_project", "status", "unpark", "run_elsewhere", "delegate", "session_elsewhere", "task_reply", "task_result", "cancel_task", "uninstall")
 	}
 	return server
+}
+
+func delegated() bool {
+	return os.Getenv(delegateVar) != ""
 }
 
 var callerPID int
 
 func serveMCP(ctx context.Context, transport mcp.Transport) error {
 	callerPID = os.Getppid()
-	go func() {
-		sweepMoves()
-		sweepTasks()
-	}()
+	if !delegated() {
+		go func() {
+			sweepMoves()
+			sweepTasks()
+		}()
+	}
 	return newMCPServer().Run(ctx, transport)
 }
 
@@ -421,7 +427,7 @@ func moveSession(ctx context.Context, in moveInput) (string, error) {
 		err = mover{session: s.SessionID, host: in.To, out: &out}.run()
 	} else {
 		var message string
-		if message, err = pullHere(m.Name, s.SessionID, "", &out, true); err == nil {
+		if message, err = pullHere(m.Name, s.SessionID, &out, true); err == nil {
 			fmt.Fprintln(&out, message+".")
 		}
 	}

@@ -58,15 +58,18 @@ func loadHost(name string) (Host, error) {
 	if err != nil {
 		return Host{}, err
 	}
-	host, ok := cfg.Hosts[name]
-	if !ok {
+	if _, ok := cfg.Hosts[name]; !ok {
 		names := slices.Sorted(maps.Keys(cfg.Hosts))
 		return Host{}, fmt.Errorf("%w %q in %s; configured hosts: %s", errNoHost, name, path, strings.Join(names, ", "))
 	}
-	host.LocalRoots = cfg.LocalRoots
-	host.Exclude = cfg.Exclude
-	host = host.withDefaults()
+	host := cfg.host(name)
 	return host, host.validate(name)
+}
+
+func (c Config) host(name string) Host {
+	h := c.Hosts[name]
+	h.LocalRoots, h.Exclude = c.LocalRoots, c.Exclude
+	return h.withDefaults()
 }
 
 func (h Host) withDefaults() Host {

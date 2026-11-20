@@ -1,10 +1,13 @@
 #!/bin/sh
-name=$1 cli=$2
+name=$1 cli=$2 copies=$3
 case $cli in \~/*) cli=$HOME/${cli#\~/} ;; esac
 wanted=$HOME/.magi/wanted
 if [ -n "$name" ]; then
   mkdir -p "$HOME/.magi/watchers" "$wanted"
-  ps -A -o pid= -o ppid= -o args= | loop="magi set -- \\047$name\\047" awk '$2 == 1 && index($0, ENVIRON["loop"]) && index($0, ".magi/watchers") { print $1 }' | while read -r pid; do kill "$pid"; done
+  printf '%s\n' "$copies" > "$HOME/.magi/.watcher-$name" && mv -f "$HOME/.magi/.watcher-$name" "$HOME/.magi/watchers/$name"
+  ps -A -o pid= -o ppid= -o args= | loop="set -- \\047$name\\047 " awk '
+    index($0, ENVIRON["loop"]) && index($0, ".magi/watchers") { parent[$1] = $2 }
+    END { for (p in parent) { top = p; while (parent[top] in parent) top = parent[top]; if (parent[top] == "1") print p } }' | while read -r pid; do kill "$pid"; done
 fi
 tick=0 registry=-
 usage() {
@@ -16,7 +19,7 @@ usage() {
 }
 while :; do
   if [ -n "$name" ]; then
-    : > "$HOME/.magi/watchers/$name"
+    touch "$HOME/.magi/watchers/$name"
     for f in "$wanted"/*.json; do
       [ -f "$f" ] || continue
       grep -qF "\"to\":\"$name\"" "$f" || continue

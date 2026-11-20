@@ -31,12 +31,12 @@ processes() {
 }
 
 resuming() {
-  processes | awk '{
+  processes | id=" --resume $1" awk '{
     program = $2
     if (program ~ /(^|\/)(sh|bash|dash|zsh|node)$/) program = $3
     sub(/.*\//, "", program)
-    if (program == "claude") print
-  }' | grep -F -- " --resume $1"
+    if (program == "claude" && index($0, ENVIRON["id"])) print $1
+  }'
 }
 
 ours() {
@@ -111,7 +111,7 @@ case $command in
     fi
     ;;
   kill)
-    for pid in $(resuming "$1" | cut -d ' ' -f 1); do kill -TERM "$pid"; done
+    for pid in $(resuming "$1"); do kill -TERM "$pid"; done
     ;;
   end)
     while [ $# -gt 1 ]; do

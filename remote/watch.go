@@ -34,12 +34,41 @@ type wanted struct {
 	Note string `json:"note"`
 }
 
+func wantedNote(m sh.Machine, sessionID string) (string, error) {
+	out, err := sh.Run(m, `f="$HOME/.magi/wanted/$1.json"; [ ! -f "$f" ] || cat "$f"`, sessionID)
+	if err != nil || len(out) == 0 {
+		return "", err
+	}
+	var w wanted
+	if err := json.Unmarshal(out, &w); err != nil {
+		return "", fmt.Errorf("the request to take session %s back is unreadable on %s: %w", store.ShortID(sessionID), m.Name(), err)
+	}
+	return w.Note, nil
+}
+
 func writeWanted(sessionID string, w wanted) error {
 	path, err := store.SessionPath("wanted", sessionID, ".json")
 	if err != nil {
 		return err
 	}
 	return store.WriteJSON(path, w)
+}
+
+type copies struct {
+	Secrets []string `json:"secrets"`
+	Exclude []string `json:"exclude"`
+}
+
+func takerCopies(name string) (Host, error) {
+	path, err := store.Dir(filepath.Join("watchers", name))
+	if err != nil {
+		return Host{}, err
+	}
+	var c copies
+	if err := store.ReadJSON(path, &c); err != nil {
+		return Host{}, fmt.Errorf("%s doesn't say which files it copies when it takes a session back (%v); update magi there", name, err)
+	}
+	return Host{Secrets: c.Secrets, Exclude: c.Exclude}, nil
 }
 
 func watchers() ([]string, error) {
@@ -135,13 +164,18 @@ func watch() error {
 	}()
 	go heartbeat(logger, quit)
 	var wg sync.WaitGroup
-	wg.Go(func() { watchHost(newWatcher(local.Name(), local, logger), "") })
+	wg.Go(func() { watchHost(newWatcher(local.Name(), local, logger, ""), "") })
 	for _, name := range cfg.Order {
-		remote, err := newRemote(context.Background(), cfg.Hosts[name])
+		host := cfg.host(name)
+		remote, err := newRemote(context.Background(), host)
 		if err != nil {
 			return err
 		}
-		wg.Go(func() { watchHost(newWatcher(name, remote, logger), local.Name()) })
+		said, err := json.Marshal(copies{Secrets: host.Secrets, Exclude: host.Exclude})
+		if err != nil {
+			return err
+		}
+		wg.Go(func() { watchHost(newWatcher(name, remote, logger, string(said)), local.Name()) })
 	}
 	wg.Wait()
 	return nil
@@ -206,6 +240,7 @@ func watchHost(w *watcher, me string) {
 type watcher struct {
 	name   string
 	m      sh.Machine
+	copies string
 	logger *log.Logger
 	live   liveMachine
 	block  []string
@@ -245,13 +280,13 @@ type use struct {
 	cpu, memoryMB int
 }
 
-func newWatcher(name string, m sh.Machine, logger *log.Logger) *watcher {
-	return &watcher{name: name, m: m, logger: logger, live: liveMachine{Sessions: []liveEntry{}}}
+func newWatcher(name string, m sh.Machine, logger *log.Logger, copies string) *watcher {
+	return &watcher{name: name, m: m, copies: copies, logger: logger, live: liveMachine{Sessions: []liveEntry{}}}
 }
 
 func (w *watcher) follow(me string) error {
 	w.block = nil
-	cmd := w.m.Command(watchScript, me, w.m.Claude())
+	cmd := w.m.Command(watchScript, me, w.m.Claude(), w.copies)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -393,18 +428,8 @@ func stopWatching(names []string, logger *log.Logger) {
 func take(name string, remote sh.Machine, id string, logger *log.Logger) {
 	taking.RLock()
 	defer taking.RUnlock()
-	data, err := sh.Run(remote, `cat "$HOME/.magi/wanted/$1.json"`, id)
-	if err != nil {
-		logger.Printf("%s: reading the request for session %s failed: %v", name, store.ShortID(id), err)
-		return
-	}
-	var w wanted
-	if err := json.Unmarshal(data, &w); err != nil {
-		logger.Printf("%s: the request for session %s is unreadable: %v", name, store.ShortID(id), err)
-		return
-	}
 	logger.Printf("%s: taking session %s back", name, store.ShortID(id))
-	message, err := pullHere(name, id, w.Note, logger.Writer(), true)
+	message, err := pullHere(name, id, logger.Writer(), true)
 	if err != nil {
 		logger.Printf("%s: taking session %s back failed: %v", name, store.ShortID(id), err)
 		return

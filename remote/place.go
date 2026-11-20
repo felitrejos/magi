@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,47 +21,14 @@ func expandHome(path, home string) string {
 	return path
 }
 
-func localGroup(projectRoot string, localRoots []string) string {
-	for _, root := range localRoots {
-		if group, ok := groupUnderLocal(root, projectRoot); ok {
-			return group
-		}
-	}
-	return baseName(projectRoot)
-}
-
-func groupUnderLocal(root, path string) (string, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", false
-	}
-	rootInfo, err := os.Stat(expandHome(root, home))
-	if err != nil {
-		return "", false
-	}
-	for child, parent := path, filepath.Dir(path); child != parent; child, parent = parent, filepath.Dir(parent) {
-		if info, err := os.Stat(parent); err == nil && os.SameFile(info, rootInfo) {
-			return filepath.Base(child), true
-		}
-	}
-	return "", false
-}
-
-func serverGroup(clone string, roots []string, home string) string {
+func groupOf(dir string, roots []string, home string) string {
 	for _, root := range roots {
-		if group, ok := groupUnder(expandHome(root, home), clone); ok {
-			return group
+		rel, err := filepath.Rel(expandHome(root, home), dir)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return strings.Split(rel, string(filepath.Separator))[0]
 		}
 	}
-	return baseName(filepath.Dir(clone))
-}
-
-func groupUnder(root, path string) (string, bool) {
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-		return "", false
-	}
-	return strings.Split(rel, string(filepath.Separator))[0], true
+	return baseName(filepath.Dir(dir))
 }
 
 type Placement struct {
@@ -87,7 +53,7 @@ func place(target sh.Machine, ws Workspace, roots []string, groupIfNew string, e
 			return p, err
 		}
 		if p.Root != "" {
-			p.Group = serverGroup(p.Root, roots, home)
+			p.Group = groupOf(p.Root, roots, home)
 			return p, nil
 		}
 	}

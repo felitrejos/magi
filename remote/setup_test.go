@@ -174,3 +174,17 @@ func TestSetupMachineRefusesWSLOnEitherMachine(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupMachineSavesNothingWithAnExcludeMagiCantUse(t *testing.T) {
+	f := newFixture(t)
+	server := f.serverHome()
+	f.tool("claude", fakeClaudeToSetUp)
+	f.write(filepath.Join(server, "code"), "x", "")
+	f.config("exclude = [\"build/cache\"]\n")
+	if text, failed := f.call("setup_machine", map[string]any{"host": "server", "ssh": "fakehost", "local_roots": []string{"~/laptop"}}); !failed || !strings.Contains(text, `"build/cache"`) {
+		t.Errorf("setup with a bad exclude:\n%s", text)
+	}
+	if saved := f.read(filepath.Join(f.home, ".config", "magi"), "config.toml"); strings.Contains(saved, "server") {
+		t.Errorf("setup saved the machine anyway:\n%s", saved)
+	}
+}

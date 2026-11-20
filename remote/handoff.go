@@ -12,10 +12,9 @@ import (
 	"github.com/felitrejos/magi/remote/internal/store"
 )
 
-const (
-	prepareBudget = 80 * time.Second
-	launchBudget  = 45 * time.Second
-)
+const prepareBudget = 80 * time.Second
+
+var launchBudget = 45 * time.Second
 
 type Handoff struct {
 	HostName       string
@@ -38,6 +37,7 @@ type Result struct {
 	Steps     []Step
 	ShownOn   []string
 	Where     string
+	Link      string
 	Notes     []error
 	Ports     []int
 	NewFolder string
@@ -188,10 +188,8 @@ func (r *handoffRun) run(ctx context.Context) error {
 	defer cancelStart()
 	remote := r.remote.With(start)
 	if err := r.st.run("start", func() error {
-		link, err := waitForRemoteControl(remote, r.SessionID, r.launchedAt)
-		if err == nil {
-			r.res.Where += ", and in the Claude apps at " + link
-		}
+		var err error
+		r.res.Link, err = waitForRemoteControl(remote, r.SessionID, r.launchedAt)
 		return err
 	}); err != nil {
 		return r.undo(err, true)
@@ -226,7 +224,11 @@ func (r *handoffRun) inspect(ctx context.Context) error {
 	if r.remote, err = newRemote(ctx, r.Host); err != nil {
 		return err
 	}
-	if r.where, err = place(r.remote, r.ws, r.Host.Roots, localGroup(r.ws.MainRoot, r.Host.LocalRoots), r.Host.Exclude); err != nil {
+	home, err := homeDir(r.local)
+	if err != nil {
+		return err
+	}
+	if r.where, err = place(r.remote, r.ws, r.Host.Roots, groupOf(r.ws.MainRoot, r.Host.LocalRoots, home), r.Host.Exclude); err != nil {
 		return err
 	}
 	if err := refuseUntested(r.local, r.remote, expandHome(r.Host.Claude, r.where.Home)); err != nil {

@@ -124,6 +124,7 @@ func TestTrustCarriesOverToTheOtherMachineAndKeepsEverythingElse(t *testing.T) {
 
 func TestStopSessionStopsTheSessionButNotTheTmuxServerThatStartedIt(t *testing.T) {
 	f := newFixture(t)
+	f.tool("ps", "#!/bin/sh\nPATH=${PATH#*:} ps \"$@\" | sed 's/^/   /'\n")
 	sessionID := "11111111-2222-3333-4444-555555555555"
 	server := runProgram(t, "tmux", "new-session", "--resume", sessionID)
 	session := runProgram(t, "claude", "--resume", sessionID)
@@ -310,7 +311,8 @@ func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
 	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
 	t.Setenv("CLAUDE_PID", "4242")
 	heartbeat := filepath.Join(f.home, ".magi", "watchers", "Felipes-MacBook-Pro")
-	f.write(filepath.Dir(heartbeat), filepath.Base(heartbeat), "")
+	f.write(filepath.Dir(heartbeat), filepath.Base(heartbeat), `{"secrets":[".env"],"exclude":["node_modules"]}`)
+	f.localSession(id, "busy")
 	if err := arm("mac", id, "dev server on :3000", false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
@@ -343,16 +345,18 @@ func TestArmWaitsForTheUsersYesWhenSecretFilesGo(t *testing.T) {
 	id := "0f0f0f0f-1111-2222-3333-555555555557"
 	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
 	t.Setenv("CLAUDE_PID", "4242")
-	f.write(filepath.Join(f.home, ".magi", "watchers"), "Felipes-MacBook-Pro", "")
+	f.write(filepath.Join(f.home, ".magi", "watchers"), "Felipes-MacBook-Pro", `{"secrets":["credentials.json"]}`)
 	f.write(f.local, ".env", "K=1")
+	f.write(f.local, ".gitignore", ".env*\nnode_modules/\ncredentials.json\n")
+	f.write(f.local, "credentials.json", "{}")
 	f.localSession(id, "busy")
-	for _, c := range []struct{ to, kind, block, done string }{
-		{"server", "armed", "What goes to server:", "Armed: "},
-		{"mac", "wanted", "What goes to Felipes-MacBook-Pro:", "Asked Felipes-MacBook-Pro"},
+	for _, c := range []struct{ to, kind, block, secrets, done string }{
+		{"server", "armed", "What goes to server:", "secret files, by name only: .env\n", "Armed: "},
+		{"mac", "wanted", "What goes to Felipes-MacBook-Pro:", "secret files, by name only: credentials.json\n", "Asked Felipes-MacBook-Pro"},
 	} {
 		path, _ := store.SessionPath(c.kind, id, ".json")
 		var out strings.Builder
-		if err := arm(c.to, id, "", false, &out); err != nil || !strings.HasPrefix(out.String(), "Not armed") || !strings.Contains(out.String(), "magi arm "+c.to+" "+id+" --yes") || !strings.Contains(out.String(), c.block) || !strings.Contains(out.String(), "secret files, by name only: .env") {
+		if err := arm(c.to, id, "", false, &out); err != nil || !strings.HasPrefix(out.String(), "Not armed") || !strings.Contains(out.String(), "magi arm "+c.to+" "+id+" --yes") || !strings.Contains(out.String(), c.block) || !strings.Contains(out.String(), c.secrets) {
 			t.Errorf("arm %s without a yes: %v\n%s", c.to, err, out.String())
 		}
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -383,12 +387,18 @@ func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	if err := arm("server", "not-an-id", "", false, io.Discard); err == nil {
 		t.Error("arm accepted a malformed session id")
 	}
+	path, _ := store.SessionPath("armed", id, ".json")
+	if err := arm("server", id, "", true, io.Discard); err == nil || !strings.Contains(err.Error(), "no session") {
+		t.Errorf("arm for a session whose copy can't be read gave %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("a session whose copy couldn't be read was armed")
+	}
 	f.localSession(id, "busy")
 	var out strings.Builder
 	if err := arm("server", id, "dev server on :3000", false, &out); err != nil || !strings.Contains(out.String(), "What goes to server:\n  branch main") {
 		t.Fatalf("arm: %q, %v", out.String(), err)
 	}
-	path, _ := store.SessionPath("armed", id, ".json")
 	var a armed
 	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &a); err != nil || a.Host != "server" || a.PID != 4242 || a.Note != "dev server on :3000" {
 		t.Errorf("armed = %+v, %v", a, err)

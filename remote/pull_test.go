@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -134,7 +135,7 @@ func TestWatchTakesBackASessionTheServerAsksItTo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go newWatcher("server", remote, log.New(&logged, "", 0)).follow(me)
+	go newWatcher("server", remote, log.New(&logged, "", 0), "").follow(me)
 	t.Cleanup(func() { t.Log(logged.String()) })
 	wantedFile, _ := store.SessionPath("wanted", id, ".json")
 	staleFile, _ := store.SessionPath("wanted", stale, ".json")
@@ -167,7 +168,83 @@ func TestPullingASessionTakesTheMoveLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unlock()
-	if _, err := pullHere("server", id, "", io.Discard, false); err == nil || !strings.Contains(err.Error(), "already being moved") {
+	if _, err := pullHere("server", id, io.Discard, false); err == nil || !strings.Contains(err.Error(), "already being moved") {
 		t.Fatalf("err = %v, want the pull refused while the session is being moved", err)
+	}
+}
+
+func TestATakenBackSessionGetsTheNoteItsLastTurnLeft(t *testing.T) {
+	f := newFixture(t)
+	turnEndPoll = 50 * time.Millisecond
+	t.Cleanup(func() { turnEndPoll = 2 * time.Second })
+	server := f.serverHome()
+	f.moveHost("#!/bin/sh\n" + fakeAgents + "printf '%s\\n' \"$@\" > \"$HOME/claude-args\"\n" + fakeStart + "exec sleep 60\n")
+	id := "0f0f0f0f-1111-2222-3333-999999999990"
+	f.git(f.home, "clone", "-q", f.local, f.remote)
+	f.git(f.remote, "remote", "set-url", "origin", "https://github.com/acme/api")
+	f.sessionLeftOnServer(server, id)
+	proc := exec.Command(f.tool("claude-session", "#!/bin/sh\nsleep 60\n"))
+	if err := proc.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go proc.Wait()
+	t.Cleanup(func() { proc.Process.Kill() })
+	pid := strconv.Itoa(proc.Process.Pid)
+	live := func(status string) {
+		f.write(filepath.Join(server, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"`+id+`","cwd":"`+f.remote+`","startedAt":1,"status":"`+status+`"}`)
+	}
+	request := func(note string) {
+		f.write(filepath.Join(server, ".magi", "wanted"), id+".json", `{"to":"laptop","pid":`+pid+`,"note":"`+note+`"}`)
+	}
+	live("busy")
+	request("dev server on :3000")
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		request("dev server on :3000; still running when the turn ended: pnpm dev")
+		live("idle")
+	}()
+	if _, err := pullHere("server", id, io.Discard, true); err != nil {
+		t.Fatal(err)
+	}
+	if args := f.read(f.home, "claude-args"); !strings.Contains(args, "still running when the turn ended: pnpm dev") {
+		t.Errorf("the session here started with %q", args)
+	}
+}
+
+func (f *fixture) sessionToTakeBack(fake string) (string, string) {
+	f.t.Helper()
+	server := f.serverHome()
+	f.moveHost(fake)
+	id := "0f0f0f0f-1111-2222-3333-999999999989"
+	f.git(f.home, "clone", "-q", f.local, f.remote)
+	f.git(f.remote, "remote", "set-url", "origin", "https://github.com/acme/api")
+	return id, f.sessionLeftOnServer(server, id)
+}
+
+func TestAPulledSessionOpensInAFolderTrustedLikeTheOneItLeft(t *testing.T) {
+	f := newFixture(t)
+	id, _ := f.sessionToTakeBack(fakeClaudeThatStarts)
+	f.write(filepath.Join(f.home, "server"), ".claude.json", `{"projects":{"`+f.remote+`":{"hasTrustDialogAccepted":true}}}`)
+	f.write(f.home, ".claude.json", `{}`)
+	if _, err := pullHere("server", id, io.Discard, true); err != nil {
+		t.Fatal(err)
+	}
+	if trusted, err := isTrusted(f.machine(), f.local); err != nil || !trusted {
+		t.Errorf("trusted here = %v, %v", trusted, err)
+	}
+}
+
+func TestAPullSucceedsWhenRemoteControlIsSlowToComeUp(t *testing.T) {
+	f := newFixture(t)
+	budget := launchBudget
+	launchBudget = time.Second
+	t.Cleanup(func() { launchBudget = budget })
+	id, there := f.sessionToTakeBack("#!/bin/sh\n" + fakeAgents + "exec sleep 60\n")
+	message, err := pullHere("server", id, io.Discard, true)
+	if err != nil || !strings.Contains(message, "Brought session 0f0f0f0f back from server") || !strings.Contains(message, "Remote Control") {
+		t.Fatalf("message %q, err %v", message, err)
+	}
+	if f.read(filepath.Dir(there), filepath.Base(there)) != "<missing>" {
+		t.Error("the copy on the server wasn't retired")
 	}
 }

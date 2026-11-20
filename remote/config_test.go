@@ -22,35 +22,14 @@ func TestHostRejectsRelativeRoots(t *testing.T) {
 	}
 }
 
-func TestGroupsMirrorTheLaptopAndKeepTheServersLayout(t *testing.T) {
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	for _, dir := range []string{"Projects/acme/api", "Projects/notes", "elsewhere/tool"} {
-		if err := os.MkdirAll(filepath.Join(home, dir), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	roots := []string{"~/Missing", "~/Projects"}
+func TestAProjectsGroupIsItsFolderUnderARootOrElseItsParent(t *testing.T) {
 	for dir, want := range map[string]string{
-		"Projects/acme/api": "acme",
-		"Projects/notes":    "notes",
-		"elsewhere/tool":    "tool",
-		"Projects":          "Projects",
-	} {
-		if got := localGroup(filepath.Join(home, dir), roots); got != want {
-			t.Errorf("localGroup(%s) = %q; want %q", dir, got, want)
-		}
-	}
-	for clone, want := range map[string]string{
 		"/home/me/developer/acme/api-server": "acme",
 		"/home/me/developer/notes":           "notes",
 		"/srv/other/thing":                   "other",
 	} {
-		if got := serverGroup(clone, []string{"~/developer"}, "/home/me"); got != want {
-			t.Errorf("serverGroup(%s) = %q, want %q", clone, got, want)
+		if got := groupOf(dir, []string{"~/Missing", "~/developer"}, "/home/me"); got != want {
+			t.Errorf("groupOf(%s) = %q, want %q", dir, got, want)
 		}
 	}
 }

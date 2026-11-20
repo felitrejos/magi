@@ -29,7 +29,6 @@ type Pull struct {
 	HostName  string
 	Host      Host
 	SessionID string
-	Note      string
 	Out       io.Writer
 }
 
@@ -80,7 +79,7 @@ func (p Pull) Run() (res Pulled, err error) {
 		if err := refuseUntested(local, remote, expandHome(p.Host.Claude, remoteHome)); err != nil {
 			return err
 		}
-		if where, err = place(local, ws, p.Host.LocalRoots, serverGroup(ws.MainRoot, p.Host.Roots, remoteHome), p.Host.Exclude); err != nil {
+		if where, err = place(local, ws, p.Host.LocalRoots, groupOf(ws.MainRoot, p.Host.Roots, remoteHome), p.Host.Exclude); err != nil {
 			return err
 		}
 		if where.NewFolder != "" || ws.Git == nil {
@@ -117,11 +116,15 @@ func (p Pull) Run() (res Pulled, err error) {
 		if session.Live == nil {
 			return err
 		}
-		return reopen(remote, "on "+p.HostName, expandHome(p.Host.Claude, remoteHome), serverGroup(ws.MainRoot, p.Host.Roots, remoteHome), session, "Bringing this session to "+local.Name(), err)
+		return reopen(remote, "on "+p.HostName, expandHome(p.Host.Claude, remoteHome), groupOf(ws.MainRoot, p.Host.Roots, remoteHome), session, "Bringing this session to "+local.Name(), err)
 	}
+	var note string
 	if err := st.run("inspect", func() (err error) {
-		ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude)
+		if ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude); err != nil {
+			return err
+		}
 		j.Workspace = ws
+		note, err = wantedNote(remote, session.ID)
 		return err
 	}); err != nil {
 		return res, stopped(errors.Join(err, forgetMove(session.ID)))
@@ -162,6 +165,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	}); err != nil {
 		return res, undo(err)
 	}
+	res.note(carryTrust(remote, local, session.Cwd, localDir))
 	if err := j.at("retire"); err != nil {
 		return res, undo(err)
 	}
@@ -180,7 +184,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	project, err := approvedProject(local, where.Root)
 	res.note(err)
 	res.Project, res.ProjectRoot = project, where.Root
-	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Note: p.Note, Sidecar: sidecar}
+	res.PromptInfo = Prompt{From: p.HostName, To: local.Name(), OldDir: session.Cwd, NewDir: localDir, Git: ws.Git != nil, Note: note, Sidecar: sidecar}
 	return res, nil
 }
 

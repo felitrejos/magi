@@ -555,7 +555,7 @@ func TestTheToolServerOffersItsTools(t *testing.T) {
 		t.Errorf("task_result for a bad id = %+v, %v", res, err)
 	}
 	t.Setenv("MAGI_DELEGATE", "1")
-	if got := names(connect()); got != "diff machines sessions status task_status" {
+	if got := names(connect()); got != "diff machines sessions task_status" {
 		t.Errorf("a delegated Claude is offered %s", got)
 	}
 }

@@ -43,7 +43,11 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err != nil {
 		return nil, err
 	}
-	group := localGroup(ws.MainRoot, host.LocalRoots)
+	localHome, err := homeDir(local)
+	if err != nil {
+		return nil, err
+	}
+	group := groupOf(ws.MainRoot, host.LocalRoots, localHome)
 	id := store.NewTaskID()
 	label, err := delegatorLabel(spec.Caller, ws.Name)
 	if err != nil {
@@ -82,7 +86,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		for _, c := range clones {
 			if sameRepository(c, ws) {
 				clone = c.Dir
-				group = serverGroup(clone, host.Roots, remoteHome)
+				group = groupOf(clone, host.Roots, remoteHome)
 				break
 			}
 		}

@@ -95,9 +95,6 @@ func setupMachine(in setupInput) (string, error) {
 			return "None of the usual project folders exist on this machine. Ask the user where projects live here, then call setup_machine again with local_roots.\n", nil
 		}
 	}
-	if err := h.validate(in.Host); err != nil {
-		return "", err
-	}
 	if cfg.Hosts == nil {
 		cfg.Hosts = map[string]Host{}
 	}
@@ -105,11 +102,13 @@ func setupMachine(in setupInput) (string, error) {
 		cfg.Order = append(cfg.Order, in.Host)
 	}
 	cfg.Hosts[in.Host] = h
+	h = cfg.host(in.Host)
+	if err := h.validate(in.Host); err != nil {
+		return "", err
+	}
 	if err := writeConfig(path, cfg); err != nil {
 		return "", err
 	}
-	h.LocalRoots, h.Exclude = cfg.LocalRoots, cfg.Exclude
-	h = h.withDefaults()
 	var b strings.Builder
 	fmt.Fprintf(&b, "Saved %s to %s.\n", in.Host, path)
 	home, err := homeDir(remote)
@@ -423,7 +422,7 @@ func tryRoundTrip(cfg Config, name string, host Host, out io.Writer) (err error)
 	if err := (mover{session: id, host: name, out: io.Discard}).run(); err != nil {
 		return fmt.Errorf("moving the session to %s failed: %w", name, err)
 	}
-	if _, err := pullHere(name, id, "", out, false); err != nil {
+	if _, err := pullHere(name, id, out, false); err != nil {
 		return fmt.Errorf("bringing the session back from %s failed: %w", name, err)
 	}
 	checked, err := tryClaude(dir, "--resume", id, "What word did I ask you to remember? Reply with just the word.")

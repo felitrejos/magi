@@ -111,7 +111,9 @@ func arm(hostName, sessionID, note string, yes bool, out io.Writer) error {
 		if to, err = takesBack(hostName, err); err != nil {
 			return err
 		}
-		host = Host{}.withDefaults()
+		if host, err = takerCopies(to); err != nil {
+			return err
+		}
 	}
 	local, err := sh.NewLocal(context.Background())
 	if err != nil {
@@ -119,7 +121,7 @@ func arm(hostName, sessionID, note string, yes bool, out io.Writer) error {
 	}
 	block, ask, err := describeSession(local, to, host, sessionID, true)
 	if err != nil {
-		block, ask = fmt.Sprintf("Note: what goes to %s couldn't be read (%v).", to, err), false
+		return fmt.Errorf("what goes to %s couldn't be read, so nothing was armed: %w", to, err)
 	}
 	switch {
 	case ask && !yes:
@@ -341,7 +343,7 @@ func setUpPulledProject(p *Project, root string, out io.Writer) string {
 	return b.String()
 }
 
-func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (string, error) {
+func pullHere(hostName, sessionID string, out io.Writer, inTab bool) (string, error) {
 	host, err := loadHost(hostName)
 	if err != nil {
 		return "", err
@@ -354,7 +356,7 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (stri
 	if err := recoverBefore(sessionID, false); err != nil {
 		return "", err
 	}
-	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Note: note, Out: out}.Run()
+	res, err := Pull{HostName: hostName, Host: host, SessionID: sessionID, Out: out}.Run()
 	if err != nil {
 		return "", err
 	}
@@ -403,7 +405,11 @@ func openPulledTab(res *Pulled, prompt string) (string, error) {
 	}
 	command[0] = program
 	launcher := sh.Tmux{Machine: local}
-	group := localGroup(res.ProjectRoot, cfg.LocalRoots)
+	home, err := homeDir(local)
+	if err != nil {
+		return "", err
+	}
+	group := groupOf(res.ProjectRoot, cfg.LocalRoots, home)
 	launched := time.Now()
 	tab, err := launcher.Start(group, tabLabel(res.Name), res.ToDir, command, true)
 	if err != nil {
@@ -413,5 +419,9 @@ func openPulledTab(res *Pulled, prompt string) (string, error) {
 		res.note(fmt.Errorf("showing the new tab failed: %w", err))
 	}
 	link, err := waitForRemoteControl(local, res.Session, launched)
-	return launcher.Where(group) + ", and in the Claude apps at " + link, err
+	if err != nil {
+		res.note(fmt.Errorf("%w, so it isn't in the Claude apps yet", err))
+		return launcher.Where(group), nil
+	}
+	return launcher.Where(group) + ", and in the Claude apps at " + link, nil
 }
