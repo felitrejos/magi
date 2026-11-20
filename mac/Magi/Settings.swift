@@ -353,7 +353,7 @@ struct FillButton: ButtonStyle {
 
 struct General: View {
     let welcome: () -> Void
-    @AppStorage("glyph") private var glyph = Glyph.trio
+    @AppStorage("glyph") private var glyph = Glyph.orbit
     @Environment(\.query) private var query
 
     var body: some View {
@@ -410,7 +410,7 @@ struct LoginItem: View {
 }
 
 struct MenuBar: View {
-    @AppStorage("glyph") private var glyph = Glyph.trio
+    @AppStorage("glyph") private var glyph = Glyph.orbit
     @AppStorage("showsCount") private var showsCount = false
     @AppStorage("dot") private var dot = false
     @Environment(\.query) private var query

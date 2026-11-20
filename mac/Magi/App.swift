@@ -89,7 +89,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func show(_ glance: Glance) {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let glyph = UserDefaults.standard.string(forKey: "glyph").flatMap(Glyph.init) ?? .trio
+        let glyph = UserDefaults.standard.string(forKey: "glyph").flatMap(Glyph.init) ?? .orbit
         let symbol = glance.waiting.isEmpty ? glance.answering.isEmpty ? "\(glyph.rawValue).slash" : glyph.rawValue : "\(glyph.rawValue).badge"
         let image = NSImage(symbolName: symbol, bundle: .main, variableValue: 0)!
         let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
