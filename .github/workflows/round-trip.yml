@@ -1,0 +1,93 @@
+name: Round trip
+
+on:
+  workflow_call:
+    inputs:
+      claude-version:
+        description: The Claude Code version to move a session with. Empty means the newest one remote/tested.json lists.
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      CLAUDE_PEER_REFRESH_TOKEN:
+        required: true
+      CLAUDE_PEER_SCOPES:
+        required: true
+      MAGI_SECRETS_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux-to-linux:
+    name: Linux to Linux round trip
+    runs-on: ubuntu-latest
+    concurrency:
+      group: claude-peer-login
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      PEER: magi-peer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: remote/go.mod
+          cache-dependency-path: remote/go.sum
+      - name: Install tmux, sshd and Claude Code
+        env:
+          CLAUDE_VERSION: ${{ inputs.claude-version }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tmux openssh-server
+          sudo systemctl start ssh
+          version=${CLAUDE_VERSION:-$(jq -r .claude.max remote/tested.json)}
+          ci/install.sh claude "$version" "$RUNNER_TEMP/bin"
+          sudo install -m 755 "$RUNNER_TEMP/bin/claude" /usr/local/bin/claude
+          mkdir -p ~/.magi
+          jq --arg v "$version" '.claude.max = ([.claude.max, $v] | max_by(split(".") | map(tonumber)))' remote/tested.json > ~/.magi/tested.json
+      - name: Make a second user reachable over ssh on localhost
+        run: |
+          sudo useradd -m -s /bin/bash "$PEER"
+          install -d -m 700 ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+          ssh-keyscan -H localhost >> ~/.ssh/known_hosts
+          sudo install -d -m 700 -o "$PEER" -g "$PEER" "/home/$PEER/.ssh" "/home/$PEER/.claude" "/home/$PEER/developer"
+          sudo install -m 600 -o "$PEER" -g "$PEER" ~/.ssh/id_ed25519.pub "/home/$PEER/.ssh/authorized_keys"
+          jq -n --arg d "/home/$PEER/developer" '{hasCompletedOnboarding: true, projects: {($d): {hasTrustDialogAccepted: true}}}' | sudo -u "$PEER" tee "/home/$PEER/.claude.json" >/dev/null
+          echo '{"env":{"DISABLE_AUTOUPDATER":"1"}}' | sudo -u "$PEER" tee "/home/$PEER/.claude/settings.json" >/dev/null
+          git config --global user.name magi-ci
+          git config --global user.email ci@example.com
+          sudo -u "$PEER" -H git config --global user.name magi-ci
+          sudo -u "$PEER" -H git config --global user.email ci@example.com
+          ssh -o BatchMode=yes "$PEER@localhost" true
+      - name: Log in to Claude as both users
+        id: login
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_OAUTH_REFRESH_TOKEN: ${{ secrets.CLAUDE_PEER_REFRESH_TOKEN }}
+          CLAUDE_CODE_OAUTH_SCOPES: ${{ secrets.CLAUDE_PEER_SCOPES }}
+        run: |
+          mkdir -p ~/.claude
+          jq -n --arg t "$CLAUDE_CODE_OAUTH_TOKEN" '{env: {CLAUDE_CODE_OAUTH_TOKEN: $t, DISABLE_AUTOUPDATER: "1"}}' > ~/.claude/settings.json
+          sudo --preserve-env=CLAUDE_CODE_OAUTH_REFRESH_TOKEN,CLAUDE_CODE_OAUTH_SCOPES -u "$PEER" -H claude auth login
+      - name: Move a session to the second user and back
+        working-directory: remote
+        env:
+          MAGI_CONTRACT_SSH: ${{ env.PEER }}@localhost
+        run: |
+          go test -count=1 -tags contract -run '^TestContractRoundTrip' -v ./... | tee "$RUNNER_TEMP/round-trip.log"
+          ! grep -q -- '--- SKIP' "$RUNNER_TEMP/round-trip.log"
+      - name: Keep the second user's refreshed login for the next run
+        if: always() && steps.login.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.MAGI_SECRETS_TOKEN }}
+        run: |
+          token=$(sudo jq -er .claudeAiOauth.refreshToken "/home/$PEER/.claude/.credentials.json")
+          printf '%s' "$token" | gh secret set CLAUDE_PEER_REFRESH_TOKEN --repo "$GITHUB_REPOSITORY"
