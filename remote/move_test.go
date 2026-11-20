@@ -119,7 +119,7 @@ func TestMoveSessionMovesAnIdleSessionButNotABusyOneOrItsCaller(t *testing.T) {
 	if text, failed := move(self); !failed || !strings.Contains(text, "is this session; to move it, use the handoff skill") {
 		t.Errorf("the caller's own session: %q", text)
 	}
-	if text, failed := move(idle); failed || !strings.Contains(text, "What goes to server:") || !strings.Contains(text, "Moved session 1a1a1a1a to server") {
+	if text, failed := move(idle); failed || !strings.Contains(text, "What goes to server:") || !strings.Contains(text, "Moved session 1a1a1a1a to server") || !strings.Contains(text, "in the Claude apps at https://claude.ai/code/bridge") || strings.Contains(text, "tmux attach") {
 		t.Errorf("an idle session:\n%s", text)
 	}
 	select {

@@ -71,7 +71,8 @@ func TestWaitForRemoteControlWaitsForTheNewSessionsBridge(t *testing.T) {
 	waitBriefly := func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 		defer cancel()
-		return waitForRemoteControl(f.remoteHost().With(ctx), "s1", launched)
+		_, err := waitForRemoteControl(f.remoteHost().With(ctx), "s1", launched)
+		return err
 	}
 	if err := waitBriefly(); err == nil || !strings.Contains(err.Error(), "in time") {
 		t.Fatalf("with no session files: err = %v, want a timeout rather than a script failure", err)
@@ -87,7 +88,7 @@ func TestWaitForRemoteControlWaitsForTheNewSessionsBridge(t *testing.T) {
 	}
 
 	f.write(sessions, fresh+".json", `{"pid":`+fresh+`,"sessionId":"s1","startedAt":`+started+`,"bridgeSessionId":"cse_1"}`)
-	if err := waitForRemoteControl(f.remoteHost(), "s1", launched); err != nil {
+	if _, err := waitForRemoteControl(f.remoteHost(), "s1", launched); err != nil {
 		t.Fatalf("the new session's bridge wasn't seen: %v", err)
 	}
 }
@@ -121,23 +122,26 @@ func TestTrustCarriesOverToTheOtherMachineAndKeepsEverythingElse(t *testing.T) {
 	}
 }
 
-func TestStopSessionStopsTheSessionWithoutKillingItself(t *testing.T) {
+func TestStopSessionStopsTheSessionButNotTheTmuxServerThatStartedIt(t *testing.T) {
 	f := newFixture(t)
 	sessionID := "11111111-2222-3333-4444-555555555555"
-	fake := exec.Command("sh", "-c", "sleep 30; : --resume "+sessionID)
-	if err := fake.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- fake.Wait() }()
+	server := runProgram(t, "tmux", "new-session", "--resume", sessionID)
+	session := runProgram(t, "claude", "--resume", sessionID)
 	if err := stopSession(f.remoteHost(), sessionID, false); err != nil {
 		t.Fatalf("stopSession failed: %v", err)
 	}
 	select {
-	case <-done:
+	case <-session:
 	case <-time.After(5 * time.Second):
-		fake.Process.Kill()
 		t.Fatal("the session process was not stopped")
+	}
+	select {
+	case <-server:
+		t.Fatal("the tmux server that started the session was killed too")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if running, err := runningThere(f.remoteHost(), sessionID); err != nil || running {
+		t.Errorf("runningThere = %v, %v with only the tmux server left", running, err)
 	}
 }
 

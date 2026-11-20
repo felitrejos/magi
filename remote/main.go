@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
 	"github.com/felitrejos/magi/remote/internal/store"
@@ -333,44 +334,55 @@ func pullHere(hostName, sessionID, note string, out io.Writer, inTab bool) (stri
 	}
 	res.PromptInfo.Project = setUpPulledProject(res.Project, res.ProjectRoot, out)
 	prompt := handoffPrompt(res.PromptInfo)
+	message := fmt.Sprintf("Brought session %s back from %s to %s", store.ShortID(res.Session), hostName, res.ToDir)
 	if inTab {
 		before := len(res.Notes)
-		if err := openPulledTab(&res, prompt); err != nil {
-			return "", fmt.Errorf("the session is back in %s, but its tab didn't open (%w); the user can resume it there", res.ToDir, err)
+		where, err := openPulledTab(&res, prompt)
+		if err != nil {
+			return "", fmt.Errorf("the session is back in %s, but it didn't open there (%w); the user can resume it there", res.ToDir, err)
 		}
+		message += ". It's open " + where
 		for _, note := range res.Notes[before:] {
 			fmt.Fprintf(out, "Note: %v\n", note)
 		}
 	}
-	message := fmt.Sprintf("Brought session %s back from %s to %s", store.ShortID(res.Session), hostName, res.ToDir)
 	if len(res.Notes) > 0 {
 		message += " (" + res.Noted() + ")"
 	}
 	return message, nil
 }
 
-func openPulledTab(res *Pulled, prompt string) error {
+func openPulledTab(res *Pulled, prompt string) (string, error) {
 	cfg, _, err := loadConfig()
 	if err != nil {
-		return err
+		return "", err
 	}
-	local, err := sh.NewLocal(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), launchBudget)
+	defer cancel()
+	local, err := sh.NewLocal(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	command := resumeCommand(res.Session, res.Name, prompt, res.Codex)
 	program, err := exec.LookPath(command[0])
 	if err != nil {
-		return fmt.Errorf("%s isn't installed on %s", command[0], local.Name())
+		return "", fmt.Errorf("%s isn't installed on %s", command[0], local.Name())
 	}
 	command[0] = program
 	launcher := sh.Tmux{Machine: local}
-	tab, err := launcher.Start(localGroup(res.ProjectRoot, cfg.LocalRoots), tabLabel(res.Name, res.Codex), res.ToDir, command, true)
+	group := localGroup(res.ProjectRoot, cfg.LocalRoots)
+	launched := time.Now()
+	tab, err := launcher.Start(group, tabLabel(res.Name, res.Codex), res.ToDir, command, true)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if _, err := launcher.Show(tab); err != nil {
 		res.note(fmt.Errorf("showing the new tab failed: %w", err))
 	}
-	return nil
+	where := launcher.Where(group)
+	if res.Codex {
+		return where, nil
+	}
+	link, err := waitForRemoteControl(local, res.Session, launched)
+	return where + ", and in the Claude apps at " + link, err
 }

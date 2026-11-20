@@ -195,7 +195,7 @@ func allowProject(dir, hash string, answers mcp.InputResponseMap) (*mcp.CallTool
 	answer, asked := answers[p.Hash].(*mcp.ElicitResult)
 	if !asked {
 		return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{p.Hash: &mcp.ElicitParams{
-			Message:         fmt.Sprintf("Allow %s to run on %s? It has %s. magi runs these when a session of this project moves to another machine, and before run_elsewhere and delegate tasks. If the file changes, magi asks again.", p.Path, local.Name(), p.runs()),
+			Message:         fmt.Sprintf("Allow %s? It has %s. magi runs these on the machine a session of this project moves to from %s, here when %s brings one back, and before run_elsewhere and delegate tasks started from here. If the file changes, magi asks again.", p.Path, p.runs(), local.Name(), local.Name()),
 			RequestedSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		}}}, nil
 	}
@@ -210,7 +210,7 @@ func allowProject(dir, hash string, answers mcp.InputResponseMap) (*mcp.CallTool
 	if err := writeApprovals(approvals); err != nil {
 		return nil, err
 	}
-	return said(fmt.Sprintf("Allowed %s on %s. If it changes, it needs allowing again.", p.Path, local.Name())), nil
+	return said(fmt.Sprintf("Allowed %s for moves and tasks started from %s, wherever they run. If it changes, it needs allowing again.", p.Path, local.Name())), nil
 }
 
 func said(text string) *mcp.CallToolResult {

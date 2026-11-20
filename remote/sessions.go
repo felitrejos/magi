@@ -106,7 +106,7 @@ func describeSessions(all []machineSessions) string {
 		for _, s := range m.Sessions {
 			line := fmt.Sprintf("  %s  %s  %s  %s", store.ShortID(s.SessionID), sessionTitle(s), s.Status+waitingOn(s), s.Cwd)
 			if s.BridgeSessionID != nil && *s.BridgeSessionID != "" {
-				line += "  https://claude.ai/code/" + *s.BridgeSessionID
+				line += "  " + remoteControlLink + *s.BridgeSessionID
 			}
 			fmt.Fprintln(&b, line)
 		}

@@ -202,7 +202,11 @@ func (r *handoffRun) run(ctx context.Context) error {
 		if r.Codex {
 			return waitForCodex(remote, r.rollout, r.written)
 		}
-		return waitForRemoteControl(remote, r.SessionID, r.launchedAt)
+		link, err := waitForRemoteControl(remote, r.SessionID, r.launchedAt)
+		if err == nil {
+			r.res.Where += ", and in the Claude apps at " + link
+		}
+		return err
 	}); err != nil {
 		return r.undo(err, true)
 	}

@@ -102,7 +102,7 @@ func TestPullRunsTheSetupHereAndTellsClaude(t *testing.T) {
 func TestWatchTakesBackASessionTheServerAsksItTo(t *testing.T) {
 	f := newFixture(t)
 	f.isolatedTmux()
-	f.tool("claude", fakeClaude+"exec sleep 60\n")
+	f.tool("claude", fakeClaudeThatStarts)
 	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nsecrets = [\".env\"]\n")
 	out := f.workspace(f.local)
 	if err := f.push(f.remoteHost(), out, Placement{Root: f.remote}); err != nil {

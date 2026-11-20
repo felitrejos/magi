@@ -398,3 +398,19 @@ func (f *fixture) handoffToServer(id string) Handoff {
 		Retire:         func() (int, error) { return 0, nil },
 	}
 }
+
+func runProgram(t *testing.T, name string, args ...string) <-chan error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(path, args...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); close(done) }()
+	t.Cleanup(func() { cmd.Process.Kill(); <-done })
+	return done
+}

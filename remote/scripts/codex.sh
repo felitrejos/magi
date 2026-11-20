@@ -22,16 +22,6 @@ cwd_of() {
   fi
 }
 
-processes() {
-  if [ -d /proc/self ]; then
-    for dir in /proc/[0-9]*; do
-      args=$(args_of "${dir#/proc/}" 2>/dev/null)
-      if [ -n "$args" ]; then printf '%s %s\n' "${dir#/proc/}" "$args"; fi
-    done
-  else
-    ps -axo pid=,args=
-  fi
-}
 
 started_at() {
   at=$(started "$1")
@@ -43,12 +33,7 @@ started_at() {
 }
 
 codexes() {
-  processes | awk '{
-    program = $2
-    if (program ~ /(^|\/)(sh|bash|dash|zsh|node)$/) program = $3
-    sub(/.*\//, "", program)
-    if (program == "codex" && $0 !~ / app-server( |$)/) print
-  }'
+  processes | program_is codex | grep -v ' app-server\( \|$\)'
 }
 
 turn() {

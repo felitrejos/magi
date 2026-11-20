@@ -11,6 +11,10 @@ same() {
   [ -z "$2" ] || [ "$(started "$1")" = "$(printf '%s' "$2" | tr -s ' ')" ]
 }
 
+resuming() {
+  processes | program_is claude | grep -F -- " --resume $1"
+}
+
 ours() {
   kill -0 "$1" 2>/dev/null || return 1
   case $(args_of "$1") in *claude* | *codex*) same "$1" "$2" ;; *) return 1 ;; esac
@@ -29,7 +33,7 @@ end() {
 case $command in
   running)
     id=$1
-    if pgrep -f -- "[-]-resume $id" >/dev/null; then exit 10; fi
+    if [ -n "$(resuming "$id")" ]; then exit 10; fi
     listed=$(agents "$2") || exit
     case $listed in *"\"sessionId\": \"$id\""*) exit 10 ;; esac
     ;;
@@ -77,14 +81,13 @@ case $command in
     status=$(printf '%s\n' "$listed" | awk -v pid="$pid," '$1 == "\"pid\":" { mine = $2 == pid } mine && $1 == "\"status\":" { print $2; exit }')
     case $status in '"busy"'* | '"waiting"'*) exit 10 ;; esac
     end "$pid" || exit
-    if pgrep -f -- "[-]-resume $id" >/dev/null; then
+    if [ -n "$(resuming "$id")" ]; then
       echo "another process is still running this session" >&2
       exit 1
     fi
     ;;
   kill)
-    pkill -TERM -f -- "[-]-resume $1"
-    true
+    for pid in $(resuming "$1" | cut -d ' ' -f 1); do kill -TERM "$pid"; done
     ;;
   end)
     while [ $# -gt 1 ]; do

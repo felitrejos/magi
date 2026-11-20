@@ -130,21 +130,23 @@ func clock(m sh.Machine) (time.Time, error) {
 	return time.Unix(seconds, 0), nil
 }
 
-func waitForRemoteControl(m sh.Machine, sessionID string, launchedAt time.Time) error {
+const remoteControlLink = "https://claude.ai/code/"
+
+func waitForRemoteControl(m sh.Machine, sessionID string, launchedAt time.Time) (string, error) {
 	notBefore := launchedAt.Add(-10 * time.Second).UnixMilli()
 	for {
 		sessions, err := liveSessions(m)
 		if err != nil && m.Context().Err() == nil {
-			return err
+			return "", err
 		}
 		for _, s := range sessions {
 			if s.SessionID == sessionID && s.StartedAt >= notBefore && s.BridgeSessionID != nil {
-				return nil
+				return remoteControlLink + *s.BridgeSessionID, nil
 			}
 		}
 		select {
 		case <-m.Context().Done():
-			return fmt.Errorf("the session did not come up with Remote Control on %s in time", m.Name())
+			return "", fmt.Errorf("the session did not come up with Remote Control on %s in time", m.Name())
 		case <-time.After(500 * time.Millisecond):
 		}
 	}

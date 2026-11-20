@@ -14,3 +14,23 @@ args_of() {
     ps -o args= -p "$1"
   fi
 }
+
+processes() {
+  if [ -d /proc/self ]; then
+    for dir in /proc/[0-9]*; do
+      args=$(args_of "${dir#/proc/}" 2>/dev/null)
+      if [ -n "$args" ]; then printf '%s %s\n' "${dir#/proc/}" "$args"; fi
+    done
+  else
+    ps -axo pid=,args=
+  fi
+}
+
+program_is() {
+  awk -v want="$1" '{
+    program = $2
+    if (program ~ /(^|\/)(sh|bash|dash|zsh|node)$/) program = $3
+    sub(/.*\//, "", program)
+    if (program == want) print
+  }'
+}

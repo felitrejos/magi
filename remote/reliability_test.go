@@ -70,11 +70,7 @@ func TestAHandoffIsRefusedWhenTheSessionAlreadyRunsThere(t *testing.T) {
 	f := newFixture(t)
 	id := "0f0f0f0f-1111-2222-3333-555555555553"
 	h := f.handoffToServer(id)
-	running := exec.Command("sh", "-c", "sleep 30; :", "claude", "--resume", id)
-	if err := running.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { running.Process.Kill(); running.Wait() })
+	runProgram(t, "claude", "--resume", id)
 	_, err := h.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already running on server") {
 		t.Fatalf("err = %v", err)
@@ -249,20 +245,6 @@ func TestAfterAHandoffTheTmuxPaneTheSessionRanInCloses(t *testing.T) {
 	}
 	if _, err := os.Stat(transcript + ".handed-off-to-server"); err != nil {
 		t.Errorf("the transcript wasn't marked as handed off: %v", err)
-	}
-}
-
-func TestAPullOpensATmuxWindow(t *testing.T) {
-	f := newFixture(t)
-	f.taskHost()
-	f.tool("claude", fakeClaude+"exec sleep 60\n")
-	res := Pulled{Session: "0f0f0f0f-1111-2222-3333-555555555557", Name: "acme", ProjectRoot: f.local}
-	res.ToDir = f.local
-	if err := openPulledTab(&res, "back here"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(tmuxWindows(), "acme · claude") {
-		t.Errorf("tmux windows = %q", tmuxWindows())
 	}
 }
 

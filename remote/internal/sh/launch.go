@@ -100,5 +100,5 @@ func (t Tmux) Discard(tab Tab) error {
 }
 
 func (t Tmux) Where(group string) string {
-	return fmt.Sprintf("in tmux on %s (ssh -t %s tmux attach -t %s)", t.Machine.Name(), t.Machine.Name(), Quote("="+tmuxName(group)))
+	return fmt.Sprintf("in tmux session %s on %s", tmuxName(group), t.Machine.Name())
 }
