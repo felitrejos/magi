@@ -1,0 +1,34 @@
+name: magi
+options:
+  deploymentTarget:
+    macOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    CODE_SIGN_IDENTITY: "-"
+    ENABLE_HARDENED_RUNTIME: NO
+targets:
+  magi:
+    type: application
+    platform: macOS
+    sources: [Magi]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.felitrejos.magi
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+    scheme:
+      testTargets: [magiTests]
+  magiTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MagiTests
+        excludes: [Fixtures]
+      - Magi/Live.swift
+      - Magi/Store.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.felitrejos.magi.tests
+        GENERATE_INFOPLIST_FILE: YES

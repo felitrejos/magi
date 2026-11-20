@@ -1,0 +1,4 @@
+{"time":"2026-11-20T13:14:41.582301+01:00","kind":"settled","session":"3fce93f1-2fa1-4aac-9568-e1f951fd8d7d","from":"","to":"","from_dir":"","to_dir":"","note":"Moving session 3fce93f1 to box was interrupted. The copy here is the live one, so magi set aside the copy on box. Continue it here: it's still open, in /Users/sam/code/shop."}
+{"time":"2026-11-20T17:35:46.984732+01:00","kind":"push","session":"ee27a88a-9a90-4808-b912-e6c8898162f1","from":"laptop","to":"box","from_dir":"/Users/sam/code/shop","to_dir":"/home/sam/code/shop"}
+{"time":"2026-11-20T17:42:48.41248+01:00","kind":"pull","session":"ee27a88a-9a90-4808-b912-e6c8898162f1","from":"box","to":"laptop","from_dir":"/home/sam/code/shop","to_dir":"/Users/sam/code/shop"}
+{"time":"2026-11-20T17:43:18.75481+01:00","kind":"push","session":"ee27a88a-9a90-4808-b912-e6c8898162f1","from":"laptop","to":"box","from_dir":"/Users/sam/code/shop","to_dir":"/home/sam/code/shop"}
