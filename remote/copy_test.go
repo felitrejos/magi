@@ -1,9 +1,12 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func TestTheBlockNamesWhatGoesAndNeverASecretsValue(t *testing.T) {
@@ -71,6 +74,21 @@ func TestAnExcludedUntrackedFileStaysBehind(t *testing.T) {
 	}
 	if got, _, err := describeCopy(f.machine(), "server", Host{}, ws, false); err != nil || !strings.Contains(got, "\n  left out by exclude in magi's config: build/out.o and web/dist/\n") {
 		t.Errorf("block = %v\n%s", err, got)
+	}
+	if err := park(f.machine(), f.local, ws); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkoutAccepts(f.machine(), f.local, ws); err != nil {
+		t.Errorf("the checkout refused its own session coming back over the files exclude left here: %v", err)
+	}
+	g := ws.Git
+	if _, err := sh.Run(f.machine(), checkoutScript, append([]string{"apply", f.local, g.Head, g.Worktree, g.Index, g.Branch}, ws.Exclude...)...); err != nil {
+		t.Fatal(err)
+	}
+	for _, kept := range []string{"build/out.o", "web/dist/app.js"} {
+		if _, err := os.Stat(filepath.Join(f.local, kept)); err != nil {
+			t.Errorf("the session coming back removed %s, which exclude left here", kept)
+		}
 	}
 }
 

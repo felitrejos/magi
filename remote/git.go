@@ -29,6 +29,7 @@ type Workspace struct {
 	LFSObjects []string
 	Submodules []Workspace
 	Subpath    string
+	Exclude    []string
 }
 
 type GitState struct {
@@ -69,7 +70,7 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 		return Workspace{}, err
 	}
 	fields := strings.Split(string(out), "\x00")
-	var ws Workspace
+	ws := Workspace{Exclude: exclude}
 	var real string
 	g := &GitState{}
 	for i := 0; i+1 < len(fields); i += 2 {
@@ -224,7 +225,7 @@ func park(m sh.Machine, repo string, ws Workspace) error {
 }
 
 func checkoutAccepts(m sh.Machine, repo string, ws Workspace) error {
-	if _, err := sh.Run(m, checkoutScript, "check", repo, "", ws.Git.Worktree, "", ""); err != nil {
+	if _, err := sh.Run(m, checkoutScript, append([]string{"check", repo, "", ws.Git.Worktree, "", ""}, ws.Exclude...)...); err != nil {
 		return err
 	}
 	for _, sub := range ws.Submodules {
@@ -287,7 +288,7 @@ func syncGit(from, to sh.Machine, ws Workspace, repo, mode string, send sendObje
 		return errors.Join(err, dropRefs(to, repo))
 	}
 	g := ws.Git
-	if _, err := sh.Run(to, checkoutScript, mode, repo, g.Head, g.Worktree, g.Index, g.Branch); err != nil {
+	if _, err := sh.Run(to, checkoutScript, append([]string{mode, repo, g.Head, g.Worktree, g.Index, g.Branch}, ws.Exclude...)...); err != nil {
 		return errors.Join(err, dropRefs(to, repo))
 	}
 	if err := finishGit(from, to, ws, repo, mode, send); err != nil {

@@ -410,7 +410,7 @@ func tryRoundTrip(cfg Config, name string, host Host, out io.Writer) (err error)
 	if notes, err := os.ReadFile(filepath.Join(dir, "notes.txt")); err != nil || string(notes) != "base\nuncommitted line\n" {
 		return fmt.Errorf("the session came back, but its uncommitted change didn't: notes.txt is %q (%v)", notes, err)
 	}
-	fmt.Fprintf(out, "magi works with %s: the session went there and back with its uncommitted change, and still remembered %s.\n", name, word)
+	fmt.Fprintf(out, "magi works with %s: the session went there and back with its uncommitted change, and still remembered %s. magi then removes the throwaway project from both machines, and says so if it can't.\n", name, word)
 	return nil
 }
 
