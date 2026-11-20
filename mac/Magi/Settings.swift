@@ -2,18 +2,6 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-enum Glyph: String, CaseIterable {
-    case trio, orbit, bridge
-
-    var resource: ImageResource {
-        switch self {
-        case .trio: .trio
-        case .orbit: .orbit
-        case .bridge: .bridge
-        }
-    }
-}
-
 enum Chime {
     static let name = "Glass"
     static let volume = 0.5
@@ -92,13 +80,12 @@ enum Pane: String, CaseIterable, Identifiable {
 }
 
 enum Setting: CaseIterable {
-    case tutorial, login, icon, count, dot, chimes, chime, volume
+    case tutorial, login, count, dot, chimes, chime, volume
 
     var title: String {
         switch self {
         case .tutorial: "Get Started with magi"
         case .login: "Open at Login"
-        case .icon: "Icon"
         case .count: "Show Waiting Count"
         case .dot: "Colour the Badge"
         case .chimes: "Play a Sound"
@@ -110,7 +97,7 @@ enum Setting: CaseIterable {
     var pane: Pane {
         switch self {
         case .tutorial, .login: .general
-        case .icon, .count, .dot: .menuBar
+        case .count, .dot: .menuBar
         case .chimes, .chime, .volume: .sound
         }
     }
@@ -353,7 +340,6 @@ struct FillButton: ButtonStyle {
 
 struct General: View {
     let welcome: () -> Void
-    @AppStorage("glyph") private var glyph = Glyph.orbit
     @Environment(\.query) private var query
 
     var body: some View {
@@ -364,7 +350,7 @@ struct General: View {
                         .fill(.black)
                         .frame(width: 88, height: 49)
                         .overlay {
-                            Image(glyph.resource)
+                            Image(.orbit)
                                 .font(.title)
                                 .foregroundStyle(.white)
                         }
@@ -410,56 +396,10 @@ struct LoginItem: View {
 }
 
 struct MenuBar: View {
-    @AppStorage("glyph") private var glyph = Glyph.orbit
     @AppStorage("showsCount") private var showsCount = false
     @AppStorage("dot") private var dot = false
-    @Environment(\.query) private var query
 
     var body: some View {
-        if Setting.icon.title.matches(query) {
-            SettingCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(Setting.icon.title)
-                            .font(rowFont)
-                        Text("How magi looks in the menu bar.")
-                            .font(subtitleFont)
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack(spacing: 0) {
-                        ForEach(Glyph.allCases, id: \.self) { candidate in
-                            if candidate != Glyph.allCases.first {
-                                Spacer(minLength: 16)
-                            }
-                            Button {
-                                glyph = candidate
-                            } label: {
-                                VStack(spacing: 6) {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(LinearGradient(colors: [.indigo, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                        .frame(width: 147, height: 87)
-                                        .overlay {
-                                            Image(candidate.resource)
-                                                .font(.system(size: 30))
-                                                .foregroundStyle(.white)
-                                        }
-                                        .accessibilityHidden(true)
-                                    Text(candidate.rawValue.capitalized)
-                                        .font(.system(size: 12, weight: .medium))
-                                        .padding(.horizontal, 10)
-                                        .frame(height: 22)
-                                        .background(glyph == candidate ? SettingsColor.pill : .clear, in: .capsule)
-                                }
-                                .contentShape(.rect)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityAddTraits(glyph == candidate ? .isSelected : [])
-                        }
-                    }
-                }
-                .padding(12)
-            }
-        }
         SettingCard {
             SettingRow(.count, subtitle: "The number of sessions waiting on you, next to the icon.") {
                 SettingSwitch(isOn: $showsCount)
