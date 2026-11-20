@@ -253,12 +253,18 @@ func TestANewWatchLoopStopsOrphanedLoopsForItsMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
-	for deadline := time.Now().Add(10 * time.Second); syscall.Kill(old, 0) == nil; time.Sleep(100 * time.Millisecond) {
+	running := func(pid int) bool {
+		if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+			return !strings.Contains(string(stat), ") Z ")
+		}
+		return syscall.Kill(pid, 0) == nil
+	}
+	for deadline := time.Now().Add(10 * time.Second); running(old); time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the orphaned loop for this machine is still running")
 		}
 	}
-	if syscall.Kill(other, 0) != nil || syscall.Kill(connected.Process.Pid, 0) != nil {
+	if !running(other) || !running(connected.Process.Pid) {
 		t.Error("the new loop stopped a loop for another machine or one that still has its connection")
 	}
 }
