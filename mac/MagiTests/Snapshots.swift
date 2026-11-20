@@ -53,14 +53,13 @@ struct Snapshots {
         UserDefaults.standard.removeObject(forKey: "pane")
     }
 
-    @Test func glyphs() throws {
+    @Test func glyph() throws {
         let bundle = Bundle(for: Marker.self)
-        let candidates = ["trio", "orbit", "bridge"]
         let config = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
         let scale: CGFloat = 4
         let cell = CGSize(width: 44, height: 24)
         for dark in [false, true] {
-            let size = CGSize(width: cell.width * 6 + 80, height: cell.height * CGFloat(candidates.count))
+            let size = CGSize(width: cell.width * 6, height: cell.height)
             let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
             rep.size = size
             NSGraphicsContext.saveGraphicsState()
@@ -69,18 +68,14 @@ struct Snapshots {
             NSRect(origin: .zero, size: size).fill()
             let ink = dark ? NSColor.white : NSColor.black
             let tinted = config.applying(.init(paletteColors: [ink]))
-            for (row, name) in candidates.enumerated() {
-                let y = size.height - CGFloat(row + 1) * cell.height
-                NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: ink.withAlphaComponent(0.6)]).draw(at: CGPoint(x: 6, y: y + 7))
-                let dotted = config.applying(.init(paletteColors: [ink, .systemOrange]))
-                let symbols = [(name, tinted), ("\(name).badge", tinted), ("\(name).badge", dotted), ("\(name).slash", tinted)].map { NSImage(symbolName: $0.0, bundle: bundle, variableValue: 0)!.withSymbolConfiguration($0.1)! } + ["wifi", "battery.75percent"].map { NSImage(systemSymbolName: $0, accessibilityDescription: nil)!.withSymbolConfiguration(tinted)! }
-                for (column, image) in symbols.enumerated() {
-                    let x = 80 + CGFloat(column) * cell.width + (cell.width - image.size.width) / 2
-                    image.draw(in: CGRect(x: x, y: y + (cell.height - image.size.height) / 2, width: image.size.width, height: image.size.height))
-                }
+            let dotted = config.applying(.init(paletteColors: [ink, .systemOrange]))
+            let symbols = [("orbit", tinted), ("orbit.badge", tinted), ("orbit.badge", dotted), ("orbit.slash", tinted)].map { NSImage(symbolName: $0.0, bundle: bundle, variableValue: 0)!.withSymbolConfiguration($0.1)! } + ["wifi", "battery.75percent"].map { NSImage(systemSymbolName: $0, accessibilityDescription: nil)!.withSymbolConfiguration(tinted)! }
+            for (column, image) in symbols.enumerated() {
+                let x = CGFloat(column) * cell.width + (cell.width - image.size.width) / 2
+                image.draw(in: CGRect(x: x, y: (cell.height - image.size.height) / 2, width: image.size.width, height: image.size.height))
             }
             NSGraphicsContext.restoreGraphicsState()
-            try rep.representation(using: .png, properties: [:])!.write(to: out.appending(path: "glyphs-\(dark ? "dark" : "light").png"))
+            try rep.representation(using: .png, properties: [:])!.write(to: out.appending(path: "glyph-\(dark ? "dark" : "light").png"))
         }
     }
 

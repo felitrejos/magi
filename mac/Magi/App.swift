@@ -78,7 +78,7 @@ final class App: NSObject, NSApplicationDelegate {
                 show(glance)
             }
         }
-        for key in ["glyph", "showsCount", "dot"] {
+        for key in ["showsCount", "dot"] {
             UserDefaults.standard.addObserver(self, forKeyPath: key, context: nil)
         }
         if !UserDefaults.standard.bool(forKey: "welcomed") {
@@ -89,8 +89,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func show(_ glance: Glance) {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let glyph = UserDefaults.standard.string(forKey: "glyph").flatMap(Glyph.init) ?? .orbit
-        let symbol = glance.waiting.isEmpty ? glance.answering.isEmpty ? "\(glyph.rawValue).slash" : glyph.rawValue : "\(glyph.rawValue).badge"
+        let symbol = glance.waiting.isEmpty ? glance.answering.isEmpty ? "orbit.slash" : "orbit" : "orbit.badge"
         let image = NSImage(symbolName: symbol, bundle: .main, variableValue: 0)!
         let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
         icon.symbolConfiguration = UserDefaults.standard.bool(forKey: "dot") && !glance.waiting.isEmpty ? plain.applying(.init(paletteColors: [.labelColor, .systemOrange])) : plain
