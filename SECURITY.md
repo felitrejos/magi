@@ -58,12 +58,13 @@ these in order.
 - It runs `ssh` to the machine with `true`. If that fails, it stops and
   says what only you can do, such as accepting the host key or adding an
   SSH key. It never accepts a host key for you.
-- It looks for `claude`, and `codex` if you asked for Codex, in the usual
-  install paths there.
+- It reads the kernel name on both machines and stops if either runs in
+  WSL, which magi doesn't support.
+- It looks for `claude` in the usual install paths there.
 - It saves the machine in `~/.config/magi/config.toml` here, with the
-  project folders it found on both machines, `secrets` of `.env` and
-  `.env.*`, and a default `exclude` list, unless the config has them
-  already.
+  project folders it found on both machines. It writes no `secrets` or
+  `exclude` there. The defaults under "Moving a session" apply when the
+  config has none.
 - On the other machine it adds the marketplace `felitrejos/magi` with
   `claude plugin marketplace add` and installs the plugin with
   `claude plugin install magi@magi`. If the plugin
@@ -73,8 +74,8 @@ these in order.
   It installs nothing else there and uses no `sudo`.
 - Here it installs the `magi watch` service described under "The
   watcher".
-- It checks git, `tar`, tmux, the Claude Code and Codex versions, the
-  claude.ai login and the project folders on both machines. It reads the
+- It checks git, `tar`, tmux, the Claude Code version, the claude.ai
+  login and the project folders on both machines. It reads the
   login with `claude auth status`.
 - It creates a `magi-try-*` folder in your first local root, moves a
   session in it to the other machine and back, then removes the folder
@@ -108,11 +109,15 @@ with `/plugin`.
   moves with the transcript.
 - Of the files git ignores, only those matching the `secrets` patterns in
   your config are copied, disk to disk. magi doesn't print their contents.
-  Logins, SSH keys and credential stores never move.
+  Logins, SSH keys and credential stores never move. When the config has
+  no `secrets`, the patterns are `.env` and `.env.*`.
 - Files git doesn't track yet and doesn't ignore travel with the uncommitted
-  work, in submodules too. That holds even when a name is in `exclude`.
-  `exclude` only applies to folders that aren't git repositories and to the
-  search for secret files.
+  work, in submodules too, unless their name is in `exclude`. An untracked
+  file or folder with a name in `exclude` stays behind, and the list
+  before the move names it as left out. Tracked files under those names
+  still go. When the config has no `exclude`, the names are
+  `node_modules`, `.venv`, `dist`, `build` and `target`.
+- `exclude` also applies to the search for secret files.
 - A folder that isn't a git repository is copied whole, without the names
   in `exclude`. Files in it that match `secrets` go as part of the folder.
 - On the receiving machine magi recreates your branch and uncommitted
@@ -120,12 +125,18 @@ with `/plugin`.
 - A handoff is refused when the session already runs on the destination.
   One that fails stops the new copy and leaves the session running where
   it was.
-- If you trust a project's folder in Claude Code on this machine, magi
-  marks its copy on the other machine as trusted in `~/.claude.json` there,
-  so the moved session starts without asking. It replaces that file only
-  if nothing changed it meanwhile. For a Codex session it sets the folder's
-  trust level in Codex's config there, through `codex app-server`. A
-  folder you haven't trusted here is never trusted there.
+- If you trust a project's folder in Claude Code on the machine a session
+  leaves, magi marks its copy on the receiving machine as trusted in
+  `~/.claude.json` there, so the moved session starts without asking.
+  That holds in both directions. It replaces that file only if nothing
+  changed it meanwhile. A folder you haven't trusted where the session
+  was is never trusted where it goes.
+- A move in either direction runs the same steps. The receiving machine
+  opens the session in a tmux window with Remote Control, runs an
+  approved project's `setup` and `services` in panes beside it, and the
+  result gives the session's Remote Control link.
+- When SSH to a machine dies or runs out of time during a move, the error
+  says that machine "stopped answering".
 - The Stop hook (`magi hook stop`) runs the handoff, with a time limit of
   200 seconds. The prompt hook (`magi hook prompt`) refuses new input in
   the copy a session left. It reads the session id from the hook's input
@@ -140,6 +151,8 @@ and the machine's name. It lists these.
   files, submodules included.
 - Files git doesn't track yet, by name. It names at most five, then says
   how many more there are.
+- The size of the changed and new files, as an upper bound.
+- The untracked names that `exclude` leaves out.
 - Secret files, by name only and with the same limit.
 - The number of files that go through Git LFS.
 - For a folder that isn't a git repository, its file count and size
@@ -148,24 +161,43 @@ and the machine's name. It lists these.
   command, its `services` and its `ports`. For a file you haven't
   approved here, it says that nothing in it runs on this move, and gives
   the commands and the file's SHA-256.
-- The conversation and, for Claude Code, its project memory.
+- The conversation and its project memory.
 - A last line on what doesn't go. That is anything running and, in a git
   repository, anything git ignores apart from the secret files.
 
 Where you see it depends on how the move starts.
 
-- `magi arm`, which the handoff skill runs, prints it after "Armed".
-  Claude passes it on to you, and the move starts when the turn ends.
-- The `move_session` tool returns it to Claude with the result of the
-  move, for a session that goes from this machine to another.
+- `magi arm`, which the handoff skill runs, prints it after "Armed",
+  "Asked" or "Not armed". Claude passes it on to you.
+- The `move_session` tool returns it to Claude, for a move in either
+  direction.
 - When a session comes here, through `move_session` or the watcher, the
   block says what comes back, read on the other machine. It leaves out
-  the `.magi.toml` line.
-- A hand back asked of a machine that runs `magi watch` prints nothing
-  where you asked. The block goes to that machine's watcher log.
+  the `.magi.toml` line. The watcher writes it to its log.
+- For a hand back, `magi arm` builds the block with the `secrets` and
+  `exclude` of the machine that takes the session back. That machine's
+  watch loop leaves them in its watcher file here.
 
-The block is a notice. magi doesn't wait for an answer before it copies.
-If the block can't be built, magi says so and the move goes on.
+### When Claude asks you first
+
+magi asks before it copies when the block holds any of these.
+
+- A secret file.
+- A file git doesn't track yet.
+- 50 MB or more of changed and new files, or a folder that isn't a git
+  repository of that size.
+
+Then `magi arm` prints "Not armed" and arms nothing, so the end of the
+turn moves nothing. The handoff skill tells Claude to show you the list
+and ask. After your yes Claude runs `magi arm` again with `--yes`. This
+holds for a hand back too. `move_session` moves nothing and returns the
+list until Claude calls it again with `confirmed` set, which its
+description allows only after your yes.
+
+The rule lives in magi, so Claude can't skip the first answer. The yes
+itself passes through Claude. Nothing checks that you gave it, as with
+every tool Claude calls for you. If `magi arm` can't read what goes, it
+arms nothing and returns the error.
 
 ### A move that was cut off
 
@@ -183,7 +215,7 @@ If the block can't be built, magi says so and the move goes on.
 - The live copy is the one that took new prompts since the move started.
   If both did, it is the one still running. If neither did, it is the
   copy the session was leaving, unless the move had reached its last step.
-- Recovery stops the other copy's Claude or Codex process with `TERM`. It
+- Recovery stops the other copy's Claude process with `TERM`. It
   closes the tmux window the move opened, but only while the window still
   carries the tag magi gave it, or the tmux session if the move created
   it. It renames that copy's transcript to
@@ -210,7 +242,12 @@ watcher reads".
 - It keeps one outgoing SSH connection to each machine in your config. On
   each it runs a small loop that refreshes `~/.magi/watchers/<laptop name>`
   every 2 seconds and prints the ids of hand-back requests addressed to the
-  laptop.
+  laptop. That file holds the laptop's `secrets` and `exclude` lists.
+- When a loop starts, it stops older loops for the same laptop name that
+  lost their SSH connection and were left running. To find them it runs
+  `ps -A -o pid= -o ppid= -o args=` once, which lists every process on
+  that machine with its command line, and it kills only processes that
+  carry the loop's own marker and whose top marked parent is process 1.
 - A request is the file `~/.magi/wanted/<session-id>.json` on the far
   machine. `magi arm` writes it there when you ask a session to go back to
   a machine that isn't in that machine's config but has refreshed its
@@ -235,9 +272,8 @@ watcher reads".
   machine. If either did, the watcher exits once no session is being
   taken back, and the service starts it again.
 - The log holds machine names, short session ids, folder paths, errors,
-  the output of a project's `setup` command, what magi did to settle a
-  move, and the block of what comes back, with its branch and file names. magi writes no conversation text
-  to it.
+  what magi did to settle a move, and the block of what comes back, with
+  its branch and file names. magi writes no conversation text to it.
 
 ### What the watcher reads
 
@@ -252,17 +288,6 @@ looks for no requests. The loop only reads. Every 2 seconds it does this.
 - When they changed and a session is waiting, it runs
   `claude agents --json` once to learn what the session waits on, and
   sends the output. It doesn't run that command otherwise.
-- Where Codex is configured, it lists the lock files in
-  `~/.codex/thread-writer-locks`, or under `CODEX_HOME`, and checks that
-  the processes it found holding them are alive. When that list changes,
-  it finds which processes hold each lock, with `lsof` on macOS or
-  `/proc` on Linux, and finds each thread's rollout file by name.
-- Every 6 seconds it reads the sizes of those rollout files with `wc -c`.
-  When a size changed, it reads the last turn event of each rollout to
-  tell busy from idle. It sends each thread's id, state and process ids.
-- When the set of open Codex threads changes, magi asks Codex on that
-  machine for each thread's name and folder, through `codex app-server`,
-  as the `sessions` tool does.
 
 About every 30 seconds the loop sends one line of numbers.
 
@@ -271,21 +296,28 @@ About every 30 seconds the loop sends one line of numbers.
 - The used and total size of the disk your home folder is on, from
   `df -Pk "$HOME"`.
 - For each session, CPU time and memory summed over its process and the
-  processes under it. This comes from one
-  `ps -A -o pid= -o ppid= -o time= -o rss=`. That lists every process on
-  the machine, by number, parent, CPU time and memory only. It reads no
-  command lines.
+  processes under it. On macOS this comes from one
+  `ps -A -o pid= -o ppid= -o time= -o rss=`. On Linux it reads
+  `/proc/<pid>/stat` for every process and keeps the same four values.
+  Either way it covers every process on the machine, by number, parent,
+  CPU time and memory only, and reads no command lines.
+- On Linux the CPU time includes child processes that already exited.
+  macOS doesn't expose that to other processes, so there a child that
+  started and exited between two samples isn't counted.
 
 magi writes what it heard to `~/.magi/live/<machine>.json` on the machine
 that runs `magi watch`. Only you can read the file, and each write
 replaces it whole. It holds these.
 
 - Whether the machine answers and when magi last heard from it. magi sets
-  "not answering" when the connection ends. If `magi watch` itself is
-  stopped, the file keeps its last content, so a reader must treat a
-  `heard` time older than about 40 seconds as the machine not answering.
+  "not answering" when the connection ends. When `magi watch` is stopped
+  with `TERM` or `INT`, or restarts itself, it first marks every machine
+  as not answering in these files. If it is killed outright or the
+  machine loses power, the files keep their last content, so a reader
+  should still treat a `heard` time older than about 40 seconds as the
+  machine not answering.
 - Cores, load, and used and total memory and disk in MB.
-- For each session, its id, title, folder, whether it is Codex, its state
+- For each session, its id, title, folder, its state
   (busy, idle or waiting, and on what), since when, CPU as a percentage of
   one core and memory in MB. The title is the session's name, or the name
   of its folder when it has none.
@@ -308,9 +340,11 @@ It holds no conversation text and no file contents.
   server in that Claude then leaves out every tool that is your call.
   Those are `setup_machine`, `move_session`, `allow_project`, `unpark`,
   `run_elsewhere`, `delegate`, `session_elsewhere`, `task_reply`,
-  `task_result`, `cancel_task` and `uninstall`. It keeps `machines`,
-  `sessions`, `diff`, `status` and `task_status`. So a delegate can't
-  send work on, move a session or approve a project.
+  `task_result`, `cancel_task`, `uninstall` and `status`. It keeps
+  `machines`, `sessions`, `diff` and `task_status`. So a delegate can't
+  send work on, move a session or approve a project. `status` is left
+  out because calling it settles moves, and a delegate's server doesn't
+  settle moves or tidy tasks when it starts either.
 - When a finished `delegate` is collected, its changes are written into
   your working tree here and kept as the branch `magi/task-<id>`. If they
   clash with edits made here since the task started, nothing is applied
@@ -328,17 +362,17 @@ It holds no conversation text and no file contents.
   without SSH.
 - The `sessions` tool reads `claude agents --json` and
   `~/.claude/sessions/*.json` on this machine and on each machine in your
-  config, and Codex's session files where Codex is configured. Whether a
-  Codex session is busy or idle comes from the last turn event in its
-  rollout file, one of those session files. `magi wait` reads the same.
+  config. `magi wait` reads the same.
   The `diff` tool runs `git diff HEAD` and lists untracked files in a
   session's folder. All three only read.
 
 ## Tested versions
 
-- `remote/tested.json` in this repository holds, for Claude Code and for
-  Codex, the oldest version magi supports, the newest version its contract
-  tests passed with, and a list of versions known to fail.
+- `remote/tested.json` in this repository holds, for Claude Code, the
+  oldest version magi supports, the newest version its contract tests
+  passed with, and a list of versions known to fail. It also holds a
+  frozen `codex` range. This code ignores it. It stays only so released
+  0.9 installs, which still read it, can parse the file.
 - magi downloads that file from
   `https://raw.githubusercontent.com/felitrejos/magi/main/remote/tested.json`
   and keeps it in `~/.magi/tested.json`. It downloads again when that copy
@@ -347,7 +381,7 @@ It holds no conversation text and no file contents.
   parse is thrown away. If the download fails, magi uses the copy it has, and
   with no copy the list built into the program.
 - Before a move copies anything, magi runs `claude --version` on both
-  machines, or `codex --version` for a Codex session. It refuses when
+  machines. It refuses when
   either version is older than the oldest supported, on the failing
   list, or newer than the newest tested. The checks in `setup_machine`
   fail on the same versions.
@@ -355,14 +389,22 @@ It holds no conversation text and no file contents.
   could change it on GitHub, or the copy in `~/.magi`, could block your
   moves or let an untested version through. It can do nothing else. magi
   runs nothing from it and sends nothing because of it.
-- A nightly job on the author's Linux server keeps the list current. It
-  is a systemd user timer that runs as an ordinary user. It downloads the
-  newest Claude Code and Codex, and the Go toolchain, from their official
-  release sources into a folder of its own and checks each download
-  against its published SHA-256. It runs the contract tests with them. When they pass, it raises
-  the newest tested version in the file and pushes that commit to `main`.
-  It never writes the failing list and never touches the `claude` or
-  `codex` installed on that server.
+- A nightly GitHub Actions workflow, `.github/workflows/nightly.yml`,
+  keeps the list current. It runs on GitHub's Ubuntu and macOS runners,
+  not on anyone's own machine. It downloads the newest Claude Code from
+  its official release source, checks the download against its published
+  SHA-256, and runs the contract tests with it on both runners.
+- The workflow needs one repository secret, `CLAUDE_CODE_OAUTH_TOKEN`,
+  which the owner makes with `claude setup-token`. The contract tests use
+  it to run real Claude Code turns on the owner's account. Whoever can
+  read that secret or change the workflow on `main` can use that account
+  through Claude Code. The jobs that run the tests have read-only access
+  and keep no git credentials. Only the job that commits the list can
+  write to the repository.
+- When both runners pass, the workflow raises the newest tested version
+  in the file and pushes that commit to `main`. When a job fails, it
+  opens a GitHub issue that names the failed job, or comments on the open
+  one. It never writes the failing list. That list is edited by hand.
 
 ## Project files and ports
 
@@ -399,7 +441,7 @@ when that is set. State is in `~/.magi`.
 | `bin/` | The magi binaries the launcher downloaded, one per version, and the link `magi` to the current one |
 | `armed/` | A session set to move when its turn ends, and a lock while it moves |
 | `wanted/` | Hand-back requests waiting for a watcher |
-| `watchers/` | One file per laptop watching this machine |
+| `watchers/` | One file per laptop watching this machine, with that laptop's `secrets` and `exclude` lists |
 | `watch.lock` | Keeps a second `magi watch` from starting |
 | `live/` | One file per machine, written by `magi watch`, with whether it answers, its load, memory and disk, and its sessions with their state, CPU and memory |
 | `moved/` | Where each session that left went |
@@ -411,20 +453,25 @@ when that is set. State is in `~/.magi`.
 | `allowed` | Hashes of the `.magi.toml` files you approved |
 | `folders` | Folders magi copied here for projects that aren't git repositories, with a fingerprint of each |
 | `ssh/` | SSH control sockets |
-| `tested.json` | The downloaded list of Claude Code and Codex versions magi was tested with |
+| `tested.json` | The downloaded list of Claude Code versions magi was tested with |
 
 Outside those, magi writes the project and session files it moves, the
-trust entry in `~/.claude.json` or Codex's config, and the watcher's
-service file and log.
+trust entry in `~/.claude.json`, and the watcher's service file and log.
 
 ## Releases
 
 Release builds come from GitHub Actions with actions pinned to commit
-hashes. A release runs when a `v*` tag is pushed, and it stops if the tag
-doesn't match the version in the plugin's `plugin.json`. It builds `magi`
+hashes. A release runs when a `v*` tag is pushed. It publishes only after
+every CI job passes, which is the test suite on macOS, Ubuntu and Alpine.
+It stops if the tag doesn't match the version in the plugin's
+`plugin.json`. It builds `magi`
 for macOS and Linux on arm64 and amd64, packs each in a `tar.gz` and
 writes their SHA-256 sums to `checksums.txt`. Those are the files the
 launcher downloads. There is no install script.
+
+No CI job moves a session between two real machines. Before a release
+the owner asks Claude to "check magi on my homelab", which runs `setup_machine`'s
+checks and its round trip between a Mac and a Linux server.
 
 ## Reporting a problem
 

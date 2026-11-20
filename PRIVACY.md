@@ -16,28 +16,38 @@ goes for it.
 
 To move a session or send work, magi copies these to the machine you chose.
 
-- The Claude Code or Codex session transcript, and for Claude Code the
-  project's memory files.
+- The Claude Code session transcript and the project's memory files.
 - The project's git working tree, including uncommitted changes and files
-  git doesn't track yet. For a folder that isn't a git repository, its
-  files.
+  git doesn't track yet. Untracked files and folders whose names are in
+  `exclude` in your magi config stay behind. Without an `exclude` of your
+  own, those names are `node_modules`, `.venv`, `dist`, `build` and
+  `target`. For a folder that isn't a git repository, its files without
+  those names.
 - The gitignored files that match the `secrets` patterns in your magi
-  config, such as `.env`.
+  config. Without patterns of your own, those are `.env` and `.env.*`.
 
 It doesn't send them anywhere else.
+
+Before a move, magi lists what goes across, with its size and with secret
+files by name only. Claude asks you first when secret files, untracked
+files, or 50 MB or more would go, and nothing is copied until you say
+yes.
 
 ## What magi reads on your machines
 
 To list machines and sessions, magi reads each configured machine's
-system, load and memory, and the list of Claude Code and Codex sessions
-running there with their titles, folders and state. The `diff` tool reads
+system, load and memory, and the list of Claude Code sessions running
+there with their titles, folders and state. The `diff` tool reads
 a session's uncommitted changes. The answers go to the Claude session that
 asked.
 
 `magi watch` reads the same list every 2 seconds and, about every 30
 seconds, each machine's load, memory and disk and each session's CPU and
-memory. It keeps the latest in `~/.magi/live` on the machine it runs on,
-with no conversation text and no file contents.
+memory. To add up a session's CPU and memory it reads the process list
+of that machine, by process number, parent, CPU time and memory. It keeps
+the latest in `~/.magi/live` on the machine it runs on, with no
+conversation text and no file contents. When the watcher stops, it marks
+every machine in those files as not answering.
 
 ## What magi keeps
 
@@ -50,8 +60,8 @@ log on the laptop. magi sends none of it anywhere.
 
 ## The tested versions list
 
-magi only moves a session with Claude Code and Codex versions its tests
-passed with. The list of those versions is a file in magi's repository on
+magi only moves a session with Claude Code versions its tests passed
+with. The list of those versions is a file in magi's repository on
 GitHub. magi fetches it with one HTTPS request to
 `raw.githubusercontent.com` and keeps a copy in `~/.magi/tested.json`.
 
@@ -75,11 +85,17 @@ that machine, over your SSH. These are plain downloads that send nothing
 about you, your machines or your sessions. GitHub sees your IP address
 and a user agent.
 
+## The project's own tests
+
+A nightly GitHub Actions workflow tests magi against the newest Claude
+Code. It runs on GitHub's runners with the project's own Claude account
+and test data. It never touches your machines, your sessions or your
+account.
+
 ## Other services
 
-Claude Code, Codex, Anthropic, OpenAI, GitHub and your SSH or VPN provider
-have their own privacy policies for what they do. magi doesn't change
-those. A moved session runs with Remote Control, which is Anthropic's
+Claude Code, Anthropic, GitHub and your SSH or VPN provider have their
+own privacy policies for what they do. magi doesn't change those. A moved session runs with Remote Control, which is Anthropic's
 service and shows the session in the Claude apps on your account.
 
 ## Questions
