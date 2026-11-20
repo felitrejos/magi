@@ -28,6 +28,9 @@ targets:
         excludes: [Fixtures]
       - Magi/Live.swift
       - Magi/Store.swift
+      - Magi/PanelView.swift
+      - Magi/Scope.swift
+      - Magi/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.felitrejos.magi.tests
