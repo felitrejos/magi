@@ -21,6 +21,8 @@ type Workspace struct {
 	Git        *GitState
 	Secrets    []string
 	Untracked  []string `json:"-"`
+	LeftOut    []string `json:"-"`
+	Size       int64    `json:"-"`
 	Changed    int
 	LFS        []string
 	LFSStore   string
@@ -56,7 +58,7 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 	if outermost {
 		climb = "1"
 	}
-	out, err := sh.Run(m, inspectScript, cwd, climb)
+	out, err := sh.Run(m, inspectScript, append([]string{cwd, climb}, exclude...)...)
 	switch sh.ExitCode(err) {
 	case sh.ExitConflicts:
 		return Workspace{}, errors.New("the repository has unresolved merge conflicts; resolve them before handing off")
@@ -99,7 +101,11 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 			if ws.Changed, err = strconv.Atoi(value); err != nil {
 				return Workspace{}, fmt.Errorf("unexpected changed count from %s", m.Name())
 			}
-		case "attrs", "untracked", "lfsobjects":
+		case "size":
+			if ws.Size, err = strconv.ParseInt(value, 10, 64); err != nil {
+				return Workspace{}, fmt.Errorf("unexpected size from %s", m.Name())
+			}
+		case "attrs", "untracked", "leftout", "lfsobjects":
 			n, err := strconv.Atoi(value)
 			if err != nil || i+2+n > len(fields) {
 				return Workspace{}, fmt.Errorf("unexpected %s list from %s", key, m.Name())
@@ -115,6 +121,8 @@ func inspect(m sh.Machine, cwd string, secretPatterns, exclude []string, outermo
 				}
 			case "untracked":
 				ws.Untracked = items
+			case "leftout":
+				ws.LeftOut = items
 			case "lfsobjects":
 				ws.LFSObjects = items
 			}

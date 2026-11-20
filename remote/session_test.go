@@ -311,7 +311,7 @@ func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
 	t.Setenv("CLAUDE_PID", "4242")
 	heartbeat := filepath.Join(f.home, ".magi", "watchers", "Felipes-MacBook-Pro")
 	f.write(filepath.Dir(heartbeat), filepath.Base(heartbeat), "")
-	if err := arm("mac", id, "dev server on :3000", io.Discard); err != nil {
+	if err := arm("mac", id, "dev server on :3000", false, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	path, _ := store.SessionPath("wanted", id, ".json")
@@ -326,15 +326,45 @@ func TestArmAsksAMachineThatWatchesToTakeTheSessionBack(t *testing.T) {
 	if err := json.Unmarshal([]byte(f.read(filepath.Dir(path), filepath.Base(path))), &w); err != nil || !strings.Contains(w.Note, "npm run dev") {
 		t.Errorf("after the turn the request is %+v, %v; want it kept with what was still running", w, err)
 	}
-	if err := arm("laptop", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "Felipes-MacBook-Pro") {
+	if err := arm("laptop", id, "", false, io.Discard); err == nil || !strings.Contains(err.Error(), "Felipes-MacBook-Pro") {
 		t.Errorf("arm to a name no watcher matches gave %v; want it to name the machines that watch", err)
 	}
 	old := time.Now().Add(-time.Minute)
 	if err := os.Chtimes(heartbeat, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := arm("mac", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "set up magi with this machine") {
+	if err := arm("mac", id, "", false, io.Discard); err == nil || !strings.Contains(err.Error(), "set up magi with this machine") {
 		t.Errorf("arm with only a stale watcher gave %v", err)
+	}
+}
+
+func TestArmWaitsForTheUsersYesWhenSecretFilesGo(t *testing.T) {
+	f := newFixture(t)
+	id := "0f0f0f0f-1111-2222-3333-555555555557"
+	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
+	t.Setenv("CLAUDE_PID", "4242")
+	f.write(filepath.Join(f.home, ".magi", "watchers"), "Felipes-MacBook-Pro", "")
+	f.write(f.local, ".env", "K=1")
+	f.localSession(id, "busy")
+	for _, c := range []struct{ to, kind, block, done string }{
+		{"server", "armed", "What goes to server:", "Armed: "},
+		{"mac", "wanted", "What goes to Felipes-MacBook-Pro:", "Asked Felipes-MacBook-Pro"},
+	} {
+		path, _ := store.SessionPath(c.kind, id, ".json")
+		var out strings.Builder
+		if err := arm(c.to, id, "", false, &out); err != nil || !strings.HasPrefix(out.String(), "Not armed") || !strings.Contains(out.String(), "magi arm "+c.to+" "+id+" --yes") || !strings.Contains(out.String(), c.block) || !strings.Contains(out.String(), "secret files, by name only: .env") {
+			t.Errorf("arm %s without a yes: %v\n%s", c.to, err, out.String())
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("arm %s without a yes left %s", c.to, path)
+		}
+		out.Reset()
+		if err := arm(c.to, id, "", true, &out); err != nil || !strings.HasPrefix(out.String(), c.done) {
+			t.Errorf("arm %s with a yes: %v\n%s", c.to, err, out.String())
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("arm %s with a yes: %v", c.to, err)
+		}
 	}
 }
 
@@ -343,19 +373,19 @@ func TestArmNeedsAConfiguredHostAndTheClaudeProcess(t *testing.T) {
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
 	f.config("local_roots = [\"~/laptop\"]\n[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n")
 	t.Setenv("CLAUDE_PID", "")
-	if err := arm("server", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "CLAUDE_PID") {
+	if err := arm("server", id, "", false, io.Discard); err == nil || !strings.Contains(err.Error(), "CLAUDE_PID") {
 		t.Errorf("arm outside Claude Code gave %v", err)
 	}
 	t.Setenv("CLAUDE_PID", "4242")
-	if err := arm("nowhere", id, "", io.Discard); err == nil || !strings.Contains(err.Error(), "server") {
+	if err := arm("nowhere", id, "", false, io.Discard); err == nil || !strings.Contains(err.Error(), "server") {
 		t.Errorf("arm to an unknown host gave %v", err)
 	}
-	if err := arm("server", "not-an-id", "", io.Discard); err == nil {
+	if err := arm("server", "not-an-id", "", false, io.Discard); err == nil {
 		t.Error("arm accepted a malformed session id")
 	}
 	f.localSession(id, "busy")
 	var out strings.Builder
-	if err := arm("server", id, "dev server on :3000", &out); err != nil || !strings.Contains(out.String(), "What goes to server:\n  branch main") {
+	if err := arm("server", id, "dev server on :3000", false, &out); err != nil || !strings.Contains(out.String(), "What goes to server:\n  branch main") {
 		t.Fatalf("arm: %q, %v", out.String(), err)
 	}
 	path, _ := store.SessionPath("armed", id, ".json")

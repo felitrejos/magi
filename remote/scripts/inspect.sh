@@ -3,6 +3,10 @@ set -e
 export LC_ALL=C
 cwd=$1
 outermost=$2
+shift 2
+n=$#
+for e; do set -- "$@" ":(exclude,glob)**/$e" ":(exclude,glob)**/$e/**"; done
+shift "$n"
 
 emit() { printf '%s\0%s\0' "$1" "$2"; }
 list() { emit "$1" "$(tr -cd '\0' < "$2" | wc -c | tr -d ' ')"; cat "$2"; }
@@ -66,7 +70,8 @@ fi
 
 itree=$(git write-tree)
 if [ -f "$index" ]; then cp -p "$index" "$d/index"; fi
-GIT_INDEX_FILE="$d/index" git add -A
+GIT_INDEX_FILE="$d/index" git add -u
+GIT_INDEX_FILE="$d/index" git add -A -- . "$@"
 wtree=$(GIT_INDEX_FILE="$d/index" git write-tree)
 export GIT_AUTHOR_NAME=magi GIT_AUTHOR_EMAIL=magi@localhost GIT_COMMITTER_NAME=magi GIT_COMMITTER_EMAIL=magi@localhost
 wt=$(git commit-tree "$wtree" ${head:+-p "$head"} -m 'magi: working tree')
@@ -80,8 +85,11 @@ git check-attr -z --stdin filter < "$d/changed" > "$d/attrs"
 list attrs "$d/attrs"
 git diff -z --name-only --no-renames --diff-filter=A "$itree" "$wtree" > "$d/untracked"
 list untracked "$d/untracked"
+GIT_INDEX_FILE="$d/index" git ls-files -z -o --exclude-standard --directory --no-empty-directory > "$d/leftout"
+list leftout "$d/leftout"
 tr '\0' '\n' < "$d/untracked" | sort > "$d/new"
 emit changed "$(git diff -z --name-only --no-renames "$base" "$wt" | tr '\0' '\n' | sort | comm -23 - "$d/new" | wc -l | tr -d ' ')"
+emit size "$(git diff-tree -r --no-renames --diff-filter=d "$base" "$wt" | awk '$2 != "160000" { print $4 }' | git cat-file --batch-check='%(objectsize)' | awk '{ n += $1 } END { printf "%.0f", n }')"
 
 : > "$d/objects"
 if git grep -q -e 'filter=lfs' "$wt" -- ':(glob)**/.gitattributes' && git lfs version >/dev/null 2>&1; then

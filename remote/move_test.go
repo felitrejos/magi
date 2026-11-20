@@ -108,6 +108,9 @@ func TestMoveSessionMovesAnIdleSessionButNotABusyOneOrItsCaller(t *testing.T) {
 	move := func(id string) (string, bool) {
 		return f.call("move_session", map[string]any{"session": id[:8], "to": "server"})
 	}
+	confirmed := func(id string) (string, bool) {
+		return f.call("move_session", map[string]any{"session": id[:8], "to": "server", "confirmed": true})
+	}
 
 	if text, failed := move(busy); !failed || !strings.Contains(text, "magi wait 2b2b2b2b") {
 		t.Errorf("a busy session: %q", text)
@@ -119,7 +122,13 @@ func TestMoveSessionMovesAnIdleSessionButNotABusyOneOrItsCaller(t *testing.T) {
 	if text, failed := move(self); !failed || !strings.Contains(text, "is this session; to move it, use the handoff skill") {
 		t.Errorf("the caller's own session: %q", text)
 	}
-	if text, failed := move(idle); failed || !strings.Contains(text, "What goes to server:") || !strings.Contains(text, "Moved session 1a1a1a1a to server") || !strings.Contains(text, "in the Claude apps at https://claude.ai/code/bridge") || strings.Contains(text, "tmux attach") {
+	if text, failed := move(idle); failed || !strings.Contains(text, "secret files, by name only: .env") || !strings.Contains(text, "confirmed set to true") || strings.Contains(text, "Moved") {
+		t.Errorf("an idle session with secret files, before the user's yes:\n%s", text)
+	}
+	if idleProc.Process.Signal(syscall.Signal(0)) != nil {
+		t.Fatal("the idle session was stopped before the user's yes")
+	}
+	if text, failed := confirmed(idle); failed || !strings.Contains(text, "What goes to server:") || !strings.Contains(text, "Moved session 1a1a1a1a to server") || !strings.Contains(text, "in the Claude apps at https://claude.ai/code/bridge") || strings.Contains(text, "tmux attach") {
 		t.Errorf("an idle session:\n%s", text)
 	}
 	select {
@@ -173,7 +182,7 @@ func TestMoveSessionBringsASessionHereFromAHost(t *testing.T) {
 	pid := strconv.Itoa(proc.Process.Pid)
 	f.write(filepath.Join(server, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"`+id+`","cwd":"`+f.remote+`","startedAt":1,"status":"idle"}`)
 
-	text, failed := f.call("move_session", map[string]any{"session": id[:8], "to": f.machine().Name()})
+	text, failed := f.call("move_session", map[string]any{"session": id[:8], "to": f.machine().Name(), "confirmed": true})
 	if failed || !strings.Contains(text, "Brought session 4d4d4d4d back from server to "+f.local) {
 		t.Fatalf("move_session:\n%s", text)
 	}
@@ -199,7 +208,7 @@ func TestMoveSessionBringsBackASessionThatWasQuitOnAHost(t *testing.T) {
 	f.git(f.remote, "remote", "set-url", "origin", "https://github.com/acme/api")
 	f.sessionLeftOnServer(server, id)
 
-	if text, failed := f.call("move_session", map[string]any{"session": id, "to": f.machine().Name()}); failed || !strings.Contains(text, "Brought session 5e5e5e5e back from server to "+f.local) {
+	if text, failed := f.call("move_session", map[string]any{"session": id, "to": f.machine().Name(), "confirmed": true}); failed || !strings.Contains(text, "Brought session 5e5e5e5e back from server to "+f.local) {
 		t.Fatalf("move_session:\n%s", text)
 	}
 	if got := f.read(f.local, "edited.txt"); got != "finished on the server" {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -11,23 +10,26 @@ import (
 	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
-func describeCopy(m sh.Machine, hostName string, host Host, ws Workspace, here, codex bool) (string, error) {
+const askSize = 50_000_000
+
+func describeCopy(m sh.Machine, hostName string, host Host, ws Workspace, here, codex bool) (string, bool, error) {
 	lines := []string{"What goes to " + hostName + ":"}
 	secrets := nested(ws, func(w Workspace) []string { return w.Secrets })
+	untracked := nested(ws, func(w Workspace) []string { return w.Untracked })
+	size := total(ws, func(w Workspace) int64 { return w.Size })
 	closing := "Nothing that's running goes."
 	if ws.Git == nil {
 		var err error
 		if secrets, err = findSecrets(m, ws.Root, host.Secrets, host.Exclude, nil); err != nil {
-			return "", err
+			return "", false, err
 		}
 		out, err := folder(m, "size", ws.Root, pruneArgs(host.Exclude)...)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		var files int
-		var size int64
 		if _, err := fmt.Sscan(string(out), &files, &size); err != nil {
-			return "", fmt.Errorf("unexpected folder size %q from %s", out, m.Name())
+			return "", false, fmt.Errorf("unexpected folder size %q from %s", out, m.Name())
 		}
 		line := fmt.Sprintf("  the folder, %d %s (%s)", files, plural(files, "file"), humanSize(size))
 		if len(host.Exclude) > 0 {
@@ -39,10 +41,16 @@ func describeCopy(m sh.Machine, hostName string, host Host, ws Workspace, here, 
 		if ws.Git.Branch == "" {
 			branch = "the detached HEAD"
 		}
-		n := changed(ws)
+		n := total(ws, func(w Workspace) int { return w.Changed })
 		lines = append(lines, fmt.Sprintf("  %s, its commits, and %d %s", branch, n, plural(n, "changed file")))
-		if untracked := nested(ws, func(w Workspace) []string { return w.Untracked }); len(untracked) > 0 {
+		if len(untracked) > 0 {
 			lines = append(lines, "  files git doesn't track yet: "+names(untracked))
+		}
+		if size > 0 {
+			lines = append(lines, "  changed and new files, up to "+humanSize(size))
+		}
+		if left := nested(ws, func(w Workspace) []string { return w.LeftOut }); len(left) > 0 {
+			lines = append(lines, "  left out by exclude in magi's config: "+names(left))
 		}
 		closing = "Nothing git ignores goes, and nothing that's running."
 		if len(secrets) > 0 {
@@ -70,23 +78,20 @@ func describeCopy(m sh.Machine, hostName string, host Host, ws Workspace, here, 
 	} else {
 		lines = append(lines, "  the conversation and its project memory")
 	}
-	return strings.Join(append(lines, closing), "\n"), nil
+	ask := len(secrets) > 0 || len(untracked) > 0 || size >= askSize
+	return strings.Join(append(lines, closing), "\n"), ask, nil
 }
 
-func describeHere(hostName string, host Host, sessionID string) (string, error) {
-	local, err := sh.NewLocal(context.Background())
+func describeSession(m sh.Machine, hostName string, host Host, sessionID string, here bool) (string, bool, error) {
+	s, err := findSession(m, sessionID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	s, err := findSession(local, sessionID)
+	ws, _, err := sourceWorkspace(m, m.Name(), s.Cwd, host.Secrets, host.Exclude)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	ws, _, err := sourceWorkspace(local, local.Name(), s.Cwd, host.Secrets, host.Exclude)
-	if err != nil {
-		return "", err
-	}
-	return describeCopy(local, hostName, host, ws, true, s.Codex)
+	return describeCopy(m, hostName, host, ws, here, s.Codex)
 }
 
 func nested(ws Workspace, list func(Workspace) []string) []string {
@@ -99,10 +104,10 @@ func nested(ws Workspace, list func(Workspace) []string) []string {
 	return items
 }
 
-func changed(ws Workspace) int {
-	n := ws.Changed
+func total[T int | int64](ws Workspace, of func(Workspace) T) T {
+	n := of(ws)
 	for _, sub := range ws.Submodules {
-		n += changed(sub)
+		n += total(sub, of)
 	}
 	return n
 }

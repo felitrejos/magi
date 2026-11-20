@@ -34,13 +34,8 @@ func main() {
 	args := os.Args[1:]
 	var err error
 	switch {
-	case len(args) == 3 && args[0] == "arm":
-		err = arm(args[1], args[2], "", os.Stdout)
-	case len(args) == 4 && args[0] == "arm" && args[3] == "-":
-		var note []byte
-		if note, err = io.ReadAll(os.Stdin); err == nil {
-			err = arm(args[1], args[2], strings.TrimSpace(string(note)), os.Stdout)
-		}
+	case len(args) >= 3 && args[0] == "arm":
+		err = armCommand(args[1], args[2], args[3:], os.Stdin, os.Stdout)
 	case len(args) == 1 && args[0] == "watch":
 		err = watch()
 	case len(args) == 2 && args[0] == "hook" && args[1] == "stop":
@@ -85,44 +80,82 @@ func currentVersion() string {
 	return version
 }
 
-func arm(hostName, sessionID, note string, out io.Writer) error {
+func armCommand(hostName, sessionID string, flags []string, in io.Reader, out io.Writer) error {
+	note, yes := "", false
+	for _, flag := range flags {
+		switch flag {
+		case "--yes":
+			yes = true
+		case "-":
+			b, err := io.ReadAll(in)
+			if err != nil {
+				return err
+			}
+			note = strings.TrimSpace(string(b))
+		default:
+			return fmt.Errorf("magi arm takes a host, a session id, then --yes and - for a note on stdin, not %q", flag)
+		}
+	}
+	return arm(hostName, sessionID, note, yes, out)
+}
+
+func arm(hostName, sessionID, note string, yes bool, out io.Writer) error {
 	pid, err := strconv.Atoi(os.Getenv("CLAUDE_PID"))
 	if err != nil {
 		return errors.New("CLAUDE_PID is not set; run arm from inside the Claude Code session being handed off")
 	}
+	to := hostName
 	host, err := loadHost(hostName)
-	if err != nil {
-		watching, watchErr := watchers()
-		if watchErr != nil {
-			return errors.Join(err, watchErr)
-		}
-		watcher := matchMachine(watching, hostName)
-		if watcher == "" && len(watching) > 0 {
-			return fmt.Errorf("%w, and no machine called %q takes sessions back from this one; these do: %s", err, hostName, strings.Join(watching, ", "))
-		}
-		if watcher == "" {
-			return fmt.Errorf("%w, and no machine called %q takes sessions back from this one. That machine isn't set up to take sessions back; the user can set it up from there by asking Claude to set up magi with this machine", err, hostName)
-		}
-		if err := writeWanted(sessionID, wanted{To: watcher, PID: pid, Note: note}); err != nil {
+	back := err != nil
+	if back {
+		if to, err = takesBack(hostName, err); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", watcher)
-		return nil
+		host = Host{}.withDefaults()
 	}
-	path, err := store.SessionPath("armed", sessionID, ".json")
+	local, err := sh.NewLocal(context.Background())
 	if err != nil {
 		return err
 	}
-	if err := store.WriteJSON(path, armed{Host: hostName, PID: pid, Note: note}); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
-	block, err := describeHere(hostName, host, sessionID)
+	block, ask, err := describeSession(local, to, host, sessionID, true)
 	if err != nil {
-		block = fmt.Sprintf("Note: what goes to %s couldn't be read (%v).", hostName, err)
+		block, ask = fmt.Sprintf("Note: what goes to %s couldn't be read (%v).", to, err), false
+	}
+	switch {
+	case ask && !yes:
+		fmt.Fprintf(out, "Not armed: this copy needs the user's yes first. Show the user what goes, naming the untracked and secret files, and end your turn without arming. After their yes, run magi arm %s %s --yes.\n", hostName, sessionID)
+	case back:
+		if err := writeWanted(sessionID, wanted{To: to, PID: pid, Note: note}); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Asked %s to take this session back: it moves there as soon as this turn ends. End the turn now.\n", to)
+	default:
+		path, err := store.SessionPath("armed", sessionID, ".json")
+		if err != nil {
+			return err
+		}
+		if err := store.WriteJSON(path, armed{Host: hostName, PID: pid, Note: note}); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Armed: this session moves to %s as soon as this turn ends. End the turn now.\n", hostName)
 	}
 	fmt.Fprintln(out, block)
 	return nil
+}
+
+func takesBack(hostName string, notHost error) (string, error) {
+	watching, err := watchers()
+	if err != nil {
+		return "", errors.Join(notHost, err)
+	}
+	watcher := matchMachine(watching, hostName)
+	if watcher == "" && len(watching) > 0 {
+		return "", fmt.Errorf("%w, and no machine called %q takes sessions back from this one; these do: %s", notHost, hostName, strings.Join(watching, ", "))
+	}
+	if watcher == "" {
+		return "", fmt.Errorf("%w, and no machine called %q takes sessions back from this one. That machine isn't set up to take sessions back; the user can set it up from there by asking Claude to set up magi with this machine", notHost, hostName)
+	}
+	return watcher, nil
 }
 
 func matchMachine(names []string, wanted string) string {

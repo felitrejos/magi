@@ -153,7 +153,7 @@ func (r *handoffRun) run(ctx context.Context) error {
 	r.project = project
 	r.res.note(err)
 	if r.Show != nil {
-		if block, err := describeCopy(r.local, r.HostName, r.Host, r.ws, true, r.Codex); err != nil {
+		if block, _, err := describeCopy(r.local, r.HostName, r.Host, r.ws, true, r.Codex); err != nil {
 			r.res.note(err)
 		} else {
 			r.Show(block)

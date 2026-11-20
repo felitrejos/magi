@@ -139,3 +139,15 @@ func TestHostNamesThatArentFileNamesAndSSHOptionsAreRefused(t *testing.T) {
 		t.Errorf("setup_machine with an ssh option:\n%s", text)
 	}
 }
+
+func TestAHandWrittenConfigGetsTheDefaultExcludeAndSecrets(t *testing.T) {
+	f := newFixture(t)
+	f.config("[hosts.server]\nssh = \"fakehost\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\n\n[hosts.own]\nssh = \"own\"\nclaude = \"claude\"\nroots = [\"~/developer\"]\nsecrets = [\"*.pem\"]\n")
+	host, err := loadHost("server")
+	if err != nil || strings.Join(host.Exclude, " ") != "node_modules .venv dist build target" || strings.Join(host.Secrets, " ") != ".env .env.*" {
+		t.Errorf("server = %+v, %v", host, err)
+	}
+	if own, err := loadHost("own"); err != nil || strings.Join(own.Secrets, " ") != "*.pem" {
+		t.Errorf("own = %+v, %v", own, err)
+	}
+}

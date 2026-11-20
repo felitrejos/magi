@@ -71,8 +71,9 @@ type sessionQuery struct {
 }
 
 type moveInput struct {
-	Session string `json:"session" jsonschema:"the session to move: the start of its id, or at least four letters of its title or folder"`
-	To      string `json:"to" jsonschema:"where the user agreed it goes: a host as machines lists it, or this machine's name as sessions lists it first, to bring a session here"`
+	Session   string `json:"session" jsonschema:"the session to move: the start of its id, or at least four letters of its title or folder"`
+	To        string `json:"to" jsonschema:"where the user agreed it goes: a host as machines lists it, or this machine's name as sessions lists it first, to bring a session here"`
+	Confirmed bool   `json:"confirmed,omitempty" jsonschema:"true only after the user said yes to the list of what goes that a call without it returned"`
 }
 
 type allowInput struct {
@@ -225,7 +226,7 @@ func newMCPServer() *mcp.Server {
 
 	addTool(server, &mcp.Tool{
 		Name:        "move_session",
-		Description: "Move a Claude Code or Codex session, other than this one, between this machine and another, with its conversation and its working tree. A session that runs here goes to a host as machines lists it; a session that runs on a host comes here when to is this machine's name, and opens here in a tmux window, with Remote Control for Claude Code. A session that was quit, here or on a host, moves the same way when you pass its full session id, as status lists it. Returns what went across and where it now runs. A session that's in the middle of a turn or waiting on the user isn't moved: run magi wait <session id> as a background shell command, then move it if that says it's idle, or ask the user to answer it first if that says it's waiting on them. To move this session itself, use the handoff skill. Moving a session is the user's call: before calling, say which session goes to which machine, and wait for the user's clear yes.",
+		Description: "Move a Claude Code or Codex session, other than this one, between this machine and another, with its conversation and its working tree. A session that runs here goes to a host as machines lists it; a session that runs on a host comes here when to is this machine's name, and opens here in a tmux window, with Remote Control for Claude Code. A session that was quit, here or on a host, moves the same way when you pass its full session id, as status lists it. Returns what went across and where it now runs. When the copy includes secret files, files git doesn't track, or 50 MB or more, a call without confirmed moves nothing and returns what would go: show it to the user, and after their yes call again with confirmed set to true. A session that's in the middle of a turn or waiting on the user isn't moved: run magi wait <session id> as a background shell command, then move it if that says it's idle, or ask the user to answer it first if that says it's waiting on them. To move this session itself, use the handoff skill. Moving a session is the user's call: before calling, say which session goes to which machine, and wait for the user's clear yes.",
 	}, moveSession)
 
 	addTool(server, &mcp.Tool{
@@ -401,19 +402,25 @@ func moveSession(ctx context.Context, in moveInput) (string, error) {
 		return "", err
 	}
 	here := all[0].Name
-	var out strings.Builder
 	switch {
 	case m.Name == in.To:
 		return "", fmt.Errorf("%s already runs there", sessionLabel(m.Name, s))
 	case m.Name == here && s.PID == callerPID:
 		return "", fmt.Errorf("%s is this session; to move it, use the handoff skill", sessionLabel(m.Name, s))
-	case m.Name == here:
-		err = mover{session: s.SessionID, host: in.To, out: &out}.run()
-	case in.To != here:
+	case m.Name != here && in.To != here:
 		return "", fmt.Errorf("%s runs on %s, and magi moves a session between this machine and another; move it here first, then on to %s", sessionLabel(m.Name, s), m.Name, in.To)
-	case s.Status != "idle":
+	case s.Status == "busy" || s.Status == "waiting" || m.Name != here && s.Status != "idle":
 		return "", busyError(remoteSession{ID: s.SessionID})
-	default:
+	}
+	if !in.Confirmed {
+		if block, err := askFirst(m, here, in.To, s.SessionID); err != nil || block != "" {
+			return block, err
+		}
+	}
+	var out strings.Builder
+	if m.Name == here {
+		err = mover{session: s.SessionID, host: in.To, out: &out}.run()
+	} else {
 		var message string
 		if message, err = pullHere(m.Name, s.SessionID, "", &out, true); err == nil {
 			fmt.Fprintln(&out, message+".")
@@ -423,6 +430,22 @@ func moveSession(ctx context.Context, in moveInput) (string, error) {
 		return "", fmt.Errorf("%s%w", out.String(), err)
 	}
 	return out.String(), nil
+}
+
+func askFirst(m machineSessions, here, to, sessionID string) (string, error) {
+	hostName, toName := to, to
+	if m.Name != here {
+		hostName, toName = m.Name, here
+	}
+	host, err := loadHost(hostName)
+	if err != nil {
+		return "", err
+	}
+	block, ask, err := describeSession(m.Machine, toName, host, sessionID, m.Name == here)
+	if err != nil || !ask {
+		return "", err
+	}
+	return block + "\nNothing moved: this copy needs the user's yes first. Show the user what goes, naming the untracked and secret files, and after their yes call move_session again with confirmed set to true.", nil
 }
 
 func findQuit(all []machineSessions, id string, notRunning error) (machineSessions, liveSession, error) {

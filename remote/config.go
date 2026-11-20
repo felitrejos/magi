@@ -73,7 +73,18 @@ func loadHost(name string) (Host, error) {
 	}
 	host.LocalRoots = cfg.LocalRoots
 	host.Exclude = cfg.Exclude
+	host = host.withDefaults()
 	return host, host.validate(name)
+}
+
+func (h Host) withDefaults() Host {
+	if len(h.Secrets) == 0 {
+		h.Secrets = []string{".env", ".env.*"}
+	}
+	if len(h.Exclude) == 0 {
+		h.Exclude = []string{"node_modules", ".venv", "dist", "build", "target"}
+	}
+	return h
 }
 
 func (h Host) validate(name string) error {
