@@ -40,8 +40,8 @@ struct Move: Decodable {
     let toDir: String
     let note: String?
 
-    static func all(in data: Data) -> [Move] {
-        data.split(separator: UInt8(ascii: "\n")).compactMap { try? JSONDecoder.magi.decode(Move.self, from: $0) }
+    static func recent(in data: Data) -> [Move] {
+        data.split(separator: UInt8(ascii: "\n")).suffix(5).reversed().compactMap { try? JSONDecoder.magi.decode(Move.self, from: $0) }
     }
 }
 

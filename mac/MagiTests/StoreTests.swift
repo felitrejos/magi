@@ -23,12 +23,24 @@ struct StoreTests {
     @Test func stopsAnsweringAtTheDeadline() async throws {
         defer { try? FileManager.default.removeItem(at: home) }
         let store = Store(home: home)
-        let heard = Date(timeIntervalSince1970: (Date.now.timeIntervalSince1970 - 39).rounded(.down))
+        let heard = Date(timeIntervalSince1970: (Date.now.timeIntervalSince1970 - 39).rounded(.up))
         let live = String(decoding: try fixture("live/laptop.json"), as: UTF8.self).replacing("2026-11-20T17:45:33.936688+01:00", with: heard.formatted(.iso8601))
         try publish(Data(live.utf8), as: "laptop")
         await until { store.answering.contains("laptop") }
         await until { !store.answering.contains("laptop") }
         #expect(Date.now.timeIntervalSince(heard) >= Machine.quietAfter)
+    }
+
+    @Test func showsTheLastFiveMovesNewestFirst() async throws {
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = Store(home: home)
+        let log = try FileHandle(forWritingTo: home.appending(path: "handoffs.jsonl"))
+        let times = (1...6).map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        for time in times {
+            try log.write(contentsOf: Data(#"{"time":"\#(time.formatted(.iso8601))","from":"laptop","to":"box","to_dir":"/home/sam/code/shop"}\#n"#.utf8))
+            await until { store.moves.first?.time == time }
+        }
+        #expect(store.moves.map(\.time) == times.dropFirst().reversed())
     }
 
     private func publish(_ data: Data, as name: String) throws {

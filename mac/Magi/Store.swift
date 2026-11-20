@@ -10,7 +10,6 @@ final class Store {
 
     @ObservationIgnored private let live: URL
     @ObservationIgnored private let log: URL
-    @ObservationIgnored private var modified: [String: Date] = [:]
     @ObservationIgnored private var watches: [any DispatchSourceFileSystemObject] = []
     @ObservationIgnored private let deadline = DispatchSource.makeTimerSource(queue: .main)
 
@@ -33,23 +32,16 @@ final class Store {
     }
 
     private func readLive() {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: live, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
-        var seen: [String: Date] = [:]
-        for file in files where file.pathExtension == "json" {
-            let name = file.deletingPathExtension().lastPathComponent
-            seen[name] = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-            if seen[name] != modified[name] {
-                machines[name] = try? JSONDecoder.magi.decode(Machine.self, from: Data(contentsOf: file))
-            }
+        guard let files = try? FileManager.default.contentsOfDirectory(at: live, includingPropertiesForKeys: []) else { return }
+        machines = files.filter { $0.pathExtension == "json" }.reduce(into: [:]) { machines, file in
+            machines[file.deletingPathExtension().lastPathComponent] = try? JSONDecoder.magi.decode(Machine.self, from: Data(contentsOf: file))
         }
-        machines = machines.filter { seen[$0.key] != nil }
-        modified = seen
         evaluate()
     }
 
     private func readLog() {
         guard let data = try? Data(contentsOf: log) else { return }
-        moves = Move.all(in: data).suffix(5).reversed()
+        moves = Move.recent(in: data)
     }
 
     private func evaluate() {

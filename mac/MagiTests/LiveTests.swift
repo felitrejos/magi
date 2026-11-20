@@ -22,11 +22,11 @@ struct LiveTests {
     }
 
     @Test func readsTheMovesInHandoffs() throws {
-        let moves = Move.all(in: try fixture("handoffs.jsonl"))
+        let moves = Move.recent(in: try fixture("handoffs.jsonl"))
         #expect(moves.count == 4)
-        #expect(moves[0].note?.hasPrefix("Moving session 3fce93f1 to box was interrupted.") == true)
-        #expect(moves[3].from == "laptop" && moves[3].to == "box" && moves[3].toDir == "/home/sam/code/shop" && moves[3].note == nil)
-        #expect(abs(moves[3].time.timeIntervalSince1970 - 1795192998.75481) < 0.000_001)
+        #expect(moves[3].note?.hasPrefix("Moving session 3fce93f1 to box was interrupted.") == true)
+        #expect(moves[0].from == "laptop" && moves[0].to == "box" && moves[0].toDir == "/home/sam/code/shop" && moves[0].note == nil)
+        #expect(abs(moves[0].time.timeIntervalSince1970 - 1795192998.75481) < 0.000_001)
     }
 
     @Test func stopsAnsweringWhenQuietForFortySecondsOrSaysSo() throws {

@@ -16,7 +16,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let button = item.button else { return }
+        let button = item.button!
         button.image = NSImage(systemSymbolName: "square.stack", accessibilityDescription: "magi")
         button.target = self
         button.action = #selector(clicked)
@@ -61,14 +61,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        close()
+        if panel.isVisible { close() }
     }
 }
 
 @available(macOS 27, *)
 extension App: @MainActor NSStatusItemExpandedInterfaceDelegate {
     func statusItem(_ statusItem: NSStatusItem, didBegin session: NSStatusItemExpandedInterfaceSession) {
-        open()
+        panel.isVisible ? session.cancel() : open()
     }
 
     func statusItemDidEndExpandedInterfaceSession(_ statusItem: NSStatusItem, animated: Bool) {
