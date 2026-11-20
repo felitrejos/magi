@@ -80,6 +80,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -q -m "Nightly: contract tests pass with claude $CLAUDE_VERSION" remote/tested.json
+          git pull -q --rebase origin main
           git push -q origin HEAD:main
 
   report:
@@ -95,13 +96,23 @@ jobs:
           GH_REPO: ${{ github.repository }}
           CLAUDE_VERSION: ${{ needs.versions.outputs.claude }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CONTRACT: ${{ needs.contract.result }}
         run: |
-          title="Nightly fails with Claude Code $CLAUDE_VERSION"
+          if [ "$CONTRACT" = failure ]; then
+            title="Nightly fails with Claude Code $CLAUDE_VERSION"
+            body="The contract tests failed: $RUN
+
+          remote/tested.json keeps its old max until a nightly passes. If this version can't be made to work, add it to broken in remote/tested.json by hand."
+          elif [ "$CONTRACT" = success ]; then
+            title="Nightly couldn't raise the tested versions to Claude Code $CLAUDE_VERSION"
+            body="The contract tests passed, but committing the new max to main failed: $RUN"
+          else
+            title="Nightly couldn't find the newest Claude Code"
+            body="Finding the newest Claude Code failed, so no contract tests ran: $RUN"
+          fi
           issue=$(gh issue list --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\")) | first | .number // empty")
           if [ -n "$issue" ]; then
             gh issue comment "$issue" --body "It failed again: $RUN"
           else
-            gh issue create --title "$title" --body "The contract tests failed: $RUN
-
-          remote/tested.json keeps its old max until a nightly passes. If this version can't be made to work, add it to broken in remote/tested.json by hand."
+            gh issue create --title "$title" --body "$body"
           fi

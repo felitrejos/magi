@@ -456,7 +456,7 @@ func TestBudgetsParseMemoryAndQuietHours(t *testing.T) {
 func TestTheTargetRechecksItsBudgetWhenATaskStarts(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
-	f.tool("claude", "#!/bin/sh\ncat >/dev/null\nsleep 30\n")
+	f.tool("claude", "#!/bin/sh\n"+fakeAgents+"cat >/dev/null\nsleep 30\n")
 	f.config(strings.Replace(f.read(filepath.Join(f.home, ".config", "magi"), "config.toml"), "secrets = [\".env\", \"secret.txt\"]", "secrets = [\".env\", \"secret.txt\"]\nmax_agents = 1", 1))
 	first, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "x"})
 	if err != nil {
@@ -475,9 +475,11 @@ func TestTheTargetRechecksItsBudgetWhenATaskStarts(t *testing.T) {
 		t.Errorf("%d task records, want the delegate and the command", len(tasks))
 	}
 	collectTask(first.Task.ID, true)
-	if _, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "z"}); err != nil {
-		t.Errorf("after cancelling, a delegate was refused: %v", err)
+	last, err := startTask(context.Background(), TaskSpec{Kind: kindDelegate, Host: "server", Dir: f.local, Prompt: "z"})
+	if err != nil {
+		t.Fatalf("after cancelling, a delegate was refused: %v", err)
 	}
+	collectTask(last.Task.ID, true)
 }
 
 func TestADelegatedClaudeNeverBypassesPermissions(t *testing.T) {
@@ -563,7 +565,7 @@ func TestTheToolServerOffersItsTools(t *testing.T) {
 func TestASessionTaskBringsItsChangesBackOnceTheUserQuits(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
-	f.tool("claude", "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/claude-args\"\nwhile [ ! -f \"$HOME/quit\" ]; do sleep 0.1; done\nprintf done > session.txt\n")
+	f.tool("claude", "#!/bin/sh\n"+fakeAgents+"printf '%s\\n' \"$@\" > \"$HOME/claude-args\"\nwhile [ ! -f \"$HOME/quit\" ]; do sleep 0.1; done\nprintf done > session.txt\n")
 	f.write(f.home, ".claude.json", `{"projects":{}}`)
 	s, err := startTask(context.Background(), TaskSpec{Kind: kindSession, Host: "server", Dir: f.local, Prompt: "hello there"})
 	if err != nil {
@@ -814,7 +816,7 @@ func TestADelegatedTaskKeepsItsSendersTabNameAcrossFollowUps(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := s.Task.ID
-	label := machineLabel() + " ← fix login"
+	label := f.machine().Name() + " ← fix login"
 	if !strings.Contains(describeStarted(s, "why"), "tab \""+label+"\"") {
 		t.Errorf("started:\n%s", describeStarted(s, "why"))
 	}

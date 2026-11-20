@@ -19,8 +19,8 @@ type mover struct {
 	out     io.Writer
 }
 
-func busyError(s remoteSession) error {
-	id := store.ShortID(s.ID)
+func busyError(session string) error {
+	id := store.ShortID(session)
 	return fmt.Errorf("session %s is in the middle of a turn or waiting on the user, so it wasn't moved; run magi wait %s as a background shell command, then move it if that says it's idle, or ask the user to answer it first if that says it's waiting on them", id, id)
 }
 
@@ -55,7 +55,7 @@ func (m mover) run() error {
 	}
 	_, err = sh.Run(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since(), local.Claude())
 	if sh.ExitCode(err) == sh.ExitBusy {
-		return busyError(s)
+		return busyError(s.ID)
 	}
 	if err != nil {
 		return err

@@ -32,17 +32,20 @@ type machinesInput struct {
 	Needs needsInput `json:"needs,omitempty" jsonschema:"what the work has to run on, when it matters, for example a Linux x86_64 build"`
 }
 
+type whereInput struct {
+	Host string `json:"host,omitempty" jsonschema:"the magi host the user agreed to, as listed by machines; left out, magi takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
+	Dir  string `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
+}
+
 type runInput struct {
 	Command string `json:"command" jsonschema:"the shell command to run from the project's folder, for example go test ./..."`
-	Host    string `json:"host,omitempty" jsonschema:"the magi host the user agreed to, as listed by machines; left out, magi takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
-	Dir     string `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
-	Setup   *bool  `json:"setup,omitempty" jsonschema:"run the project's approved .magi.toml setup first, such as installing dependencies (default true)"`
+	whereInput
+	Setup *bool `json:"setup,omitempty" jsonschema:"run the project's approved .magi.toml setup first, such as installing dependencies (default true)"`
 }
 
 type delegateInput struct {
-	Task           string   `json:"task" jsonschema:"a self-contained brief, since the remote Claude doesn't see this conversation and can't ask questions: the goal, the relevant files and what you already know about them, constraints, how to check the work, and what done looks like"`
-	Host           string   `json:"host,omitempty" jsonschema:"the magi host the user agreed to, as listed by machines; left out, magi takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
-	Dir            string   `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
+	Task string `json:"task" jsonschema:"a self-contained brief, since the remote Claude doesn't see this conversation and can't ask questions: the goal, the relevant files and what you already know about them, constraints, how to check the work, and what done looks like"`
+	whereInput
 	AllowedTools   []string `json:"allowed_tools,omitempty" jsonschema:"extra permission rules the remote Claude may use without asking, for example Bash(go test:*) or Bash(npm run lint); only what the user agreed to. When the task revolves around one tool, grant the whole tool, such as Bash(docker:*), rather than a few of its subcommands, or the remote Claude gets stuck on the first one you didn't list"`
 	PermissionMode string   `json:"permission_mode,omitempty" jsonschema:"acceptEdits (default: read and edit files in its copy), dontAsk (only what allowed_tools and that machine's settings allow) or auto (Claude Code's auto mode, which reviews each action)"`
 	Model          string   `json:"model,omitempty" jsonschema:"model for the remote Claude, such as sonnet or opus; leave out for that machine's default"`
@@ -51,8 +54,7 @@ type delegateInput struct {
 }
 
 type sessionInput struct {
-	Host   string `json:"host,omitempty" jsonschema:"the magi host the user agreed to, as listed by machines; left out, magi takes the first machine in the user's list that has room at this moment, which may not be the one you proposed"`
-	Dir    string `json:"dir,omitempty" jsonschema:"absolute path of the project folder to copy; pass your current working directory"`
+	whereInput
 	Prompt string `json:"prompt,omitempty" jsonschema:"an optional first message for the new session"`
 }
 
@@ -176,7 +178,7 @@ func startElsewhere(ctx context.Context, host string, spec TaskSpec) (string, er
 }
 
 func newMCPServer() *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "magi", Title: "magi", Version: currentVersion()}, &mcp.ServerOptions{Instructions: serverInstructions})
+	server := mcp.NewServer(&mcp.Implementation{Name: "magi", Title: "magi", Version: version}, &mcp.ServerOptions{Instructions: serverInstructions})
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
 	no := false
 
@@ -247,18 +249,14 @@ func newMCPServer() *mcp.Server {
 		Name:        "status",
 		Description: "What magi has going on on this machine: moves that were cut off, sessions waiting for another machine to take them back, recent handoffs, parked checkouts and ports forwarded to sessions that moved away. magi settles a cut-off move on its own, and calling this settles any it can right away; what's left says what the user has to decide, such as which copy to keep when both were used. Call it when a move didn't finish or the user asks what magi did.",
 	}, func(context.Context, struct{}) (string, error) {
-		var b strings.Builder
-		err := status(&b)
-		return b.String(), err
+		return status()
 	})
 
 	addTool(server, &mcp.Tool{
 		Name:        "unpark",
 		Description: "Stop treating a checkout on this machine as parked. A session that moved away leaves its checkout parked, and when the session comes back, its changes replace the uncommitted ones there, unless they were edited meanwhile. After unpark, the uncommitted changes there count as the user's own, so a session coming back is refused until they're committed or stashed. Call it when the user wants to keep working in that checkout. status lists the parked ones.",
 	}, func(_ context.Context, in dirInput) (string, error) {
-		var b strings.Builder
-		err := unpark(in.Dir, &b)
-		return b.String(), err
+		return unpark(in.Dir)
 	})
 
 	addTool(server, &mcp.Tool{
@@ -313,11 +311,7 @@ func newMCPServer() *mcp.Server {
 		Description: "Check a task started with run_elsewhere, delegate or session_elsewhere: still running or finished, with its latest output. Without task_id, lists this machine's tasks. Read-only: it doesn't collect anything. Between checks, carry on with other work instead of polling in a loop.",
 	}, func(_ context.Context, in optionalTaskInput) (string, error) {
 		if in.TaskID == "" {
-			var b strings.Builder
-			if err := printTasks(&b); err != nil {
-				return "", err
-			}
-			return b.String(), nil
+			return describeTasks()
 		}
 		r, err := taskStatus(in.TaskID)
 		if err != nil {
@@ -415,7 +409,7 @@ func moveSession(ctx context.Context, in moveInput) (string, error) {
 	case m.Name != here && in.To != here:
 		return "", fmt.Errorf("%s runs on %s, and magi moves a session between this machine and another; move it here first, then on to %s", sessionLabel(m.Name, s), m.Name, in.To)
 	case s.Status == "busy" || s.Status == "waiting" || m.Name != here && s.Status != "idle":
-		return "", busyError(remoteSession{ID: s.SessionID})
+		return "", busyError(s.SessionID)
 	}
 	if !in.Confirmed {
 		if block, err := askFirst(m, here, in.To, s.SessionID); err != nil || block != "" {
@@ -463,4 +457,8 @@ func findQuit(all []machineSessions, id string, notRunning error) (machineSessio
 		}
 	}
 	return machineSessions{}, liveSession{}, notRunning
+}
+
+func said(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }

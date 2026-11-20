@@ -53,7 +53,7 @@ func loadTested() (testedRange, error) {
 	if err != nil {
 		return testedRange{}, err
 	}
-	if info, err := os.Stat(path); testedURL != "" && (err != nil || time.Since(info.ModTime()) > testedFresh) {
+	if info, err := os.Stat(path); err != nil || time.Since(info.ModTime()) > testedFresh {
 		if data, err := fetchTested(); err == nil {
 			if err := store.WriteAtomic(path, data); err != nil {
 				return testedRange{}, err

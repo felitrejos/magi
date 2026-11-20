@@ -417,3 +417,19 @@ func normalizeRemote(raw string) string {
 	}
 	return strings.ToLower(host) + "/" + strings.TrimPrefix(path, "/")
 }
+
+func unparkRepo(m sh.Machine, repo string) error {
+	if err := deleteRefs(m, repo, parkedRef); err != nil {
+		return err
+	}
+	links, err := gitlinks(m, repo)
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
+		if err := unparkRepo(m, repo+"/"+link); err != nil {
+			return err
+		}
+	}
+	return nil
+}

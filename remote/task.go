@@ -33,7 +33,6 @@ type Task struct {
 	Host     string    `json:"host"`
 	Created  time.Time `json:"created"`
 	Project  string    `json:"project"`
-	Name     string    `json:"name"`
 	Git      bool      `json:"git"`
 	Subs     bool      `json:"submodules,omitempty"`
 	Starting bool      `json:"starting,omitempty"`
@@ -87,8 +86,12 @@ type TaskSpec struct {
 	Caller  int
 }
 
+func taskPath(name string) (string, error) {
+	return store.Dir(filepath.Join("tasks", name))
+}
+
 func (t *Task) save() error {
-	dir, err := store.Dir("tasks")
+	path, err := taskPath(t.ID + ".json")
 	if err != nil {
 		return err
 	}
@@ -96,18 +99,18 @@ func (t *Task) save() error {
 	if err != nil {
 		return err
 	}
-	return store.WriteAtomic(filepath.Join(dir, t.ID+".json"), data)
+	return store.WriteAtomic(path, data)
 }
 
 func loadTask(id string) (*Task, error) {
 	if !taskIDPattern.MatchString(id) {
 		return nil, fmt.Errorf("%q isn't a task id; task ids are 8 hex characters", id)
 	}
-	dir, err := store.Dir("tasks")
+	path, err := taskPath(id + ".json")
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(filepath.Join(dir, id+".json"))
+	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("no task %s on this machine", id)
 	}
@@ -122,11 +125,11 @@ func loadTask(id string) (*Task, error) {
 }
 
 func listTasks() ([]*Task, error) {
-	dir, err := store.Dir("tasks")
+	pattern, err := taskPath("*.json")
 	if err != nil {
 		return nil, err
 	}
-	names, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	names, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, err
 	}
@@ -165,16 +168,16 @@ func (t *Task) branch() string {
 }
 
 func (t *Task) forget() error {
-	dir, err := store.Dir("tasks")
+	base, err := taskPath(t.ID)
 	if err != nil {
 		return err
 	}
-	turnLogs, err := filepath.Glob(filepath.Join(dir, t.ID+"-*.log"))
+	turnLogs, err := filepath.Glob(base + "-*.log")
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for _, path := range append([]string{filepath.Join(dir, t.ID+".json"), filepath.Join(dir, t.ID+".log"), filepath.Join(dir, t.ID+".lock"), filepath.Join(dir, t.ID+".files")}, turnLogs...) {
+	for _, path := range append([]string{base + ".json", base + ".log", base + ".lock", base + ".files"}, turnLogs...) {
 		if err := os.RemoveAll(path); err != nil {
 			errs = append(errs, err)
 		}
@@ -200,9 +203,9 @@ func (t *Task) remote(ctx context.Context) (*sh.Remote, Host, error) {
 var errTaskBusy = errors.New("being collected by another magi right now; try again in a moment")
 
 func lockTask(id string) (func(), error) {
-	dir, err := store.Dir("tasks")
+	path, err := taskPath(id + ".lock")
 	if err != nil {
 		return nil, err
 	}
-	return store.Lock(filepath.Join(dir, id+".lock"), fmt.Errorf("task %s is %w", id, errTaskBusy))
+	return store.Lock(path, fmt.Errorf("task %s is %w", id, errTaskBusy))
 }

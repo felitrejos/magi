@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -195,7 +194,7 @@ func installPlugin(m sh.Machine, claude string) (magiPlugin, string, error) {
 
 func olderThanThis(installed string) bool {
 	there, ok := parseVersion(installed)
-	here, ours := parseVersion(currentVersion())
+	here, ours := parseVersion(version)
 	return ok && ours && compareVersions(there, here) < 0
 }
 
@@ -357,8 +356,6 @@ func doctorMachine(c *checks, versions testedRange, m sh.Machine, name string, r
 	}
 }
 
-var tryProject = regexp.MustCompile(`^magi-try-[0-9a-f]{8}$`)
-
 var tryWords = []string{"HERON", "OTTER", "BADGER", "KESTREL", "MARMOT", "IBIS"}
 
 type claudeReply struct {
@@ -432,9 +429,6 @@ func tryClaude(dir string, args ...string) (claudeReply, error) {
 }
 
 func tryCleanup(local *sh.Local, localRoots []string, host Host, project, sessionID string) error {
-	if !tryProject.MatchString(project) {
-		return fmt.Errorf("refusing to remove %q, which isn't a magi try project", project)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var errs []error

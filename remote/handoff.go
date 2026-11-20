@@ -479,3 +479,23 @@ func (r *moveRun) reopen(err error) error {
 	}
 	return fmt.Errorf("%w. The session was stopped for the move, so magi reopened it %s in a tmux window", err, where)
 }
+
+func recordTab(m sh.Machine, sessionID string, tab sh.Tab) error {
+	_, err := sh.Run(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n' "$2" "$3" "$4" > "$HOME/.magi/tabs/$1"`, sessionID, tab.Session, tab.Window, tab.Tag)
+	return err
+}
+
+func closeRecordedTab(r sh.Machine, sessionID string) error {
+	out, err := sh.Run(r, `f="$HOME/.magi/tabs/$1"; if [ -f "$f" ]; then cat "$f"; rm -f "$f"; fi`, sessionID)
+	if err != nil || len(out) == 0 {
+		return err
+	}
+	lines := strings.Split(string(out), "\n")
+	if len(lines) < 3 {
+		return fmt.Errorf("unexpected tab record for session %s on %s", sessionID, r.Name())
+	}
+	if err := (sh.Tmux{Machine: r}).Discard(sh.Tab{Session: lines[0], Window: lines[1], Tag: lines[2]}); err != nil && !sh.TabGone(err) {
+		return err
+	}
+	return nil
+}

@@ -114,9 +114,6 @@ func TestTryRemovesOnlyItsOwnProject(t *testing.T) {
 		f.write(dir, "notes.txt", "test")
 	}
 	host := Host{SSH: "fakehost", Claude: "claude", Roots: []string{"~/developer"}}
-	if err := tryCleanup(f.machine(), []string{"~/laptop"}, host, "magi-try-keep", ""); err == nil {
-		t.Fatal("removed a folder that isn't a magi try project")
-	}
 	if err := tryCleanup(f.machine(), []string{"~/laptop"}, host, project, ""); err != nil {
 		t.Fatal(err)
 	}

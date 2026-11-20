@@ -69,7 +69,7 @@ func TestWaitForRemoteControlWaitsForTheNewSessionsBridge(t *testing.T) {
 	f := newFixture(t)
 	launched := time.Now()
 	waitBriefly := func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
 		_, err := waitForRemoteControl(f.remoteHost().With(ctx), "s1", launched)
 		return err

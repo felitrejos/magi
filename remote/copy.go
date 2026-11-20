@@ -31,11 +31,7 @@ func describeCopy(m sh.Machine, hostName string, host Host, ws Workspace, here b
 		if _, err := fmt.Sscan(string(out), &files, &size); err != nil {
 			return "", false, fmt.Errorf("unexpected folder size %q from %s", out, m.Name())
 		}
-		line := fmt.Sprintf("  the folder, %d %s (%s)", files, plural(files, "file"), humanSize(size))
-		if len(host.Exclude) > 0 {
-			line += ", without " + names(host.Exclude)
-		}
-		lines = append(lines, line)
+		lines = append(lines, fmt.Sprintf("  the folder, %d %s (%s), without %s", files, plural(files, "file"), humanSize(size), names(host.Exclude)))
 	} else {
 		branch := "branch " + ws.Git.Branch
 		if ws.Git.Branch == "" {

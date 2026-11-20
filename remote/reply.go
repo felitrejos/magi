@@ -10,11 +10,6 @@ import (
 	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
-const (
-	keepCopies    = 24 * time.Hour
-	keepCollected = 7 * 24 * time.Hour
-)
-
 func (t *Task) delegateCommand(program, setup string, resume bool) []string {
 	claude := []string{"env", delegateVar + "=1", program}
 	if t.RunDir != t.Checkout {
@@ -27,69 +22,6 @@ func (t *Task) delegateCommand(program, setup string, resume bool) []string {
 	}
 	claude = append(claude, t.Claude...)
 	return append([]string{"sh", "-c", taskScript, "magi", "delegate", t.Dir, setup}, claude...)
-}
-
-func (t *Task) removeCopy(r *sh.Remote) error {
-	slug := ""
-	if t.Kind == kindDelegate {
-		var err error
-		if slug, err = projectSlug(t.RunDir); err != nil {
-			return err
-		}
-	}
-	if _, err := sh.Run(r, taskScript, "remove", t.Dir, slug); err != nil {
-		return fmt.Errorf("removing its copy at %s on %s failed: %w", t.Dir, t.Host, err)
-	}
-	return nil
-}
-
-func closeIdleCopy(id string) (bool, error) {
-	unlock, err := lockTask(id)
-	if err != nil {
-		return false, err
-	}
-	defer unlock()
-	t, err := loadTask(id)
-	if err != nil || t.Outcome == nil || !t.Outcome.Kept || time.Since(t.Outcome.Ended) < keepCopies {
-		return false, err
-	}
-	return true, t.closeCopy()
-}
-
-func sweepTasks() string {
-	tasks, err := listTasks()
-	errs := []error{err}
-	for _, t := range tasks {
-		switch {
-		case t.Outcome == nil:
-		case t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCopies:
-			if _, err := closeIdleCopy(t.ID); err != nil && !errors.Is(err, errTaskBusy) {
-				errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
-			}
-		case !t.Outcome.Kept && time.Since(t.Outcome.Ended) > keepCollected:
-			if err := t.forget(); err != nil {
-				errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
-			}
-		}
-	}
-	if err := errors.Join(errs...); err != nil {
-		return fmt.Sprintf("Note: tidying up old tasks failed: %v\n", err)
-	}
-	return ""
-}
-
-func (t *Task) closeCopy() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	r, _, err := t.remote(ctx)
-	if err != nil {
-		return err
-	}
-	if err := t.removeCopy(r); err != nil {
-		return err
-	}
-	t.Outcome.Kept, t.Outcome.Closed = false, true
-	return t.save()
 }
 
 func replyTask(ctx context.Context, id, message string) (*started, error) {

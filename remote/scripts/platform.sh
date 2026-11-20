@@ -18,5 +18,4 @@ for t in docker podman; do
 done
 echo
 load
-listed=$("$claude" agents --json) || exit
-printf '%s\n' "$listed" | awk '$1 == "\"status\":" && $2 ~ /^"busy"/ { n++ } END { print n + 0 }'
+working "$claude"

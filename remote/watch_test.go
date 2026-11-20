@@ -16,13 +16,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/felitrejos/magi/remote/internal/store"
 )
 
 func readLive(t *testing.T, name string) liveMachine {
 	t.Helper()
-	path, err := store.Dir(filepath.Join("live", name+".json"))
+	path, err := livePath(name)
 	if err != nil {
 		t.Fatal(err)
 	}

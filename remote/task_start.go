@@ -51,7 +51,6 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		Host:     spec.Host,
 		Created:  time.Now(),
 		Project:  ws.Root,
-		Name:     ws.Name,
 		Git:      ws.Git != nil,
 		Subs:     len(ws.Submodules) > 0,
 		Command:  spec.Command,
@@ -75,12 +74,9 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, c := range clones {
-			if sameRepository(c, ws) {
-				clone = c.Dir
-				group = groupOf(clone, host.Roots, remote.Home())
-				break
-			}
+		if found := clonesOf(clones, ws); len(found) > 0 {
+			clone = found[0]
+			group = groupOf(clone, host.Roots, remote.Home())
 		}
 	}
 	t.Group = group
@@ -187,7 +183,7 @@ func checkRoom(remote *sh.Remote, host Host, t *Task, action string) error {
 	if reason := b.noRoom(time.Now(), nil, false); reason != "" {
 		return &noRoomError{Host: t.Host, Reason: reason}
 	}
-	_, err := sh.Run(remote, taskScript, action, t.Dir, t.Kind, strconv.Itoa(b.MaxAgents), fmt.Sprintf("%.0f", b.MinFree))
+	_, err := sh.Run(remote, taskScript, action, t.Dir, t.Kind, strconv.Itoa(b.MaxAgents), fmt.Sprintf("%.0f", b.MinFree), remote.Claude())
 	var ce *sh.Error
 	if sh.ExitCode(err) == sh.ExitNoRoom && errors.As(err, &ce) {
 		return &noRoomError{Host: t.Host, Reason: ce.Stderr}

@@ -74,9 +74,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Setenv("MAGI_FAKE_CLAUDE_VERSION", builtin.Max)
-	url := testedURL
-	testedURL = ""
-	t.Cleanup(func() { testedURL = url })
+	f.write(filepath.Join(home, ".magi"), "tested.json", string(builtinTested))
 	f.tool("claude", fakeClaude)
 	f.tool("launchctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
 	f.tool("systemctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
@@ -358,4 +356,18 @@ func runProgram(t *testing.T, name string, args ...string) <-chan error {
 	go func() { done <- cmd.Wait(); close(done) }()
 	t.Cleanup(func() { cmd.Process.Kill(); <-done })
 	return done
+}
+
+func TestMain(m *testing.M) {
+	retireDelay = 0
+	if args := os.Getenv("MAGI_TEST_RUN"); args != "" {
+		os.Args = append([]string{"magi"}, strings.Fields(args)...)
+		if os.Args[1] == "pull" {
+			pullHere(os.Args[2], os.Args[3], os.Stdout, false)
+		} else {
+			main()
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
 }

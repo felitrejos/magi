@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -220,14 +219,10 @@ func describeMachines(view fleetView, needs needsInput) string {
 	return b.String()
 }
 
-func printTasks(w io.Writer) error {
+func describeTasks() (string, error) {
 	tasks, err := listTasks()
-	if err != nil {
-		return err
-	}
-	if len(tasks) == 0 {
-		fmt.Fprintln(w, "No tasks yet.")
-		return nil
+	if err != nil || len(tasks) == 0 {
+		return "No tasks yet.\n", err
 	}
 	states := make([]string, len(tasks))
 	var wg sync.WaitGroup
@@ -254,10 +249,11 @@ func printTasks(w io.Writer) error {
 		})
 	}
 	wg.Wait()
+	var b strings.Builder
 	for i, t := range tasks {
-		fmt.Fprintf(w, "%s  %-8s  %-10s  %-16s  %s\n    %s\n", t.ID, t.Kind, t.Host, ago(t.Created), t.summary(), firstLine(states[i]))
+		fmt.Fprintf(&b, "%s  %-8s  %-10s  %-16s  %s\n    %s\n", t.ID, t.Kind, t.Host, ago(t.Created), t.summary(), firstLine(states[i]))
 	}
-	return nil
+	return b.String(), nil
 }
 
 func firstLine(s string) string {

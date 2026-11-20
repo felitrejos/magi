@@ -213,10 +213,6 @@ func allowProject(dir, hash string, answers mcp.InputResponseMap) (*mcp.CallTool
 	return said(fmt.Sprintf("Allowed %s for moves and tasks started from %s, wherever they run. If it changes, it needs allowing again.", p.Path, local.Name())), nil
 }
 
-func said(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
-}
-
 func prepareSetupStatus(m sh.Machine, sessionID string) (string, error) {
 	out, err := sh.Run(m, `mkdir -p "$HOME/.magi/setup" && f="$HOME/.magi/setup/$1" && : > "$f" && printf '%s' "$f"`, sessionID)
 	return string(out), err
@@ -264,26 +260,6 @@ func startProject(l sh.Tmux, tab sh.Tab, dir, status string, p *Project) error {
 			return fmt.Errorf("the project's panes didn't open: %w", err)
 		}
 		anchor, below = id, false
-	}
-	return nil
-}
-
-func recordTab(m sh.Machine, sessionID string, tab sh.Tab) error {
-	_, err := sh.Run(m, `mkdir -p "$HOME/.magi/tabs" && printf '%s\n%s\n%s\n' "$2" "$3" "$4" > "$HOME/.magi/tabs/$1"`, sessionID, tab.Session, tab.Window, tab.Tag)
-	return err
-}
-
-func closeRecordedTab(r sh.Machine, sessionID string) error {
-	out, err := sh.Run(r, `f="$HOME/.magi/tabs/$1"; if [ -f "$f" ]; then cat "$f"; rm -f "$f"; fi`, sessionID)
-	if err != nil || len(out) == 0 {
-		return err
-	}
-	lines := strings.Split(string(out), "\n")
-	if len(lines) < 3 {
-		return fmt.Errorf("unexpected tab record for session %s on %s", sessionID, r.Name())
-	}
-	if err := (sh.Tmux{Machine: r}).Discard(sh.Tab{Session: lines[0], Window: lines[1], Tag: lines[2]}); err != nil && !sh.TabGone(err) {
-		return err
 	}
 	return nil
 }

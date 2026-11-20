@@ -32,30 +32,6 @@ render() {
   fi
 }
 
-working() {
-  n=0
-  for d in "$HOME"/.magi/tasks/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]; do
-    if [ ! -d "$d" ] || [ -f "$d/exit" ]; then continue; fi
-    case $(cat "$d/kind" 2>/dev/null) in
-      delegate | session) ;;
-      *) continue ;;
-    esac
-    if [ -f "$d/pid" ]; then
-      read -r p < "$d/pid"
-      if ! kill -0 "$p" 2>/dev/null; then continue; fi
-    elif [ -z "$(find "$d" -prune -mmin -10)" ]; then
-      continue
-    fi
-    n=$((n + 1))
-  done
-  for f in "$HOME"/.claude/sessions/*.json; do
-    if [ ! -f "$f" ] || ! grep -q '"status": *"busy"' "$f" || grep -qF '/.magi/tasks/' "$f"; then continue; fi
-    p=${f##*/}
-    if kill -0 "${p%.json}" 2>/dev/null; then n=$((n + 1)); fi
-  done
-  echo "$n"
-}
-
 alive() {
   [ -f "$dir/pid" ] || return 1
   { read -r pid; read -r since; } < "$dir/pid"
@@ -173,7 +149,7 @@ case $command in
     printf '%s\n' "$result"
     ;;
   reserve | room)
-    kind=$1 max=$2 min=$3
+    kind=$1 max=$2 min=$3 claude=$4
     lock=$HOME/.magi/tasks/.lock
     mkdir -p "$HOME/.magi/tasks"
     i=0
@@ -189,7 +165,7 @@ case $command in
     echo "$$" > "$lock/pid"
     trap 'rm -rf "$lock"' EXIT
     if [ "$max" -gt 0 ] && { [ "$kind" = delegate ] || [ "$kind" = session ]; }; then
-      n=$(working)
+      n=$(working "$claude") || exit
       if [ "$n" -ge "$max" ]; then
         echo "$n agents are already running there (Claude sessions in a turn, and magi's delegates and sessions), its budget is $max" >&2
         exit 11

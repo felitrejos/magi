@@ -19,19 +19,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestMain(m *testing.M) {
-	if args := os.Getenv("MAGI_TEST_RUN"); args != "" {
-		os.Args = append([]string{"magi"}, strings.Fields(args)...)
-		if os.Args[1] == "pull" {
-			pullHere(os.Args[2], os.Args[3], os.Stdout, false)
-		} else {
-			main()
-		}
-		os.Exit(0)
-	}
-	os.Exit(m.Run())
-}
-
 func (f *fixture) armedToMove(id string) (*exec.Cmd, <-chan struct{}, string) {
 	f.t.Helper()
 	f.serverHome()

@@ -110,13 +110,18 @@ func sameRepository(c Clone, ws Workspace) bool {
 	return c.Origin == "" && ws.Git.RootCommit != "" && c.RootCommit == ws.Git.RootCommit
 }
 
-func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
-	var matches []string
+func clonesOf(clones []Clone, ws Workspace) []string {
+	var dirs []string
 	for _, c := range clones {
 		if sameRepository(c, ws) {
-			matches = append(matches, c.Dir)
+			dirs = append(dirs, c.Dir)
 		}
 	}
+	return dirs
+}
+
+func matchClone(clones []Clone, ws Workspace, host string) (string, error) {
+	matches := clonesOf(clones, ws)
 	switch len(matches) {
 	case 0:
 		return "", nil

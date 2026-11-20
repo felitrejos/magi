@@ -678,15 +678,7 @@ func TestSecretsInsideIgnoredFoldersComeAlongButNotFromExcludedOnes(t *testing.T
 	}
 }
 
-func TestAnOriginMatchesByItsRawURLEvenWhenEachMachineResolvesItDifferently(t *testing.T) {
-	ws := Workspace{Git: &GitState{Origin: "git@gitea:acme/api.git", OriginKey: "homelab.tailnet/acme/api"}}
-	clones := []Clone{{Dir: "/srv/api", Origin: "git@gitea:acme/api", OriginKey: "localhost/acme/api"}}
-	if got, err := matchClone(clones, ws, "server"); err != nil || got != "/srv/api" {
-		t.Errorf("matchClone = %q, %v", got, err)
-	}
-}
-
-func TestAnSSHAliasInTheRemoteMatchesTheSameRepositoryOverHTTPS(t *testing.T) {
+func TestAnOriginMatchesThroughAnSSHAliasOrByItsRawURL(t *testing.T) {
 	f := newFixture(t)
 	f.write(f.home, ".fake-ssh-hosts", "github-work github.com\n")
 	f.git(f.local, "remote", "set-url", "origin", "git@github-work:acme/api.git")
@@ -697,6 +689,11 @@ func TestAnSSHAliasInTheRemoteMatchesTheSameRepositoryOverHTTPS(t *testing.T) {
 	}
 	if got, err := matchClone(clones, f.workspace(f.local), r.Name()); err != nil || got != f.remote {
 		t.Errorf("matchClone = %q, %v; want %s", got, err, f.remote)
+	}
+	ws := Workspace{Git: &GitState{Origin: "git@gitea:acme/api.git", OriginKey: "homelab.tailnet/acme/api"}}
+	resolved := []Clone{{Dir: "/srv/api", Origin: "git@gitea:acme/api", OriginKey: "localhost/acme/api"}}
+	if got, err := matchClone(resolved, ws, "server"); err != nil || got != "/srv/api" {
+		t.Errorf("an origin each machine resolves differently: matchClone = %q, %v", got, err)
 	}
 }
 

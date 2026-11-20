@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"os"
 	"slices"
 	"strings"
 
@@ -26,11 +25,5 @@ func delegatorLabel(pid int, project string) (string, error) {
 	if i < 0 {
 		return "", nil
 	}
-	return machineLabel() + " ← " + cmp.Or(strings.TrimSpace(sessions[i].Name), project), nil
-}
-
-func machineLabel() string {
-	name, _ := os.Hostname()
-	short, _, _ := strings.Cut(name, ".")
-	return strings.ToLower(short)
+	return local.Name() + " ← " + cmp.Or(strings.TrimSpace(sessions[i].Name), project), nil
 }

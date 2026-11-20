@@ -166,6 +166,7 @@ func startRunner(t *testing.T, path string, record forwardRecord) <-chan error {
 	if err := store.WriteJSON(path, record); err != nil {
 		t.Fatal(err)
 	}
+	retry := forwardRetry
 	forwardRetry = 50 * time.Millisecond
 	done, finished := make(chan error, 1), make(chan struct{})
 	go func() {
@@ -179,7 +180,7 @@ func startRunner(t *testing.T, path string, record forwardRecord) <-chan error {
 		}
 		select {
 		case <-finished:
-			forwardRetry = 2 * time.Second
+			forwardRetry = retry
 		case <-time.After(5 * time.Second):
 			t.Error("the runner never stopped")
 		}
@@ -208,11 +209,14 @@ exec sleep 30
 func TestAnSSHForwardIsConnectedOnlyOnceEveryPortAccepts(t *testing.T) {
 	path := forwardHome(t)
 	fakeTunnel(t, "ssh", longTunnel)
+	poll := forwardPoll
+	forwardPoll = 20 * time.Millisecond
+	t.Cleanup(func() { forwardPoll = poll })
 	first, firstPort := listen(t)
 	defer first.Close()
 	secondPort := freePort(t)
 	startRunner(t, path, forwardRecord{Session: forwardSession, Host: "homelab", SSH: "homelab", Ports: []int{firstPort, secondPort}, State: forwardWaiting})
-	if stateFor(path, 3500*time.Millisecond, forwardConnected) {
+	if stateFor(path, 500*time.Millisecond, forwardConnected) {
 		t.Fatal("the forward was connected while ssh still hadn't opened one of its ports")
 	}
 	second, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(secondPort))
