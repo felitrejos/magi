@@ -37,7 +37,7 @@ func (f *fixture) localSession(id, status string) (*exec.Cmd, string) {
 	}
 	transcript := filepath.Join(f.home, ".claude", "projects", slug, id+".jsonl")
 	f.write(filepath.Dir(transcript), id+".jsonl", `{"cwd":"`+f.local+`"}`+"\n")
-	proc := exec.Command(f.tool("claude-session", "#!/bin/sh\nsleep 60\n"))
+	proc := exec.Command(f.tool("claude-session-"+id[:8], "#!/bin/sh\nsleep 60\n"))
 	if err := proc.Start(); err != nil {
 		f.t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestMoveSessionBringsASessionHereFromAHost(t *testing.T) {
 	f.git(f.home, "clone", "-q", f.local, f.remote)
 	f.git(f.remote, "remote", "set-url", "origin", "https://github.com/acme/api")
 	f.sessionLeftOnServer(server, id)
-	proc := exec.Command(f.tool("claude-session", "#!/bin/sh\nsleep 60\n"))
+	proc := exec.Command(f.tool("claude-session-"+id[:8], "#!/bin/sh\nsleep 60\n"))
 	if err := proc.Start(); err != nil {
 		t.Fatal(err)
 	}

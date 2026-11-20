@@ -76,6 +76,8 @@ func newFixture(t *testing.T) *fixture {
 	t.Setenv("MAGI_FAKE_CLAUDE_VERSION", builtin.Max)
 	f.write(filepath.Join(home, ".magi"), "tested.json", string(builtinTested))
 	f.tool("claude", fakeClaude)
+	f.tool("docker", "#!/bin/sh\nexit 1\n")
+	f.tool("podman", "#!/bin/sh\nexit 1\n")
 	f.tool("launchctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
 	f.tool("systemctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
