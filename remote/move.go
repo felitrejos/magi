@@ -95,11 +95,7 @@ func (m mover) now(local *sh.Local, host Host, s remoteSession, stopped bool) er
 	show := func(block string) { fmt.Fprintln(m.out, block) }
 	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Show: show, Retire: closeHere}.Run(context.Background())
 	if err != nil && stopped {
-		home, homeErr := homeDir(local)
-		if homeErr != nil {
-			return errors.Join(err, homeErr)
-		}
-		return reopen(local, "here", local.Claude(), groupOf(s.Cwd, host.LocalRoots, home), s, "Moving this session to "+m.host, err)
+		return reopen(local, "here", local.Claude(), groupOf(s.Cwd, host.LocalRoots, local.Home()), s, "Moving this session to "+m.host, err)
 	}
 	if err != nil {
 		return err

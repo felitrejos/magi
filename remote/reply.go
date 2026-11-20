@@ -15,12 +15,8 @@ const (
 	keepCollected = 7 * 24 * time.Hour
 )
 
-func (t *Task) remoteHome() string {
-	return strings.TrimSuffix(t.Dir, "/.magi/tasks/"+t.ID)
-}
-
-func (t *Task) delegateCommand(host Host, setup string, resume bool) []string {
-	claude := []string{"env", delegateVar + "=1", expandHome(host.Claude, t.remoteHome())}
+func (t *Task) delegateCommand(program, setup string, resume bool) []string {
+	claude := []string{"env", delegateVar + "=1", program}
 	if t.RunDir != t.Checkout {
 		claude = append(claude, "--add-dir", t.Checkout)
 	}
@@ -143,7 +139,7 @@ func replyTask(ctx context.Context, id, message string) (*started, error) {
 		return nil, err
 	}
 	launcher := sh.Tmux{Machine: r}
-	tab, err := launcher.Start(t.Group, t.Label, t.RunDir, t.delegateCommand(host, "", true), false)
+	tab, err := launcher.Start(t.Group, t.Label, t.RunDir, t.delegateCommand(r.Claude(), "", true), false)
 	if err != nil {
 		return nil, err
 	}

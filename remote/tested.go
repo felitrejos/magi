@@ -104,25 +104,17 @@ func (r testedRange) refuse(where, version string) error {
 	return nil
 }
 
-func toolVersion(m sh.Machine, program string) (string, error) {
-	out, err := sh.Run(m, `"$1" --version`, program)
-	return versionPattern.FindString(string(out)), err
-}
-
-func refuseUntested(local sh.Machine, remote sh.Machine, remoteProgram string) error {
+func refuseUntested(machines ...sh.Machine) error {
 	tested, err := loadTested()
 	if err != nil {
 		return fmt.Errorf("reading which versions magi was tested with failed: %w", err)
 	}
-	for _, m := range []struct {
-		machine sh.Machine
-		program string
-	}{{local, local.Claude()}, {remote, remoteProgram}} {
-		version, err := toolVersion(m.machine, m.program)
+	for _, m := range machines {
+		out, err := sh.Run(m, `"$1" --version`, m.Claude())
 		if err != nil {
-			return fmt.Errorf("reading the Claude Code version on %s failed: %w", m.machine.Name(), err)
+			return fmt.Errorf("reading the Claude Code version on %s failed: %w", m.Name(), err)
 		}
-		if err := tested.refuse(m.machine.Name(), version); err != nil {
+		if err := tested.refuse(m.Name(), versionPattern.FindString(string(out))); err != nil {
 			return err
 		}
 	}

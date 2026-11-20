@@ -1,7 +1,6 @@
 #!/bin/sh
 PATH="$PATH:$HOME/.local/bin:$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin"
 claude=$1
-case $claude in \~/*) claude=$HOME/${claude#\~/} ;; esac
 if [ "$(uname -s)" = Darwin ]; then
   echo "macOS $(sw_vers -productVersion)"
 else

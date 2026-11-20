@@ -164,18 +164,20 @@ func watch() error {
 	}()
 	go heartbeat(logger, quit)
 	var wg sync.WaitGroup
-	wg.Go(func() { watchHost(newWatcher(local.Name(), local, logger, ""), "") })
+	wg.Go(func() {
+		watchHost(newWatcher(local.Name(), nil, logger, ""), "", func() (sh.Machine, error) { return local, nil })
+	})
 	for _, name := range cfg.Order {
 		host := cfg.host(name)
-		remote, err := newRemote(context.Background(), host)
-		if err != nil {
-			return err
-		}
 		said, err := json.Marshal(copies{Secrets: host.Secrets, Exclude: host.Exclude})
 		if err != nil {
 			return err
 		}
-		wg.Go(func() { watchHost(newWatcher(name, remote, logger, string(said)), local.Name()) })
+		wg.Go(func() {
+			watchHost(newWatcher(name, nil, logger, string(said)), local.Name(), func() (sh.Machine, error) {
+				return newRemote(context.Background(), host)
+			})
+		})
 	}
 	wg.Wait()
 	return nil
@@ -223,11 +225,15 @@ func heartbeat(logger *log.Logger, restart func()) {
 	}
 }
 
-func watchHost(w *watcher, me string) {
+func watchHost(w *watcher, me string, connect func() (sh.Machine, error)) {
 	wait := time.Second
 	for {
 		started := time.Now()
-		err := w.follow(me)
+		m, err := connect()
+		if err == nil {
+			w.m = m
+			err = w.follow(me)
+		}
 		if time.Since(started) > watchBackoff {
 			wait = time.Second
 		}

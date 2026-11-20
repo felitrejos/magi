@@ -7,19 +7,12 @@ import (
 	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
-func sourceWorkspace(m sh.Machine, machine, cwd string, secrets, exclude []string) (Workspace, string, error) {
+func sourceWorkspace(m sh.Machine, machine, cwd string, secrets, exclude []string) (Workspace, error) {
 	ws, err := readWorkspace(m, cwd, secrets, exclude)
-	if err != nil {
-		return ws, "", err
+	if err == nil && ws.Git == nil && (ws.Root == m.Home() || ws.Root == "/") {
+		err = fmt.Errorf("%s on %s is a whole home folder, not a project; start Claude in the project's folder to hand it off", ws.Root, machine)
 	}
-	home, err := homeDir(m)
-	if err != nil {
-		return ws, "", err
-	}
-	if ws.Git == nil && (ws.Root == home || ws.Root == "/") {
-		return ws, "", fmt.Errorf("%s on %s is a whole home folder, not a project; start Claude in the project's folder to hand it off", ws.Root, machine)
-	}
-	return ws, home, nil
+	return ws, err
 }
 
 func syncProject(from, to sh.Machine, ws Workspace, where Placement, exclude []string, syncRepo func() error) error {
@@ -57,7 +50,7 @@ func settle(source sh.Machine, ws Workspace, exclude []string) error {
 }
 
 func moveTranscript(from sh.Machine, transcriptPath string, ws Workspace, to sh.Machine, where Placement, toDir string) (sidecar string, err error) {
-	toProject, err := claudeProject(where.Home, toDir)
+	toProject, err := claudeProject(to.Home(), toDir)
 	if err != nil {
 		return "", err
 	}
@@ -71,15 +64,11 @@ func moveTranscript(from sh.Machine, transcriptPath string, ws Workspace, to sh.
 	if err := sh.Transfer(from, set.Dir, sh.Archive{Paths: set.Files}, to, toProject); err != nil {
 		return "", err
 	}
-	fromHome, err := homeDir(from)
+	fromMemory, err := claudeProject(from.Home(), ws.MainRoot)
 	if err != nil {
 		return "", err
 	}
-	fromMemory, err := claudeProject(fromHome, ws.MainRoot)
-	if err != nil {
-		return "", err
-	}
-	toMemory, err := claudeProject(where.Home, where.Root)
+	toMemory, err := claudeProject(to.Home(), where.Root)
 	if err != nil {
 		return "", err
 	}

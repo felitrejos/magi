@@ -68,18 +68,17 @@ func (p Pull) Run() (res Pulled, err error) {
 	var session remoteSession
 	var ws Workspace
 	var where Placement
-	var remoteHome string
 	if err := st.run("find", func() (err error) {
 		if session, err = findSession(remote, p.SessionID); err != nil {
 			return err
 		}
-		if ws, remoteHome, err = sourceWorkspace(remote, p.HostName, session.Cwd, p.Host.Secrets, p.Host.Exclude); err != nil {
+		if ws, err = sourceWorkspace(remote, p.HostName, session.Cwd, p.Host.Secrets, p.Host.Exclude); err != nil {
 			return err
 		}
-		if err := refuseUntested(local, remote, expandHome(p.Host.Claude, remoteHome)); err != nil {
+		if err := refuseUntested(local, remote); err != nil {
 			return err
 		}
-		if where, err = place(local, ws, p.Host.LocalRoots, groupOf(ws.MainRoot, p.Host.Roots, remoteHome), p.Host.Exclude); err != nil {
+		if where, err = place(local, ws, p.Host.LocalRoots, groupOf(ws.MainRoot, p.Host.Roots, remote.Home()), p.Host.Exclude); err != nil {
 			return err
 		}
 		if where.NewFolder != "" || ws.Git == nil {
@@ -92,7 +91,7 @@ func (p Pull) Run() (res Pulled, err error) {
 	res.Session, res.Name = session.ID, baseName(where.Root)
 	localDir := filepath.Join(where.Root, ws.Subdir)
 	j := &moveJournal{Session: session.ID, Kind: "pull", Host: p.HostName, Started: time.Now(), RemoteTranscript: session.Transcript, Workspace: ws, Where: where}
-	if j.LocalTranscript, err = claudeTranscript(where.Home, localDir, session.ID); err != nil {
+	if j.LocalTranscript, err = claudeTranscript(local.Home(), localDir, session.ID); err != nil {
 		return res, err
 	}
 	if err := j.at("stop"); err != nil {
@@ -116,7 +115,7 @@ func (p Pull) Run() (res Pulled, err error) {
 		if session.Live == nil {
 			return err
 		}
-		return reopen(remote, "on "+p.HostName, expandHome(p.Host.Claude, remoteHome), groupOf(ws.MainRoot, p.Host.Roots, remoteHome), session, "Bringing this session to "+local.Name(), err)
+		return reopen(remote, "on "+p.HostName, remote.Claude(), groupOf(ws.MainRoot, p.Host.Roots, remote.Home()), session, "Bringing this session to "+local.Name(), err)
 	}
 	var note string
 	if err := st.run("inspect", func() (err error) {

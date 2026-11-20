@@ -228,25 +228,21 @@ func recoverMove(id string) recovered {
 	host, reach := loadHost(j.Host)
 	var remote *sh.Remote
 	if reach == nil {
-		if remote, err = newRemote(ctx, host); err != nil {
-			return failed(err)
-		}
+		remote, reach = newRemote(ctx, host)
 	}
 	r := j.recovery(local, remote, host)
 	if err := r.here.look(j); err != nil {
 		return failed(err)
 	}
+	if reach == nil {
+		reach = r.there.look(j)
+	}
 	switch {
 	case errors.Is(reach, errNoHost):
-	case reach != nil:
+	case reach != nil && sh.ExitCode(reach) != sh.ExitUnreachable && ctx.Err() == nil:
 		return failed(reach)
-	default:
-		if reach = r.there.look(j); reach != nil && sh.ExitCode(reach) != sh.ExitUnreachable && ctx.Err() == nil {
-			return failed(reach)
-		}
-		if reach != nil {
-			r.there.procs = nil
-		}
+	case reach != nil:
+		r.there.procs = nil
 	}
 	live := r.live(reach == nil)
 	switch {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func TestHostRejectsRelativeRoots(t *testing.T) {
@@ -41,8 +43,8 @@ func TestExpandHomeOnlyExpandsALeadingTilde(t *testing.T) {
 		"/opt/claude~1/bin":   "/opt/claude~1/bin",
 		"~other/bin":          "~other/bin",
 	} {
-		if got := expandHome(in, "/h"); got != want {
-			t.Errorf("expandHome(%q) = %q, want %q", in, got, want)
+		if got := sh.ExpandHome(in, "/h"); got != want {
+			t.Errorf("ExpandHome(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

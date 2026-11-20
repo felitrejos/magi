@@ -11,19 +11,9 @@ import (
 	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
-func expandHome(path, home string) string {
-	if path == "~" {
-		return home
-	}
-	if rest, ok := strings.CutPrefix(path, "~/"); ok {
-		return home + "/" + rest
-	}
-	return path
-}
-
 func groupOf(dir string, roots []string, home string) string {
 	for _, root := range roots {
-		rel, err := filepath.Rel(expandHome(root, home), dir)
+		rel, err := filepath.Rel(sh.ExpandHome(root, home), dir)
 		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") {
 			return strings.Split(rel, string(filepath.Separator))[0]
 		}
@@ -32,18 +22,13 @@ func groupOf(dir string, roots []string, home string) string {
 }
 
 type Placement struct {
-	Home      string
 	Root      string
 	Group     string
 	NewFolder string
 }
 
 func place(target sh.Machine, ws Workspace, roots []string, groupIfNew string, exclude []string) (Placement, error) {
-	home, err := homeDir(target)
-	if err != nil {
-		return Placement{}, err
-	}
-	p := Placement{Home: home}
+	var p Placement
 	if ws.Git != nil {
 		clones, err := listClones(target, roots)
 		if err != nil {
@@ -53,12 +38,12 @@ func place(target sh.Machine, ws Workspace, roots []string, groupIfNew string, e
 			return p, err
 		}
 		if p.Root != "" {
-			p.Group = groupOf(p.Root, roots, home)
+			p.Group = groupOf(p.Root, roots, target.Home())
 			return p, nil
 		}
 	}
 	p.Group = groupIfNew
-	p.Root = expandHome(roots[0], home) + "/" + groupIfNew + "/" + ws.Name
+	p.Root = sh.ExpandHome(roots[0], target.Home()) + "/" + groupIfNew + "/" + ws.Name
 	f, err := folderState(target, p.Root)
 	if err != nil {
 		return p, err
@@ -83,11 +68,6 @@ type Clone struct {
 	Origin     string
 	OriginKey  string
 	RootCommit string
-}
-
-func homeDir(m sh.Machine) (string, error) {
-	out, err := sh.Run(m, `printf '%s' "$HOME"`)
-	return string(out), err
 }
 
 func listClones(m sh.Machine, roots []string) ([]Clone, error) {

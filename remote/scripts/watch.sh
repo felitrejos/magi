@@ -1,6 +1,5 @@
 #!/bin/sh
 name=$1 cli=$2 copies=$3
-case $cli in \~/*) cli=$HOME/${cli#\~/} ;; esac
 wanted=$HOME/.magi/wanted
 if [ -n "$name" ]; then
   mkdir -p "$HOME/.magi/watchers" "$wanted"

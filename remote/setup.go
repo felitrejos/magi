@@ -55,9 +55,6 @@ func setupMachine(in setupInput) (string, error) {
 	}
 	remote, err := newRemote(ctx, h)
 	if err != nil {
-		return "", err
-	}
-	if _, err := sh.Run(remote, "true"); err != nil {
 		return sshFailed(h.SSH, err), nil
 	}
 	for _, m := range []struct {
@@ -111,11 +108,7 @@ func setupMachine(in setupInput) (string, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Saved %s to %s.\n", in.Host, path)
-	home, err := homeDir(remote)
-	if err != nil {
-		return "", err
-	}
-	plugin, note, pluginErr := installPlugin(remote, expandHome(h.Claude, home))
+	plugin, note, pluginErr := installPlugin(remote, sh.ExpandHome(h.Claude, remote.Home()))
 	fmt.Fprint(&b, note)
 	if err := installWatch(&b); err != nil {
 		(&checks{out: &b}).fail("magi watch couldn't start here", err.Error())
@@ -319,7 +312,7 @@ func doctor(cfg Config, name string, h Host, plugin magiPlugin, pluginErr error,
 	}
 	_, err = exec.LookPath("ssh")
 	c.check(err, "ssh is installed", "install ssh")
-	doctorMachine(c, versions, local, "this machine", local.Claude(), cfg.LocalRoots)
+	doctorMachine(c, versions, local, "this machine", cfg.LocalRoots)
 	running := watchRunning()
 	_, tmuxErr := exec.LookPath("tmux")
 	switch {
@@ -336,12 +329,8 @@ func doctor(cfg Config, name string, h Host, plugin magiPlugin, pluginErr error,
 	if reason := b.noRoom(time.Now(), nil, true); reason != "" {
 		fmt.Fprintf(out, "  · no new tasks now: %s\n", reason)
 	}
-	remote, err := newRemote(context.Background(), h)
-	if err != nil {
-		return err
-	}
-	if _, err := c.run(remote, "true"); c.check(err, "ssh "+h.SSH+" works without a password prompt", "only the user can do this: set up key-based SSH to "+h.SSH) {
-		doctorMachine(c, versions, remote, name, h.Claude, h.Roots)
+	if remote, err := newRemote(context.Background(), h); c.check(err, "ssh "+h.SSH+" works without a password prompt", "only the user can do this: set up key-based SSH to "+h.SSH) {
+		doctorMachine(c, versions, remote, name, h.Roots)
 		c.plugin(remote, name, plugin, pluginErr)
 		_, err = c.run(remote, "command -v tmux >/dev/null")
 		c.check(err, "tmux on "+name, "install tmux there; when that needs sudo, only the user can do it")
@@ -352,25 +341,18 @@ func doctor(cfg Config, name string, h Host, plugin magiPlugin, pluginErr error,
 	return nil
 }
 
-func doctorMachine(c *checks, versions testedRange, m sh.Machine, name, claudePath string, roots []string) {
+func doctorMachine(c *checks, versions testedRange, m sh.Machine, name string, roots []string) {
 	gitOut, gitErr := c.run(m, "git --version")
 	c.gitVersion(name, string(gitOut), gitErr)
 	_, err := c.run(m, "command -v tar >/dev/null")
 	c.check(err, "tar on "+name, "install tar there")
-	out, err := c.run(m, `printf '%s' "$HOME"`)
-	if err != nil {
-		c.fail("read $HOME on "+name, err.Error())
-		return
-	}
-	home := string(out)
-	claude := expandHome(claudePath, home)
-	if v, err := c.run(m, `"$1" --version`, claude); c.check(err, "claude at "+claudePath+" on "+name, "call setup_machine again so it finds claude there") {
+	if v, err := c.run(m, `"$1" --version`, m.Claude()); c.check(err, "claude at "+m.Claude()+" on "+name, "call setup_machine again so it finds claude there") {
 		c.tested(versions, name, string(v))
-		status, _ := c.run(m, `"$1" auth status`, claude)
+		status, _ := c.run(m, `"$1" auth status`, m.Claude())
 		c.login(name, string(status))
 	}
 	for _, root := range roots {
-		_, err := c.run(m, `[ -d "$1" ]`, expandHome(root, home))
+		_, err := c.run(m, `[ -d "$1" ]`, sh.ExpandHome(root, m.Home()))
 		c.check(err, "folder "+root+" exists on "+name, "create it there, or call setup_machine with folders that exist")
 	}
 }
@@ -401,12 +383,8 @@ func tryRoundTrip(cfg Config, name string, host Host, out io.Writer) (err error)
 	if err != nil {
 		return err
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
 	project := "magi-try-" + store.NewTaskID()
-	dir := filepath.Join(expandHome(cfg.LocalRoots[0], home), project)
+	dir := filepath.Join(sh.ExpandHome(cfg.LocalRoots[0], local.Home()), project)
 	word := tryWords[rand.IntN(len(tryWords))]
 	fmt.Fprintf(out, "\nTrying a round trip to %s with a throwaway session in %s. It takes three short Claude turns on the user's account.\n", name, dir)
 	var id string

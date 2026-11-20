@@ -405,11 +405,7 @@ func openPulledTab(res *Pulled, prompt string) (string, error) {
 	}
 	command[0] = program
 	launcher := sh.Tmux{Machine: local}
-	home, err := homeDir(local)
-	if err != nil {
-		return "", err
-	}
-	group := groupOf(res.ProjectRoot, cfg.LocalRoots, home)
+	group := groupOf(res.ProjectRoot, cfg.LocalRoots, local.Home())
 	launched := time.Now()
 	tab, err := launcher.Start(group, tabLabel(res.Name), res.ToDir, command, true)
 	if err != nil {

@@ -83,10 +83,21 @@ func ExitCode(err error) int {
 
 type Machine interface {
 	Name() string
+	Home() string
+	Claude() string
 	Context() context.Context
 	With(context.Context) Machine
 	Command(script string, args ...string) *exec.Cmd
-	Claude() string
+}
+
+func ExpandHome(path, home string) string {
+	if path == "~" {
+		return home
+	}
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		return home + "/" + rest
+	}
+	return path
 }
 
 func Run(m Machine, script string, args ...string) ([]byte, error) {
@@ -125,6 +136,7 @@ func stopped(m Machine, err error) bool {
 type Local struct {
 	ctx  context.Context
 	name string
+	home string
 }
 
 func NewLocal(ctx context.Context) (*Local, error) {
@@ -132,12 +144,17 @@ func NewLocal(ctx context.Context) (*Local, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Local{ctx: ctx, name: strings.TrimSuffix(name, ".local")}, nil
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	return &Local{ctx: ctx, name: strings.TrimSuffix(name, ".local"), home: home}, nil
 }
 
 func (l *Local) Name() string             { return l.name }
-func (l *Local) Context() context.Context { return l.ctx }
+func (l *Local) Home() string             { return l.home }
 func (l *Local) Claude() string           { return "claude" }
+func (l *Local) Context() context.Context { return l.ctx }
 func (l *Local) With(ctx context.Context) Machine {
 	c := *l
 	c.ctx = ctx
@@ -151,6 +168,7 @@ type Remote struct {
 	ctx    context.Context
 	host   string
 	opts   []string
+	home   string
 	claude string
 }
 
@@ -162,10 +180,9 @@ func NewRemote(ctx context.Context, ssh, claude string) (*Remote, error) {
 	if err := os.MkdirAll(sockets, 0o700); err != nil {
 		return nil, err
 	}
-	return &Remote{
-		ctx:    ctx,
-		host:   ssh,
-		claude: claude,
+	r := &Remote{
+		ctx:  ctx,
+		host: ssh,
 		opts: []string{
 			"-o", "BatchMode=yes",
 			"-o", "ConnectTimeout=10",
@@ -175,12 +192,19 @@ func NewRemote(ctx context.Context, ssh, claude string) (*Remote, error) {
 			"-o", "ServerAliveInterval=15",
 			"-o", "ServerAliveCountMax=3",
 		},
-	}, nil
+	}
+	home, err := Run(r, `printf '%s' "$HOME"`)
+	if err != nil {
+		return nil, err
+	}
+	r.home, r.claude = string(home), ExpandHome(claude, string(home))
+	return r, nil
 }
 
 func (r *Remote) Name() string             { return r.host }
-func (r *Remote) Context() context.Context { return r.ctx }
+func (r *Remote) Home() string             { return r.home }
 func (r *Remote) Claude() string           { return r.claude }
+func (r *Remote) Context() context.Context { return r.ctx }
 func (r *Remote) With(ctx context.Context) Machine {
 	c := *r
 	c.ctx = ctx

@@ -159,7 +159,7 @@ func (r *handoffRun) run(ctx context.Context) error {
 	if r.j.Turns, err = turnsIn(r.local, r.TranscriptPath); err != nil {
 		return err
 	}
-	if r.j.RemoteTranscript, err = claudeTranscript(r.where.Home, r.remoteDir, r.SessionID); err != nil {
+	if r.j.RemoteTranscript, err = claudeTranscript(r.remote.Home(), r.remoteDir, r.SessionID); err != nil {
 		return err
 	}
 	if err := r.j.at("sync"); err != nil {
@@ -218,20 +218,16 @@ func (r *handoffRun) run(ctx context.Context) error {
 
 func (r *handoffRun) inspect(ctx context.Context) error {
 	var err error
-	if r.ws, _, err = sourceWorkspace(r.local, r.local.Name(), r.Cwd, r.Host.Secrets, r.Host.Exclude); err != nil {
+	if r.ws, err = sourceWorkspace(r.local, r.local.Name(), r.Cwd, r.Host.Secrets, r.Host.Exclude); err != nil {
 		return err
 	}
 	if r.remote, err = newRemote(ctx, r.Host); err != nil {
 		return err
 	}
-	home, err := homeDir(r.local)
-	if err != nil {
+	if r.where, err = place(r.remote, r.ws, r.Host.Roots, groupOf(r.ws.MainRoot, r.Host.LocalRoots, r.local.Home()), r.Host.Exclude); err != nil {
 		return err
 	}
-	if r.where, err = place(r.remote, r.ws, r.Host.Roots, groupOf(r.ws.MainRoot, r.Host.LocalRoots, home), r.Host.Exclude); err != nil {
-		return err
-	}
-	if err := refuseUntested(r.local, r.remote, expandHome(r.Host.Claude, r.where.Home)); err != nil {
+	if err := refuseUntested(r.local, r.remote); err != nil {
 		return err
 	}
 	running, err := runningThere(r.remote, r.SessionID)
@@ -259,7 +255,7 @@ func (r *handoffRun) launch(sidecar string) error {
 	name := baseName(r.where.Root)
 	prompt := handoffPrompt(Prompt{From: r.local.Name(), To: r.HostName, OldDir: r.Cwd, NewDir: r.remoteDir, Git: r.ws.Git != nil, Note: r.Note, Sidecar: sidecar, Project: projectNote})
 	command := resumeCommand(r.SessionID, name, prompt)
-	command[0] = expandHome(r.Host.Claude, r.where.Home)
+	command[0] = r.remote.Claude()
 	r.res.note(carryTrust(r.local, r.remote, r.Cwd, r.remoteDir))
 	r.res.note(clearMoved(r.remote, r.SessionID))
 	if r.tab, err = r.launcher.Start(r.where.Group, tabLabel(name), r.remoteDir, command, true); err != nil {

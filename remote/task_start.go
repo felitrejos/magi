@@ -31,7 +31,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err != nil {
 		return nil, err
 	}
-	ws, _, err := sourceWorkspace(local, local.Name(), spec.Dir, host.Secrets, host.Exclude)
+	ws, err := sourceWorkspace(local, local.Name(), spec.Dir, host.Secrets, host.Exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -39,15 +39,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err != nil {
 		return nil, err
 	}
-	remoteHome, err := homeDir(remote)
-	if err != nil {
-		return nil, err
-	}
-	localHome, err := homeDir(local)
-	if err != nil {
-		return nil, err
-	}
-	group := groupOf(ws.MainRoot, host.LocalRoots, localHome)
+	group := groupOf(ws.MainRoot, host.LocalRoots, local.Home())
 	id := store.NewTaskID()
 	label, err := delegatorLabel(spec.Caller, ws.Name)
 	if err != nil {
@@ -65,7 +57,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		Command:  spec.Command,
 		Starting: true,
 		Prompt:   spec.Prompt,
-		Dir:      remoteHome + "/.magi/tasks/" + id,
+		Dir:      remote.Home() + "/.magi/tasks/" + id,
 		Label:    cmp.Or(label, fmt.Sprintf("%s · %s %s", ws.Name, spec.Kind, id)),
 		Turn:     1,
 		Keep:     spec.Keep,
@@ -86,7 +78,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		for _, c := range clones {
 			if sameRepository(c, ws) {
 				clone = c.Dir
-				group = groupOf(clone, host.Roots, remoteHome)
+				group = groupOf(clone, host.Roots, remote.Home())
 				break
 			}
 		}
@@ -131,9 +123,9 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 			return nil, removeCopy(err)
 		}
 		t.Session, t.Claude = store.NewSessionID(), spec.Claude
-		command = t.delegateCommand(host, setup, false)
+		command = t.delegateCommand(remote.Claude(), setup, false)
 	case kindSession:
-		claude := []string{expandHome(host.Claude, remoteHome), "--remote-control", ws.Name + " task " + id}
+		claude := []string{remote.Claude(), "--remote-control", ws.Name + " task " + id}
 		if spec.Prompt != "" {
 			claude = append(claude, "--", spec.Prompt)
 		}
@@ -152,7 +144,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	t.Tab, t.Where, t.Starting = tab, launcher.Where(group), false
 	if spec.Kind == kindSession {
 		if trusted, err := isTrusted(remote, t.RunDir); err == nil && !trusted {
-			res.Notes = append(res.Notes, fmt.Sprintf("Claude there first asks whether to trust the copy's folder; the user answers Yes in that tab. To skip that for later sessions, the user can run claude once in %s/.magi/tasks on %s and trust it", remoteHome, spec.Host))
+			res.Notes = append(res.Notes, fmt.Sprintf("Claude there first asks whether to trust the copy's folder; the user answers Yes in that tab. To skip that for later sessions, the user can run claude once in %s/.magi/tasks on %s and trust it", remote.Home(), spec.Host))
 		}
 		var showErr error
 		if res.ShownOn, showErr = launcher.Show(tab); showErr != nil {

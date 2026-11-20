@@ -2,11 +2,6 @@
 command=$1
 shift
 
-agents() {
-  case $1 in \~/*) set -- "$HOME/${1#\~/}" ;; esac
-  "$1" agents --json
-}
-
 same() {
   [ -z "$2" ] || [ "$(started "$1")" = "$(printf '%s' "$2" | tr -s ' ')" ]
 }
@@ -58,7 +53,7 @@ case $command in
   running)
     id=$1
     if [ -n "$(resuming "$id")" ]; then exit 10; fi
-    listed=$(agents "$2") || exit
+    listed=$("$2" agents --json) || exit
     case $listed in *"\"sessionId\": \"$id\""*) exit 10 ;; esac
     ;;
   moved)
@@ -69,7 +64,7 @@ case $command in
     esac
     ;;
   live)
-    agents "$1" || exit
+    "$1" agents --json || exit
     for f in "$HOME"/.claude/sessions/*.json; do
       if [ -f "$f" ]; then printf '\0'; cat "$f"; fi
     done
@@ -101,7 +96,7 @@ case $command in
   stop)
     pid=$1 id=$2 since=$3
     ours "$pid" "$since" || exit 0
-    listed=$(agents "$4") || exit
+    listed=$("$4" agents --json) || exit
     status=$(printf '%s\n' "$listed" | awk -v pid="$pid," '$1 == "\"pid\":" { mine = $2 == pid } mine && $1 == "\"status\":" { print $2; exit }')
     case $status in '"busy"'* | '"waiting"'*) exit 10 ;; esac
     end "$pid" || exit

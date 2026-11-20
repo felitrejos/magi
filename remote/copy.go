@@ -83,7 +83,7 @@ func describeSession(m sh.Machine, hostName string, host Host, sessionID string,
 	if err != nil {
 		return "", false, err
 	}
-	ws, _, err := sourceWorkspace(m, m.Name(), s.Cwd, host.Secrets, host.Exclude)
+	ws, err := sourceWorkspace(m, m.Name(), s.Cwd, host.Secrets, host.Exclude)
 	if err != nil {
 		return "", false, err
 	}
