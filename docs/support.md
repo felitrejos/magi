@@ -93,10 +93,22 @@ earlier run than the Linux one.
 
 ## Known limits
 
-- Per-session CPU in `~/.magi/live` includes child processes that already
-  exited on Linux. macOS doesn't expose that to other processes, so on a
-  Mac a child that started and exited between two samples isn't counted.
-- A Mac to Mac or Linux to Linux move has never run between two real
-  machines in a recorded test.
-- Releases aren't signed. The launcher checks the download against the
-  release's own `checksums.txt`.
+- **No CI job moves a session between two real machines.** The real round
+  trip is the manual check from a Mac to a Linux server.
+- **Linux to Linux and Mac to Mac have never run between two real
+  machines.** The CI suite and the nightly cover them on one machine.
+- **Releases aren't signed.** The launcher checks the download against
+  the release's own `checksums.txt`, so the checksum comes from the same
+  release as the binary.
+- **The nightly depends on one Claude account**, through the repository
+  secret `CLAUDE_CODE_OAUTH_TOKEN`.
+- **The list of failing versions in `remote/tested.json` is edited by
+  hand.** The nightly only raises the newest tested version.
+- **On macOS, per-session CPU misses short-lived children.** Per-session
+  CPU in `~/.magi/live` includes child processes that already exited on
+  Linux. macOS doesn't expose that to other processes, so on a Mac a
+  child that started and exited between two samples isn't counted.
+- **Live files keep their last content if the watcher is killed
+  outright.** Stopping the watcher marks every machine as not answering,
+  but a kill leaves the files as they were. A reader checks `heard` and
+  treats a time older than about 40 seconds as the machine not answering.
