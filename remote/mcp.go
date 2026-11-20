@@ -10,14 +10,15 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/felitrejos/magi/remote/internal/sh"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const serverInstructions = `magi sends work from this session to the user's other machines over SSH: a shell command (run_elsewhere), a self-contained task for a background Claude (delegate), or a new interactive session (session_elsewhere). Each runs in its own copy of this project's working tree, in a tmux window the user can watch, and never touches the user's checkouts there. When you collect a delegate with task_result, its changes are applied to this working tree, unless you passed keep_branch.
 
-Starting work on another machine is the user's call. Before run_elsewhere, delegate or session_elsewhere: call machines, propose one machine (the one machines suggests, the first in the user's list with room, unless the user named one), say exactly what will run there, and let the user choose: run it there, run it here instead, or don't run it. Wait for the user's clear answer. Ask even when the user tells you to pick the machine or to run it wherever fits best: choosing the machine is your part, agreeing to it is theirs. Then start it and carry on with other work.
+Starting work on another machine is the user's call. Before run_elsewhere, delegate or session_elsewhere: call machines, propose one machine (the one machines suggests, the first in the user's list with room, unless the user named one), say exactly what will run there, and let the user choose: run it there, run it here instead, or don't run it. Wait for the user's clear answer. Ask even when the user tells you to pick the machine or to run it wherever fits best: choosing the machine is your part, agreeing to it is theirs. Then start it and carry on with other work. Moving a session with move_session is the user's call too: propose it, naming the session and the machine, and wait for the user's clear yes.
 
-To be told when a run_elsewhere or delegate task is done, run magi tasks wait <task id> as a background shell command: it exits when the task finishes, and then you collect it with task_result. When a delegated Claude should keep going until something passes, such as running CI and fixing what fails, say so in its task. If task_result shows it isn't fully done, send what's left with task_reply and wait again. If it says the changes couldn't be applied, merge them in yourself from its branch, then tell the user what changed. Don't poll in a loop.`
+To be told when a run_elsewhere or delegate task is done, run magi tasks wait <task id> as a background shell command: it exits when the task finishes, and then you collect it with task_result. When a delegated Claude should keep going until something passes, such as running CI and fixing what fails, say so in its task. If task_result shows it isn't fully done, send what's left with task_reply and wait again. If it says the changes couldn't be applied, merge them in yourself from its branch, then tell the user what changed. To be told when a session isn't busy any more, such as one you'd move, run magi wait <session id> as a background shell command. Don't poll in a loop.`
 
 const delegateSystemPrompt = `You are a delegated task started by magi from another machine. You work in a throwaway copy of the project on this machine; nobody is watching to answer questions or approve permission prompts. Tools that would need approval are denied: work around them, and say what you couldn't do. Work only inside this folder. Don't commit, push, open pull requests or change git configuration: leave your changes in the working tree, and magi brings them back to the caller. Finish with a short report: what you did, which files you changed, how you checked it, and anything left undone.`
 
@@ -64,6 +65,11 @@ type replyInput struct {
 
 type sessionQuery struct {
 	Session string `json:"session" jsonschema:"the session: the start of its id, or at least four letters of its title or folder"`
+}
+
+type moveInput struct {
+	Session string `json:"session" jsonschema:"the session to move: the start of its id, or at least four letters of its title or folder"`
+	Host    string `json:"host" jsonschema:"the magi host the user agreed to move it to, as listed by machines"`
 }
 
 type optionalTaskInput struct {
@@ -186,7 +192,7 @@ func newMCPServer() *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "diff",
 		Annotations: readOnly,
-		Description: "Show a running Claude Code session's uncommitted changes (git diff against HEAD, plus new untracked files), on whichever machine it runs, read over SSH. Long diffs keep their end. Read-only.",
+		Description: "Show a running Claude Code or Codex session's uncommitted changes (git diff against HEAD, plus new untracked files), on whichever machine it runs, read over SSH. Long diffs keep their end. Read-only.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in sessionQuery) (*mcp.CallToolResult, any, error) {
 		all, err := everySession(ctx)
 		if err != nil {
@@ -201,6 +207,35 @@ func newMCPServer() *mcp.Server {
 			return nil, nil, err
 		}
 		return textResult(text), nil, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "move_session",
+		Description: "Move a Claude Code or Codex session that runs on this machine, other than this one, to another machine, as magi move does: it stops the session here and continues it there with its conversation and its working tree. Returns what went across and where it now runs. A session that's in the middle of a turn or waiting on the user isn't moved: run magi wait <session id> as a background shell command, then move it if that says it's idle, or ask the user to answer it first if that says it's waiting on them. To move this session itself, use the handoff skill. Moving a session is the user's call: before calling, say which session goes to which machine, and wait for the user's clear yes.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in moveInput) (*mcp.CallToolResult, any, error) {
+		local, err := sh.NewLocal(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		here := machineSessions{Name: local.Name(), Machine: local}
+		if here.read(); here.Err != nil {
+			return nil, nil, here.Err
+		}
+		_, s, err := findAnySession([]machineSessions{here}, in.Session)
+		if err != nil && here.CodexErr != nil {
+			err = fmt.Errorf("%w; this machine's Codex sessions couldn't be read: %w", err, here.CodexErr)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		if s.PID == callerPID {
+			return nil, nil, fmt.Errorf("%s is this session; to move it, use the handoff skill", sessionLabel(here.Name, s))
+		}
+		var out strings.Builder
+		if err := (mover{session: s.SessionID, host: in.Host, refuseBusy: true, out: &out}).run(); err != nil {
+			return nil, nil, errors.New(strings.TrimSpace(out.String()))
+		}
+		return textResult(out.String()), nil, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{

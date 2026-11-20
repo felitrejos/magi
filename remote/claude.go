@@ -62,6 +62,7 @@ type liveSession struct {
 	Status     string `json:"status"`
 	WaitingFor string `json:"waitingFor"`
 	Name       string `json:"name"`
+	Codex      bool   `json:"-"`
 	fromRegistry
 }
 

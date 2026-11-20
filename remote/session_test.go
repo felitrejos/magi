@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -417,5 +418,31 @@ func TestNothingWaitingSaysWhichMachinesWentUnchecked(t *testing.T) {
 	text := describeSessions([]machineSessions{{Name: "laptop"}, {Name: "nas", Err: errors.New("timed out")}})
 	if want := "Nothing that magi could check is waiting on you. Not checked: nas.\n"; !strings.HasPrefix(text, want) {
 		t.Fatalf("sessions start %q, want %q", text, want)
+	}
+}
+
+func TestWaitingOnASessionReturnsOnceItIsntBusy(t *testing.T) {
+	f := newFixture(t)
+	id := "0f0f0f0f-1111-2222-3333-dddddddddddd"
+	proc, _ := f.localSession(id, "busy")
+	done := make(chan string, 1)
+	go func() {
+		text, err := waitSession("0f0f0f0f", 50*time.Millisecond)
+		done <- text + fmt.Sprint(err)
+	}()
+	select {
+	case got := <-done:
+		t.Fatalf("the wait returned while the session was busy: %s", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+	pid := strconv.Itoa(proc.Process.Pid)
+	f.write(filepath.Join(f.home, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"`+id+`","cwd":"`+f.local+`","startedAt":1,"status":"idle"}`)
+	select {
+	case got := <-done:
+		if want := "api (0f0f0f0f) on " + f.machine().Name() + " is idle.<nil>"; got != want {
+			t.Errorf("wait = %q, want %q", got, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wait didn't return once the session was idle")
 	}
 }

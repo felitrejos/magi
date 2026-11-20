@@ -39,10 +39,11 @@ type moveReport struct {
 }
 
 type mover struct {
-	session string
-	host    string
-	json    bool
-	out     io.Writer
+	session    string
+	host       string
+	json       bool
+	refuseBusy bool
+	out        io.Writer
 }
 
 func (m mover) report(r moveReport) {
@@ -60,6 +61,11 @@ func (m mover) fail(err error) error {
 }
 
 var errReported = errors.New("reported")
+
+func busyError(s remoteSession) error {
+	id := store.ShortID(s.ID)
+	return fmt.Errorf("session %s is in the middle of a turn or waiting on the user, so it wasn't moved; run magi wait %s as a background shell command, then move it if that says it's idle, or ask the user to answer it first if that says it's waiting on them", id, id)
+}
 
 func moveCommand(args []string, out io.Writer) error {
 	m := mover{out: out}
@@ -111,6 +117,9 @@ func (m mover) run() error {
 	if s.Live != nil {
 		_, err := sh.Run(local, sessionScript, "stop", strconv.Itoa(s.Live.PID), s.ID, s.Live.since(), local.Claude())
 		if sh.ExitCode(err) == sh.ExitBusy {
+			if m.refuseBusy {
+				return m.fail(busyError(s))
+			}
 			unlock()
 			return m.whenTurnEnds(s)
 		}
@@ -153,6 +162,9 @@ func (m mover) codex(local *sh.Local, host Host, s remoteSession) error {
 				return m.fail(err)
 			}
 			return m.now(local, host, s, true)
+		}
+		if m.refuseBusy {
+			return m.fail(busyError(s))
 		}
 		if !told {
 			m.report(moveReport{Event: "waiting", OK: true, Message: fmt.Sprintf("Session %s is in the middle of a turn; it moves to %s as soon as the turn ends.", store.ShortID(s.ID), m.host)})

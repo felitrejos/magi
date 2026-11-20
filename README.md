@@ -79,10 +79,11 @@ your working tree and kept on the branch `magi/task-<id>`. If they clash
 with your edits, they stay on the branch.
 
 The tools are `machines`, `sessions`, `diff`, `run_elsewhere`, `delegate`,
-`session_elsewhere`, `task_status`, `task_result`, `task_reply` and
-`cancel_task`. `magi mcp` serves them to any MCP client. Under a host in
-`~/.config/magi/config.toml` you can set `max_agents`, `min_free_memory`
-and `quiet_hours`, and magi starts nothing new on a machine past them.
+`session_elsewhere`, `move_session`, `task_status`, `task_result`,
+`task_reply` and `cancel_task`. `magi mcp` serves them to any MCP client.
+Under a host in `~/.config/magi/config.toml` you can set `max_agents`,
+`min_free_memory` and `quiet_hours`, and magi starts nothing new on a
+machine past them.
 
 ## Commands
 
@@ -94,6 +95,9 @@ magi doctor [host...]              check that everything a handoff needs is in p
 magi pull <host> [session-id]      bring a session back from <host> and continue it here
 magi move <session-id> <host> [--json]
                                    move a session on this machine to <host>
+magi wait <session>                wait until a Claude Code or Codex session on
+                                   any machine isn't busy, then print whether
+                                   it's idle, waiting on you or ended
 magi status                        recent handoffs, parked checkouts, and moves that
                                    were cut off, which it settles
 magi watch                         take back sessions other machines hand back here

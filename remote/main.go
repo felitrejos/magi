@@ -35,6 +35,9 @@ Usage:
                                         move a Claude Code or Codex session on this machine to
                                         <host>, from outside it: now if it's idle, or when its
                                         turn ends; Codex needs codex = "<path>" for <host>
+  magi wait <session>                wait until a Claude Code or Codex session on any machine
+                                        isn't busy, then print whether it's idle, waiting on
+                                        you or ended
   magi status                        moves that were cut off, which it settles, then recent
                                         handoffs and parked checkouts
   magi watch                         take back sessions other machines hand back here, over SSH
@@ -118,6 +121,11 @@ func main() {
 		err = moveCommand(args[1:], os.Stdout)
 	case len(args) == 1 && args[0] == "mcp":
 		err = serveMCP(context.Background())
+	case len(args) == 2 && args[0] == "wait":
+		var text string
+		if text, err = waitSession(args[1], waitEvery); err == nil {
+			fmt.Println(text)
+		}
 	case len(args) == 1 && args[0] == "tasks":
 		err = printTasks(os.Stdout)
 	case len(args) == 2 && args[0] == "tasks" && args[1] == "clean":

@@ -93,9 +93,15 @@ workspace.
     Codex window keeps its sessions in its own background server, and the
     `codex app-server` magi starts to ask can't see into it.
   - A Codex turn that was killed midway can still read as busy.
-- **Two more MCP tools.** `wait` waits until another session finishes,
-  such as one handed off to another machine. `move_session` moves a session
-  other than the one you're in, using `magi move`.
+- **Wait for a session, move another one.** What exists now is
+  `magi wait`, which returns once a session on any machine isn't busy and
+  says whether it's idle, waiting on you or ended. It follows a session
+  that is being handed off to another machine. The `move_session` MCP tool
+  moves a session on this machine, other than the one you're in, as
+  `magi move` does. Claude proposes the move and waits for your yes. It
+  doesn't move a session that is busy or waiting on you. `wait` is a
+  command and not a tool, like `magi tasks wait`, because a tool call that
+  blocks for minutes runs into MCP time limits.
 - **`magi watch` streams changes.** Today the watcher only takes sessions
   back. Over the same SSH connection per machine it will also stream what
   changes there. That is machine stats, sessions and their state, and the

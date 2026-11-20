@@ -1,11 +1,13 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
 	"github.com/felitrejos/magi/remote/internal/store"
@@ -48,13 +50,17 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 				}
 				m.Machine = r
 			}
-			if m.Sessions, m.Err = liveSessions(m.Machine); m.Err == nil && m.Machine.Codex() != "" {
-				m.Codex, m.CodexErr = openCodexSessions(m.Machine)
-			}
+			m.read()
 		})
 	}
 	wg.Wait()
 	return all, nil
+}
+
+func (m *machineSessions) read() {
+	if m.Sessions, m.Err = liveSessions(m.Machine); m.Err == nil && m.Machine.Codex() != "" {
+		m.Codex, m.CodexErr = openCodexSessions(m.Machine)
+	}
 }
 
 func describeSessions(all []machineSessions) string {
@@ -68,11 +74,7 @@ func describeSessions(all []machineSessions) string {
 			if s.Status != "waiting" {
 				continue
 			}
-			on := sessionTitle(s) + " (" + store.ShortID(s.SessionID) + ") on " + m.Name
-			if s.WaitingFor != "" {
-				on += " (" + s.WaitingFor + ")"
-			}
-			waiting = append(waiting, on)
+			waiting = append(waiting, sessionLabel(m.Name, s)+waitingOn(s))
 		}
 	}
 	switch {
@@ -98,26 +100,15 @@ func describeSessions(all []machineSessions) string {
 		}
 		fmt.Fprintf(&b, "%s:\n", m.Name)
 		for _, s := range m.Sessions {
-			state := s.Status
-			if s.WaitingFor != "" {
-				state += " (" + s.WaitingFor + ")"
-			}
-			line := fmt.Sprintf("  %s  %s  %s  %s", store.ShortID(s.SessionID), sessionTitle(s), state, s.Cwd)
+			line := fmt.Sprintf("  %s  %s  %s  %s", store.ShortID(s.SessionID), sessionTitle(s), s.Status+waitingOn(s), s.Cwd)
 			if s.BridgeSessionID != nil && *s.BridgeSessionID != "" {
 				line += "  https://claude.ai/code/" + *s.BridgeSessionID
 			}
 			fmt.Fprintln(&b, line)
 		}
 		for _, t := range m.Codex {
-			title := t.Name
-			if title == "" {
-				title = baseName(t.Cwd)
-			}
-			state := "codex idle"
-			if t.Busy {
-				state = "codex busy"
-			}
-			fmt.Fprintf(&b, "  %s  %s  %s  %s\n", store.ShortID(t.ID), title, state, t.Cwd)
+			c := codexSession(t)
+			fmt.Fprintf(&b, "  %s  %s  codex %s  %s\n", store.ShortID(c.SessionID), sessionTitle(c), c.Status, c.Cwd)
 		}
 		if m.CodexErr != nil {
 			fmt.Fprintf(&b, "  couldn't read its Codex sessions (%v)\n", m.CodexErr)
@@ -133,26 +124,93 @@ func sessionTitle(s liveSession) string {
 	return baseName(s.Cwd)
 }
 
+func sessionLabel(machine string, s liveSession) string {
+	return sessionTitle(s) + " (" + store.ShortID(s.SessionID) + ") on " + machine
+}
+
+func waitingOn(s liveSession) string {
+	if s.WaitingFor == "" {
+		return ""
+	}
+	return " (" + s.WaitingFor + ")"
+}
+
+func codexSession(t codexThread) liveSession {
+	s := liveSession{SessionID: t.ID, Cwd: t.Cwd, Name: t.Name, Status: "idle", Codex: true}
+	if t.Busy {
+		s.Status = "busy"
+	}
+	return s
+}
+
 func findAnySession(all []machineSessions, query string) (machineSessions, liveSession, error) {
 	var matches []string
 	var foundOn machineSessions
 	var found liveSession
 	for _, m := range all {
+		for _, t := range m.Codex {
+			m.Sessions = append(m.Sessions, codexSession(t))
+		}
 		for _, s := range m.Sessions {
 			if strings.HasPrefix(s.SessionID, query) || len(query) >= 4 && strings.Contains(strings.ToLower(sessionTitle(s)), strings.ToLower(query)) {
-				matches = append(matches, fmt.Sprintf("%s %s on %s", store.ShortID(s.SessionID), sessionTitle(s), m.Name))
+				matches = append(matches, sessionLabel(m.Name, s))
 				foundOn, found = m, s
 			}
 		}
 	}
 	switch len(matches) {
 	case 0:
-		return foundOn, found, fmt.Errorf("no running Claude Code session matches %q", query)
+		return foundOn, found, fmt.Errorf("no running Claude Code or Codex session matches %q", query)
 	case 1:
 		return foundOn, found, nil
 	}
 	slices.Sort(matches)
 	return foundOn, found, fmt.Errorf("%q matches more than one session: %s", query, strings.Join(matches, ", "))
+}
+
+func waitSession(query string, every time.Duration) (string, error) {
+	all, err := everySession(context.Background())
+	if err != nil {
+		return "", err
+	}
+	m, s, err := findAnySession(all, query)
+	if err != nil {
+		return "", err
+	}
+	for failures := 0; s.Status == "busy"; {
+		time.Sleep(every)
+		if all, err = everySession(context.Background()); err != nil {
+			return "", err
+		}
+		found := false
+		for _, o := range all {
+			if _, now, err := findAnySession([]machineSessions{o}, s.SessionID); err == nil && (!found || now.Status == "busy") {
+				m, s, found = o, now, true
+			}
+		}
+		if found {
+			failures = 0
+			continue
+		}
+		i := slices.IndexFunc(all, func(o machineSessions) bool { return o.Name == m.Name })
+		if i < 0 {
+			return sessionLabel(m.Name, s) + " ended.", nil
+		}
+		unread := all[i].Err
+		if s.Codex {
+			unread = cmp.Or(unread, all[i].CodexErr)
+		}
+		if unread == nil {
+			return sessionLabel(m.Name, s) + " ended.", nil
+		}
+		if failures++; failures >= waitFailures {
+			return "", fmt.Errorf("%s couldn't be checked: %w", m.Name, unread)
+		}
+	}
+	if s.Status == "waiting" {
+		return sessionLabel(m.Name, s) + " is waiting on you" + waitingOn(s) + ".", nil
+	}
+	return sessionLabel(m.Name, s) + " is " + s.Status + ".", nil
 }
 
 func sessionDiff(m sh.Machine, s liveSession) (string, error) {

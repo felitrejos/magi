@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/felitrejos/magi/remote/internal/sh"
 	"github.com/felitrejos/magi/remote/internal/store"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func (f *fixture) moveHost(fake string) {
@@ -285,5 +287,48 @@ func TestAReusedPidIsNotStopped(t *testing.T) {
 	}
 	if err := proc.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Error("stop killed a process that only had the session's pid")
+	}
+}
+
+func TestMoveSessionMovesAnIdleSessionButNotABusyOneOrItsCaller(t *testing.T) {
+	f := newFixture(t)
+	f.moveHost(fakeClaudeThatStarts)
+	idle, busy, self := "1a1a1a1a-1111-2222-3333-444444444444", "2b2b2b2b-1111-2222-3333-444444444444", "3c3c3c3c-1111-2222-3333-444444444444"
+	idleProc, _ := f.localSession(idle, "idle")
+	go idleProc.Wait()
+	busyProc, _ := f.localSession(busy, "busy")
+	selfProc, _ := f.localSession(self, "idle")
+	callerPID = selfProc.Process.Pid
+	t.Cleanup(func() { callerPID = 0 })
+	serverSide, clientSide := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := newMCPServer().Connect(ctx, serverSide, nil); err != nil {
+		t.Fatal(err)
+	}
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientSide, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	move := func(id string) (string, bool) {
+		res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "move_session", Arguments: map[string]any{"session": id[:8], "host": "server"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Content[0].(*mcp.TextContent).Text, res.IsError
+	}
+
+	if text, failed := move(busy); !failed || !strings.Contains(text, "magi wait 2b2b2b2b") {
+		t.Errorf("a busy session: %q", text)
+	}
+	armedPath, _ := store.SessionPath("armed", busy, ".json")
+	if _, err := os.Stat(armedPath); !os.IsNotExist(err) || busyProc.Process.Signal(syscall.Signal(0)) != nil {
+		t.Error("the busy session was armed or stopped")
+	}
+	if text, failed := move(self); !failed || !strings.Contains(text, "is this session; to move it, use the handoff skill") {
+		t.Errorf("the caller's own session: %q", text)
+	}
+	if text, failed := move(idle); failed || !strings.Contains(text, "What goes to server:") || !strings.Contains(text, "Moved session 1a1a1a1a to server") {
+		t.Errorf("an idle session:\n%s", text)
 	}
 }

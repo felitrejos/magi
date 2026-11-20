@@ -534,7 +534,7 @@ func TestTheToolServerOffersItsTools(t *testing.T) {
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
 	}
-	if got := strings.Join(names, " "); got != "cancel_task delegate diff machines run_elsewhere session_elsewhere sessions task_reply task_result task_status" {
+	if got := strings.Join(names, " "); got != "cancel_task delegate diff machines move_session run_elsewhere session_elsewhere sessions task_reply task_result task_status" {
 		t.Errorf("tools = %s", got)
 	}
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "machines"})
