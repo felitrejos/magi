@@ -131,8 +131,8 @@ unit on Linux. It runs as you, never as root, and starts at login.
   writes on the far machine. It can only make the laptop pull a session
   from the machine the request is on.
 - Every 2 seconds the loop reads Claude Code's own record of each live
-  session in `~/.claude/sessions`, on the laptop too, and magi's own record
-  in `~/.magi/tabs` of the tmux window each session it opened runs in.
+  session in `~/.claude/sessions`, on the laptop too. When that changes,
+  it asks tmux which window each session's process runs in.
   When a session is waiting, it runs `claude agents --json` once to learn
   on what.
 - About every 30 seconds it reads load, memory, the disk your home folder

@@ -42,16 +42,16 @@ while :; do
 "
     pids="$pids $pid"
   done
-  for f in "$HOME"/.magi/tabs/*; do
-    [ -f "$f" ] || continue
-    { read -r _; read -r window; } < "$f"
-    live="${live}tab ${f##*/} $window
-"
-  done
   if [ "$live" != "$registry" ]; then
     registry=$live
     case $live in *'"status":"waiting"'*) live="${live}waiting $("$cli" agents --json | tr -d '\n')
 " ;; esac
+    panes=$(tmux list-panes -a -F '#{pane_pid} #{window_id}' 2>/dev/null)
+    for pid in $pids; do
+      window=$(printf '%s\n' "$panes" | awk -v a="$pid" -v b="$(ps -o ppid= -p "$pid")" '$1 == a || $1 == b + 0 { print $2; exit }')
+      if [ -n "$window" ]; then live="${live}tab $pid $window
+"; fi
+    done
     printf '%s' "$live"
     echo sessions
   fi

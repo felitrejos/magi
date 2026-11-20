@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -346,7 +347,7 @@ func (w *watcher) hear(line string, now time.Time) {
 func (w *watcher) sessions() {
 	var sessions []liveSession
 	waiting := map[int]string{}
-	windows := map[string]string{}
+	windows := map[int]string{}
 	for _, line := range w.block {
 		kind, rest, _ := strings.Cut(line, " ")
 		switch kind {
@@ -362,17 +363,15 @@ func (w *watcher) sessions() {
 				waiting[s.PID] = s.WaitingFor
 			}
 		case "tab":
-			id, window, _ := strings.Cut(rest, " ")
-			windows[id] = window
+			pid, window, _ := strings.Cut(rest, " ")
+			n, _ := strconv.Atoi(pid)
+			windows[n] = window
 		}
 	}
 	w.block = nil
 	entries := []liveEntry{}
 	for _, s := range sessions {
-		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], Tmux: windows[s.SessionID], pid: s.PID}
-		if s.BridgeSessionID != nil {
-			e.RemoteControl = remoteControlLink + *s.BridgeSessionID
-		}
+		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], RemoteControl: s.remoteControl(), Tmux: windows[s.PID], pid: s.PID}
 		if s.StatusAt > 0 {
 			e.Since = time.UnixMilli(s.StatusAt)
 		}

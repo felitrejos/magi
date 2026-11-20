@@ -85,6 +85,7 @@ breaking one of these needs 2.0.
   `setup`, `services` and `ports` in `.magi.toml`. A key magi no longer
   uses is ignored.
 - The fields of `~/.magi/live/<machine>.json`, which can gain new ones.
+- The lines of `~/.magi/handoffs.jsonl`, which can gain new fields.
 
 Anything else can change in any release. That includes message wording,
 time budgets, the magi program's own arguments, the other files in

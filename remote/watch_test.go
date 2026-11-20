@@ -65,12 +65,11 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	id := "0f0f0f0f-1111-2222-3333-555555555555"
 	busySince := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
 	session := func(status string, at time.Time) {
-		f.write(filepath.Join(server, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"%s","cwd":"/srv/api","name":"api","status":"%s","statusUpdatedAt":%d,"bridgeSessionId":"session_42"}`, pid, id, status, at.UnixMilli()))
+		f.write(filepath.Join(server, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"%s","cwd":"/srv/api","name":"api","status":"%s","statusUpdatedAt":%d}`, pid, id, status, at.UnixMilli()))
 	}
 	session("busy", busySince)
-	f.write(filepath.Join(server, ".magi", "tabs"), id, "$3\n@7\nmagi\n")
 	r := f.remoteHost()
-	w := newWatcher("server", "me@server", r, log.New(io.Discard, "", 0), "")
+	w := newWatcher("server", "", r, log.New(io.Discard, "", 0), "")
 	cmd := r.Command(watchScript, "", "claude")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -117,9 +116,6 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	s := live.Sessions[0]
 	if s.ID != id || s.State != "busy" || !s.Since.Equal(busySince) || s.Title != "api" || s.Folder != "/srv/api" {
 		t.Errorf("live session = %+v, want %s busy since %s", s, id, busySince)
-	}
-	if s.RemoteControl != "https://claude.ai/code/session_42" || s.Tmux != "@7" || live.SSH != "me@server" {
-		t.Errorf("live session opens through %q and tmux window %q, machine over ssh %q", s.RemoteControl, s.Tmux, live.SSH)
 	}
 	if s.MemoryMB != 150 || s.CPU < 90 || s.CPU > 110 {
 		t.Errorf("session uses %d%% CPU and %d MB, want about 100%% and 150 MB", s.CPU, s.MemoryMB)
@@ -222,6 +218,30 @@ func TestStoppingTheWatcherMarksEveryMachineAsNotAnswering(t *testing.T) {
 	for _, name := range names {
 		if readLive(t, name).Answering {
 			t.Errorf("after the watcher stopped, %s still reads as answering", name)
+		}
+	}
+}
+
+func TestTheLiveFileSaysHowToOpenASession(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	server := f.serverHome()
+	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{pane_pid} #{window_id}", "sleep 60").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, window, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
+	f.write(filepath.Join(server, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"0f0f0f0f-1111-2222-3333-555555555559","cwd":"/srv/api","status":"idle","bridgeSessionId":"session_42"}`)
+	go newWatcher("server", "me@server", f.remoteHost(), log.New(io.Discard, "", 0), "").follow("")
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		if live := readLive(t, "server"); len(live.Sessions) == 1 {
+			if s := live.Sessions[0]; s.RemoteControl != "https://claude.ai/code/session_42" || s.Tmux != window || live.SSH != "me@server" {
+				t.Errorf("the session opens through %q and tmux window %q (want %s), the machine over ssh %q", s.RemoteControl, s.Tmux, window, live.SSH)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the session never reached the live file")
 		}
 	}
 }

@@ -71,6 +71,13 @@ type fromRegistry struct {
 	ProcStart       any     `json:"procStart"`
 }
 
+func (s liveSession) remoteControl() string {
+	if s.BridgeSessionID == nil || *s.BridgeSessionID == "" {
+		return ""
+	}
+	return remoteControlLink + *s.BridgeSessionID
+}
+
 func (s liveSession) since() string {
 	switch v := s.ProcStart.(type) {
 	case string:
@@ -139,8 +146,8 @@ func waitForRemoteControl(m sh.Machine, sessionID string, launchedAt time.Time) 
 			return "", err
 		}
 		for _, s := range sessions {
-			if s.SessionID == sessionID && s.StartedAt >= notBefore && s.BridgeSessionID != nil {
-				return remoteControlLink + *s.BridgeSessionID, nil
+			if link := s.remoteControl(); s.SessionID == sessionID && s.StartedAt >= notBefore && link != "" {
+				return link, nil
 			}
 		}
 		select {
