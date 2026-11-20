@@ -34,7 +34,7 @@ var (
 	//go:embed scripts/task.sh
 	taskBody string
 	//go:embed scripts/codex.sh
-	codexScript string
+	codexBody string
 	//go:embed scripts/load.sh
 	loadScript string
 	//go:embed scripts/watch.sh
@@ -49,7 +49,8 @@ var (
 	tryScript string
 
 	sessionScript  = startedScript + sessionBody
-	taskScript     = startedScript + taskBody
+	taskScript     = startedScript + loadScript + taskBody
+	codexScript    = startedScript + codexBody
 	watchScript    = loadScript + watchBody
 	platformScript = loadScript + platformBody
 )

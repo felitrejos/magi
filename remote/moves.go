@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +17,11 @@ import (
 	"github.com/felitrejos/magi/remote/internal/store"
 )
 
-const recoverBudget = 15 * time.Second
+const (
+	recoverBudget = 15 * time.Second
+	cleanupBudget = 15 * time.Second
+	finishBudget  = 10 * time.Second
+)
 
 type moveJournal struct {
 	Session          string    `json:"-"`
@@ -206,13 +209,10 @@ func recoverMove(id string) recovered {
 	if err != nil {
 		return recovered{report: err.Error() + "."}
 	}
-	data, err := os.ReadFile(path)
+	j := &moveJournal{Session: id}
+	err = store.ReadJSON(path, j)
 	if errors.Is(err, os.ErrNotExist) {
 		return recovered{settled: true}
-	}
-	j := &moveJournal{Session: id}
-	if err == nil {
-		err = json.Unmarshal(data, j)
 	}
 	if err != nil {
 		return recovered{report: fmt.Sprintf("The record of an interrupted move of session %s can't be read (%v); remove %s.", store.ShortID(id), err, path)}

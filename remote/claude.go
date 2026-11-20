@@ -205,12 +205,16 @@ func isTrusted(m sh.Machine, dir string) (bool, error) {
 	if err := json.Unmarshal(out, &state); err != nil {
 		return false, fmt.Errorf("read ~/.claude.json on %s: %w", m.Name(), err)
 	}
+	return trustedUnder(dir, func(d string) bool { return state.Projects[d].Trusted }), nil
+}
+
+func trustedUnder(dir string, trusted func(string) bool) bool {
 	for d := dir; ; d = filepath.Dir(d) {
-		if state.Projects[d].Trusted {
-			return true, nil
+		if trusted(d) {
+			return true
 		}
 		if d == filepath.Dir(d) {
-			return false, nil
+			return false
 		}
 	}
 }

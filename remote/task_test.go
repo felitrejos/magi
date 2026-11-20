@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -445,7 +444,7 @@ func TestBudgetsParseMemoryAndQuietHours(t *testing.T) {
 	if got := b.String(); got != "at most 2 working agents, at least 4.0 GB free memory, nothing new 22:00-07:00" {
 		t.Errorf("budget = %q", got)
 	}
-	tight := &fleetMachine{MemoryTotal: 8 << 30, MemoryUsed: 6 << 30, Cores: 4, Load: []float64{0}}
+	tight := &fleetMachine{MemoryTotal: 8 << 30, MemoryUsed: 6 << 30, Cores: 4}
 	if got := b.noRoom(at("12:00"), tight, true); !strings.Contains(got, "2.0 GB of memory is free there, its budget needs 4.0 GB") {
 		t.Errorf("noRoom = %q", got)
 	}
@@ -766,33 +765,6 @@ func TestOnlyADelegatedClaudeTakesFollowUps(t *testing.T) {
 	collectTask(d.Task.ID, true)
 }
 
-func TestATaskKeepsItsStateCurrent(t *testing.T) {
-	f := newFixture(t)
-	f.taskHost()
-	if _, err := startElsewhere(context.Background(), "server", TaskSpec{Kind: kindRun, Dir: f.local, Command: "sleep 0.5"}); err != nil {
-		t.Fatal(err)
-	}
-	tasks, _ := listTasks()
-	id := tasks[0].ID
-	record := func() map[string]any {
-		var m map[string]any
-		dir, _ := store.Dir("tasks")
-		json.Unmarshal([]byte(f.read(dir, id+".json")), &m)
-		return m
-	}
-	if m := record(); m["state"] != "running" {
-		t.Errorf("record = %v", m)
-	}
-	f.waitForTask(id)
-	if m := record(); m["state"] != "done" {
-		t.Errorf("after finishing, state = %v", m["state"])
-	}
-	collectTask(id, false)
-	if m := record(); m["state"] != "collected" {
-		t.Errorf("after collecting, state = %v", m["state"])
-	}
-}
-
 func TestClosingIdleCopiesReportsWhatFailedAndSkipsOneAnotherMagiHolds(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
@@ -815,15 +787,14 @@ func TestClosingIdleCopiesReportsWhatFailedAndSkipsOneAnotherMagiHolds(t *testin
 	}
 }
 
-const fakeParentClaude = "#!/bin/sh\n" + fakeAgents + `prompt=$(cat)
-echo "parent=$MAGI_PARENT" >> "$HOME/claude-parents"
+const fakeSenderClaude = "#!/bin/sh\n" + fakeAgents + `prompt=$(cat)
 printf '{"type":"result","subtype":"success","num_turns":1,"result":"did: %s"}\n' "$prompt"
 `
 
-func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing.T) {
+func TestADelegatedTaskKeepsItsSendersTabNameAcrossFollowUps(t *testing.T) {
 	f := newFixture(t)
 	f.taskHost()
-	f.tool("claude", fakeParentClaude)
+	f.tool("claude", fakeSenderClaude)
 	sender := startFakeClaude(t, "60").Process.Pid
 	f.write(filepath.Join(f.home, ".claude", "sessions"), strconv.Itoa(sender)+".json", `{"pid":`+strconv.Itoa(sender)+`,"sessionId":"9fb6fe92","name":"fix login"}`)
 	args, _ := delegateArgs(delegateInput{})
@@ -844,25 +815,14 @@ func TestADelegatedTaskKeepsItsSendersTabNameAndParentAcrossFollowUps(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Task.tabLabel() != label {
-		t.Errorf("the follow-up's tab is %q", r.Task.tabLabel())
+	if r.Task.Label != label {
+		t.Errorf("the follow-up's tab is %q", r.Task.Label)
 	}
 	windows, _ := exec.Command("tmux", "list-windows", "-a", "-F", "#{window_name}").Output()
 	if strings.Contains(string(windows), " · delegate ") {
 		t.Errorf("tmux windows = %q", windows)
 	}
 	f.waitForTask(id)
-	if got := f.read(f.home, "claude-parents"); got != "parent=9fb6fe92\nparent=9fb6fe92\n" {
-		t.Errorf("claude ran with %q", got)
-	}
-
-	var old Task
-	if err := json.Unmarshal([]byte(`{"id":"0000000c","kind":"delegate","name":"api"}`), &old); err != nil {
-		t.Fatal(err)
-	}
-	if old.tabLabel() != "api · delegate 0000000c" || strings.Join(withParent(old.Parent, []string{"sh"}), " ") != "sh" {
-		t.Errorf("an older task's tab is %q", old.tabLabel())
-	}
 }
 
 func TestWaitingOnATaskReturnsOnceItFinishes(t *testing.T) {

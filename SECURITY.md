@@ -27,7 +27,8 @@ the ports you ask it to forward, which listen on `127.0.0.1`.
   fails to connect instead of asking you to accept it. That holds unless
   your own SSH config accepts new keys.
 - Connections to one machine share a control socket in `~/.magi/ssh`,
-  which closes 60 seconds after its last use.
+  which closes 60 seconds after its last use. A port forward uses a
+  connection of its own.
 - Git objects travel with `git push` and `git fetch` over that connection.
   Files travel as a `tar` stream over it.
 - `magi init` runs `tailscale status --json` if Tailscale is installed,
@@ -47,6 +48,25 @@ the ports you ask it to forward, which listen on `127.0.0.1`.
   search for secret files.
 - A folder that isn't a git repository is copied whole, without the names
   in `exclude`. Files in it that match `secrets` go as part of the folder.
+- On the receiving machine magi recreates your branch and uncommitted
+  work. It refuses if that checkout has work or commits of its own.
+- A handoff is refused when the session already runs on the destination.
+  One that fails stops the new copy and leaves the session running where
+  it was.
+- If you trust a project's folder in Claude Code on this machine, magi
+  marks its copy on the other machine as trusted in `~/.claude.json` there,
+  so the moved session starts without asking. It replaces that file only
+  if nothing changed it meanwhile. For a Codex session it sets the folder's
+  trust level in Codex's config there, through `codex app-server`. A
+  folder you haven't trusted here is never trusted there.
+- The Stop hook (`magi hook stop`) runs the handoff, with a time limit of
+  200 seconds. The prompt hook (`magi hook prompt`) refuses new input in
+  the copy a session left. It reads the session id from the hook's input
+  and the marker in `~/.magi/moved`, and contacts nothing.
+- `magi try` creates a `magi-try-*` folder in your first local root and
+  moves it to the host's root. When it ends, it removes the folder and
+  its transcripts on both machines. It makes three Claude turns on your
+  account.
 
 ### What magi shows before a move
 
@@ -57,8 +77,7 @@ and the machine's name. It lists these.
   files, submodules included.
 - Files git doesn't track yet, by name. It names at most five, then says
   how many more there are.
-- Secret files, by name only and with the same limit. magi never prints
-  what is in them.
+- Secret files, by name only and with the same limit.
 - The number of files that go through Git LFS.
 - For a folder that isn't a git repository, its file count and size
   without the names in `exclude`, and those names.
@@ -71,33 +90,22 @@ and the machine's name. It lists these.
 
 Where you see it depends on how the move starts.
 
-- `magi arm`, which the handoff skill runs, prints it after "Armed". It
-  describes the session's own folder, and Claude passes it on to you. The
-  move then starts when the turn ends.
-- `magi move` prints it after it has inspected the project and before it
-  copies anything. With `--json` it is one `copy` event.
+- `magi arm`, which the handoff skill runs, prints it after "Armed".
+  Claude passes it on to you, and the move starts when the turn ends.
+- `magi move` prints it after it has inspected the project. With `--json`
+  it is one `copy` event.
 - `magi pull` and `magi watch` print what comes back, read on the other
   machine. They leave out the `.magi.toml` line.
-- A session that is in the middle of a turn when you run `magi move` hands
-  off from the Stop hook, and no block is printed.
+- A Claude Code session that is in the middle of a turn when you run
+  `magi move` hands off from the Stop hook, and no block is printed.
 - A hand back asked of a machine that runs `magi watch` prints nothing
   where you asked. The block goes to that machine's watcher log.
 
 The block is a notice. magi doesn't wait for an answer before it copies.
 If the block can't be built, magi says so and the move goes on.
-- If you trust a project's folder in Claude Code on this machine, magi
-  marks its copy on the other machine as trusted in `~/.claude.json` there,
-  so the moved session starts without asking. It replaces that file only
-  if nothing changed it meanwhile. A folder you haven't trusted here is
-  never trusted there.
-- `magi try` creates a `magi-try-*` folder in your first local root and
-  in the host's root, with its transcripts, and removes them on both
-  machines when it ends. It makes three Claude turns on your account.
-- On the receiving machine it recreates your branch and uncommitted work.
-  It refuses if that checkout has work or commits of its own.
-- A handoff is refused when the session already runs on the destination.
-  One that fails stops the new copy and leaves the session running where
-  it was.
+
+### A move that was cut off
+
 - Every move writes a journal, `~/.magi/moves/<session-id>.json`, before
   it changes anything, and removes it as its last step. A journal whose
   move is no longer running belongs to a move that was cut off.
@@ -120,15 +128,11 @@ If the block can't be built, magi says so and the move goes on.
 - If the other machine doesn't answer, magi changes nothing there and
   keeps the journal. It prints the journal's path, which you remove
   yourself if that machine is gone for good.
-- The Stop hook (`magi hook stop`) runs the handoff, with a time limit of
-  200 seconds. The prompt hook (`magi hook prompt`) refuses new input in
-  the copy a session left. It reads the session id from the hook's input
-  and the marker in `~/.magi/moved`, and contacts nothing.
 
 ## The watcher
 
-`magi watch` is for a laptop that takes no incoming SSH. It also keeps a
-live view of each machine, described under "What the watcher reads".
+`magi watch` is for a laptop that takes no incoming SSH. It also records
+what runs on each machine, described under "What the watcher reads".
 
 - It keeps one outgoing SSH connection to each machine in your config. On
   each it runs a small loop that refreshes `~/.magi/watchers/<laptop name>`
@@ -140,9 +144,11 @@ live view of each machine, described under "What the watcher reads".
   watcher file in the last 15 seconds. It holds the laptop's name, the
   session's process id and the note on what was running.
 - The laptop then pulls the session over its own connection, the same way
-  `magi pull` does, and removes the request. A request can only make the
+  `magi pull` does, opens it in a tmux window and removes the request. If
+  the pull fails, it tries again each minute. A request can only make the
   laptop pull a session from the machine the request is on.
-- The loop deletes a request whose session process is gone.
+- The loop deletes a request addressed to the laptop whose session process
+  is gone.
 - `magi watch install` writes a launchd agent on macOS
   (`~/Library/LaunchAgents/magi-watch.plist`, log in
   `~/Library/Logs/magi-watch.log`) or a systemd user unit on Linux
@@ -216,9 +222,10 @@ It holds no conversation text and no file contents.
 - Claude proposes the machine and the work, and you approve both. The
   tools that start, continue or stop work are not marked read-only, so an
   MCP client can ask before using them.
-- A delegated Claude runs headless in `acceptEdits` mode by default. Other
-  prompts are answered "no" unless you allowed the tool, and it never runs
-  with permission checks bypassed.
+- A delegated Claude runs headless in `acceptEdits` mode by default, or in
+  `dontAsk` or `auto` when Claude asks for one. Other prompts are answered
+  "no" unless you allowed the tool, and it never runs with permission
+  checks bypassed.
 - When a finished `delegate` is collected, its changes are written into
   your working tree here and kept as the branch `magi/task-<id>`. If they
   clash with edits made here since the task started, nothing is applied
@@ -238,9 +245,9 @@ It holds no conversation text and no file contents.
   `~/.claude/sessions/*.json` on this machine and on each machine in your
   config, and Codex's session files where Codex is configured. Whether a
   Codex session is busy or idle comes from the last turn event in its
-  rollout file, one of those session files. The `diff`
-  tool runs `git diff HEAD` and lists untracked files in a session's
-  folder. Both only read.
+  rollout file, one of those session files. `magi wait` reads the same.
+  The `diff` tool runs `git diff HEAD` and lists untracked files in a
+  session's folder. All three only read.
 
 ## Tested versions
 
@@ -251,8 +258,8 @@ It holds no conversation text and no file contents.
   `https://raw.githubusercontent.com/felitrejos/magi/main/remote/tested.json`
   and keeps it in `~/.magi/tested.json`. It downloads again when that copy
   is more than an hour old, and only for a hand off, a pull or
-  `magi doctor`. The request has a 5 second limit. A file magi can't parse
-  is thrown away. If the download fails, magi uses the copy it has, and
+  `magi doctor`. The request has a 5 second limit. A download magi can't
+  parse is thrown away. If the download fails, magi uses the copy it has, and
   with no copy the list built into the program.
 - Before a hand off or a pull copies anything, magi runs `claude --version`
   on both machines, or `codex --version` for a Codex session. It refuses
@@ -265,9 +272,9 @@ It holds no conversation text and no file contents.
   runs nothing from it and sends nothing because of it.
 - A nightly job on the author's Linux server keeps the list current. It
   is a systemd user timer that runs as an ordinary user. It downloads the
-  newest Claude Code and Codex from their official release sources into a
-  folder of its own and checks each download against its published
-  SHA-256. It runs the contract tests with them. When they pass, it raises
+  newest Claude Code and Codex, and the Go toolchain, from their official
+  release sources into a folder of its own and checks each download
+  against its published SHA-256. It runs the contract tests with them. When they pass, it raises
   the newest tested version in the file and pushes that commit to `main`.
   It never writes the failing list and never touches the `claude` or
   `codex` installed on that server.
@@ -283,11 +290,12 @@ It holds no conversation text and no file contents.
 
 ## Files magi writes
 
-Settings are in `~/.config/magi/config.toml`. State is in `~/.magi`.
+Settings are in `~/.config/magi/config.toml`, or under `XDG_CONFIG_HOME`
+when that is set. State is in `~/.magi`.
 
 | Path in `~/.magi` | What it holds |
 |---|---|
-| `armed/` | A session set to move when its turn ends, and a lock while it moves |
+| `armed/` | A session set to move when its turn ends, a lock while it moves, and the result the Stop hook leaves for `magi move` |
 | `wanted/` | Hand-back requests waiting for a watcher |
 | `watchers/` | One file per laptop watching this machine |
 | `watch.lock` | Keeps a second `magi watch` from starting |
@@ -304,14 +312,16 @@ Settings are in `~/.config/magi/config.toml`. State is in `~/.magi`.
 | `tested.json` | The downloaded list of Claude Code and Codex versions magi was tested with |
 
 Outside those, magi writes the project and session files it moves, the
-trust entry in `~/.claude.json` and the watcher's service file and log.
+trust entry in `~/.claude.json` or Codex's config, and the watcher's
+service file and log.
 
 ## Releases
 
 Release builds come from GitHub Actions with actions pinned to commit
 hashes. `install.sh` downloads over HTTPS and checks the archive's SHA-256
-before installing. It also removes the service and binaries of
-`magi-overview`, an earlier companion program, if it finds them.
+before installing. It also deletes the service and the `magi-overview`
+and `magi-remote` binaries that earlier releases installed, if it finds
+them.
 
 ## Reporting a problem
 

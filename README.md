@@ -37,28 +37,27 @@ magi try
 throwaway session to the other machine and back and removes it. It takes
 about 15 seconds and three short Claude turns on your account. If a check
 fails, it stops and says what to fix. `magi init` is the setup alone, and
-you run it again to add a machine. `magi doctor` checks both ends.
+you run it again to add a machine. `magi doctor` is the checks alone.
 
-If your laptop takes no incoming SSH, run `magi watch install` on it as
-well, and again after you add a machine. It keeps `magi watch` running
-from login, so sessions on your other machines can be handed back to the
-laptop, and it keeps a live view of each machine for the menu bar app.
+If your laptop takes no incoming SSH, run `magi watch install` on it too,
+and again after you add a machine. It runs `magi watch` from login, so
+sessions on your other machines can be handed back to the laptop. It also
+writes each machine's load and sessions to `~/.magi/live/<machine>.json`.
 
 ## Hand off and back
 
-Say "hand this off to my homelab" in a Claude Code session. When the turn
-ends, magi copies the conversation, the branch, staged and unstaged
-changes, the gitignored files you listed and Claude's project memory.
-Before it copies anything, magi shows what goes across, with secret files
-by name only. The session continues in a tmux window on the homelab with Remote Control on,
-so it is also in the Claude app, and magi prints the command that attaches
-to it. The copy you left closes and refuses new messages.
+Say "hand this off to my homelab" in a Claude Code session. magi shows
+what goes across, with secret files by name only. When the turn ends, it
+copies the conversation, the branch, your uncommitted and untracked work,
+the gitignored files you listed and Claude's project memory. The session
+continues in a tmux window on the homelab with Remote Control on, so it is
+also in the Claude app. The copy you left closes and refuses new messages.
 
-Say "hand this back to my Mac" there to return. Without `magi watch`, run
-`magi pull homelab` on the Mac instead. From outside a session,
-`magi move <session-id> <host>` moves a session on this machine, and that
-is how you move a Codex session. A handoff that fails leaves the session
-running where it was, and `magi status` shows what happened.
+Say "hand this back to my Mac" there to return. If the Mac doesn't run
+`magi watch`, run `magi pull homelab` on it instead. From outside a
+session, `magi move <session-id> <host>` moves a session on this machine,
+and that is how you move a Codex session. A handoff that fails leaves the
+session running where it was and says why.
 
 Nothing that is running moves. A project's `.magi.toml` can name a `setup`
 command, `services` to start beside the session and `ports` to forward
@@ -74,9 +73,9 @@ with `magi allow`.
 The plugin gives Claude tools to run a shell command, a background Claude
 or a new session on another machine. Claude proposes a machine and waits
 for your yes. The work runs in its own copy of your working tree, in a
-tmux window you can watch. A background Claude's changes are applied to
-your working tree and kept on the branch `magi/task-<id>`. If they clash
-with your edits, they stay on the branch.
+tmux window you can watch. When Claude collects a background Claude's
+changes, they are applied to your working tree and kept on the branch
+`magi/task-<id>`. If they clash with your edits, they stay on the branch.
 
 The tools are `machines`, `sessions`, `diff`, `run_elsewhere`, `delegate`,
 `session_elsewhere`, `move_session`, `task_status`, `task_result`,
@@ -95,11 +94,10 @@ magi doctor [host...]              check that everything a handoff needs is in p
 magi pull <host> [session-id]      bring a session back from <host> and continue it here
 magi move <session-id> <host> [--json]
                                    move a session on this machine to <host>
-magi wait <session>                wait until a Claude Code or Codex session on
-                                   any machine isn't busy, then print whether
-                                   it's idle, waiting on you or ended
-magi status                        recent handoffs, parked checkouts, and moves that
-                                   were cut off, which it settles
+magi wait <session>                wait until a session on any machine isn't busy, then
+                                   print whether it's idle, waiting on you or ended
+magi status                        moves that were cut off, which it settles, then
+                                   recent handoffs and parked checkouts
 magi watch                         take back sessions other machines hand back here
 magi watch install | uninstall     run magi watch in the background from login
 magi unpark [dir]                  stop treating a checkout as parked
@@ -122,8 +120,8 @@ with versions its tests passed with. New releases are tested every night,
 so a refusal usually clears within a day without a magi update.
 
 **What if a move is cut off?** Run `magi status`. It works out which copy
-is the live one, closes the other without deleting any folder, and prints
-the command to continue. The next move of that session does the same.
+is live, closes the other without deleting any folder and says how to
+continue. The next move of that session does the same.
 
 **Do my secrets move?** Only the gitignored files you listed, such as
 `.env`, and only to machines you configured. Logins and SSH keys never

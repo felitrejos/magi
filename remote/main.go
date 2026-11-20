@@ -261,18 +261,12 @@ func stopHook(in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
+	var a armed
+	err = store.ReadJSON(path, &a)
 	if errors.Is(err, os.ErrNotExist) {
 		return waitForPull(input, out)
 	}
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil {
-		return err
-	}
-	var a armed
-	if err := json.Unmarshal(data, &a); err != nil {
+	if err := errors.Join(err, os.Remove(path)); err != nil {
 		return err
 	}
 	if os.Getenv("CLAUDE_PID") != strconv.Itoa(a.PID) {
@@ -290,7 +284,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 		if a.Notify {
 			err = errors.Join(err, writeMoveResult(input.SessionID, moveReport{Event: "failed", Message: "this handoff didn't start: " + err.Error()}))
 		}
-		return json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": "This handoff didn't start: " + err.Error() + ". Tell the user."})
+		return block(out, "This handoff didn't start: "+err.Error()+". Tell the user.")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
@@ -303,10 +297,7 @@ func stopHook(in io.Reader, out io.Writer) error {
 				reason += fmt.Sprintf(" Telling magi move about it also failed: %v.", writeErr)
 			}
 		}
-		return json.NewEncoder(out).Encode(map[string]string{
-			"decision": "block",
-			"reason":   reason + " Tell the user what failed in plain words.",
-		})
+		return block(out, reason+" Tell the user what failed in plain words.")
 	}
 	if a.Notify {
 		res.note(writeMoveResult(input.SessionID, movedReport(input.SessionID, a.Host, res)))
@@ -336,10 +327,11 @@ func promptHook(in io.Reader, out io.Writer) error {
 		return err
 	}
 	to := strings.TrimSpace(string(host))
-	return json.NewEncoder(out).Encode(map[string]string{
-		"decision": "block",
-		"reason":   fmt.Sprintf("This session moved to %s, so this copy takes no more messages. Continue it there, or bring it back here with magi pull %s.", to, to),
-	})
+	return block(out, fmt.Sprintf("This session moved to %s, so this copy takes no more messages. Continue it there, or bring it back here with magi pull %s.", to, to))
+}
+
+func block(out io.Writer, reason string) error {
+	return json.NewEncoder(out).Encode(map[string]string{"decision": "block", "reason": reason})
 }
 
 func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
@@ -359,10 +351,7 @@ func handoff(ctx context.Context, a armed, input stopInput) (Result, error) {
 		TranscriptPath: input.TranscriptPath,
 		Cwd:            input.Cwd,
 		Retire: func() (int, error) {
-			if err := markMoved(local, input.SessionID, a.Host); err != nil {
-				return 0, err
-			}
-			return retire(a, input.SessionID, input.TranscriptPath)
+			return retire(local, a.Host, input.SessionID, input.TranscriptPath, a.PID)
 		},
 	}.Run(ctx)
 }
@@ -386,12 +375,19 @@ func stillRunning(note string, tasks []backgroundTask) string {
 	return note + "; " + list
 }
 
-func retire(a armed, sessionID, transcriptPath string) (int, error) {
+func retire(local sh.Machine, host, sessionID, transcript string, pid int) (int, error) {
+	if err := markMoved(local, sessionID, host); err != nil {
+		return 0, err
+	}
 	journal, err := movePath(sessionID)
 	if err != nil {
 		return 0, err
 	}
-	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(a.PID), transcriptPath, a.Host, sessionID, os.Getenv("TMUX_PANE"), journal)
+	if pid == 0 {
+		_, err = sh.Run(local, retireScript, "", transcript, host, sessionID, "", journal)
+		return 0, err
+	}
+	cmd := exec.Command("sh", "-c", retireScript, "magi", strconv.Itoa(pid), transcript, host, sessionID, os.Getenv("TMUX_PANE"), journal)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return 0, err
@@ -433,7 +429,7 @@ func setUpPulledProject(p *Project, root string, out io.Writer) string {
 }
 
 func pullCommand(args []string) error {
-	if len(args) < 1 || len(args) > 2 {
+	if len(args) > 2 {
 		return errors.New("usage: magi pull <host> [session-id]")
 	}
 	hostName, sessionID := args[0], ""
@@ -512,10 +508,6 @@ func openPulledTab(res *Pulled, prompt string) error {
 	if err != nil {
 		return err
 	}
-	root := res.ProjectRoot
-	if root == "" {
-		root = res.ToDir
-	}
 	command := resumeCommand(res.Session, res.Name, prompt, res.Codex)
 	program, err := exec.LookPath(command[0])
 	if err != nil {
@@ -523,7 +515,7 @@ func openPulledTab(res *Pulled, prompt string) error {
 	}
 	command[0] = program
 	launcher := sh.Tmux{Machine: local}
-	tab, err := launcher.Start(localGroup(root, cfg.LocalRoots), tabLabel(res.Name, res.Codex), res.ToDir, command, true)
+	tab, err := launcher.Start(localGroup(res.ProjectRoot, cfg.LocalRoots), tabLabel(res.Name, res.Codex), res.ToDir, command, true)
 	if err != nil {
 		return err
 	}

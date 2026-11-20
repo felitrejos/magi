@@ -57,7 +57,7 @@ func describeStarted(s *started, why string) string {
 	t := s.Task
 	var b strings.Builder
 	fmt.Fprintf(&b, "Started task %s (%s) on %s: %s.\n", t.ID, t.Kind, t.Host, why)
-	fmt.Fprintf(&b, "It runs in its own copy of the project at %s there, %s, tab %q.\n", t.RunDir, t.Where, t.tabLabel())
+	fmt.Fprintf(&b, "It runs in its own copy of the project at %s there, %s, tab %q.\n", t.RunDir, t.Where, t.Label)
 	if len(s.ShownOn) > 0 {
 		fmt.Fprintf(&b, "It's open in %s.\n", strings.Join(s.ShownOn, ", "))
 	}
@@ -73,13 +73,6 @@ func describeStarted(s *started, why string) string {
 	return b.String()
 }
 
-func (t *Task) tabLabel() string {
-	if t.Label != "" {
-		return t.Label
-	}
-	return taskTabLabel(t.Name, t.Kind, t.ID)
-}
-
 func describeReport(r *taskReport) string {
 	t, st := r.Task, r.State
 	var b strings.Builder
@@ -89,7 +82,7 @@ func describeReport(r *taskReport) string {
 	}
 	switch st.State {
 	case "running":
-		fmt.Fprintf(&b, "%s\nStill running, %s, tab %q.\n", head, t.Where, t.tabLabel())
+		fmt.Fprintf(&b, "%s\nStill running, %s, tab %q.\n", head, t.Where, t.Label)
 		if t.Kind == kindRun || t.Kind == kindDelegate {
 			fmt.Fprintf(&b, "Latest output:\n%s", fence(tail(st.Tail)))
 		}
@@ -253,9 +246,6 @@ func printTasks(w io.Writer) error {
 			if err == nil {
 				var st taskState
 				if st, err = probeTask(r, t); err == nil {
-					err = t.noteState(st.State)
-				}
-				if err == nil {
 					states[i] = st.State
 					if st.State == "done" {
 						states[i] = "finished (" + st.Exit + "), not collected"

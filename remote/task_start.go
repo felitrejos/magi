@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -30,15 +31,8 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	if err != nil {
 		return nil, err
 	}
-	ws, err := readWorkspace(local, spec.Dir, host.Secrets, host.Exclude)
+	ws, _, err := sourceWorkspace(local, local.Name(), spec.Dir, host.Secrets, host.Exclude)
 	if err != nil {
-		return nil, err
-	}
-	home, err := homeDir(local)
-	if err != nil {
-		return nil, err
-	}
-	if err := refuseHome(ws, home, local.Name()); err != nil {
 		return nil, err
 	}
 	remote, err := newRemote(ctx, host)
@@ -51,13 +45,9 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	}
 	group := localGroup(ws.MainRoot, host.LocalRoots)
 	id := store.NewTaskID()
-	label, parentID := taskTabLabel(ws.Name, spec.Kind, id), ""
-	delegator, err := delegatingSession(spec.Caller, ws.Name)
+	label, err := delegatorLabel(spec.Caller, ws.Name)
 	if err != nil {
 		return nil, err
-	}
-	if delegator != nil {
-		label, parentID = delegator.tabLabel(), delegator.ID
 	}
 	t := &Task{
 		ID:       id,
@@ -72,11 +62,9 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		Starting: true,
 		Prompt:   spec.Prompt,
 		Dir:      remoteHome + "/.magi/tasks/" + id,
-		Label:    label,
-		Parent:   parentID,
+		Label:    cmp.Or(label, fmt.Sprintf("%s · %s %s", ws.Name, spec.Kind, id)),
 		Turn:     1,
 		Keep:     spec.Keep,
-		State:    "starting",
 	}
 	t.Checkout = t.Dir + "/checkout/" + ws.Name
 	t.RunDir = filepath.Join(t.Checkout, ws.Subdir)
@@ -104,7 +92,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		return nil, err
 	}
 	removeCopy := func(err error) error {
-		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cleanup, cancel := context.WithTimeout(context.Background(), cleanupBudget)
 		defer cancel()
 		if _, rmErr := sh.Run(remote.With(cleanup), taskScript, "remove", t.Dir); rmErr != nil {
 			return fmt.Errorf("%w; removing the task's copy at %s on %s also failed: %v", err, t.Dir, spec.Host, rmErr)
@@ -149,15 +137,15 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 	}
 
 	launcher := sh.Tmux{Machine: remote}
-	tab, err := launcher.Start(group, t.Label, t.RunDir, withParent(t.Parent, command), spec.Kind == kindSession)
+	tab, err := launcher.Start(group, t.Label, t.RunDir, command, spec.Kind == kindSession)
 	if err != nil {
-		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
+		return nil, removeCopy(err)
 	}
 	tab.SessionCreated = false
 	if err := waitForTask(remote, t.Dir); err != nil {
 		return nil, removeCopy(errors.Join(err, launcher.Discard(tab)))
 	}
-	t.Tab, t.Where, t.Starting, t.State = tab, launcher.Where(group), false, "running"
+	t.Tab, t.Where, t.Starting = tab, launcher.Where(group), false
 	if spec.Kind == kindSession {
 		if trusted, err := isTrusted(remote, t.RunDir); err == nil && !trusted {
 			res.Notes = append(res.Notes, fmt.Sprintf("Claude there first asks whether to trust the copy's folder; the user answers Yes in that tab. To skip that for later sessions, the user can run claude once in %s/.magi/tasks on %s and trust it", remoteHome, spec.Host))
@@ -168,7 +156,7 @@ func startTask(parent context.Context, spec TaskSpec) (*started, error) {
 		}
 	}
 	if err := t.save(); err != nil {
-		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cleanup, cancel := context.WithTimeout(context.Background(), cleanupBudget)
 		defer cancel()
 		launcher.Machine = remote.With(cleanup)
 		_, cancelErr := sh.Run(launcher.Machine, taskScript, "cancel", t.Dir)
@@ -196,10 +184,6 @@ func waitForTask(m sh.Machine, dir string) error {
 		case <-time.After(150 * time.Millisecond):
 		}
 	}
-}
-
-func taskTabLabel(name, kind, id string) string {
-	return fmt.Sprintf("%s · %s %s", name, kind, id)
 }
 
 func checkRoom(remote *sh.Remote, host Host, t *Task, action string) error {

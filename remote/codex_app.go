@@ -120,15 +120,23 @@ func (e *codexRefusal) Error() string {
 }
 
 func openCodexSessions(m sh.Machine) ([]codexThread, error) {
-	out, err := sh.Run(m, codexScript, "opened")
+	out, err := sh.Run(m, `sh -c "$1" magi opened | sh -c "$1" magi states`, codexScript)
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
+	var ids, states []string
 	for line := range strings.Lines(string(out)) {
-		id, _, _ := strings.Cut(line, " ")
-		ids = append(ids, id)
+		fields := strings.Fields(line)
+		ids, states = append(ids, fields[1]), append(states, fields[2])
 	}
+	threads, err := readCodexThreads(m, ids)
+	for i := range threads {
+		threads[i].Busy = states[i] == "busy"
+	}
+	return threads, err
+}
+
+func readCodexThreads(m sh.Machine, ids []string) ([]codexThread, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -148,11 +156,6 @@ func openCodexSessions(m sh.Machine) ([]codexThread, error) {
 		if err := json.Unmarshal(answer, &read); err != nil {
 			return nil, fmt.Errorf("unreadable Codex session %s on %s: %w", ids[i], m.Name(), err)
 		}
-		turn, err := openTurn(m, read.Thread.Path)
-		if err != nil {
-			return nil, err
-		}
-		read.Thread.Busy = turn != ""
 		threads[i] = read.Thread
 	}
 	return threads, nil

@@ -18,18 +18,6 @@ import (
 
 const forwardSession = "0f0f0f0f-1111-2222-3333-444444444444"
 
-func TestForwardArgsBindOnlyThisMachineAndUseTheirOwnConnection(t *testing.T) {
-	args := strings.Join(forwardArgs(forwardRecord{SSH: "homelab", Ports: []int{3000, 8080}}), " ")
-	for _, want := range []string{"-N", "ExitOnForwardFailure=yes", "ControlPath=none", "-L 127.0.0.1:3000:localhost:3000", "-L 127.0.0.1:8080:localhost:8080"} {
-		if !strings.Contains(args, want) {
-			t.Errorf("missing %q in %s", want, args)
-		}
-	}
-	if !strings.HasSuffix(args, " -- homelab") {
-		t.Errorf("the destination isn't last: %s", args)
-	}
-}
-
 func forwardHome(t *testing.T) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())

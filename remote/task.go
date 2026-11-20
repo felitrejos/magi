@@ -47,7 +47,6 @@ type Task struct {
 	Where    string    `json:"where"`
 	Tab      sh.Tab    `json:"tab"`
 	Label    string    `json:"tab_label,omitempty"`
-	Parent   string    `json:"parent_session,omitempty"`
 	Outcome  *Outcome  `json:"outcome,omitempty"`
 	Group    string    `json:"group,omitempty"`
 	Session  string    `json:"claude_session,omitempty"`
@@ -56,7 +55,6 @@ type Task struct {
 	Reply    string    `json:"reply,omitempty"`
 	Tip      string    `json:"tip,omitempty"`
 	Keep     bool      `json:"keep_branch,omitempty"`
-	State    string    `json:"state"`
 }
 
 type Outcome struct {
@@ -197,29 +195,6 @@ func (t *Task) remote(ctx context.Context) (*sh.Remote, Host, error) {
 	}
 	r, err := newRemote(ctx, host)
 	return r, host, err
-}
-
-func (t *Task) noteState(state string) error {
-	if t.State == state {
-		return nil
-	}
-	unlock, err := lockTask(t.ID)
-	if errors.Is(err, errTaskBusy) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	fresh, err := loadTask(t.ID)
-	if err != nil {
-		return err
-	}
-	if fresh.Outcome != nil || fresh.Starting || fresh.Turn != t.Turn {
-		return nil
-	}
-	fresh.State = state
-	return fresh.save()
 }
 
 var errTaskBusy = errors.New("being collected by another magi right now; try again in a moment")

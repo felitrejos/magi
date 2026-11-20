@@ -374,5 +374,6 @@ func (f *fixture) handoffToServer(id string) Handoff {
 		SessionID:      id,
 		TranscriptPath: transcript,
 		Cwd:            f.local,
+		Retire:         func() (int, error) { return 0, nil },
 	}
 }

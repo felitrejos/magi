@@ -3,7 +3,9 @@ package main
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -31,10 +33,11 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 	}
 	all := []machineSessions{{Name: local.Name(), Machine: local}}
 	cfg, _, err := loadConfig()
-	if err == nil {
-		for _, name := range cfg.Order {
-			all = append(all, machineSessions{Name: name})
-		}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, name := range cfg.Order {
+		all = append(all, machineSessions{Name: name})
 	}
 	var wg sync.WaitGroup
 	for i := range all {
@@ -51,6 +54,7 @@ func everySession(ctx context.Context) ([]machineSessions, error) {
 				m.Machine = r
 			}
 			m.read()
+			m.Machine = m.Machine.With(ctx)
 		})
 	}
 	wg.Wait()

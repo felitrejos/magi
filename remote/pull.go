@@ -24,6 +24,8 @@ const (
 	pullBudget = 3 * time.Minute
 )
 
+var turnEndPoll = 2 * time.Second
+
 type Pull struct {
 	HostName  string
 	Host      Host
@@ -92,17 +94,11 @@ func (p Pull) Run() (res Pulled, err error) {
 				return err
 			}
 		}
-		if ws, err = readWorkspace(remote, session.Cwd, p.Host.Secrets, p.Host.Exclude); err != nil {
-			return err
-		}
-		remoteHome, err := homeDir(remote)
-		if err != nil {
+		var remoteHome string
+		if ws, remoteHome, err = sourceWorkspace(remote, p.HostName, session.Cwd, p.Host.Secrets, p.Host.Exclude); err != nil {
 			return err
 		}
 		if err := refuseUntested(session.Codex, local, remote, expandHome(p.Host.program(session.Codex), remoteHome)); err != nil {
-			return err
-		}
-		if err := refuseHome(ws, remoteHome, p.HostName); err != nil {
 			return err
 		}
 		if where, err = place(local, ws, p.Host.LocalRoots, serverGroup(ws.MainRoot, p.Host.Roots, remoteHome), p.Host.Exclude); err != nil {
@@ -157,11 +153,11 @@ func (p Pull) Run() (res Pulled, err error) {
 		return res, stopped(errors.Join(err, forgetMove(session.ID)))
 	}
 	res.NewFolder = where.NewFolder
-	res.FromDir, res.ToDir = session.Cwd, localDir
+	res.ToDir = localDir
 	undo := func(err error) error {
-		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cleanup, cancel := context.WithTimeout(context.Background(), cleanupBudget)
 		defer cancel()
-		return stopped(j.recovery(local.With(cleanup), remote, p.Host).giveBack(err))
+		return stopped(j.recovery(local.With(cleanup), remote.With(cleanup), p.Host).giveBack(err))
 	}
 
 	if err := st.run("sync", func() error {
@@ -276,7 +272,7 @@ func stopAtTurnEnd(r *sh.Remote, s remoteSession, out io.Writer) error {
 		select {
 		case <-r.Context().Done():
 			return fmt.Errorf("the session on %s was still busy", r.Name())
-		case <-time.After(2 * time.Second):
+		case <-time.After(turnEndPoll):
 		}
 	}
 }

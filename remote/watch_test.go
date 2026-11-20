@@ -68,7 +68,7 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 			select {
 			case line := <-lines:
 				heard = append(heard, line)
-				w.hear(line)
+				w.hear(line, time.Now())
 				if strings.HasPrefix(line, kind) {
 					n--
 				}
@@ -82,9 +82,9 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	if tree := fmt.Sprintf(" %d:3.00:150", pid); !strings.HasSuffix(heard[len(heard)-1], tree) {
 		t.Errorf("stats line = %q, want the session's tree summed to %q", heard[len(heard)-1], tree)
 	}
-	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 %d:10:150", pid))
-	time.Sleep(3 * time.Second)
-	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 %d:13:150", pid))
+	now := time.Now()
+	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 %d:10:150", pid), now)
+	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 %d:13:150", pid), now.Add(3*time.Second))
 	live := readLive(t, "server")
 	if len(live.Sessions) != 1 {
 		t.Fatalf("live sessions = %+v", live.Sessions)

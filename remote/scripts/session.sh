@@ -13,8 +13,7 @@ same() {
 
 ours() {
   kill -0 "$1" 2>/dev/null || return 1
-  if [ -r "/proc/$1/cmdline" ]; then args=$(tr '\0' ' ' < "/proc/$1/cmdline"); else args=$(ps -o args= -p "$1"); fi
-  case $args in *claude* | *codex*) same "$1" "$2" ;; *) return 1 ;; esac
+  case $(args_of "$1") in *claude* | *codex*) same "$1" "$2" ;; *) return 1 ;; esac
 }
 
 end() {

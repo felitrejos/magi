@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -304,14 +303,7 @@ func readCodexConfig(m sh.Machine) (string, codexConfig, error) {
 }
 
 func (c codexConfig) trusts(dir string) bool {
-	for d := dir; ; d = filepath.Dir(d) {
-		if c.Projects[d].TrustLevel == "trusted" {
-			return true
-		}
-		if d == filepath.Dir(d) {
-			return false
-		}
-	}
+	return trustedUnder(dir, func(d string) bool { return c.Projects[d].TrustLevel == "trusted" })
 }
 
 func carryCodexTrust(local, remote sh.Machine, localDir, remoteDir, remoteRoot string) error {

@@ -49,9 +49,6 @@ func taskStatus(id string) (*taskReport, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := t.noteState(st.State); err != nil {
-		return nil, err
-	}
 	return &taskReport{Task: t, State: st}, nil
 }
 
@@ -125,7 +122,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 			}
 		}
 		if st.State == "running" {
-			return nil, fmt.Errorf("task %s on %s is still running after being told to stop; close its tab there (%s)", t.ID, t.Host, t.tabLabel())
+			return nil, fmt.Errorf("task %s on %s is still running after being told to stop; close its tab there (%s)", t.ID, t.Host, t.Label)
 		}
 		cancelled = true
 	}
@@ -168,7 +165,7 @@ func collectTask(id string, cancelIt bool) (*taskReport, error) {
 	if err := errors.Join(notes...); err != nil {
 		o.Note = err.Error()
 	}
-	t.Outcome, t.State = o, "collected"
+	t.Outcome = o
 	if err := t.save(); err != nil {
 		return nil, err
 	}

@@ -47,6 +47,14 @@ func WriteAtomic(path string, data []byte) error {
 	return os.Rename(f.Name(), path)
 }
 
+func ReadJSON(path string, v any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
+}
+
 func WriteJSON(path string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {

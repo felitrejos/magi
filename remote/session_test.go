@@ -262,6 +262,8 @@ func TestFindSessionPrefersTheNewestRecordAndRejectsBadIDs(t *testing.T) {
 
 func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
 	f := newFixture(t)
+	turnEndPoll = 50 * time.Millisecond
+	t.Cleanup(func() { turnEndPoll = 2 * time.Second })
 	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	fake := exec.Command("sh", "-c", "sleep 30; : claude --resume "+id)
 	if err := fake.Start(); err != nil {
@@ -273,7 +275,7 @@ func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
 	f.write(f.home, ".claude/sessions/"+pid+".json", `{"pid":`+pid+`,"sessionId":"`+id+`","status":"busy"}`)
 	idle := `{"pid":` + pid + `,"sessionId":"` + id + `","status":"idle"}`
 	go func() {
-		time.Sleep(2500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		if err := os.WriteFile(filepath.Join(f.home, ".claude/sessions", pid+".json"), []byte(idle), 0o644); err != nil {
 			t.Error(err)
 		}
@@ -283,7 +285,7 @@ func TestStopAtTurnEndWaitsForTheTurnAndOnlyStopsClaude(t *testing.T) {
 	if err := stopAtTurnEnd(f.remoteHost(), remoteSession{ID: id, Live: &liveSession{PID: fake.Process.Pid}}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(started) < 2*time.Second || !strings.Contains(out.String(), "Waiting") {
+	if time.Since(started) < 500*time.Millisecond || !strings.Contains(out.String(), "Waiting") {
 		t.Errorf("stopped before the turn ended (%s, %q)", time.Since(started), out.String())
 	}
 	select {

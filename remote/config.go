@@ -119,11 +119,6 @@ func loadConfig() (Config, string, error) {
 			cfg.Order = append(cfg.Order, key[1])
 		}
 	}
-	for _, name := range slices.Sorted(maps.Keys(cfg.Hosts)) {
-		if !slices.Contains(cfg.Order, name) {
-			cfg.Order = append(cfg.Order, name)
-		}
-	}
 	return cfg, path, nil
 }
 

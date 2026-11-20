@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -47,11 +46,7 @@ func lockPath(recordPath string) string {
 
 func readForward(path string) (forwardRecord, error) {
 	var r forwardRecord
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return r, err
-	}
-	return r, json.Unmarshal(data, &r)
+	return r, store.ReadJSON(path, &r)
 }
 
 func runnerAlive(recordPath string) bool {

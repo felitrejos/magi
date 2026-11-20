@@ -97,15 +97,8 @@ func describeHere(hostName string, host Host, sessionID string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	ws, err := readWorkspace(local, s.Cwd, host.Secrets, host.Exclude)
+	ws, _, err := sourceWorkspace(local, local.Name(), s.Cwd, host.Secrets, host.Exclude)
 	if err != nil {
-		return "", err
-	}
-	home, err := homeDir(local)
-	if err != nil {
-		return "", err
-	}
-	if err := refuseHome(ws, home, local.Name()); err != nil {
 		return "", err
 	}
 	return describeCopy(local, hostName, host, ws, true, s.Codex)

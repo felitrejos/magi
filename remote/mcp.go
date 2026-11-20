@@ -76,8 +76,14 @@ type optionalTaskInput struct {
 	TaskID string `json:"task_id,omitempty" jsonschema:"the task id; leave out to list this machine's tasks"`
 }
 
-func textResult(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+func addTool[In any](server *mcp.Server, tool *mcp.Tool, run func(context.Context, In) (string, error)) {
+	mcp.AddTool(server, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+		text, err := run(ctx, in)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
+	})
 }
 
 func projectDir(dir string) (string, error) {
@@ -162,192 +168,176 @@ func newMCPServer() *mcp.Server {
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
 	no := false
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "machines",
 		Annotations: readOnly,
 		Description: "List the machines magi can send work to, each with its operating system, architecture and the tools it has (build toolchains, and Docker or Podman when they're running), its load read over SSH (cores, load average, memory and Claude sessions working there), whether it answers over SSH, magi tasks running on it, each host's budget and whether it has room, the machine magi suggests, and this machine's own load for comparison. When the work needs a platform or a tool, such as a Linux build from a Mac, pass needs: machines then ranks the places that can do it, best first: one that runs it natively, then a container on whichever machine has room, this machine included. Prefer a machine that runs it natively over a container or emulation here. Read-only. Call it before proposing where to run something, and tell the user which machine you'd pick and why.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in machinesInput) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, in machinesInput) (string, error) {
 		cfg, path, err := loadConfig()
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
 		if len(cfg.Hosts) == 0 {
-			return nil, nil, fmt.Errorf("no hosts in %s; the user can add one with magi init", path)
+			return "", fmt.Errorf("no hosts in %s; the user can add one with magi init", path)
 		}
-		return textResult(describeMachines(surveyFleet(ctx, cfg, true), in.Needs)), nil, nil
+		return describeMachines(surveyFleet(ctx, cfg, true), in.Needs), nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "sessions",
 		Annotations: readOnly,
 		Description: "List the Claude Code and Codex sessions running on this machine and on every machine in the user's magi config, read over SSH. The first line says which sessions are waiting on the user, so this one call answers \"does anything need me?\". Then each session's id, title, state and folder: busy, waiting (and on what) or idle for Claude Code, busy or idle for Codex, from its session file (a Codex approval wait isn't visible from outside Codex, and a Codex turn that was killed midway can still read as busy), and its Remote Control link when it has one. Read-only.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ struct{}) (string, error) {
 		all, err := everySession(ctx)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
-		return textResult(describeSessions(all)), nil, nil
+		return describeSessions(all), nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "diff",
 		Annotations: readOnly,
 		Description: "Show a running Claude Code or Codex session's uncommitted changes (git diff against HEAD, plus new untracked files), on whichever machine it runs, read over SSH. Long diffs keep their end. Read-only.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in sessionQuery) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, in sessionQuery) (string, error) {
 		all, err := everySession(ctx)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
 		m, s, err := findAnySession(all, in.Session)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
-		text, err := sessionDiff(m.Machine, s)
-		if err != nil {
-			return nil, nil, err
-		}
-		return textResult(text), nil, nil
+		return sessionDiff(m.Machine, s)
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "move_session",
 		Description: "Move a Claude Code or Codex session that runs on this machine, other than this one, to another machine, as magi move does: it stops the session here and continues it there with its conversation and its working tree. Returns what went across and where it now runs. A session that's in the middle of a turn or waiting on the user isn't moved: run magi wait <session id> as a background shell command, then move it if that says it's idle, or ask the user to answer it first if that says it's waiting on them. To move this session itself, use the handoff skill. Moving a session is the user's call: before calling, say which session goes to which machine, and wait for the user's clear yes.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in moveInput) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, in moveInput) (string, error) {
 		local, err := sh.NewLocal(ctx)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
 		here := machineSessions{Name: local.Name(), Machine: local}
 		if here.read(); here.Err != nil {
-			return nil, nil, here.Err
+			return "", here.Err
 		}
 		_, s, err := findAnySession([]machineSessions{here}, in.Session)
 		if err != nil && here.CodexErr != nil {
 			err = fmt.Errorf("%w; this machine's Codex sessions couldn't be read: %w", err, here.CodexErr)
 		}
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
 		if s.PID == callerPID {
-			return nil, nil, fmt.Errorf("%s is this session; to move it, use the handoff skill", sessionLabel(here.Name, s))
+			return "", fmt.Errorf("%s is this session; to move it, use the handoff skill", sessionLabel(here.Name, s))
 		}
 		var out strings.Builder
 		if err := (mover{session: s.SessionID, host: in.Host, refuseBusy: true, out: &out}).run(); err != nil {
-			return nil, nil, errors.New(strings.TrimSpace(out.String()))
+			return "", errors.New(strings.TrimSpace(out.String()))
 		}
-		return textResult(out.String()), nil, nil
+		return out.String(), nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "run_elsewhere",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
 		Description: "Run a shell command, such as a slow test suite or a build, on another machine, in a copy of this project's exact working tree (commits, staged and unstaged changes, untracked and secret files). It copies the working tree first, usually in seconds, then returns a task id; the command runs in the background in a tab the user can watch, so long runs never block or time out. The copy is separate from any checkout on that machine and is removed when the result is collected; this session and this checkout are untouched. Dependencies such as node_modules aren't copied, but the project's approved .magi.toml setup runs first. Before calling: call machines, tell the user which machine you propose (the one machines suggests unless they named one) and the exact command, and wait for their OK. Afterwards run magi tasks wait <task id> as a background shell command to be told when it finishes, then task_result for the exit code and output.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, in runInput) (string, error) {
 		if strings.TrimSpace(in.Command) == "" {
-			return nil, nil, fmt.Errorf("command is empty")
+			return "", fmt.Errorf("command is empty")
 		}
 		dir, err := projectDir(in.Dir)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
-		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindRun, Dir: dir, Command: in.Command, Setup: setupWanted(in.Setup)})
-		if err != nil {
-			return nil, nil, err
-		}
-		return textResult(text), nil, nil
+		return startElsewhere(ctx, in.Host, TaskSpec{Kind: kindRun, Dir: dir, Command: in.Command, Setup: setupWanted(in.Setup)})
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "delegate",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
 		Description: "Give a self-contained task to a background Claude on another machine: a subagent that runs elsewhere, in its own copy of this project's working tree. It copies the working tree first, usually in seconds, then returns a task id. When it's done, task_result returns its final message, and applies its file changes to this working tree, keeping them on the branch magi/task-<id> too; with keep_branch they're only put on that branch. It runs headless (claude -p) in acceptEdits mode by default: it reads and edits files in its copy, and anything else that would ask for permission, such as shell commands or network access, is denied unless allowed_tools or that machine's own settings allow it. It never runs with permission checks bypassed. It can't ask you questions, so put everything it needs in task. Before calling: call machines, then tell the user the machine you propose, what the task is, and any allowed_tools you want to grant, and wait for their OK.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in delegateInput) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, in delegateInput) (string, error) {
 		if strings.TrimSpace(in.Task) == "" {
-			return nil, nil, fmt.Errorf("task is empty")
+			return "", fmt.Errorf("task is empty")
 		}
 		args, err := delegateArgs(in)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
 		dir, err := projectDir(in.Dir)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
-		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindDelegate, Dir: dir, Prompt: in.Task, Claude: args, Setup: setupWanted(in.Setup), Keep: in.KeepBranch})
-		if err != nil {
-			return nil, nil, err
-		}
-		return textResult(text), nil, nil
+		return startElsewhere(ctx, in.Host, TaskSpec{Kind: kindDelegate, Dir: dir, Prompt: in.Task, Claude: args, Setup: setupWanted(in.Setup), Keep: in.KeepBranch})
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "session_elsewhere",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
 		Description: "Open a new interactive Claude session for this project on another machine, in its own copy of this project's working tree, in a tmux window, with Remote Control so it's also in every Claude app on their account. For when the user wants to work on something in parallel on a lighter machine. This session keeps running. Only with the user's clear yes: first call machines, then say which machine and what the new session will start with, and wait. When the user quits that session, task_result brings its changes back as a branch.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in sessionInput) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, in sessionInput) (string, error) {
 		dir, err := projectDir(in.Dir)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
-		text, err := startElsewhere(ctx, in.Host, TaskSpec{Kind: kindSession, Dir: dir, Prompt: in.Prompt})
-		if err != nil {
-			return nil, nil, err
-		}
-		return textResult(text), nil, nil
+		return startElsewhere(ctx, in.Host, TaskSpec{Kind: kindSession, Dir: dir, Prompt: in.Prompt})
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "task_status",
 		Annotations: readOnly,
 		Description: "Check a task started with run_elsewhere, delegate or session_elsewhere: still running or finished, with its latest output. Without task_id, lists this machine's tasks. Read-only: it doesn't collect anything. Between checks, carry on with other work instead of polling in a loop.",
-	}, func(_ context.Context, _ *mcp.CallToolRequest, in optionalTaskInput) (*mcp.CallToolResult, any, error) {
+	}, func(_ context.Context, in optionalTaskInput) (string, error) {
 		if in.TaskID == "" {
 			var b strings.Builder
 			if err := printTasks(&b); err != nil {
-				return nil, nil, err
+				return "", err
 			}
-			return textResult(b.String()), nil, nil
+			return b.String(), nil
 		}
 		r, err := taskStatus(in.TaskID)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
-		return textResult(describeReport(r)), nil, nil
+		return describeReport(r), nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "task_result",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
 		Description: "Collect a finished task. A run_elsewhere task gives its exit code, the end of its output and the path of the full log on this machine. A delegate task gives Claude's final message and applies its changes to this working tree, keeping them on a branch too (only on the branch with keep_branch, or when they clash with changes made here since); a session_elsewhere task gives its changes as a branch. Collecting closes the task's tab and removes its copy on the other machine, except a finished delegate's copy: that stays for task_reply until cancel_task removes it or it has been idle for a day. If the task is still running, it says so and changes nothing. Calling it again returns the same result.",
-	}, func(_ context.Context, _ *mcp.CallToolRequest, in taskInput) (*mcp.CallToolResult, any, error) {
+	}, func(_ context.Context, in taskInput) (string, error) {
 		r, err := collectTask(in.TaskID, false)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
-		return textResult(describeReport(r) + sweepIdleCopies()), nil, nil
+		return describeReport(r) + sweepIdleCopies(), nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "task_reply",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
 		Description: "Send a follow-up to a delegated Claude once its last turn has finished, for example \"now also fix the lint errors\". It resumes the same Claude session in the same copy on the same machine, so it keeps everything it knew and did; the follow-up runs as a new turn of the same task, with the same permissions. Returns at once; run magi tasks wait <task id> as a background shell command to be told when the turn is done, then collect it with task_result, which returns its new message and applies that turn's changes the same way. It isn't sent when that machine's budget has no room. Tell the user what you're asking it before you send it.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in replyInput) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, in replyInput) (string, error) {
 		s, err := replyTask(ctx, in.TaskID, in.Message)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
-		return textResult(fmt.Sprintf("Sent the follow-up to task %s on %s as turn %d; it runs %s, tab %q. To be told when it's done, run `magi tasks wait %s` as a background shell command; then collect it with task_result.\n", s.Task.ID, s.Task.Host, s.Task.Turn, s.Task.Where, s.Task.tabLabel(), s.Task.ID)), nil, nil
+		return fmt.Sprintf("Sent the follow-up to task %s on %s as turn %d; it runs %s, tab %q. To be told when it's done, run `magi tasks wait %s` as a background shell command; then collect it with task_result.\n", s.Task.ID, s.Task.Host, s.Task.Turn, s.Task.Where, s.Task.Label, s.Task.ID), nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "cancel_task",
 		Description: "Stop a running task, close its tab and remove its copy on the other machine; its unfinished changes are discarded. A run_elsewhere or delegate task's output so far is kept in a log on this machine; a session_elsewhere task keeps no output. Also use it to remove a finished delegate's copy once you're done sending it follow-ups. Ask the user before stopping a running task.",
-	}, func(_ context.Context, _ *mcp.CallToolRequest, in taskInput) (*mcp.CallToolResult, any, error) {
+	}, func(_ context.Context, in taskInput) (string, error) {
 		r, err := collectTask(in.TaskID, true)
 		if err != nil {
-			return nil, nil, err
+			return "", err
 		}
-		return textResult(describeReport(r)), nil, nil
+		return describeReport(r), nil
 	})
 	return server
 }

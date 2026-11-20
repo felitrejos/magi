@@ -98,9 +98,6 @@ func replyTask(ctx context.Context, id, message string) (*started, error) {
 	if t.Kind != kindDelegate {
 		return nil, fmt.Errorf("task %s is a %s task; only a delegated Claude takes follow-ups", id, t.Kind)
 	}
-	if t.Session == "" {
-		return nil, fmt.Errorf("task %s was started by an older magi that didn't keep its Claude session; start a new delegate", id)
-	}
 	if t.Outcome == nil {
 		r, err := collectTask(id, false)
 		if err != nil {
@@ -137,15 +134,15 @@ func replyTask(ctx context.Context, id, message string) (*started, error) {
 		return nil, err
 	}
 	launcher := sh.Tmux{Machine: r}
-	tab, err := launcher.Start(t.Group, t.tabLabel(), t.RunDir, withParent(t.Parent, t.delegateCommand(host, "", true)), false)
+	tab, err := launcher.Start(t.Group, t.Label, t.RunDir, t.delegateCommand(host, "", true), false)
 	if err != nil {
-		return nil, errors.Join(err, launcher.Discard(tab))
+		return nil, err
 	}
 	tab.SessionCreated = false
 	if err := waitForTask(r, t.Dir); err != nil {
 		return nil, errors.Join(err, launcher.Discard(tab))
 	}
-	t.Outcome, t.Tab, t.Reply, t.State = nil, tab, message, "running"
+	t.Outcome, t.Tab, t.Reply = nil, tab, message
 	t.Turn++
 	if err := t.save(); err != nil {
 		return nil, err

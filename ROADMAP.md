@@ -18,8 +18,8 @@
   was cut off.
 - **A layer for other tools.** The CLI and `magi mcp` give scripts, other
   orchestrators and Claude itself magi's actions. No tool types into
-  another live session. The session's own app (Desktop, the Claude app
-  through Remote Control, or its terminal) is where you answer it.
+  another live session. You answer a session in its own app, which is the
+  Claude app through Remote Control or its terminal.
 
 ## 1.0
 
@@ -53,8 +53,8 @@ workspace.
   written before the move changes anything and removed when it has fully
   finished. `magi status` and the next move of that session read a journal
   left behind and finish or undo the move. They never delete a folder, and
-  they stop nothing when they can't tell which copy is live. Tests kill the hook
-  partway and take the network down, and they run in the test suite.
+  they stop nothing when they can't tell which copy is live. Tests that
+  kill the hook partway and take the network down run in the test suite.
   Still open are these.
   - The results of those tests aren't published alongside the round-trip
     numbers.
@@ -105,18 +105,15 @@ workspace.
 - **`magi watch` streams changes.** What exists now is a watcher that,
   over the one SSH connection per machine it already keeps for hand backs,
   also streams what changes there. It runs the same loop for this machine.
-  Every 2 seconds the loop reads Claude Code's session registry files and
-  Codex's open-thread lock files, and it sends a snapshot only when
-  something changed. It runs `claude agents --json` only when a session is
-  waiting, to learn on what. About every 30 seconds it sends the machine's
-  cores, load, memory and home disk, and each session's CPU and memory
-  summed over its process tree, from one `ps`. magi writes
-  `~/.magi/live/<machine>.json` with whether the machine answers, when it
-  was last heard, those stats and each session's id, title, folder, state,
-  since when, CPU and memory. Hand backs and state changes show within
-  about 2 seconds, and Codex busy or idle within about 6. Idle cost was
-  measured on a Mac over 10 minutes against a budget of 0.5% of one core
-  and 30 MB. The loop on the watched machine used 0.30% to 0.45% and
+  Every 2 seconds the loop reads Claude Code's session files and Codex's
+  open-thread lock files, and it sends a snapshot only when something
+  changed. About every 30 seconds it sends the machine's load, memory and
+  disk and each session's CPU and memory. magi writes the latest to
+  `~/.magi/live/<machine>.json`. [SECURITY.md](SECURITY.md) lists what the
+  loop reads and what the file holds. Hand backs and state changes show
+  within about 2 seconds, and Codex busy or idle within about 6. Idle cost
+  was measured on a Mac over 10 minutes against a budget of 0.5% of one
+  core and 30 MB. The loop on the watched machine used 0.30% to 0.45% and
   2.8 MB at its peak. magi itself used 0.013% and 13.5 MB. Still open are
   these.
   - Idle cost isn't measured on Linux yet.
@@ -126,25 +123,23 @@ workspace.
     unverified.
   - A reader of the live file must treat a `heard` time older than about
     40 seconds as the machine not answering. The file keeps its last
-    content when `magi watch` itself stops. The menu bar app has to apply
-    that rule.
-- **The menu bar app.** SwiftUI, Mac only, open source. It reads the files
-  `magi watch` writes in `~/.magi/live`. It shows each machine's load
+    content when `magi watch` itself stops.
+- **The menu bar app.** Not built yet. SwiftUI, Mac only, open source. It
+  reads the files `magi watch` writes in `~/.magi/live`. It shows each machine's load
   against its cores, memory, disk and whether it answers, which includes a
   machine not heard from for about 40 seconds. For each session it shows
   the project, the state, how long it's been in it, and its CPU and
   memory. For a Codex session that time counts from when the watcher first
   saw the state. It also shows where sessions moved and background tasks,
-  which the live files don't hold. A badge
-  shows when a Claude Code session is waiting on you. A Codex approval
-  wait shows only once `sessions` can see it. The only click opens a session
-  where it lives, in Desktop or its tmux window. It doesn't answer prompts
-  or type into sessions. It reconnects quietly after sleep or a network
+  which the live files don't hold. A badge shows when a Claude Code
+  session is waiting on you. A Codex approval wait shows only once
+  `sessions` can see it. The only click opens a session where it lives. It
+  doesn't answer prompts or type into sessions. It reconnects quietly after sleep or a network
   change and shows a machine that doesn't answer instead of hiding it.
-- **Shipping the menu bar app.** Not notarized. Installed from a Homebrew tap of the
-  project's own, with the README saying how to open it the first time
-  (right-click and Open, or `xattr -dr com.apple.quarantine`). Updates
-  through that tap.
+- **Shipping the menu bar app.** Not notarized. Installed from a Homebrew
+  tap of the project's own, with the README saying how to open it the
+  first time (right-click and Open, or `xattr -dr com.apple.quarantine`).
+  Updates through that tap.
 
 ### Not in 1.0
 
@@ -159,12 +154,5 @@ workspace.
 - **Actions in the menu bar.** Answering prompts or typing into a session
   from the menu bar would duplicate the session's own app and need hooks
   that wait for an answer. Opening the session is enough.
-- **Tools that type into other sessions.** Remote Control and Desktop
-  already let you answer a session yourself.
-- **Claude Desktop handling of its own.** magi used to jump Desktop to the
-  moved session, reopen a hand back in Desktop and archive the copy left
-  behind. All three relied on undocumented Desktop behaviour, so they were
-  dropped. A Desktop session now moves like any other and shows in Desktop
-  through Remote Control. This is worth revisiting only if Desktop
-  documents a way to open a session by id with a ready signal,
-  `claude --desktop --fork-session`, or archiving from the CLI.
+- **Tools that type into other sessions.** Remote Control already lets you
+  answer a session yourself.

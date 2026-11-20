@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -131,7 +132,7 @@ func initConfig(in io.Reader, out io.Writer) error {
 		return errors.New("a name is needed")
 	}
 	h := cfg.Hosts[name]
-	if h.SSH, err = p.ask("ssh destination for "+name, firstNonEmpty(h.SSH, name)); err != nil {
+	if h.SSH, err = p.ask("ssh destination for "+name, cmp.Or(h.SSH, name)); err != nil {
 		return err
 	}
 	remote, err := newRemote(ctx, h)
@@ -141,20 +142,20 @@ func initConfig(in io.Reader, out io.Writer) error {
 	if _, err := sh.Run(remote, "true"); err != nil {
 		return fmt.Errorf("ssh %s doesn't work without a password prompt yet; set up key-based ssh (or Tailscale SSH) and run magi init again: %w", h.SSH, err)
 	}
-	detected, _ := sh.Run(remote, `for c in "$HOME/.local/bin/claude" "$(command -v claude 2>/dev/null)" /opt/homebrew/bin/claude /usr/local/bin/claude; do [ -x "$c" ] && { printf '%s' "$c" | sed "s|^$HOME/|~/|"; exit 0; }; done; true`)
-	if h.Claude, err = p.ask("Path to claude on "+name, firstNonEmpty(h.Claude, string(detected))); err != nil {
+	detected, _ := sh.Run(remote, `for t in claude codex; do for c in "$HOME/.local/bin/$t" "$(command -v "$t" 2>/dev/null)" "/opt/homebrew/bin/$t" "/usr/local/bin/$t"; do [ -x "$c" ] && { printf '%s' "$c" | sed "s|^$HOME/|~/|"; break; }; done; echo; done`)
+	claude, codex, _ := strings.Cut(strings.TrimSuffix(string(detected), "\n"), "\n")
+	if h.Claude, err = p.ask("Path to claude on "+name, cmp.Or(h.Claude, claude)); err != nil {
 		return err
 	}
-	detected, _ = sh.Run(remote, `for c in "$HOME/.local/bin/codex" "$(command -v codex 2>/dev/null)" /opt/homebrew/bin/codex /usr/local/bin/codex; do [ -x "$c" ] && { printf '%s' "$c" | sed "s|^$HOME/|~/|"; exit 0; }; done; true`)
-	if h.Codex, err = p.ask("Path to codex on "+name+", to move Codex sessions there (blank if you don't use Codex there)", firstNonEmpty(h.Codex, string(detected))); err != nil {
+	if h.Codex, err = p.ask("Path to codex on "+name+", to move Codex sessions there (blank if you don't use Codex there)", cmp.Or(h.Codex, codex)); err != nil {
 		return err
 	}
-	roots, err := p.ask("Where projects live on "+name+" (comma-separated; new ones go in the first)", firstNonEmpty(strings.Join(h.Roots, ", "), strings.Join(existing(remote, projectFolders), ", "), "~/projects"))
+	roots, err := p.ask("Where projects live on "+name+" (comma-separated; new ones go in the first)", cmp.Or(strings.Join(h.Roots, ", "), strings.Join(existing(remote, projectFolders), ", "), "~/projects"))
 	if err != nil {
 		return err
 	}
 	h.Roots = list(roots)
-	secrets, err := p.ask("Gitignored files to bring along", firstNonEmpty(strings.Join(h.Secrets, ", "), ".env, .env.*"))
+	secrets, err := p.ask("Gitignored files to bring along", cmp.Or(strings.Join(h.Secrets, ", "), ".env, .env.*"))
 	if err != nil {
 		return err
 	}
@@ -172,13 +173,4 @@ func initConfig(in io.Reader, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "\nSaved %s. Checking everything:\n\n", path)
 	return doctor([]string{name}, out)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
 }

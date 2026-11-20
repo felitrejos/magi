@@ -86,14 +86,14 @@ func lastHandoffTo(host string) (string, error) {
 }
 
 func status(w io.Writer) error {
-	entries, err := readLog()
-	if err != nil {
-		return err
-	}
 	if err := reportMoves(w); err != nil {
 		return err
 	}
 	if err := reportWanted(w); err != nil {
+		return err
+	}
+	entries, err := readLog()
+	if err != nil {
 		return err
 	}
 	if len(entries) == 0 {

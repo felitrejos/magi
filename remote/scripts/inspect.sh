@@ -69,13 +69,8 @@ if [ -f "$index" ]; then cp -p "$index" "$d/index"; fi
 GIT_INDEX_FILE="$d/index" git add -A
 wtree=$(GIT_INDEX_FILE="$d/index" git write-tree)
 export GIT_AUTHOR_NAME=magi GIT_AUTHOR_EMAIL=magi@localhost GIT_COMMITTER_NAME=magi GIT_COMMITTER_EMAIL=magi@localhost
-if [ -n "$head" ]; then
-  wt=$(git commit-tree "$wtree" -p "$head" -m 'magi: working tree')
-  idx=$(git commit-tree "$itree" -p "$head" -m 'magi: staging area')
-else
-  wt=$(git commit-tree "$wtree" -m 'magi: working tree')
-  idx=$(git commit-tree "$itree" -m 'magi: staging area')
-fi
+wt=$(git commit-tree "$wtree" ${head:+-p "$head"} -m 'magi: working tree')
+idx=$(git commit-tree "$itree" ${head:+-p "$head"} -m 'magi: staging area')
 emit worktree "$wt"
 emit index "$idx"
 

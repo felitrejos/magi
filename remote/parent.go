@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"os"
 	"slices"
@@ -9,46 +10,23 @@ import (
 	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
-const parentEnv = "MAGI_PARENT"
-
-type parentSession struct {
-	ID   string
-	Name string
-}
-
-func delegatingSession(pid int, project string) (*parentSession, error) {
+func delegatorLabel(pid int, project string) (string, error) {
 	if pid == 0 {
-		return nil, nil
+		return "", nil
 	}
 	local, err := sh.NewLocal(context.Background())
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	sessions, err := liveSessions(local)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	i := slices.IndexFunc(sessions, func(s liveSession) bool { return s.PID == pid })
 	if i < 0 {
-		return nil, nil
+		return "", nil
 	}
-	live := sessions[i]
-	name := strings.TrimSpace(live.Name)
-	if name == "" {
-		name = project
-	}
-	return &parentSession{ID: live.SessionID, Name: name}, nil
-}
-
-func (p *parentSession) tabLabel() string {
-	return machineLabel() + " ← " + p.Name
-}
-
-func withParent(id string, command []string) []string {
-	if id == "" {
-		return command
-	}
-	return append([]string{"env", parentEnv + "=" + id}, command...)
+	return machineLabel() + " ← " + cmp.Or(strings.TrimSpace(sessions[i].Name), project), nil
 }
 
 func machineLabel() string {

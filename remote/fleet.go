@@ -19,17 +19,17 @@ type fleetMachine struct {
 	Arch        string
 	Tools       []string
 	Cores       int
-	Load        []float64
+	Load        float64
 	MemoryUsed  float64
 	MemoryTotal float64
 	Working     int
 }
 
 func (m fleetMachine) busy() float64 {
-	if len(m.Load) == 0 || m.Cores == 0 {
+	if m.Cores == 0 {
 		return 0
 	}
-	return m.Load[0] / float64(m.Cores)
+	return m.Load / float64(m.Cores)
 }
 
 func (m fleetMachine) measured() bool {
@@ -40,7 +40,7 @@ func (m fleetMachine) describe() string {
 	if !m.measured() {
 		return "its system and tools were read over SSH, but not its load"
 	}
-	parts := []string{fmt.Sprintf("load %.2f on %d cores", m.Load[0], m.Cores)}
+	parts := []string{fmt.Sprintf("load %.2f on %d cores", m.Load, m.Cores)}
 	if m.MemoryTotal > 0 {
 		parts = append(parts, "memory "+formatMemory(m.MemoryUsed)+" of "+formatMemory(m.MemoryTotal))
 	}
@@ -83,7 +83,11 @@ func surveyFleet(ctx context.Context, cfg Config, agents bool) fleetView {
 			m.Fleet, m.Reachable = probeMachine(ctx, m.Name, m.Host)
 		})
 	}
-	wg.Go(func() { view.Here = probeHere(ctx) })
+	wg.Go(func() {
+		if local, err := sh.NewLocal(ctx); err == nil {
+			view.Here, _ = probePlatform(local, local.Name())
+		}
+	})
 	wg.Wait()
 	for i := range view.Machines {
 		m := &view.Machines[i]
@@ -97,28 +101,18 @@ func surveyFleet(ctx context.Context, cfg Config, agents bool) fleetView {
 	return view
 }
 
-func probeHere(ctx context.Context) *fleetMachine {
-	local, err := sh.NewLocal(ctx)
-	if err != nil {
-		return nil
-	}
-	out, err := sh.Run(local, platformScript, local.Claude())
-	if err != nil {
-		return nil
-	}
-	return parsePlatform(local.Name(), string(out))
-}
-
-var probeMachine = probePlatform
-
-func probePlatform(ctx context.Context, name string, h Host) (*fleetMachine, error) {
+var probeMachine = func(ctx context.Context, name string, h Host) (*fleetMachine, error) {
 	ctx, cancel := context.WithTimeout(ctx, reachWait)
 	defer cancel()
 	r, err := newRemote(ctx, h)
 	if err != nil {
 		return nil, err
 	}
-	out, err := sh.Run(r, platformScript, r.Claude())
+	return probePlatform(r, name)
+}
+
+func probePlatform(m sh.Machine, name string) (*fleetMachine, error) {
+	out, err := sh.Run(m, platformScript, m.Claude())
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +146,7 @@ func parsePlatform(name, out string) *fleetMachine {
 	if totalErr != nil || availableErr != nil {
 		return m
 	}
-	m.Cores, m.Load, m.MemoryTotal, m.MemoryUsed = cores, []float64{load}, total, total-available
+	m.Cores, m.Load, m.MemoryTotal, m.MemoryUsed = cores, load, total, total-available
 	m.Working = working
 	return m
 }

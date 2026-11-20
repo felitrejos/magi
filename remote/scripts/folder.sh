@@ -59,8 +59,4 @@ case $command in
     mkdir -p "$(dirname "$dir")"
     mkdir "$dir"
     ;;
-  *)
-    echo "folder.sh: unknown command $command" >&2
-    exit 2
-    ;;
 esac

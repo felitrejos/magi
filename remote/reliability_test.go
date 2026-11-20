@@ -138,7 +138,7 @@ func TestEveryHandoffStepFitsInsideTheHooksTimeLimit(t *testing.T) {
 	if stop.Command != "magi hook stop" || time.Duration(stop.Timeout)*time.Second != hookLimit {
 		t.Fatalf("the Stop hook is %+v, want magi hook stop with %s", stop, hookLimit)
 	}
-	worst := recoverBudget + prepareBudget + launchBudget + 10*time.Second + projectPanesLimit + 15*time.Second
+	worst := recoverBudget + prepareBudget + launchBudget + finishBudget + projectPanesLimit + cleanupBudget
 	if worst > hookLimit-5*time.Second {
 		t.Errorf("a handoff can take %s, more than the hook's %s", worst, hookLimit)
 	}
@@ -205,7 +205,7 @@ func TestRetireClosesTheRecordedTabWhenItsSessionPaneClosesFirst(t *testing.T) {
 	}
 	transcript := filepath.Join(f.home, "s.jsonl")
 	f.write(f.home, "s.jsonl", "{}")
-	if _, err := retire(armed{Host: "laptop", PID: pid}, id, transcript); err != nil {
+	if _, err := retire(f.machine(), "laptop", id, transcript, pid); err != nil {
 		t.Fatal(err)
 	}
 	if !waitForFile(t, transcript+".handed-off-to-laptop", 10*time.Second) {
@@ -282,7 +282,7 @@ func TestSessionsAndTheirDiffsAreReadOverSSH(t *testing.T) {
 	if _, _, err := findAnySession(all, "fix login"); err == nil || !strings.Contains(err.Error(), "more than one") {
 		t.Errorf("the same session on both fixture machines should be ambiguous, got %v", err)
 	}
-	m, s, err := findAnySession(all[:1], "0f0f0f0f")
+	m, s, err := findAnySession(all[1:], "0f0f0f0f")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,6 +292,10 @@ func TestSessionsAndTheirDiffsAreReadOverSSH(t *testing.T) {
 	}
 	if !strings.Contains(diff, "+changed") || !strings.Contains(diff, "new file: brand-new.txt") {
 		t.Errorf("diff = %q", diff)
+	}
+	f.config("[hosts")
+	if _, err := everySession(context.Background()); err == nil {
+		t.Error("a broken config was read as no other machines")
 	}
 }
 

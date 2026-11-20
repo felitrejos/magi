@@ -228,8 +228,9 @@ func TestAPullCutOffAfterTheTranscriptArrivedIsFinishedByStatus(t *testing.T) {
 	id := "0f0f0f0f-1111-2222-3333-123456789011"
 	there := f.sessionLeftOnServer(server, id)
 	f.cutOff(id, "retire", "", "pull", "server", id)
+	os.Remove(filepath.Join(f.home, ".magi", "handoffs.jsonl"))
 	out := f.status()
-	if journaled(id) || !strings.Contains(out, "The copy here is the live one") {
+	if journaled(id) || !strings.Contains(out, "The copy here is the live one") || !strings.Contains(out, "pull  0f0f0f0f") {
 		t.Errorf("status:\n%s", out)
 	}
 	if f.read(filepath.Dir(there), filepath.Base(there)) != "<missing>" || f.read(filepath.Join(server, ".magi", "moved"), id) != f.machine().Name()+"\n" {

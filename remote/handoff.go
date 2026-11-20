@@ -43,8 +43,6 @@ type Result struct {
 	Notes     []error
 	Ports     []int
 	NewFolder string
-	From      string
-	FromDir   string
 	ToDir     string
 }
 
@@ -162,7 +160,7 @@ func (r *handoffRun) run(ctx context.Context) error {
 		}
 	}
 	r.remoteDir = filepath.Join(r.where.Root, r.ws.Subdir)
-	r.res.NewFolder, r.res.From, r.res.FromDir, r.res.ToDir = r.where.NewFolder, r.local.Name(), r.Cwd, r.remoteDir
+	r.res.NewFolder, r.res.ToDir = r.where.NewFolder, r.remoteDir
 	r.launcher = sh.Tmux{Machine: r.remote}
 	r.j = &moveJournal{Session: r.SessionID, Kind: "push", Host: r.HostName, Codex: r.Codex, Started: time.Now(), LocalTranscript: r.TranscriptPath, Workspace: r.ws, Where: r.where}
 	if r.j.Turns, err = turnsIn(r.local, r.TranscriptPath); err != nil {
@@ -215,9 +213,6 @@ func (r *handoffRun) run(ctx context.Context) error {
 	if err := r.parent.Err(); err != nil {
 		return r.undo(fmt.Errorf("the handoff was interrupted: %w", err), false)
 	}
-	if r.Retire == nil {
-		return nil
-	}
 	if err := r.j.at("retire"); err != nil {
 		return r.undo(err, false)
 	}
@@ -235,14 +230,7 @@ func (r *handoffRun) run(ctx context.Context) error {
 
 func (r *handoffRun) inspect(ctx context.Context) error {
 	var err error
-	if r.ws, err = readWorkspace(r.local, r.Cwd, r.Host.Secrets, r.Host.Exclude); err != nil {
-		return err
-	}
-	home, err := homeDir(r.local)
-	if err != nil {
-		return err
-	}
-	if err := refuseHome(r.ws, home, r.local.Name()); err != nil {
+	if r.ws, _, err = sourceWorkspace(r.local, r.local.Name(), r.Cwd, r.Host.Secrets, r.Host.Exclude); err != nil {
 		return err
 	}
 	if r.remote, err = newRemote(ctx, r.Host); err != nil {
@@ -305,7 +293,7 @@ func (r *handoffRun) launch(sidecar string) error {
 }
 
 func (r *handoffRun) undo(err error, startTimedOut bool) error {
-	cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	cleanup, cancel := context.WithTimeout(context.Background(), cleanupBudget)
 	defer cancel()
 	r.remote = r.remote.With(cleanup).(*sh.Remote)
 	if startTimedOut && !r.trustedThere() {
@@ -324,7 +312,7 @@ func (r *handoffRun) trustedThere() bool {
 }
 
 func (r *handoffRun) finish() {
-	finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	finish, cancel := context.WithTimeout(context.Background(), finishBudget)
 	defer cancel()
 	local, remote := r.local.With(finish), r.remote.With(finish)
 	if err := settle(local, r.ws, r.Host.Exclude); err != nil {

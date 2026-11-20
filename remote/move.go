@@ -204,21 +204,13 @@ func (m mover) now(local *sh.Local, host Host, s remoteSession, stopped bool) er
 	progress := func(step string) {
 		m.report(moveReport{Event: "step", OK: true, Step: step, Message: fmt.Sprintf("Moving session %s to %s: %s", store.ShortID(s.ID), m.host, step)})
 	}
-	retire := func() (int, error) {
-		finish, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	closeHere := func() (int, error) {
+		finish, cancel := context.WithTimeout(context.Background(), finishBudget)
 		defer cancel()
-		here := local.With(finish)
-		journal, err := movePath(s.ID)
-		if err == nil {
-			err = markMoved(here, s.ID, m.host)
-		}
-		if err == nil {
-			_, err = sh.Run(here, retireScript, "", s.Transcript, m.host, s.ID, "", journal)
-		}
-		return 0, err
+		return retire(local.With(finish), m.host, s.ID, s.Transcript, 0)
 	}
 	show := func(block string) { m.report(moveReport{Event: "copy", OK: true, Message: block}) }
-	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Show: show, Codex: s.Codex, Rollout: s.Rollout, Retire: retire}.Run(context.Background())
+	res, err := Handoff{HostName: m.host, Host: host, SessionID: s.ID, TranscriptPath: s.Transcript, Cwd: s.Cwd, Progress: progress, Show: show, Codex: s.Codex, Rollout: s.Rollout, Retire: closeHere}.Run(context.Background())
 	if err != nil {
 		if stopped {
 			err = fmt.Errorf("%w. The session was stopped here; to carry on here instead, run %s in %s", err, resumeHint(s), s.Cwd)
@@ -346,9 +338,8 @@ func (m mover) whenTurnEnds(s remoteSession) error {
 }
 
 func armedSessionGone(path string) bool {
-	data, err := os.ReadFile(path)
 	var a armed
-	return err == nil && json.Unmarshal(data, &a) == nil && errors.Is(syscall.Kill(a.PID, 0), syscall.ESRCH)
+	return store.ReadJSON(path, &a) == nil && errors.Is(syscall.Kill(a.PID, 0), syscall.ESRCH)
 }
 
 func exists(path string) (bool, error) {

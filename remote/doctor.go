@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -165,27 +164,9 @@ func doctor(names []string, out io.Writer) error {
 	if !c.check(err, "read which Claude Code and Codex versions magi was tested with", "check ~/.magi/tested.json") {
 		return errors.New("fix the tested versions first")
 	}
-	gitOut, gitErr := sh.Exec(ctx, "git", "--version")
-	c.gitVersion("this machine", string(gitOut), gitErr)
-	for _, tool := range []string{"tar", "ssh"} {
-		_, err := exec.LookPath(tool)
-		c.check(err, tool+" is installed", "install "+tool)
-	}
-	if _, err := exec.LookPath("magi"); err != nil {
-		c.fail("magi isn't on PATH", "the Claude Code hook runs magi by name; put its folder on PATH")
-	} else {
-		c.pass("magi is on PATH")
-	}
-	if v, err := sh.Exec(ctx, "claude", "--version"); c.check(err, "claude is installed", "install Claude Code") {
-		c.tested(versions.Claude, "Claude Code", "this machine", string(v))
-		status, _ := sh.Exec(ctx, "claude", "auth", "status")
-		c.login("this machine", string(status))
-		plugins, _ := sh.Exec(ctx, "claude", "plugin", "list", "--json")
-		c.plugin("this machine", string(plugins))
-	}
-	if v, err := sh.Exec(ctx, "codex", "--version"); err == nil {
-		c.tested(versions.Codex, "Codex", "this machine", string(v))
-	}
+	_, err = exec.LookPath("ssh")
+	c.check(err, "ssh is installed", "install ssh")
+	doctorMachine(c, versions, local, "this machine", local.Claude(), local.Codex(), cfg.LocalRoots)
 	running := watchRunning()
 	_, tmuxErr := exec.LookPath("tmux")
 	switch {
@@ -195,14 +176,6 @@ func doctor(names []string, out io.Writer) error {
 		c.pass("magi watch runs here, so sessions on other machines can be handed back")
 	default:
 		c.warn("magi watch isn't running here", "run magi watch install so a session on another machine can be handed back here")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	for _, root := range cfg.LocalRoots {
-		_, err := os.Stat(expandHome(root, home))
-		c.check(err, "local root "+root+" exists", "fix local_roots in "+path)
 	}
 	if len(names) == 0 {
 		names = cfg.Order
@@ -238,37 +211,41 @@ func doctorHost(ctx context.Context, c *checks, versions testedVersions, name st
 	if _, err := sh.Run(remote, "true"); !c.check(err, "ssh "+h.SSH+" works without a password prompt", "set up key-based ssh to "+h.SSH) {
 		return
 	}
-	gitOut, gitErr := sh.Run(remote, "git --version")
+	doctorMachine(c, versions, remote, name, h.Claude, h.Codex, h.Roots)
+	_, err = sh.Run(remote, "command -v tmux >/dev/null")
+	c.check(err, "tmux on "+name, "install tmux there")
+}
+
+func doctorMachine(c *checks, versions testedVersions, m sh.Machine, name, claudePath, codexPath string, roots []string) {
+	gitOut, gitErr := sh.Run(m, "git --version")
 	c.gitVersion(name, string(gitOut), gitErr)
-	_, err = sh.Run(remote, "command -v tar >/dev/null")
+	_, err := sh.Run(m, "command -v tar >/dev/null")
 	c.check(err, "tar on "+name, "install tar there")
-	home, err := homeDir(remote)
+	home, err := homeDir(m)
 	if err != nil {
 		c.fail("read $HOME on "+name, err.Error())
 		return
 	}
-	claude := expandHome(h.Claude, home)
-	if v, err := sh.Run(remote, `"$1" --version`, claude); c.check(err, "claude at "+h.Claude+" on "+name, "fix the claude path for "+name) {
+	claude := expandHome(claudePath, home)
+	if v, err := sh.Run(m, `"$1" --version`, claude); c.check(err, "claude at "+claudePath+" on "+name, "fix the claude path for "+name) {
 		c.tested(versions.Claude, "Claude Code", name, string(v))
-		status, _ := sh.Run(remote, `"$1" auth status`, claude)
+		status, _ := sh.Run(m, `"$1" auth status`, claude)
 		c.login(name, string(status))
-		plugins, _ := sh.Run(remote, `"$1" plugin list --json`, claude)
+		plugins, _ := sh.Run(m, `"$1" plugin list --json`, claude)
 		c.plugin(name, string(plugins))
 	}
-	if _, err := sh.Run(remote, `"${SHELL:-sh}" -lc 'command -v magi' >/dev/null`); err != nil {
+	if _, err := sh.Run(m, `"${SHELL:-sh}" -lc 'command -v magi' >/dev/null`); err != nil {
 		c.fail("magi isn't on PATH on "+name, "the plugin's hooks run it there; install it on "+name+" with curl -fsSL https://github.com/felitrejos/magi/releases/latest/download/install.sh | sh")
 	} else {
 		c.pass("magi is on PATH on " + name)
 	}
-	if h.Codex != "" {
-		if v, err := sh.Run(remote, `"$1" --version`, expandHome(h.Codex, home)); c.check(err, "codex at "+h.Codex+" on "+name, "fix the codex path for "+name) {
+	if codexPath != "" {
+		if v, err := sh.Run(m, `"$1" --version`, expandHome(codexPath, home)); c.check(err, "codex at "+codexPath+" on "+name, "fix the codex path for "+name) {
 			c.tested(versions.Codex, "Codex", name, string(v))
 		}
 	}
-	for _, root := range h.Roots {
-		_, err := sh.Run(remote, `[ -d "$1" ]`, expandHome(root, home))
+	for _, root := range roots {
+		_, err := sh.Run(m, `[ -d "$1" ]`, expandHome(root, home))
 		c.check(err, "root "+root+" exists on "+name, "create it there or fix roots")
 	}
-	_, err = sh.Run(remote, "command -v tmux >/dev/null")
-	c.check(err, "tmux on "+name, "install tmux there")
 }

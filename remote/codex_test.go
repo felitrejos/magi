@@ -304,7 +304,7 @@ func TestACodexHandoffOpensItsOwnCodexTab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Handoff{HostName: "server", Host: host, SessionID: id, TranscriptPath: local, Cwd: f.local, Codex: true, Rollout: rolloutName + id + ".jsonl"}.Run(context.Background())
+	res, err := Handoff{HostName: "server", Host: host, SessionID: id, TranscriptPath: local, Cwd: f.local, Codex: true, Rollout: rolloutName + id + ".jsonl", Retire: func() (int, error) { return 0, nil }}.Run(context.Background())
 	if err != nil {
 		t.Fatalf("handoff failed after %s: %v", res.Summary(), err)
 	}

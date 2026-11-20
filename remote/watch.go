@@ -67,15 +67,12 @@ func waitForPull(input stopInput, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
+	var w wanted
+	err = store.ReadJSON(path, &w)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return err
-	}
-	var w wanted
-	if err := json.Unmarshal(data, &w); err != nil {
 		return err
 	}
 	w.Note = stillRunning(w.Note, input.BackgroundTasks)
@@ -99,11 +96,7 @@ func reportWanted(w io.Writer) error {
 	fmt.Fprintln(w, "Waiting to be taken back:")
 	for _, path := range paths {
 		var request wanted
-		data, err := os.ReadFile(path)
-		if err == nil {
-			err = json.Unmarshal(data, &request)
-		}
-		if err != nil {
+		if err := store.ReadJSON(path, &request); err != nil {
 			return err
 		}
 		fmt.Fprintf(w, "  %s  by %s\n", store.ShortID(strings.TrimSuffix(filepath.Base(path), ".json")), request.To)
@@ -227,7 +220,7 @@ func (w *watcher) follow(me string) error {
 	for lines.Scan() {
 		line := lines.Text()
 		if !store.SessionIDPattern.MatchString(line) {
-			w.hear(line)
+			w.hear(line, time.Now())
 			continue
 		}
 		if time.Since(tried[line]) < watchRetry {
@@ -241,7 +234,7 @@ func (w *watcher) follow(me string) error {
 	return errors.Join(err, w.save())
 }
 
-func (w *watcher) hear(line string) {
+func (w *watcher) hear(line string, now time.Time) {
 	kind, rest, _ := strings.Cut(line, " ")
 	switch kind {
 	case "claude", "waiting", "codex":
@@ -250,12 +243,12 @@ func (w *watcher) hear(line string) {
 	case "sessions":
 		w.sessions()
 	case "stats":
-		if err := w.stats(rest); err != nil {
+		if err := w.stats(rest, now); err != nil {
 			w.logger.Printf("%s: unreadable stats %q: %v", w.name, rest, err)
 			return
 		}
 	}
-	w.live.Answering, w.live.Heard = true, time.Now()
+	w.live.Answering, w.live.Heard = true, now
 	if err := w.save(); err != nil {
 		w.logger.Printf("%s: writing what it runs failed: %v", w.name, err)
 	}
@@ -295,7 +288,7 @@ func (w *watcher) sessions() {
 	w.block = nil
 	if seen := strings.Join(ids, " "); seen != w.codexIDs {
 		ctx, cancel := context.WithTimeout(w.m.Context(), reachWait)
-		threads, err := openCodexSessions(w.m.With(ctx))
+		threads, err := readCodexThreads(w.m.With(ctx), ids)
 		cancel()
 		if err != nil {
 			w.logger.Printf("%s: reading its Codex sessions failed: %v", w.name, err)
@@ -327,12 +320,11 @@ func (w *watcher) sessions() {
 	w.live.Sessions = entries
 }
 
-func (w *watcher) stats(line string) error {
+func (w *watcher) stats(line string, now time.Time) error {
 	l := &w.live
 	if _, err := fmt.Sscan(line, &l.Cores, &l.Load, &l.Memory.UsedMB, &l.Memory.TotalMB, &l.Disk.UsedMB, &l.Disk.TotalMB); err != nil {
 		return err
 	}
-	now := time.Now()
 	usage := map[int]use{}
 	for _, field := range strings.Fields(line)[6:] {
 		var pid int

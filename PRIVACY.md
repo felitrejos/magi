@@ -1,6 +1,6 @@
 # Privacy
 
-Last updated 19 November 2026.
+Last updated 20 November 2026.
 
 magi is software you run on your own machines. I run no servers for it and
 collect nothing. There is no telemetry, no analytics, no accounts and no
@@ -17,8 +17,9 @@ To move a session or send work, magi copies these to the machine you chose.
 
 - The Claude Code or Codex session transcript, and for Claude Code the
   project's memory files.
-- The project's git working tree, including uncommitted changes. For a
-  folder that isn't a git repository, its files.
+- The project's git working tree, including uncommitted changes and files
+  git doesn't track yet. For a folder that isn't a git repository, its
+  files.
 - The gitignored files that match the `secrets` patterns in your magi
   config, such as `.env`.
 
@@ -28,8 +29,14 @@ It doesn't send them anywhere else.
 
 To list machines and sessions, magi reads each configured machine's
 system, load and memory, and the list of Claude Code and Codex sessions
-running there with their titles and folders. The answers go to your
-terminal or to the Claude session that asked.
+running there with their titles, folders and state. The `diff` tool reads
+a session's uncommitted changes. The answers go to your terminal or to the
+Claude session that asked.
+
+`magi watch` reads the same list every 2 seconds and, about every 30
+seconds, each machine's load, memory and disk and each session's CPU and
+memory. It keeps the latest in `~/.magi/live` on the machine it runs on,
+with no conversation text and no file contents.
 
 ## What magi keeps
 
@@ -37,7 +44,7 @@ magi keeps its settings in `~/.config/magi/config.toml` and its state in
 `~/.magi` on each machine. That includes a log of handoffs with session
 ids, machine names and folder paths, and the output of tasks you sent to
 other machines. If you run `magi watch` as a service, it also writes a log
-on the laptop. None of it leaves your machines.
+on the laptop. magi sends none of it anywhere.
 [SECURITY.md](SECURITY.md) lists every file.
 
 ## The tested versions list
