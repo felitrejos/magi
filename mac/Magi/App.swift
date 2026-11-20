@@ -16,7 +16,6 @@ final class App: NSObject, NSApplicationDelegate {
     private var host: Host?
     private var monitor: Any?
     private var shown: Glance?
-    private var symbol: String?
 
     override init() {
         let store = Store(home: .homeDirectory.appending(path: ".magi"))
@@ -88,22 +87,12 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     private func show(_ glance: Glance) {
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let symbol = glance.waiting.isEmpty ? glance.answering.isEmpty ? "orbit.slash" : "orbit" : "orbit.badge"
-        let image = NSImage(symbolName: symbol, bundle: .main, variableValue: 0)!
         let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
         icon.symbolConfiguration = UserDefaults.standard.bool(forKey: "dot") && !glance.waiting.isEmpty ? plain.applying(.init(paletteColors: [.labelColor, .systemOrange])) : plain
-        if self.symbol == nil || reduceMotion {
-            icon.image = image
-        } else if self.symbol != symbol {
-            icon.setSymbolImage(image, contentTransition: .replace.magic(fallback: .replace.downUp))
-        }
-        self.symbol = symbol
+        icon.image = NSImage(symbolName: symbol, bundle: .main, variableValue: 0)
         if let shown {
             let started = glance.waiting.filter { shown.waiting[$0.key] == nil }
-            if !started.isEmpty, !reduceMotion {
-                icon.addSymbolEffect(.bounce, options: .nonRepeating)
-            }
             if !started.isEmpty, UserDefaults.standard.bool(forKey: "chimes") {
                 Chime.play()
             }
