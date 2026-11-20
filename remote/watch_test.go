@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func readLive(t *testing.T, name string) liveMachine {
@@ -107,8 +110,8 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 		t.Errorf("stats line = %q, want the session's tree summed with its child's CPU and memory", heard[len(heard)-1])
 	}
 	now := time.Now()
-	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 %d:10:150", pid), now)
-	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 %d:13:150", pid), now.Add(3*time.Second))
+	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 0 0 1794928938 %d:10:150", pid), now)
+	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 0 0 1794928938 %d:13:150", pid), now.Add(3*time.Second))
 	live := readLive(t, "server")
 	if len(live.Sessions) != 1 {
 		t.Fatalf("live sessions = %+v", live.Sessions)
@@ -148,7 +151,15 @@ func TestWatchCountsTheCPUOfChildrenThatExited(t *testing.T) {
 	server := f.serverHome()
 	pid := f.worker(`(` + burn + `); : > "$1"; sleep 60; :`)
 	f.write(filepath.Join(server, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"0f0f0f0f-1111-2222-3333-555555555556","cwd":"/srv/api","status":"idle"}`, pid))
-	cmd := f.remoteHost().Command(watchScript, "", "claude")
+	stats := firstStats(t, f.remoteHost())
+	if used, _ := usedBy(t, stats, pid); used < 0.1 {
+		t.Errorf("stats line = %q, want the session's CPU to count its child that exited", stats)
+	}
+}
+
+func firstStats(t *testing.T, m sh.Machine) string {
+	t.Helper()
+	cmd := m.Command(watchScript, "", "claude")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -159,13 +170,82 @@ func TestWatchCountsTheCPUOfChildrenThatExited(t *testing.T) {
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
 	for lines := bufio.NewScanner(stdout); lines.Scan(); {
 		if strings.HasPrefix(lines.Text(), "stats") {
-			if used, _ := usedBy(t, lines.Text(), pid); used < 0.1 {
-				t.Errorf("stats line = %q, want the session's CPU to count its child that exited", lines.Text())
-			}
-			return
+			return lines.Text()
 		}
 	}
 	t.Fatal("the watcher never reported stats")
+	return ""
+}
+
+func TestAMacReportsItsMemoryPressureSwapBootTimeAndBattery(t *testing.T) {
+	f := newFixture(t)
+	f.tool("uname", "#!/bin/sh\necho Darwin\n")
+	f.tool("sysctl", macSysctl)
+	f.tool("pmset", "#!/bin/sh\nprintf \"Now drawing from 'Battery Power'\\n -InternalBattery-0 (id=4653155)\\t85%%; discharging; 4:10 remaining present: true\\n\"\n")
+	w := newWatcher("mac", "", nil, log.New(io.Discard, "", 0), "")
+	w.hear(firstStats(t, f.machine()), time.Now())
+	live := readLive(t, "mac")
+	if live.Pressure != "warning" || live.Swap != (space{UsedMB: 1095, TotalMB: 2048}) || !live.BootedAt.Equal(time.Unix(1794928938, 0)) {
+		t.Errorf("pressure %q, swap %+v, booted at %s; want warning, 1095 of 2048 MB, %s", live.Pressure, live.Swap, live.BootedAt, time.Unix(1794928938, 0))
+	}
+	if live.Battery == nil || *live.Battery != (battery{Percent: 85, OnBattery: true}) {
+		t.Errorf("battery = %+v, want 85%% and on battery", live.Battery)
+	}
+}
+
+func TestALinuxMachineReportsItsMemoryPressureSwapBootTimeAndBattery(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads this machine's /proc")
+	}
+	f := newFixture(t)
+	f.tool("grep", `#!/bin/sh
+printf '%s\n' /sys/class/power_supply/AC/type:Mains /sys/class/power_supply/AC/online:1 /sys/class/power_supply/BAT0/type:Battery /sys/class/power_supply/BAT0/capacity:64 /sys/class/power_supply/BAT0/status:Charging /sys/class/power_supply/hidpp_battery_0/type:Battery /sys/class/power_supply/hidpp_battery_0/scope:Device /sys/class/power_supply/hidpp_battery_0/capacity:10
+`)
+	w := newWatcher("linux", "", nil, log.New(io.Discard, "", 0), "")
+	w.hear(firstStats(t, f.machine()), time.Now())
+	live := readLive(t, "linux")
+	var swapKB, uptime float64
+	meminfo, _ := os.ReadFile("/proc/meminfo")
+	for _, line := range strings.Split(string(meminfo), "\n") {
+		fmt.Sscanf(line, "SwapTotal: %g kB", &swapKB)
+	}
+	up, _ := os.ReadFile("/proc/uptime")
+	fmt.Sscan(string(up), &uptime)
+	pressure := ""
+	if psi, err := os.ReadFile("/proc/pressure/memory"); err == nil {
+		var avg10, avg60 float64
+		fmt.Sscanf(string(psi), "some avg10=%g avg60=%g", &avg10, &avg60)
+		pressure = "normal"
+		if avg60 >= 10 {
+			pressure = "warning"
+		}
+		if avg60 >= 30 {
+			pressure = "critical"
+		}
+	}
+	if booted := time.Now().Add(-time.Duration(uptime * float64(time.Second))); live.BootedAt.Sub(booted).Abs() > 2*time.Second {
+		t.Errorf("booted at %s, want about %s", live.BootedAt, booted)
+	}
+	if live.Swap.TotalMB != int(math.Round(swapKB/1024)) || live.Swap.UsedMB > live.Swap.TotalMB || live.Pressure != pressure {
+		t.Errorf("swap %+v and pressure %q, want %.0f MB of swap and pressure %q", live.Swap, live.Pressure, swapKB/1024, pressure)
+	}
+	if live.Battery == nil || *live.Battery != (battery{Percent: 64, Charging: true}) {
+		t.Errorf("battery = %+v, want the system battery at 64%%, charging, on mains", live.Battery)
+	}
+}
+
+func TestAMachineReachedThroughATailscaleRelayIsMarkedRelayed(t *testing.T) {
+	f := newFixture(t)
+	f.tool("tailscale", `#!/bin/sh
+[ "$*" = "status --json" ] && echo '{"Peer":{"nodekey:1":{"HostName":"homelab","DNSName":"homelab.tail1.ts.net.","CurAddr":""},"nodekey:2":{"HostName":"Studio","DNSName":"studio.tail1.ts.net.","CurAddr":"192.168.1.20:41641"}}}'
+`)
+	for ssh, want := range map[string]bool{"me@homelab": true, "homelab.tail1.ts.net": true, "studio": false, "Studio": false, "elsewhere": false} {
+		w := newWatcher(ssh, ssh, nil, log.New(io.Discard, "", 0), "")
+		w.hear("stats 10 1.5 100 200 300 400 0 0 1794928938", time.Now())
+		if got := readLive(t, ssh).Relayed; got != want {
+			t.Errorf("%s reads as relayed %t, want %t", ssh, got, want)
+		}
+	}
 }
 
 func TestWatchMarksAMachineThatStopsAnswering(t *testing.T) {

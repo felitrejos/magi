@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/felitrejos/magi/remote/internal/sh"
@@ -139,10 +140,12 @@ type moveRun struct {
 	tab        sh.Tab
 	launchedAt time.Time
 	j          *moveJournal
+	copied     atomic.Int64
 }
 
 func (m Move) Run(parent context.Context) (Result, error) {
-	r := &moveRun{Move: m, parent: parent, st: stepper{progress: m.Progress}, res: Result{Kind: m.Kind, Session: m.Session.ID}}
+	r := &moveRun{Move: m, st: stepper{progress: m.Progress}, res: Result{Kind: m.Kind, Session: m.Session.ID}}
+	r.parent = sh.Metered(parent, &r.copied)
 	err := r.run()
 	r.res.Steps = r.st.steps
 	if err != nil && r.Stopped {
@@ -360,7 +363,13 @@ func (r *moveRun) retireSource() error {
 }
 
 func (r *moveRun) logEntry() logEntry {
-	return logEntry{Time: time.Now(), Kind: r.Kind, Session: r.Session.ID, From: r.res.From, To: r.res.To, FromDir: r.Session.Cwd, ToDir: r.toDir}
+	e := logEntry{Time: time.Now(), Kind: r.Kind, Session: r.Session.ID, From: r.res.From, To: r.res.To, FromDir: r.Session.Cwd, ToDir: r.toDir, Bytes: r.copied.Load()}
+	for _, s := range r.st.steps {
+		if s.Name == "sync" || s.Name == "transcript" {
+			e.Seconds += s.Took.Seconds()
+		}
+	}
+	return e
 }
 
 func (r *moveRun) open(sidecar string) error {

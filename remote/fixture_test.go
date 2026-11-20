@@ -41,6 +41,7 @@ if [ -e "$HOME/ssh-down" ]; then
   exit 255
 fi
 if [ -n "$MAGI_TEST_REMOTE_HOME" ]; then export HOME="$MAGI_TEST_REMOTE_HOME"; fi
+unset GIT_TRACE2_EVENT
 exec "${MAGI_TEST_LOGIN_SHELL:-sh}" -c "$*"
 `
 
@@ -78,6 +79,7 @@ func newFixture(t *testing.T) *fixture {
 	f.tool("claude", fakeClaude)
 	f.tool("docker", "#!/bin/sh\nexit 1\n")
 	f.tool("podman", "#!/bin/sh\nexit 1\n")
+	f.tool("tailscale", "#!/bin/sh\nexit 1\n")
 	f.tool("launchctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
 	f.tool("systemctl", "#!/bin/sh\necho \"$*\" >> \"$HOME/service-calls\"\n")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")

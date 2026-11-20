@@ -85,7 +85,13 @@ breaking one of these needs 2.0.
   `setup`, `services` and `ports` in `.magi.toml`. A key magi no longer
   uses is ignored.
 - The fields of `~/.magi/live/<machine>.json`, which can gain new ones.
-- The lines of `~/.magi/handoffs.jsonl`, which can gain new fields.
+- The lines of `~/.magi/handoffs.jsonl`, which can gain new fields. On
+  a push or pull line, `bytes` is what the move sent from one machine to
+  the other: the size of the git pack, as git counts it while writing or
+  receiving it, plus every tar stream magi pipes across for files,
+  secrets, Git LFS objects, the transcript and project memory. Ref
+  negotiation and SSH's own overhead aren't counted. `seconds` is the
+  time the sync and transcript steps took.
 
 Anything else can change in any release. That includes message wording,
 time budgets, the magi program's own arguments, the other files in

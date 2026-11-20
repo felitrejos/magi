@@ -357,7 +357,7 @@ func (f *fixture) probesEach(outputs map[string]string, others string) {
 	f.t.Cleanup(func() { probeMachine = saved })
 }
 
-const quietLinux = "Ubuntu 24.04\nx86_64\ndocker\n4\n0.10 0.10 0.10\n8000000000 6000000000\n0\n"
+const quietLinux = "Ubuntu 24.04\nx86_64\ndocker\n4\n0.10 0.10 0.10\n8000000000 6000000000\n0 2048 1794928938 normal\n0\n"
 
 func TestTheFirstMachineInConfigOrderWithRoomIsChosen(t *testing.T) {
 	f := newFixture(t)

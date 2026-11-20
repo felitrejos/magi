@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -327,12 +329,37 @@ func pushGit(local *sh.Local, remote *sh.Remote, ws Workspace, remoteRepo string
 func sendGit(local *sh.Local, remote *sh.Remote, ws Workspace, remoteRepo, mode string) error {
 	return syncGit(local, remote, ws, remoteRepo, mode, func(ws Workspace, repo string) error {
 		refspecs := snapshotRefspecs(*ws.Git, func(ref, id string) string { return id + ":" + ref })
-		_, err := sh.Run(local, `dir=$1 to=$3; export GIT_SSH_COMMAND="$2"; shift 3; cd -- "$dir" || exit
-if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git push --quiet --force --no-verify --receive-pack='git -c receive.shallowUpdate=true receive-pack' "$to" "$1" || exit; fi
-git push --quiet --force --no-verify "$to" "$@"`,
+		return countedGit(local, `dir=$1 to=$3; export GIT_SSH_COMMAND="$2"; shift 3; cd -- "$dir" || exit
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git push --progress --force --no-verify --receive-pack='git -c receive.shallowUpdate=true receive-pack' "$to" "$1" || exit; fi
+git push --progress --force --no-verify "$to" "$@"`,
 			append([]string{ws.Root, remote.SSHCommand(), remote.Name() + ":" + repo}, refspecs...)...)
-		return err
 	})
+}
+
+func countedGit(local *sh.Local, script string, args ...string) error {
+	trace, err := os.CreateTemp("", "magi-trace2-")
+	if err != nil {
+		return err
+	}
+	trace.Close()
+	defer os.Remove(trace.Name())
+	if _, err := sh.Run(local, `export GIT_TRACE2_EVENT="$1" GIT_TRACE2_EVENT_NESTING=10; shift`+"\n"+script, append([]string{trace.Name()}, args...)...); err != nil {
+		return err
+	}
+	events, err := os.ReadFile(trace.Name())
+	if err != nil {
+		return err
+	}
+	var copied int64
+	for _, line := range strings.Split(string(events), "\n") {
+		var e struct{ Category, Key, Value string }
+		if json.Unmarshal([]byte(line), &e) == nil && e.Category == "progress" && e.Key == "total_bytes" {
+			n, _ := strconv.ParseInt(e.Value, 10, 64)
+			copied += n
+		}
+	}
+	sh.Copied(local, copied)
+	return nil
 }
 
 func pullGit(remote *sh.Remote, local *sh.Local, ws Workspace, localRepo string) error {
@@ -346,7 +373,7 @@ func pullGit(remote *sh.Remote, local *sh.Local, ws Workspace, localRepo string)
 			return err
 		}
 		refspecs := snapshotRefspecs(*ws.Git, func(ref, _ string) string { return "+" + outPrefix + baseName(ref) + ":" + ref })
-		_, fetchErr := sh.Run(local, `dir=$1 ssh=$2; shift 2; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git fetch --quiet --atomic --update-shallow --no-tags "$@"`,
+		fetchErr := countedGit(local, `dir=$1 ssh=$2; shift 2; cd -- "$dir" && GIT_SSH_COMMAND=$ssh git -c fetch.unpackLimit=1 fetch --progress --atomic --update-shallow --no-tags "$@"`,
 			append([]string{repo, remote.SSHCommand(), remote.Name() + ":" + ws.Root}, refspecs...)...)
 		cleanErr := deleteRefs(remote, ws.Root, outPrefix+"handoff", outPrefix+"worktree", outPrefix+"index")
 		return errors.Join(fetchErr, cleanErr)

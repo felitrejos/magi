@@ -103,7 +103,7 @@ func TestAMachineWhoseLoadCantBeReadSaysSo(t *testing.T) {
 }
 
 func TestAMachineReportsItsLoadOverSSH(t *testing.T) {
-	m := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\ndocker go\n8\n3.20 2.10 1.00\n16000000000 4000000000\n2\n")
+	m := parsePlatform("homelab", "Ubuntu 26.04\nx86_64\ndocker go\n8\n3.20 2.10 1.00\n16000000000 4000000000\n0 2048 1794928938 normal\n2\n")
 	if !m.measured() || m.Cores != 8 || m.Load != 3.2 || m.MemoryUsed != 12e9 || m.Working != 2 {
 		t.Fatalf("parsed %+v", m)
 	}
@@ -140,6 +140,9 @@ for name; do
 	vm.page_free_count) echo 12520 ;;
 	vm.page_pageable_external_count) echo 180728 ;;
 	vm.page_purgeable_count) echo 5018 ;;
+	vm.swapusage) echo 'total = 2048.00M  used = 1095.06M  free = 952.94M  (encrypted)' ;;
+	kern.boottime) echo '{ sec = 1794928938, usec = 329742 } Tue Nov 17 16:22:18 2026' ;;
+	kern.memorystatus_vm_pressure_level) echo 2 ;;
 	esac
 done
 `

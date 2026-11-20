@@ -135,15 +135,23 @@ unit on Linux. It runs as you, never as root, and starts at login.
   it asks tmux which window each session's process runs in.
   When a session is waiting, it runs `claude agents --json` once to learn
   on what.
-- About every 30 seconds it reads load, memory, the disk your home folder
-  is on, and every process's number, parent, CPU time and memory.
+- About every 30 seconds it reads load, memory, memory pressure, swap,
+  the boot time, the disk your home folder is on, the battery's charge
+  and whether the machine runs on it, and every process's number,
+  parent, CPU time and memory. On macOS that's `sysctl` and
+  `pmset -g batt`; on Linux, files in `/proc` and
+  `/sys/class/power_supply`.
+- On the laptop, the watcher runs `tailscale status --json` for each
+  other machine about every 30 seconds, when Tailscale is installed, to
+  learn whether the connection goes through a Tailscale relay.
 - When a loop starts, it lists every process with its command line once,
   to stop older copies of itself that lost their connection.
 - The watcher writes what it hears to `~/.magi/live/<machine>.json` on the
   laptop, readable only by you. That is whether the machine answers, its
-  SSH destination, load, memory and disk, and each session's id, title,
-  folder, state, CPU, memory, Remote Control link and tmux window. The
-  file holds no conversation text and no file contents.
+  SSH destination, load, memory, memory pressure, swap, disk, boot time,
+  battery, whether it's reached through a relay, and each session's id,
+  title, folder, state, CPU, memory, Remote Control link and tmux
+  window. The file holds no conversation text and no file contents.
 - Its log holds machine names, short session ids, folder paths, branch
   and file names, and errors.
 

@@ -8,7 +8,14 @@ if [ -n "$name" ]; then
     index($0, ENVIRON["loop"]) && index($0, ".magi/watchers") { parent[$1] = $2 }
     END { for (p in parent) { top = p; while (parent[top] in parent) top = parent[top]; if (parent[top] == 1) print p } }' | while read -r pid; do kill "$pid"; done
 fi
-tick=0 registry=-
+tick=0 registry=- os=$(uname -s)
+battery() {
+  if [ "$os" = Darwin ]; then
+    pmset -g batt
+  else
+    grep -s . /dev/null /sys/class/power_supply/*/type /sys/class/power_supply/*/scope /sys/class/power_supply/*/capacity /sys/class/power_supply/*/status /sys/class/power_supply/*/online
+  fi
+}
 usage() {
   if [ -r /proc/self/stat ]; then
     cat /proc/[0-9]*/stat 2>/dev/null | sed 's/^\([0-9]*\) (.*) /\1 /' | awk -v hz="$(getconf CLK_TCK)" -v page="$(getconf PAGESIZE)" '{ print $1, $3, ($13 + $14 + $15 + $16) / hz, $23 * page / 1024 }'
@@ -56,18 +63,26 @@ while :; do
     echo sessions
   fi
   if [ $((tick % 15)) -eq 0 ]; then
-    printf 'stats %s\n' "$({ load; df -Pk "$HOME"; usage; } | awk -v roots="$pids" '
+    printf 'stats %s\n' "$({ load; df -Pk "$HOME"; usage; battery; } | awk -v roots="$pids" '
       function seconds(t, n, p, i, s) {
         n = split(t, p, /[-:]/)
         for (i = 1; i <= n; i++) s = s * (i == 2 && t ~ /-/ ? 24 : 60) + p[i]
         return s
       }
+      /^Now drawing from / { mains = !/Battery Power/; next }
+      /^ -InternalBattery/ { split($0, b, /\t|; /); battery = sprintf("%d:%d", b[2], b[3] == "charging" || b[3] == "finishing charge"); next }
+      /^\/sys\/class\/power_supply\// { split($0, f, /[\/:]/); supply[f[5], f[6]] = f[7]; if (f[6] == "type") type[f[5]] = f[7]; next }
       NR == 1 { cores = $1 }
       NR == 2 { load = $1 }
       NR == 3 { total = $1; used = $1 - $2 }
-      NR == 5 { disk = sprintf("%.0f %.0f", $3 / 1024, $2 / 1024) }
-      NR > 5 { parent[$1] = $2; cpu[$1] = seconds($3); rss[$1] = $4 }
+      NR == 4 { swap = $1 " " $2; booted = $3; pressure = $4 }
+      NR == 6 { disk = sprintf("%.0f %.0f", $3 / 1024, $2 / 1024) }
+      NR > 6 { parent[$1] = $2; cpu[$1] = seconds($3); rss[$1] = $4 }
       END {
+        for (s in type) {
+          if (type[s] == "Mains" && supply[s, "online"] != 0) mains = 1
+          if (type[s] == "Battery" && supply[s, "scope"] != "Device") battery = sprintf("%d:%d", supply[s, "capacity"], supply[s, "status"] == "Charging")
+        }
         n = split(roots, r, " ")
         for (i = 1; i <= n; i++) root[r[i]] = 1
         for (p in parent) {
@@ -75,7 +90,9 @@ while :; do
           while (q > 0 && !(q in root)) q = (q in parent) ? parent[q] : 0
           if (q in root) { c[q] += cpu[p]; m[q] += rss[p] }
         }
-        printf "%s %s %.0f %.0f %s", cores, load, used / 1048576, total / 1048576, disk
+        printf "%s %s %.0f %.0f %s %s %s", cores, load, used / 1048576, total / 1048576, disk, swap, booted
+        if (pressure != "") printf " pressure=%s", pressure
+        if (battery != "") printf " battery=%s:%d", battery, !mains
         for (i = 1; i <= n; i++) printf " %s:%.2f:%.0f", r[i], c[r[i]], m[r[i]] / 1024
         print ""
       }')"

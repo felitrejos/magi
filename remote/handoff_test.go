@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,4 +125,43 @@ func TestAFailedHandoffLeavesNoTabAndARetryPicksUpFromIt(t *testing.T) {
 	if got := f.read(f.remote, "kept.txt"); got != "edited while the session kept running here" {
 		t.Errorf("kept.txt on the server = %q", got)
 	}
+}
+
+func (f *fixture) copyThatWeighs(dir, transcript string) (sent int64, copying func(Result) float64) {
+	f.t.Helper()
+	work := make([]byte, 200_000)
+	rand.Read(work)
+	f.write(dir, "kept.txt", string(work))
+	pad := `{"pad":"` + strings.Repeat("x", 150_000) + `"}` + "\n"
+	f.write(filepath.Dir(transcript), filepath.Base(transcript), f.read(filepath.Dir(transcript), filepath.Base(transcript))+pad)
+	return int64(len(work) + len(pad)), func(res Result) (seconds float64) {
+		for _, s := range res.Steps {
+			if s.Name == "sync" || s.Name == "transcript" {
+				seconds += s.Took.Seconds()
+			}
+		}
+		return seconds
+	}
+}
+
+func (f *fixture) loggedCopy(kind string, sent int64, seconds float64) {
+	f.t.Helper()
+	entries, err := readLog()
+	if err != nil || len(entries) == 0 {
+		f.t.Fatalf("log = %+v, %v", entries, err)
+	}
+	if e := entries[len(entries)-1]; e.Kind != kind || e.Bytes < sent || e.Bytes > sent+100_000 || e.Seconds != seconds {
+		f.t.Errorf("logged %s of %d bytes in %gs, want at least the %d bytes of work and transcript in the %gs of sync and transcript", e.Kind, e.Bytes, e.Seconds, sent, seconds)
+	}
+}
+
+func TestAHandoffLogsTheBytesItCopiedAndHowLongTheCopyTook(t *testing.T) {
+	f := newFixture(t)
+	h := f.handoffToServer("0f0f0f0f-1111-2222-3333-444444444445")
+	sent, copying := f.copyThatWeighs(f.local, h.Session.Transcript)
+	res, err := h.Run(context.Background())
+	if err != nil {
+		t.Fatalf("handoff failed after %s: %v", res.Summary(), err)
+	}
+	f.loggedCopy("push", sent, copying(res))
 }

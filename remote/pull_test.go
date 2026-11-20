@@ -245,3 +245,14 @@ func TestAPulledSessionRunsTheProjectsSetupInAPaneHere(t *testing.T) {
 		t.Error("the project's setup didn't run here")
 	}
 }
+
+func TestAPullLogsTheBytesItCopiedAndHowLongTheCopyTook(t *testing.T) {
+	f := newFixture(t)
+	id := "0f0f0f0f-1111-2222-3333-888888888889"
+	sent, copying := f.copyThatWeighs(f.remote, f.sessionLeftOnServer(f.home, id))
+	res, err := Move{Kind: "pull", HostName: "server", Host: Host{SSH: "fakehost", Claude: "claude", Roots: []string{"~/developer"}, LocalRoots: []string{"~/laptop"}}, Session: remoteSession{ID: id}, NoTab: true, Out: io.Discard}.Run(context.Background())
+	if err != nil {
+		t.Fatalf("pull failed after %s: %v", res.Summary(), err)
+	}
+	f.loggedCopy("pull", sent, copying(res))
+}

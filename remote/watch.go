@@ -11,6 +11,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -24,9 +25,10 @@ import (
 )
 
 const (
-	watcherFresh = 15 * time.Second
-	watchRetry   = time.Minute
-	watchBackoff = time.Minute
+	watcherFresh  = 15 * time.Second
+	watchRetry    = time.Minute
+	watchBackoff  = time.Minute
+	tailscaleWait = 5 * time.Second
 )
 
 type wanted struct {
@@ -262,12 +264,23 @@ type liveMachine struct {
 	Load      float64     `json:"load"`
 	Memory    space       `json:"memory"`
 	Disk      space       `json:"disk"`
+	Pressure  string      `json:"pressure,omitempty"`
+	Swap      space       `json:"swap,omitzero"`
+	BootedAt  time.Time   `json:"bootedAt,omitzero"`
+	Battery   *battery    `json:"battery,omitempty"`
+	Relayed   bool        `json:"relayed,omitempty"`
 	Sessions  []liveEntry `json:"sessions"`
 }
 
 type space struct {
 	UsedMB  int `json:"usedMB"`
 	TotalMB int `json:"totalMB"`
+}
+
+type battery struct {
+	Percent   int  `json:"percent"`
+	Charging  bool `json:"charging"`
+	OnBattery bool `json:"onBattery"`
 }
 
 type liveEntry struct {
@@ -382,11 +395,25 @@ func (w *watcher) sessions() {
 
 func (w *watcher) stats(line string, now time.Time) error {
 	l := &w.live
-	if _, err := fmt.Sscan(line, &l.Cores, &l.Load, &l.Memory.UsedMB, &l.Memory.TotalMB, &l.Disk.UsedMB, &l.Disk.TotalMB); err != nil {
+	var booted int64
+	if _, err := fmt.Sscan(line, &l.Cores, &l.Load, &l.Memory.UsedMB, &l.Memory.TotalMB, &l.Disk.UsedMB, &l.Disk.TotalMB, &l.Swap.UsedMB, &l.Swap.TotalMB, &booted); err != nil {
 		return err
 	}
+	l.BootedAt, l.Pressure, l.Battery = time.Unix(booted, 0), "", nil
+	l.Relayed = l.SSH != "" && relayed(l.SSH)
 	usage := map[int]use{}
-	for _, field := range strings.Fields(line)[6:] {
+	for _, field := range strings.Fields(line)[9:] {
+		if pressure, ok := strings.CutPrefix(field, "pressure="); ok {
+			l.Pressure = pressure
+			continue
+		}
+		if charge, ok := strings.CutPrefix(field, "battery="); ok {
+			l.Battery = &battery{}
+			if _, err := fmt.Sscanf(charge, "%d:%t:%t", &l.Battery.Percent, &l.Battery.Charging, &l.Battery.OnBattery); err != nil {
+				return err
+			}
+			continue
+		}
 		var pid int
 		u := use{at: now}
 		if _, err := fmt.Sscanf(field, "%d:%g:%d", &pid, &u.seconds, &u.memoryMB); err != nil {
@@ -399,6 +426,24 @@ func (w *watcher) stats(line string, now time.Time) error {
 	}
 	w.usage = usage
 	return nil
+}
+
+func relayed(ssh string) bool {
+	var status struct {
+		Peer map[string]struct{ HostName, DNSName, CurAddr string }
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tailscaleWait)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "tailscale", "status", "--json").Output(); err == nil {
+		json.Unmarshal(out, &status)
+	}
+	host := ssh[strings.LastIndex(ssh, "@")+1:]
+	for _, p := range status.Peer {
+		if p.HostName == host || strings.HasPrefix(p.DNSName, host+".") {
+			return p.CurAddr == ""
+		}
+	}
+	return false
 }
 
 func (w *watcher) save() error {

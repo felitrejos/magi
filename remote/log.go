@@ -20,6 +20,8 @@ type logEntry struct {
 	FromDir string    `json:"from_dir"`
 	ToDir   string    `json:"to_dir"`
 	Note    string    `json:"note,omitempty"`
+	Bytes   int64     `json:"bytes,omitzero"`
+	Seconds float64   `json:"seconds,omitzero"`
 }
 
 func appendLog(e logEntry) error {

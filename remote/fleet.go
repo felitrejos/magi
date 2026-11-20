@@ -131,13 +131,13 @@ func parsePlatform(name, out string) *fleetMachine {
 	if len(lines) > 2 {
 		m.Tools = strings.Fields(lines[2])
 	}
-	if len(lines) < 7 {
+	if len(lines) < 8 {
 		return m
 	}
 	cores, coresErr := strconv.Atoi(strings.TrimSpace(lines[3]))
 	load, loadErr := strconv.ParseFloat(firstField(lines[4]), 64)
 	memory := strings.Fields(lines[5])
-	working, workingErr := strconv.Atoi(strings.TrimSpace(lines[6]))
+	working, workingErr := strconv.Atoi(strings.TrimSpace(lines[7]))
 	if coresErr != nil || loadErr != nil || workingErr != nil || len(memory) != 2 || cores <= 0 {
 		return m
 	}
