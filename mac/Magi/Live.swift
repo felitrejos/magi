@@ -15,6 +15,7 @@ struct Machine: Decodable {
     let swap: Space?
     let bootedAt: Date?
     let battery: Battery?
+    let critical: Double?
     let relayed: Bool?
     let history: [Reading]?
 
@@ -31,10 +32,6 @@ struct Space: Decodable {
     var fraction: Double {
         Double(usedMB) / Double(totalMB)
     }
-
-    var nearlyFull: Bool {
-        fraction >= 0.9
-    }
 }
 
 enum Pressure: String, Decodable {
@@ -44,6 +41,7 @@ enum Pressure: String, Decodable {
 struct Battery: Decodable {
     let percent: Int
     let onBattery: Bool
+    let minutesLeft: Int?
 }
 
 struct Session: Decodable {
@@ -62,6 +60,11 @@ struct Reading: Decodable {
     let at: TimeInterval
     let load: Double
     let memoryMB: Int
+    let cpu: Int?
+    let temp: Double?
+    let thermal: Int?
+    let rx: Int?
+    let tx: Int?
 }
 
 struct CPUReading: Decodable {

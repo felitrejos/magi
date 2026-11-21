@@ -91,7 +91,7 @@ struct PanelView: View {
             }
             Spacer(minLength: 0)
             if names.count == 1, let name = names.first, let machine = store.machines[name] {
-                tile(name, machine, order: 0, now: now)
+                tile(name, machine, now: now)
                     .frame(width: 150)
             }
         }
@@ -102,21 +102,21 @@ struct PanelView: View {
 
     private func strip(now: Date) -> some View {
         HStack(spacing: 6) {
-            ForEach(Array(names.enumerated()), id: \.element) { order, name in
+            ForEach(names, id: \.self) { name in
                 if let machine = store.machines[name] {
-                    tile(name, machine, order: order, now: now)
+                    tile(name, machine, now: now)
                 }
             }
         }
         .padding(8)
     }
 
-    private func tile(_ name: String, _ machine: Machine, order: Int, now: Date) -> some View {
+    private func tile(_ name: String, _ machine: Machine, now: Date) -> some View {
         Button {
             scope = scope == name ? nil : name
             highlight = nil
         } label: {
-            Tile(name: name, machine: machine, answers: store.answering.contains(name), selected: scope == name, delay: 0.08 + 0.03 * Double(order), now: now)
+            Tile(name: name, machine: machine, answers: store.answering.contains(name), selected: scope == name, now: now)
         }
         .buttonStyle(Press())
     }
@@ -167,9 +167,20 @@ struct SessionList: View {
         ScrollView {
             VStack(spacing: 0) {
                 if let scope, let machine {
-                    ScopeSummary(name: scope, machine: machine, now: now)
-                        .padding(.bottom, 8)
+                    Monitor(name: scope, machine: machine, now: now)
+                        .padding(8)
+                        .padding(.bottom, 6)
                         .transition(.move(edge: .top).combined(with: .opacity))
+                    if !rows.isEmpty {
+                        Text("Sessions")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8)
+                            .padding(.bottom, 2)
+                            .accessibilityAddTraits(.isHeader)
+                            .transition(.opacity)
+                    }
                 }
                 ForEach(rows) { row in
                     SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now)
@@ -394,15 +405,17 @@ struct Tile: View {
     let machine: Machine
     let answers: Bool
     let selected: Bool
-    let delay: Double
     let now: Date
     @State private var hovered = false
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityShowBorders) private var showBorders
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("monitorModules") private var modules = Modules.defaults
 
-    private var percent: Int {
-        Int((machine.load / Double(machine.cores) * 100).rounded())
+    private var caption: (text: String, health: Health)? {
+        if let alert = machine.alert(modules.enabled), let word = alert.alert {
+            return (word, alert.health)
+        }
+        return machine.measures(modules.enabled).first.map { ($0.headline, $0.health) }
     }
 
     private var heading: some View {
@@ -428,16 +441,18 @@ struct Tile: View {
 
     @ViewBuilder private var summary: some View {
         if answers {
-            HStack(spacing: 6) {
-                Trend(points: machine.loadPoints(now: now), color: machine.health, delay: delay)
-                    .frame(maxHeight: 12)
-                Text("\(percent)% load")
-                    .font(.footnote)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(percent)))
-                    .animation(.snappy(duration: 0.3), value: percent)
-                    .layoutPriority(1)
+            if let caption {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(caption.health.color)
+                        .frame(width: 6, height: 6)
+                    Text(caption.text)
+                        .font(.footnote)
+                        .monospacedDigit()
+                        .foregroundStyle(caption.health == .fine ? AnyShapeStyle(.secondary) : AnyShapeStyle(caption.health.color))
+                        .contentTransition(.opacity)
+                }
+                .animation(.easeOut(duration: 0.2), value: caption.text)
             }
         } else {
             ViewThatFits {
@@ -469,7 +484,7 @@ struct Tile: View {
     }
 
     private var label: String {
-        answers ? "\(name), load \(percent)%" : "\(name), \(machine.quiet(now: now))"
+        [name, answers ? caption?.text : machine.quiet(now: now)].compactMap(\.self).joined(separator: ", ")
     }
 
     private var plate: some View {
@@ -550,12 +565,6 @@ func latest(_ reading: TimeInterval?, now: Date) -> Date {
 let historyWindow: TimeInterval = 60 * 60
 
 extension Machine {
-    var health: Color {
-        if pressure == .critical { return .red }
-        if load >= 0.7 * Double(cores) || pressure == .warning || disk.nearlyFull { return .orange }
-        return .green
-    }
-
     func quiet(now: Date) -> String {
         guard let heard else { return "not answering" }
         return "not answering for \(span(now.timeIntervalSince(heard)))"
@@ -564,13 +573,5 @@ extension Machine {
     var device: String {
         if battery != nil { return "macbook" }
         return ssh?.isEmpty ?? true ? "desktopcomputer" : "server.rack"
-    }
-
-    var peak: Double {
-        max(Double(cores), (history ?? []).map(\.load).max() ?? 0)
-    }
-
-    func loadPoints(now: Date) -> [CGPoint] {
-        trend((history ?? []).map { ($0.at, $0.load) }, top: peak, now: now)
     }
 }

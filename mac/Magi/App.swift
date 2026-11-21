@@ -11,7 +11,7 @@ final class App: NSObject, NSApplicationDelegate {
     private let menu = NSMenu()
     private let store: Store
     private let scenes: NSHostingSceneRepresentation<Scenes>
-    private lazy var settings = NSWindow.settings { [scenes] in scenes.environment.openWindow(id: Welcome.id, value: Welcome.id) }
+    private lazy var settings = NSWindow.settings(store: store) { [scenes] in scenes.environment.openWindow(id: Welcome.id, value: Welcome.id) }
     private let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
     private var host: NSView?
     private var monitor: Any?

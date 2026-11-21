@@ -45,7 +45,7 @@ extension EnvironmentValues {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case general, menuBar, sound
+    case general, menuBar, monitor, sound
 
     var id: Self { self }
 
@@ -53,6 +53,7 @@ enum Pane: String, CaseIterable, Identifiable {
         switch self {
         case .general: "General"
         case .menuBar: "Menu Bar"
+        case .monitor: "Monitor"
         case .sound: "Sound"
         }
     }
@@ -61,6 +62,7 @@ enum Pane: String, CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape.fill"
         case .menuBar: "menubar.rectangle"
+        case .monitor: "gauge.with.dots.needle.67percent"
         case .sound: "speaker.wave.2.fill"
         }
     }
@@ -69,12 +71,13 @@ enum Pane: String, CaseIterable, Identifiable {
         switch self {
         case .general: [Color(white: 0.45), Color(white: 0.25)]
         case .menuBar: [Color(red: 0.35, green: 0.6, blue: 1), Color(red: 0.1, green: 0.35, blue: 0.9)]
+        case .monitor: [Color(red: 0.3, green: 0.8, blue: 0.45), Color(red: 0.1, green: 0.55, blue: 0.25)]
         case .sound: [Color(red: 1, green: 0.4, blue: 0.5), Color(red: 0.85, green: 0.15, blue: 0.3)]
         }
     }
 
     func matches(_ query: String) -> Bool {
-        title.matches(query) || Setting.allCases.contains { $0.pane == self && $0.title.matches(query) }
+        title.matches(query) || Setting.allCases.contains { $0.pane == self && $0.title.matches(query) } || self == .monitor && Module.allCases.contains { $0.title.matches(query) }
     }
 }
 
@@ -103,8 +106,8 @@ enum Setting: CaseIterable {
 }
 
 extension NSWindow {
-    static func settings(welcome: @escaping () -> Void) -> NSWindow {
-        let host = NSHostingController(rootView: SettingsView(welcome: welcome))
+    static func settings(store: Store, welcome: @escaping () -> Void) -> NSWindow {
+        let host = NSHostingController(rootView: SettingsView(store: store, welcome: welcome))
         host.sceneBridgingOptions = [.toolbars]
         let window = NSWindow(contentViewController: host)
         window.styleMask = [.titled, .closable, .fullSizeContentView]
@@ -115,6 +118,7 @@ extension NSWindow {
 }
 
 struct SettingsView: View {
+    let store: Store
     let welcome: () -> Void
     @AppStorage("pane") private var pane = Pane.general
     @State private var back: [Pane] = []
@@ -169,6 +173,7 @@ struct SettingsView: View {
             switch pane {
             case .general: General(welcome: welcome)
             case .menuBar: MenuBar()
+            case .monitor: MonitorPane(store: store)
             case .sound: Sound()
             }
         }
@@ -408,6 +413,166 @@ struct MenuBar: View {
                 SettingSwitch(isOn: $dot)
             }
         }
+    }
+}
+
+struct MonitorPane: View {
+    let store: Store
+    @AppStorage("monitorModules") private var modules = Modules.defaults
+    @State private var picked: String?
+    @State private var target: Module?
+    @State private var width: CGFloat = 0
+    @Environment(\.query) private var query
+
+    private var names: [String] {
+        store.machines.keys.sorted()
+    }
+
+    private var name: String? {
+        picked.flatMap { store.machines[$0] == nil ? nil : $0 } ?? names.first(where: store.answering.contains) ?? names.first
+    }
+
+    private var rows: [Module] {
+        modules.enabled + Module.allCases.filter { !modules.enabled.contains($0) }
+    }
+
+    var body: some View {
+        if query.isEmpty, let name, let machine = store.machines[name] {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Preview")
+                        .font(.system(size: 13.5, weight: .semibold))
+                    Spacer()
+                    Menu {
+                        Picker("Machine", selection: Binding(get: { name }, set: { picked = $0 })) {
+                            ForEach(names, id: \.self) { name in
+                                Text(name).tag(name)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: machine.device)
+                                .font(.system(size: 10))
+                            Text(name)
+                                .font(.system(size: 13, weight: .medium))
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: 24)
+                        .background(SettingsColor.control, in: .rect(cornerRadius: 6, style: .continuous))
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                }
+                MonitorGrid(name: name, measures: Array(machine.measures(modules.enabled).filter { $0.module != .network }.prefix(4)), now: .now)
+                    .frame(width: 328)
+                    .containerShape(.rect)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(12)
+            .background(SettingsColor.card, in: .rect(cornerRadius: 10, style: .continuous))
+        }
+        let matching = rows.filter { $0.title.matches(query) }
+        if !matching.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Modules")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 12)
+                SettingCard {
+                    ForEach(matching) { module in
+                        row(module)
+                    }
+                }
+                .onGeometryChange(for: CGFloat.self, of: \.size.width) { width = $0 }
+                .animation(.snappy(duration: 0.3), value: modules)
+                if query.isEmpty {
+                    Text("Drag to reorder. Every machine shows the same modules; one without the data skips it.")
+                        .font(subtitleFont)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                }
+            }
+        }
+        if query.isEmpty {
+            HStack {
+                Spacer()
+                Button("Restore Defaults") {
+                    modules = .defaults
+                }
+                .buttonStyle(FillButton())
+            }
+        }
+    }
+
+    @ViewBuilder private func row(_ module: Module) -> some View {
+        let on = modules.enabled.contains(module)
+        let row = ModuleRow(module: module, on: Binding(get: { on }, set: { enable(module, $0) }), draggable: on)
+            .background(target == module ? SettingsColor.selection : .clear, in: .rect(cornerRadius: 10, style: .continuous))
+        if on {
+            row
+                .draggable(module.rawValue) {
+                    ModuleRow(module: module, on: .constant(true), draggable: true)
+                        .frame(width: width)
+                        .background(SettingsColor.card, in: .rect(cornerRadius: 10, style: .continuous))
+                        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+                }
+                .dropDestination(for: String.self) { items, _ in
+                    target = nil
+                    guard let moved = items.first.flatMap(Module.init(rawValue:)), let from = modules.enabled.firstIndex(of: moved), let to = modules.enabled.firstIndex(of: module) else { return }
+                    modules.enabled.move(fromOffsets: [from], toOffset: to > from ? to + 1 : to)
+                }
+                .onDropSessionUpdated { session in
+                    switch session.phase {
+                    case .entering, .active: target = module
+                    default: target = target == module ? nil : target
+                    }
+                }
+        } else {
+            row
+        }
+    }
+
+    private func enable(_ module: Module, _ on: Bool) {
+        if on {
+            modules.enabled.append(module)
+        } else {
+            modules.enabled.removeAll { $0 == module }
+        }
+    }
+}
+
+struct ModuleRow: View {
+    let module: Module
+    @Binding var on: Bool
+    let draggable: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.tertiary)
+                .opacity(draggable ? 1 : 0)
+                .accessibilityHidden(true)
+            PaneTile(symbol: module.symbol, colors: module.colors)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(module.title)
+                    .font(rowFont)
+                Text(module.subtitle)
+                    .font(subtitleFont)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            SettingSwitch(isOn: $on)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 47)
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
     }
 }
 
