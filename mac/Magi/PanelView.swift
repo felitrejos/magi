@@ -118,8 +118,10 @@ struct PanelView: View {
 
     private func tile(_ name: String, _ machine: Machine, now: Date) -> some View {
         Button {
-            scope = scope == name ? nil : name
-            highlight = nil
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.4)) {
+                scope = scope == name ? nil : name
+                highlight = nil
+            }
         } label: {
             Tile(name: name, machine: machine, answers: store.answering.contains(name), selected: scope == name, now: now)
         }
