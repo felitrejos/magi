@@ -200,11 +200,11 @@ enum Opener {
             let rex = try await tool("rex")
             guard let label = try Script.rexLabel(ssh: ssh, hosts: await run(rex, ["hosts", "list", "--json"], until: deadline)),
                   let name = SCDynamicStoreCopyComputerName(nil, nil) as String? else { throw Failure() }
-            try await run(rex, ["-S", label, "block", "focus", "-s", session, block], until: deadline)
             try await NSWorkspace.shared.openApplication(at: try required(Host.rex.bundle!), configuration: .init())
             while ContinuousClock.now < deadline {
                 if let client = try Script.rexClient(await run(rex, ["-S", label, "client", "ls", "--json"], until: deadline), label: name),
                    (try? await run(rex, ["-S", label, "-C", client, "do", "session.select", "session_id=\(session)"], until: deadline)) != nil {
+                    try await run(rex, ["-S", label, "block", "focus", "-s", session, block], until: deadline)
                     return
                 }
                 try await Task.sleep(for: .milliseconds(250))
