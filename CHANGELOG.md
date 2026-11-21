@@ -4,10 +4,31 @@ What changed in each version of magi.
 [docs/support.md](docs/support.md#versions) says what a version number
 promises.
 
-## Unreleased
+## 1.0.0, 2026-11-21
 
-The plugin's version in this work is 0.10.0. No release with that number
-is published.
+The first stable release. [docs/support.md](docs/support.md#versions)
+lists what now stays the same until 2.0. No 0.10.0 was published.
+
+The menu bar app, new, for macOS 26 and later.
+
+- It lists the sessions on all your machines, the ones waiting on you
+  first, each with Claude's question. A click on a row opens the session
+  where it runs: the Claude desktop app, Rex, Ghostty, Terminal, a tmux
+  pane, or its Remote Control link.
+- A notification when a session starts waiting on you. A click on it
+  opens the session. An optional sound.
+- A monitor per machine: CPU, memory, temperature, disk and network over
+  the last hour, each session's CPU and memory, uptime, and whether the
+  machine is on battery or reached through a Tailscale relay.
+- Settings has General, Notifications and Monitor tabs, with Open at
+  Login, a waiting count next to the icon, and the monitor's modules and
+  their order.
+- "Set up magi" on a Mac installs it in `/Applications`, and
+  `setup_machine` without a machine sets up only this Mac. The watcher
+  keeps the app at magi's version. It is signed with magi's own
+  certificate and isn't notarized.
+
+The plugin.
 
 - You install magi by adding the plugin in Claude Code. Its launcher
   downloads the release binary for its version and checks its SHA-256.
@@ -31,12 +52,17 @@ is published.
   version its tests haven't passed with.
 - Every move writes a journal, and magi settles a move that was cut off
   on its own. It never deletes a folder or a transcript.
-- `magi watch` writes each machine's load, memory and disk and each
-  session's state, CPU and memory to `~/.magi/live/<machine>.json`.
+- `magi watch` writes each machine's load, CPU, memory, disk,
+  temperature and network, and each session's state, CPU, memory and
+  where it runs, to `~/.magi/live/<machine>.json`, with the last hour of
+  readings.
+- Claude offers magi by itself for slow builds and tests, and for work
+  that needs another operating system.
 - A move's result gives the Remote Control link and each step's time.
   `sessions` opens with the sessions waiting on you.
 - The nightly is a GitHub Actions workflow on Ubuntu and macOS runners. A
-  release publishes only after CI passes on macOS, Ubuntu and Alpine.
+  release publishes only after CI passes on macOS, Ubuntu and Alpine,
+  and it builds and signs the menu bar app.
 - Removed Codex support, Rex and the `magi-overview` program. magi moves
   Claude Code sessions only, and tmux is the only launcher. An old config
   with a `codex` key still loads.
