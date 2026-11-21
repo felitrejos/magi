@@ -126,12 +126,11 @@ func setupMachine(in setupInput) (string, error) {
 }
 
 func setUpHere(b *strings.Builder) {
-	c := &checks{out: b}
 	if err := installWatch(b); err != nil {
-		c.fail("magi watch couldn't start here", err.Error())
+		failLine(b, "magi watch couldn't start here", err.Error())
 	}
 	if err := setUpApp(b); err != nil {
-		c.fail("magi's menu bar app wasn't installed", err.Error())
+		failLine(b, "magi's menu bar app wasn't installed", err.Error())
 	}
 }
 
@@ -233,7 +232,11 @@ func (c *checks) pass(what string) {
 
 func (c *checks) fail(what, fix string) {
 	c.failed++
-	fmt.Fprintf(c.out, "  ✗ %s\n      %s\n", what, fix)
+	failLine(c.out, what, fix)
+}
+
+func failLine(out io.Writer, what, fix string) {
+	fmt.Fprintf(out, "  ✗ %s\n      %s\n", what, fix)
 }
 
 func (c *checks) warn(what, note string) {

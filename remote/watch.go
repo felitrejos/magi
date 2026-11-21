@@ -170,7 +170,6 @@ func watch() error {
 	}()
 	go heartbeat(logger, quit)
 	go followTailnet(logger)
-	go updateApp(logger)
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		watchHost(newWatcher(local.Name(), "", nil, logger, ""), "", func() (sh.Machine, error) { return local, nil })
@@ -208,6 +207,8 @@ func heartbeat(logger *log.Logger, restart func()) {
 	}
 	self, _ := filepath.EvalSymlinks(link)
 	config, _ := os.ReadFile(path)
+	var appTried time.Time
+	appCurrent := false
 	for range time.Tick(heartbeatEvery) {
 		moves, err := sweepMoves()
 		if err != nil {
@@ -229,6 +230,8 @@ func heartbeat(logger *log.Logger, restart func()) {
 			logger.Printf("%s; restarting once no session is being taken back", changed)
 			taking.Lock()
 			restart()
+		} else if !appCurrent && time.Since(appTried) >= time.Hour {
+			appTried, appCurrent = time.Now(), updateApp(logger)
 		}
 	}
 }

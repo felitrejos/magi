@@ -26,9 +26,10 @@ Run these in Claude Code on your laptop.
 ```
 
 Then say "set up magi with my homelab". Claude says what it will install
-and waits for your yes. Each machine needs `curl`, git 2.31 or newer,
-`tar`, tmux and Claude Code signed in with a claude.ai account. Your
-laptop needs SSH to the other machine without a password prompt.
+and waits for your yes. On a Mac, setup also installs magi's menu bar
+app. Each machine needs `curl`, git 2.31 or newer, `tar`, tmux and Claude
+Code signed in with a claude.ai account. Your laptop needs SSH to the
+other machine without a password prompt.
 
 ## What you can ask
 

@@ -28,14 +28,21 @@ jobs:
         run: |
           keychain=$RUNNER_TEMP/signing.keychain-db
           printf %s "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
-          security create-keychain -p "$P12_PASSWORD" "$keychain"
+          password=${P12_PASSWORD//\\/\\\\}
+          password=${password//\"/\\\"}
+          on_stdin() { printf '%s\n' "$1" | security -q -i; }
+          on_stdin "create-keychain -p \"$password\" \"$keychain\""
           security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$P12_PASSWORD" "$keychain"
-          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -f pkcs12 -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$P12_PASSWORD" "$keychain" >/dev/null
-          rm "$RUNNER_TEMP/signing.p12"
+          on_stdin "unlock-keychain -p \"$password\" \"$keychain\""
+          on_stdin "import \"$RUNNER_TEMP/signing.p12\" -k \"$keychain\" -f pkcs12 -P \"$password\" -T /usr/bin/codesign"
+          on_stdin "set-key-partition-list -S apple-tool:,apple: -s -k \"$password\" \"$keychain\"" >/dev/null
       - name: Build, sign and package the menu bar app
         run: mac/release.sh "$(jq -r .version plugin/.claude-plugin/plugin.json)" "$RUNNER_TEMP/signing.keychain-db" "$GITHUB_WORKSPACE/dist"
+      - name: Remove the signing identity
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/signing.p12"
+          [ ! -e "$RUNNER_TEMP/signing.keychain-db" ] || security delete-keychain "$RUNNER_TEMP/signing.keychain-db"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: app

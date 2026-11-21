@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -19,14 +20,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/felitrejos/magi/remote/internal/store"
 	"golang.org/x/sys/unix"
 )
 
 //go:embed app.requirement
 var appRequirement string
 
+var appPath = "/Applications/magi.app"
+
 const (
-	appPath     = "/Applications/magi.app"
 	appBundleID = "io.github.felitrejos.magi"
 	appArchive  = "magi.app.zip"
 	lsregister  = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
@@ -40,105 +43,185 @@ const appCopiesScript = `function run(argv) {
 	})
 }`
 
+type appCopies struct {
+	Copies []string
+	Pids   []int
+}
+
 func setUpApp(out io.Writer) error {
-	if _, err := installApp(out); err != nil {
+	if _, ok := parseVersion(version); !ok {
+		fmt.Fprintf(out, "This magi is a %s build, so it doesn't install the menu bar app.\n", version)
+		return nil
+	}
+	unlock, err := lockApp()
+	if err != nil {
 		return err
 	}
-	return openApp(out)
+	defer unlock()
+	installed, err := installedApp()
+	if err != nil {
+		return err
+	}
+	if installed == version && verifyApp(appPath) == nil {
+		found, err := findApps()
+		if err != nil {
+			return err
+		}
+		if len(found.Pids) == 0 {
+			if err := openApp(); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(out, "magi's menu bar app %s is already installed in %s and running in the menu bar.\n", version, appPath)
+		return nil
+	}
+	if err := installApp(out, true); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "It's running in the menu bar.")
+	if installed == "" {
+		fmt.Fprintln(out, "macOS asks once before it brings a Ghostty or Terminal window to the front.")
+	}
+	return nil
 }
 
-func updateApp(logger *log.Logger) {
-	installed, err := appVersion(appPath)
-	if err != nil || !appStale(installed) {
-		return
+func updateApp(logger *log.Logger) bool {
+	if _, ok := parseVersion(version); !ok {
+		return true
 	}
 	var b strings.Builder
-	running, err := installApp(&b)
-	if err == nil && running {
-		err = openApp(&b)
+	err := func() error {
+		unlock, err := lockApp()
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		installed, err := installedApp()
+		if err != nil || installed == "" || installed == version {
+			return err
+		}
+		fmt.Fprintf(&b, "Updating the menu bar app from %s to %s.\n", installed, version)
+		return installApp(&b, false)
+	}()
+	if said := strings.TrimSpace(b.String()); said != "" {
+		logger.Print(said)
 	}
 	if err != nil {
-		logger.Printf("updating the menu bar app from %s to %s failed: %v", installed, version, err)
-		return
+		logger.Printf("updating the menu bar app to %s failed, so the watcher tries again in an hour: %v", version, err)
+		return false
 	}
-	logger.Print(strings.TrimSpace(b.String()))
+	return true
 }
 
-func appStale(installed string) bool {
-	_, ok := parseVersion(version)
-	return ok && installed != version
+func lockApp() (func(), error) {
+	path, err := store.Dir("app.lock")
+	if err != nil {
+		return nil, err
+	}
+	return store.Lock(path, errors.New("another magi is installing the menu bar app right now"))
 }
 
-func appVersion(app string) (string, error) {
-	out, err := exec.Command("plutil", "-extract", "CFBundleShortVersionString", "raw", "-o", "-", filepath.Join(app, "Contents", "Info.plist")).Output()
-	return strings.TrimSpace(string(out)), err
+func installedApp() (string, error) {
+	if _, err := os.Lstat(appPath); errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if id, err := appInfo(appPath, "CFBundleIdentifier"); err != nil || id != appBundleID {
+		return "", fmt.Errorf("%s isn't magi's menu bar app, so magi leaves it alone; move it out of %s to install magi's", appPath, filepath.Dir(appPath))
+	}
+	return appInfo(appPath, "CFBundleShortVersionString")
 }
 
-func installApp(out io.Writer) (bool, error) {
+func appInfo(app, key string) (string, error) {
+	return runQuiet("/usr/bin/plutil", "-extract", key, "raw", "-o", "-", filepath.Join(app, "Contents", "Info.plist"))
+}
+
+func appWritable() error {
+	dir := filepath.Dir(appPath)
+	if unix.Access(dir, unix.W_OK) != nil {
+		return fmt.Errorf("installing the menu bar app needs an administrator account: this account can't write to %s", dir)
+	}
+	if err := unix.Access(appPath, unix.W_OK); err != nil && !errors.Is(err, unix.ENOENT) {
+		return fmt.Errorf("%s is owned by another user, so this account can't replace it", appPath)
+	}
+	return nil
+}
+
+func installApp(out io.Writer, open bool) error {
+	if err := appWritable(); err != nil {
+		return err
+	}
+	stale, _ := filepath.Glob(filepath.Join(os.TempDir(), "magi-app-*"))
+	for _, dir := range stale {
+		os.RemoveAll(dir)
+	}
 	work, err := os.MkdirTemp("", "magi-app-")
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer os.RemoveAll(work)
 	archive, err := fetchApp(cmp.Or(os.Getenv("MAGI_RELEASE_URL"), "https://github.com/felitrejos/magi/releases/download/v"+version), work)
 	if err != nil {
-		return false, err
+		return err
 	}
-	staged, err := unpackApp(archive, filepath.Join(work, "staged"), strings.TrimSpace(appRequirement))
+	staged, err := unpackApp(archive, filepath.Join(work, "staged"))
 	if err != nil {
-		return false, err
+		return err
 	}
-	found, err := exec.Command("osascript", "-l", "JavaScript", "-e", appCopiesScript, appBundleID).Output()
+	found, err := findApps()
 	if err != nil {
-		return false, fmt.Errorf("asking LaunchServices for copies of magi.app failed: %w", err)
-	}
-	var registered struct {
-		Copies []string
-		Pids   []int
-	}
-	if err := json.Unmarshal(found, &registered); err != nil {
-		return false, err
-	}
-	if err := quitApps(registered.Pids); err != nil {
-		return false, err
+		return err
 	}
 	if err := replaceApp(staged, appPath); err != nil {
-		return false, fmt.Errorf("putting magi.app in %s failed: %w", filepath.Dir(appPath), err)
+		return fmt.Errorf("putting magi.app in %s failed: %w", filepath.Dir(appPath), err)
 	}
-	for _, c := range registered.Copies {
+	fmt.Fprintf(out, "Installed magi's menu bar app %s in %s.\n", version, appPath)
+	quitErr := quitApps(found.Pids)
+	for _, c := range found.Copies {
 		if c == appPath {
 			continue
 		}
-		if err := runQuiet(lsregister, "-u", c); err != nil {
-			return false, fmt.Errorf("unregistering %s from LaunchServices failed: %w", c, err)
+		if _, err := runQuiet(lsregister, "-u", c); err != nil {
+			fmt.Fprintf(out, "Unregistering another copy of magi.app, %s, from LaunchServices failed: %v\n", c, err)
+			continue
 		}
 		fmt.Fprintf(out, "Unregistered another copy of magi.app from LaunchServices: %s\n", c)
 	}
-	if err := runQuiet(lsregister, "-f", appPath); err != nil {
-		return false, fmt.Errorf("registering %s with LaunchServices failed: %w", appPath, err)
+	if _, err := runQuiet(lsregister, "-f", appPath); err != nil {
+		fmt.Fprintf(out, "Registering %s with LaunchServices failed: %v\n", appPath, err)
 	}
-	fmt.Fprintf(out, "Installed magi's menu bar app %s in %s.\n", version, appPath)
-	return len(registered.Pids) > 0, nil
+	if open || len(found.Pids) > 0 {
+		return errors.Join(quitErr, openApp())
+	}
+	return quitErr
 }
 
-func openApp(out io.Writer) error {
-	if err := runQuiet("open", appPath); err != nil {
+func findApps() (appCopies, error) {
+	var found appCopies
+	text, err := runQuiet("/usr/bin/osascript", "-l", "JavaScript", "-e", appCopiesScript, appBundleID)
+	if err != nil {
+		return found, fmt.Errorf("asking LaunchServices for copies of magi.app failed: %w", err)
+	}
+	return found, json.Unmarshal([]byte(text), &found)
+}
+
+func openApp() error {
+	if _, err := runQuiet("/usr/bin/open", appPath); err != nil {
 		return fmt.Errorf("opening %s failed: %w", appPath, err)
 	}
-	fmt.Fprintln(out, "It's running in the menu bar. macOS asks once before it brings a Ghostty or Terminal window to the front.")
 	return nil
 }
 
-func runQuiet(name string, args ...string) error {
-	if msg, err := exec.Command(name, args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(msg)))
+func runQuiet(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).Output()
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
+		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(exit.Stderr)))
 	}
-	return nil
+	return strings.TrimSpace(string(out)), err
 }
 
 func fetchApp(url, dir string) (string, error) {
 	for _, file := range []string{appArchive, "checksums.txt"} {
-		if err := runQuiet("curl", "-fsSL", "--connect-timeout", "10", "--max-time", "300", "--proto", "=https,file", "--proto-redir", "=https", "-o", filepath.Join(dir, file), url+"/"+file); err != nil {
+		if _, err := runQuiet("/usr/bin/curl", "-fsSL", "--connect-timeout", "10", "--max-time", "300", "--proto", "=https,file", "--proto-redir", "=https", "-o", filepath.Join(dir, file), url+"/"+file); err != nil {
 			return "", fmt.Errorf("downloading %s from %s failed: %w", file, url, err)
 		}
 	}
@@ -160,15 +243,26 @@ func fetchApp(url, dir string) (string, error) {
 	return "", fmt.Errorf("%s doesn't match its checksum, so it wasn't installed", appArchive)
 }
 
-func unpackApp(archive, dir, requirement string) (string, error) {
-	if err := runQuiet("ditto", "-x", "-k", archive, dir); err != nil {
+func unpackApp(archive, dir string) (string, error) {
+	if _, err := runQuiet("/usr/bin/ditto", "-x", "-k", archive, dir); err != nil {
 		return "", fmt.Errorf("unpacking %s failed: %w", appArchive, err)
 	}
 	app := filepath.Join(dir, "magi.app")
-	if msg, err := exec.Command("codesign", "--verify", "--strict", "--deep", "-R", "="+requirement, app).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("magi.app isn't signed by magi's certificate, so it wasn't installed: %s", strings.TrimSpace(string(msg)))
+	if info, err := os.Lstat(app); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("%s holds no magi.app folder, so it wasn't installed", appArchive)
+	}
+	if got, err := appInfo(app, "CFBundleShortVersionString"); err != nil || got != version {
+		return "", fmt.Errorf("the downloaded magi.app is version %q, not %s, so it wasn't installed", got, version)
+	}
+	if err := verifyApp(app); err != nil {
+		return "", fmt.Errorf("magi.app isn't signed by magi's certificate, so it wasn't installed: %w", err)
 	}
 	return app, nil
+}
+
+func verifyApp(app string) error {
+	_, err := runQuiet("/usr/bin/codesign", "--verify", "--strict", "--deep", "-R", "="+strings.TrimSpace(appRequirement), app)
+	return err
 }
 
 func replaceApp(staged, dest string) error {
@@ -189,7 +283,7 @@ func quitApps(pids []int) error {
 	for _, pid := range pids {
 		for syscall.Kill(pid, 0) == nil {
 			if time.Now().After(deadline) {
-				return fmt.Errorf("magi.app (pid %d) didn't quit, so it wasn't replaced", pid)
+				return fmt.Errorf("magi.app (pid %d) didn't quit", pid)
 			}
 			time.Sleep(100 * time.Millisecond)
 		}

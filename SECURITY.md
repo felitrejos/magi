@@ -4,8 +4,8 @@ magi is one program, `magi`, that runs on your own machines. The Claude
 Code plugin runs it, and you ask Claude for what you need. It reaches your
 other machines only through your own `ssh`. Its other connections are
 HTTPS downloads from GitHub: the release binary, the tested versions list
-and, on a Mac, the menu bar app. It opens no network listener except the ports you ask it to
-forward, which listen on `127.0.0.1`.
+and, on a Mac, the menu bar app. It opens no network listener except the
+ports you ask it to forward, which listen on `127.0.0.1`.
 
 ## What runs where
 
@@ -181,15 +181,28 @@ magi's version when magi updates.
 - It downloads `magi.app.zip` and `checksums.txt` from the same release
   as the binary, and installs nothing unless the zip's SHA-256 matches.
 - The app is signed with magi's own certificate, the same for every
-  release, so macOS keeps its permissions across updates. It isn't
-  notarized: magi downloads it with `curl`, which marks nothing as
-  quarantined, so Gatekeeper doesn't check it.
-- magi installs nothing unless `codesign` verifies the app and it
-  satisfies the requirement pinned in magi, `remote/app.requirement`,
-  which names the bundle id and the certificate's SHA-1.
-- It quits the running app, swaps `/Applications/magi.app` for the new
-  one in a single rename, unregisters other copies of the app from
-  LaunchServices, and opens the app again.
+  release, so macOS keeps its permissions across updates. Its private
+  key is in this repository's GitHub Actions secrets, for the release
+  workflow, and in the owner's offline copy. The app isn't notarized:
+  magi downloads it with `curl`, which marks nothing as quarantined, so
+  Gatekeeper doesn't check it.
+- magi installs nothing unless `magi.app` in the zip is a folder, not a
+  link, its version is magi's, and `codesign` verifies it against the
+  requirement pinned in magi, `remote/app.requirement`, which names the
+  bundle id and the certificate's SHA-1. The pin covers the app only:
+  the `magi` binary is checked against its checksum but isn't signed.
+- It replaces `/Applications/magi.app` only when that is magi's app, by
+  its bundle id. Writing to `/Applications` needs an administrator
+  account, and magi refuses before it changes anything when this
+  account can't.
+- It swaps `/Applications/magi.app` for the new one in a single rename,
+  then quits every running app with magi's bundle id and unregisters
+  other copies of it from LaunchServices. `setup_machine` opens the
+  app. The watcher reopens it only if it was running, and if an update
+  fails it tries again once an hour.
+- When the app is already installed at magi's version and passes the
+  pinned requirement, `setup_machine` leaves it as it is and only opens
+  it if it isn't running.
 
 The macOS menu bar app reads `~/.magi/live` and shows what is in it. To
 open a session where it runs, it opens apps and links through macOS and
@@ -273,7 +286,7 @@ State is in `~/.magi`.
 |---|---|
 | `bin/` | The downloaded magi binaries and the link `magi` to the current one |
 | `armed/`, `wanted/` | A session set to move when its turn ends, and hand-back requests |
-| `watchers/`, `watch.lock` | One file per laptop watching this machine, and the watcher's lock |
+| `watchers/`, `watch.lock`, `app.lock` | One file per laptop watching this machine, the watcher's lock, and the menu bar app's install lock |
 | `live/` | One file per machine, written by `magi watch` |
 | `moved/`, `handoffs.jsonl` | Where each session went, and a log of handoffs and settled moves |
 | `moves/` | One journal per move in progress or cut off |
