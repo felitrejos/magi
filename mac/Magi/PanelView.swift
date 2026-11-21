@@ -307,7 +307,11 @@ struct SessionRow: View {
     }
 
     private var accessibility: String {
-        let state = waiting ? "waiting on you" + (row.session.waitingOn.map { ": \($0)" } ?? "") : row.session.state
+        let state = switch row.session.state {
+        case "waiting": "waiting on you" + (row.session.waitingOn.map { ": \($0)" } ?? "")
+        case "busy": "working"
+        default: row.session.state
+        }
         let detail = usage ? "CPU \(row.session.cpu)%, memory \(row.session.memory)" : elapsed.map { "for \($0)" }
         return [row.session.title, state, "\(folder) on \(row.machine)", detail].compactMap(\.self).joined(separator: ", ")
     }
@@ -323,12 +327,12 @@ struct HostIcon: View {
     }
 
     @ViewBuilder private var icon: some View {
-        if let bundle = host.bundle, let image = AppIcons.icon(bundle) {
+        if let bundle = host.bundle, let image = Apps.icon(bundle) {
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.high)
         } else {
-            Image(systemName: "terminal")
+            Image(systemName: host.symbol)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
         }
@@ -460,7 +464,7 @@ struct Tile: View {
     @State private var hovered = false
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityShowBorders) private var showBorders
-    @AppStorage("monitorModules") private var modules = Modules.defaults
+    @AppStorage(Defaults.modules) private var modules = Modules.defaults
 
     private var caption: (text: String, health: Health)? {
         if let alert = machine.alert(modules.enabled), let word = alert.alert {
@@ -550,70 +554,9 @@ struct Tile: View {
     }
 }
 
-struct Trend: View {
-    let points: [CGPoint]
-    let color: Color
-    let delay: Double
-    @State private var drawn = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorSchemeContrast) private var contrast
-
-    var body: some View {
-        ZStack {
-            Trace(points: points, closed: true)
-                .fill(color.opacity(0.18))
-            Trace(points: points, closed: false)
-                .stroke(color, style: StrokeStyle(lineWidth: contrast == .increased ? 2 : 1.25, lineCap: .round, lineJoin: .round))
-        }
-        .mask(alignment: .leading) {
-            Rectangle().scaleEffect(x: drawn || reduceMotion ? 1 : 0, anchor: .leading)
-        }
-        .onAppear {
-            withAnimation(.spring(duration: 0.6, bounce: 0.15).delay(delay)) {
-                drawn = true
-            }
-        }
-    }
-}
-
-struct Trace: Shape {
-    let points: [CGPoint]
-    let closed: Bool
-
-    func path(in rect: CGRect) -> Path {
-        Path { path in
-            let placed = points.map { CGPoint(x: rect.minX + $0.x * rect.width, y: rect.maxY - $0.y * rect.height) }
-            path.addLines(placed)
-            if closed, let first = placed.first, let last = placed.last {
-                path.addLine(to: CGPoint(x: last.x, y: rect.maxY))
-                path.addLine(to: CGPoint(x: first.x, y: rect.maxY))
-                path.closeSubpath()
-            }
-        }
-    }
-}
-
 func span(_ seconds: TimeInterval) -> String {
     Duration.seconds(max(seconds, 60)).formatted(.units(allowed: [.days, .hours, .minutes], width: .narrow, maximumUnitCount: 1))
 }
-
-func trend(_ readings: [(at: TimeInterval, value: Double)], top: Double, now: Date) -> [CGPoint] {
-    let end = latest(readings.last?.at, now: now).timeIntervalSince1970
-    let width = window(from: readings.first?.at, to: end)
-    let points = readings.map { CGPoint(x: 1 - (end - $0.at) / width, y: $0.value / top) }
-    guard points.count == 1, let only = points.first else { return points }
-    return [CGPoint(x: 0, y: only.y), CGPoint(x: 1, y: only.y)]
-}
-
-func window(from first: TimeInterval?, to end: TimeInterval) -> TimeInterval {
-    min(historyWindow, max(60, end - (first ?? end)))
-}
-
-func latest(_ reading: TimeInterval?, now: Date) -> Date {
-    max(now, Date(timeIntervalSince1970: reading ?? 0))
-}
-
-let historyWindow: TimeInterval = 60 * 60
 
 extension Machine {
     func quiet(now: Date) -> String {

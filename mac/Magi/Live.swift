@@ -68,8 +68,6 @@ struct RexBlock: Decodable, Equatable {
 
 struct Reading: Decodable {
     let at: TimeInterval
-    let load: Double
-    let memoryMB: Int
     let cpu: Int?
     let temp: Double?
     let thermal: Int?

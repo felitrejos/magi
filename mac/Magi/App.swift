@@ -36,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shown: Glance?
     private var dotted: Bool?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        Defaults.register()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let button = item.button!
         button.target = self
@@ -102,8 +106,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !started.isEmpty, UserDefaults.standard.bool(forKey: "playsSound") {
             Chime.play()
         }
-        if !started.isEmpty, UserDefaults.standard.object(forKey: "notifies") as? Bool ?? true {
-            notify(started)
+        if !started.isEmpty, UserDefaults.standard.bool(forKey: "notifies") {
+            notify(Array(started.keys))
+        }
+        if shown == nil {
+            withdrawStale()
         }
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: glance.stopped(after: shown))
         for line in started.values.map(\.announcement).sorted() + (shown?.answering.subtracting(glance.answering).sorted() ?? []).map({ "\($0) stopped answering" }) {
@@ -120,12 +127,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shown = glance
     }
 
-    private func notify(_ started: [String: Waiting]) {
+    private func notify(_ started: [String]) {
         Task {
             guard await permission.request() else { return }
-            for (id, waiting) in started where shown?.waiting[id] == waiting {
+            for id in started {
+                guard let waiting = shown?.waiting[id] else { continue }
                 try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: waiting.content, trigger: nil))
             }
+        }
+    }
+
+    private func withdrawStale() {
+        Task {
+            let delivered = await UNUserNotificationCenter.current().deliveredNotifications().map(\.request.identifier)
+            guard let shown else { return }
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: shown.stale(delivered))
         }
     }
 
@@ -146,7 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func open() {
-        guard let window = item.button?.window, let screen = window.screen else { return }
+        guard host == nil, let window = item.button?.window, let screen = window.screen else { return }
         let height = min(560, screen.visibleFrame.height * 0.7)
         let host = NSHostingView(rootView: PanelView(store: store, height: height) { [weak self] in self?.close() }.padding([.horizontal, .bottom], PanelView.margin))
         host.sizingOptions = []
@@ -159,7 +175,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSAnimationContext.animate(.easeOut(duration: 0.18)) {
             panel.animator().alphaValue = 1
         }
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in self?.close() }
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            guard let self, !itemTakesClick else { return }
+            close()
+        }
+    }
+
+    private var itemTakesClick: Bool {
+        guard item.button?.window?.frame.contains(NSEvent.mouseLocation) == true else { return false }
+        if #available(macOS 27, *) {
+            return item.expandedInterfaceSession == nil
+        }
+        return true
     }
 
     private func close() {

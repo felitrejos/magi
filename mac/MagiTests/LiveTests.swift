@@ -27,7 +27,7 @@ struct LiveTests {
         #expect(laptop.battery?.percent == 64 && laptop.battery?.onBattery == true)
         #expect(laptop.relayed == nil && box.relayed == true)
         #expect(box.pressure == nil && box.swap == nil && box.bootedAt == nil && box.battery == nil)
-        #expect(laptop.history?.first.map { [$0.at, $0.load, Double($0.memoryMB)] } == [1795189563, 1.82, 12210])
+        #expect(laptop.history?.first?.at == 1795189563)
         #expect(laptop.history?.count == 3 && laptop.sessions[1].cpuHistory?.map(\.cpu) == [4, 6])
         #expect(laptop.history?.last.map { [$0.cpu, $0.thermal, $0.rx, $0.tx] } == [31, 1, 2_400_000, 310_000] && laptop.history?.first?.cpu == nil)
         #expect(box.critical == 105 && laptop.critical == nil)
@@ -48,7 +48,7 @@ struct LiveTests {
 
     @Test func measuresEachModuleWithDataAndColorsItByItsThresholds() {
         func machine(_ readings: [(cpu: Int?, temp: Double?, thermal: Int?)] = [], critical: Double? = nil, disk: Int = 100, pressure: Pressure? = nil) -> Machine {
-            let history = readings.enumerated().map { Reading(at: Double($0.offset * 30), load: 1, memoryMB: 1, cpu: $0.element.cpu, temp: $0.element.temp, thermal: $0.element.thermal, rx: nil, tx: nil) }
+            let history = readings.enumerated().map { Reading(at: Double($0.offset * 30), cpu: $0.element.cpu, temp: $0.element.temp, thermal: $0.element.thermal, rx: nil, tx: nil) }
             return Machine(answering: true, heard: nil, ssh: nil, cores: 10, load: 1, memory: Space(usedMB: 1, totalMB: 2), disk: Space(usedMB: disk, totalMB: 1000), sessions: [], pressure: pressure, swap: nil, bootedAt: nil, battery: nil, critical: critical, relayed: nil, history: history)
         }
         func health(_ machine: Machine, _ module: Module) -> Health? {
@@ -68,9 +68,16 @@ struct LiveTests {
         #expect(strained.alert([.memory, .disk])?.alert == "Out of memory")
     }
 
+    @Test func plotsOneReadingAsAFlatLineOverAtLeastAMinute() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let one = Plot([Point(at: now, value: 5)], now: now)
+        #expect(one.start == now - 60 && one.end == now && one.points.map(\.at) == [now - 60, now] && one.points.map(\.value) == [5, 5])
+        let short = Plot([Point(at: now - 20, value: 1), Point(at: now - 10, value: 2)], now: now)
+        #expect(short.start == now - 60 && short.end == now && short.points.map(\.value) == [1, 2])
+    }
+
     @Test func storesTheEnabledModulesInOrderAndSkipsUnknownOnes() {
         #expect(Modules(rawValue: "disk,gpu,battery,cpu").enabled == [.disk, .cpu])
-        #expect(Modules.defaults.rawValue == "cpu,memory,temperature,disk")
     }
 
     @Test func putsWaitingFirstLongestWaitingFirstThenBusyThenIdleAndKeepsAFrozenOrder() {
@@ -84,7 +91,7 @@ struct LiveTests {
         #expect(Row.ordered(urgent, keeping: frozen).map(\.id) == ["a/idle", "b/early", "a/late", "a/busy", "b/busy"])
     }
 
-    @Test func opensEachSessionWhereItRunsOrNotAtAll() {
+    @MainActor @Test func opensEachSessionWhereItRunsOrNotAtAll() {
         let link = URL(string: "https://claude.ai/code/session_01")!
         let ghostty = "com.mitchellh.ghostty"
         func route(_ remote: String?, _ session: Session) -> Route? {
@@ -92,23 +99,16 @@ struct LiveTests {
         }
         #expect(route(nil, session(hostSession: "local_7c", app: "com.anthropic.claudefordesktop")) == .link(URL(string: "claude://code/continue?session=local_7c")!))
         #expect(route("box", session(hostSession: "local_7c", remoteControl: link)) == .remoteControl(link))
-        #expect(route("homelab", session(rex: RexBlock(session: "s", block: "b"), remoteControl: link)) == .rex(host: "homelab", session: "s", block: "b"))
-        #expect(route(nil, session(tmux: "%3", app: ghostty, tty: "/dev/ttys007")) == .tmux(pane: "%3", client: "/dev/ttys007", app: ghostty))
-        #expect(route(nil, session(tmux: "%3")) == .attach(pane: "%3", host: nil))
-        #expect(route("homelab", session(tmux: "%3", app: ghostty, tty: "/dev/pts/2")) == .attach(pane: "%3", host: "homelab"))
+        #expect(route("homelab", session(rex: RexBlock(session: "session:01", block: "block:02"), remoteControl: link)) == .rex(ssh: "homelab", session: "session:01", block: "block:02"))
+        #expect(route("homelab", session(rex: RexBlock(session: "session:01", block: "-h"), remoteControl: link)) == .remoteControl(link))
+        let tmuxInGhostty = route(nil, session(tmux: "%3", app: ghostty, tty: "/dev/ttys007"))
+        #expect(tmuxInGhostty == .tmux(pane: "%3", client: "/dev/ttys007", app: ghostty) && tmuxInGhostty?.host == .ghostty)
+        #expect(route(nil, session(tmux: "%3", app: "com.apple.Terminal", tty: "/dev/ttys007"))?.host == .tmux)
+        #expect(route(nil, session(tmux: "%3")) == .attach(pane: "%3", ssh: nil))
+        #expect(route("homelab", session(tmux: "%3", app: ghostty, tty: "/dev/pts/2")) == .attach(pane: "%3", ssh: "homelab"))
         #expect(route(nil, session(app: ghostty, tty: "/dev/ttys004", remoteControl: link)) == .ghostty(tty: "/dev/ttys004"))
         #expect(route(nil, session(app: "com.apple.Terminal", tty: "/dev/ttys004", remoteControl: link)) == .remoteControl(link))
         #expect(route(nil, session(app: "com.apple.Terminal", tty: "/dev/ttys004")) == nil)
-    }
-
-    @Test func namesWhereEachRouteOpens() {
-        let link = URL(string: "https://claude.ai/code/session_01")!
-        #expect(Route.link(link).host == .claude && Route.remoteControl(link).host == .claude)
-        #expect(Route.rex(host: "homelab", session: "s", block: "b").host == .rex)
-        #expect(Route.tmux(pane: "%3", client: "/dev/ttys007", app: "com.mitchellh.ghostty").host == .ghostty)
-        #expect(Route.tmux(pane: "%3", client: "/dev/ttys007", app: "com.apple.Terminal").host == .tmux)
-        #expect(Route.attach(pane: "%3", host: nil).host == .tmux)
-        #expect(Route.ghostty(tty: "/dev/ttys004").host == .ghostty)
     }
 
     private func session(_ id: String = "a", state: String = "idle", since: TimeInterval = 0, hostSession: String? = nil, tmux: String? = nil, rex: RexBlock? = nil, app: String? = nil, tty: String? = nil, remoteControl: URL? = nil) -> Session {

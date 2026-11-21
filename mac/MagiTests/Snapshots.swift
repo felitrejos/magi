@@ -24,9 +24,9 @@ struct Snapshots {
             try await shot("scope-\(suffix)", full, scheme, height: 900, act: { right($0, times: 2) })
             try await shot("scope-laptop-\(suffix)", full, scheme, height: 900, act: { right($0, times: 3) })
             try await shot("scope-alert-\(suffix)", strained, scheme, height: 900, act: { right($0, times: 3) })
-            UserDefaults.standard.set("cpu,memory,temperature,disk,network", forKey: "monitorModules")
+            UserDefaults.standard.set("cpu,memory,temperature,disk,network", forKey: Defaults.modules)
             try await shot("scope-network-\(suffix)", full, scheme, height: 900, act: { right($0, times: 2) })
-            UserDefaults.standard.removeObject(forKey: "monitorModules")
+            UserDefaults.standard.removeObject(forKey: Defaults.modules)
             try await shot("empty-\(suffix)", quiet, scheme)
             try await shot("not-set-up-\(suffix)", bare, scheme)
             try await shot("health-\(suffix)", strained, scheme)
@@ -73,7 +73,7 @@ struct Snapshots {
         let full = try await store(machines(sessions: true))
         let bare = try await store([:])
         let quiet = try await store(machines(sessions: false).mapValues { $0.merging(["answering": false]) { $1 } })
-        UserDefaults.standard.set("cpu,memory,temperature,disk,network", forKey: "monitorModules")
+        UserDefaults.standard.set("cpu,memory,temperature,disk,network", forKey: Defaults.modules)
         let scenes = NSHostingSceneRepresentation { Settings { SettingsView(store: full, permission: Permission()) } }
         NSApplication.shared.addSceneRepresentation(scenes)
         let before = Set(NSApp.windows)
@@ -96,7 +96,7 @@ struct Snapshots {
         window.close()
         NSApp.appearance = nil
         UserDefaults.standard.removeObject(forKey: "pane")
-        UserDefaults.standard.removeObject(forKey: "monitorModules")
+        UserDefaults.standard.removeObject(forKey: Defaults.modules)
     }
 
     @Test func glyph() throws {
@@ -184,14 +184,12 @@ struct Snapshots {
         let store = Store(home: home)
         for (index, (name, machine)) in machines.sorted(by: { $0.key < $1.key }).enumerated() {
             var machine = machine
-            let load = machine["load"] as! Double
-            let used = (machine["memory"] as! [String: Int])["usedMB"]!
             machine["heard"] = stamp(now.addingTimeInterval(-3))
             let sample = machine.removeValue(forKey: "sample") as! [String: Int]
             machine["history"] = (0..<120).map { step -> [String: Any] in
                 let wave = sin(Double(step + index * 17) / 9) + 0.4 * sin(Double(step) / 2.3)
                 let spike = max(0, 1 - abs(Double(step - 96)) / 6)
-                var reading: [String: Any] = ["at": now.timeIntervalSince1970 - Double(119 - step) * 30, "load": max(0.05, load * (1 + 0.4 * wave)), "memoryMB": Int(Double(used) * (0.94 + 0.04 * wave))]
+                var reading: [String: Any] = ["at": now.timeIntervalSince1970 - Double(119 - step) * 30]
                 reading["cpu"] = sample["cpu"].map { Int(min(100, max(1, step == 119 ? Double($0) : Double($0) * (1 + 0.25 * wave) + 30 * spike))) }
                 reading["temp"] = sample["temp"].map { step == 119 ? Double($0) : Double($0) + 2 * wave + 14 * spike }
                 reading["thermal"] = sample["thermal"]

@@ -10,12 +10,6 @@ struct Glance: Equatable {
         waiting.isEmpty ? answering.isEmpty ? "orbit.slash" : "orbit" : "orbit.badge"
     }
 
-    @MainActor init(store: Store) {
-        waiting = Dictionary(uniqueKeysWithValues: store.rows.filter { $0.session.state == "waiting" }.map { ($0.id, Waiting(row: $0)) })
-        answering = store.answering
-        hasMachines = !store.machines.isEmpty
-    }
-
     var label: String {
         if !waiting.isEmpty { return "magi, \(waiting.count) waiting on you" }
         if !hasMachines { return "magi, not set up" }
@@ -30,6 +24,16 @@ struct Glance: Equatable {
     func stopped(after shown: Glance?) -> [String] {
         shown?.waiting.keys.filter { waiting[$0] == nil } ?? []
     }
+
+    func stale(_ delivered: [String]) -> [String] {
+        delivered.filter { waiting[$0] == nil }
+    }
+}
+
+extension Glance {
+    @MainActor init(store: Store) {
+        self.init(waiting: Dictionary(uniqueKeysWithValues: store.rows.filter { $0.session.state == "waiting" }.map { ($0.id, Waiting(row: $0)) }), answering: store.answering, hasMachines: !store.machines.isEmpty)
+    }
 }
 
 struct Waiting: Equatable {
@@ -37,13 +41,6 @@ struct Waiting: Equatable {
     let machine: String
     let folder: String
     let on: String?
-
-    init(row: Row) {
-        title = row.session.title
-        machine = row.machine
-        folder = URL(filePath: row.session.folder).lastPathComponent
-        on = row.session.waitingOn
-    }
 
     var announcement: String {
         "\(title) on \(machine) is waiting on you"
@@ -55,5 +52,11 @@ struct Waiting: Equatable {
         content.subtitle = "\(machine) \u{00B7} \(folder)"
         content.body = on ?? "Waiting on you."
         return content
+    }
+}
+
+extension Waiting {
+    init(row: Row) {
+        self.init(title: row.session.title, machine: row.machine, folder: URL(filePath: row.session.folder).lastPathComponent, on: row.session.waitingOn)
     }
 }

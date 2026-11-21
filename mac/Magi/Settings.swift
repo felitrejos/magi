@@ -9,9 +9,17 @@ enum Chime {
     static let names = ((try? FileManager.default.contentsOfDirectory(atPath: "/System/Library/Sounds")) ?? []).map { ($0 as NSString).deletingPathExtension }.sorted()
 
     @MainActor static func play() {
-        let sound = NSSound(named: UserDefaults.standard.string(forKey: "sound") ?? name)
-        sound?.volume = Float(UserDefaults.standard.object(forKey: "volume") as? Double ?? volume)
+        let sound = UserDefaults.standard.string(forKey: "sound").flatMap { NSSound(named: $0) }
+        sound?.volume = Float(UserDefaults.standard.double(forKey: "volume"))
         sound?.play()
+    }
+}
+
+enum Defaults {
+    static let modules = "monitorModules"
+
+    static func register() {
+        UserDefaults.standard.register(defaults: ["notifies": true, "sound": Chime.name, "volume": Chime.volume, modules: Modules.defaults.rawValue])
     }
 }
 
@@ -291,7 +299,7 @@ struct MenuBar: View {
 
 struct MonitorPane: View {
     let store: Store
-    @AppStorage("monitorModules") private var modules = Modules.defaults
+    @AppStorage(Defaults.modules) private var modules = Modules.defaults
     @State private var picked: String?
     @State private var target: Module?
     @State private var width: CGFloat = 0
@@ -443,7 +451,7 @@ struct Notify: View {
 
     var body: some View {
         SettingCard {
-            SettingRow(title: "Notify When a Session Waits", subtitle: permission.status == .denied ? "Notifications for magi are off in System Settings." : "Once, with what it waits on. Click it to open the session.") {
+            SettingRow(title: "Notify When a Session Waits", subtitle: permission.status == .denied ? "Notifications for magi are off in System Settings." : "One notification per wait, with the question. Click it to open the session.") {
                 if permission.status == .denied {
                     Button("Open Notification Settings") {
                         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier!)")!)

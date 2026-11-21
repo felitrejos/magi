@@ -101,7 +101,7 @@ struct Measure {
     }
 
     let module: Module
-    let title: String
+    var name: String?
     let value: String
     var unit: String?
     let detail: String
@@ -109,6 +109,10 @@ struct Measure {
     var health = Health.fine
     var alerts: [String] = []
     let visual: Visual
+
+    var title: String {
+        name ?? module.title
+    }
 
     var alert: String? {
         health == .fine ? nil : alerts[health.rawValue - 1]
@@ -134,34 +138,34 @@ extension Machine {
             let points = series { $0.cpu.map(Double.init) }
             guard let last = points.last?.value else { return nil }
             let sustained = min(last, points.dropLast().last?.value ?? last)
-            return Measure(module: module, title: "CPU", value: "\(Int(last))", unit: "%", detail: "load \(tenths(load)) \u{00B7} \(cores) cores", headline: "\(Int(last))% CPU", health: Health(sustained, warning: 75, critical: 90), alerts: ["Busy", "Very busy"], visual: .spark(points, 0...100, unit: "percent"))
+            return Measure(module: module, value: "\(Int(last))", unit: "%", detail: "Load \(tenths(load)) \u{00B7} \(cores) cores", headline: "\(Int(last))% CPU", health: Health(sustained, warning: 75, critical: 90), alerts: ["Busy", "Very busy"], visual: .spark(points, 0...100, unit: "percent"))
         case .memory:
             let (value, unit) = amount(memory)
-            let notes = [pressure.map { "Pressure \($0.word)" }, swap.map { $0.usedMB > 0 ? "\(amount(megabytes: $0.usedMB)) swap" : "no swap" }].compactMap(\.self)
+            let notes = [pressure.map { "Pressure \($0.word)" }, swap.map { $0.usedMB > 0 ? "\(amount(megabytes: $0.usedMB)) swap" : "No swap" }].compactMap(\.self)
             let health: Health = switch pressure {
             case .warning: .warning
             case .critical: .critical
             case .normal, nil: .fine
             }
-            return Measure(module: module, title: "Memory", value: value, unit: unit, detail: notes.joined(separator: " \u{00B7} "), headline: "\(value) GB", health: health, alerts: ["Low memory", "Out of memory"], visual: .bar(memory.fraction))
+            return Measure(module: module, value: value, unit: unit, detail: notes.joined(separator: " \u{00B7} "), headline: "\(Int((memory.fraction * 100).rounded()))% memory", health: health, alerts: ["Low memory", "Out of memory"], visual: .bar(memory.fraction))
         case .temperature:
             let points = series(\.temp)
             if let last = points.last?.value {
                 let peak = points.map(\.value).max() ?? last
                 let health: Health = last >= (critical.map { $0 - 10 } ?? 90) ? .critical : last >= 80 ? .warning : .fine
-                return Measure(module: module, title: "CPU temp", value: "\(Int(last.rounded()))", unit: "\u{00B0}C", detail: "1 h peak \(Int(peak.rounded())) \u{00B0}C", headline: "\(Int(last.rounded())) \u{00B0}C", health: health, alerts: ["Warm", "Hot"], visual: .spark(points, 20...100, unit: "degrees Celsius"))
+                return Measure(module: module, name: "CPU temp", value: "\(Int(last.rounded()))", unit: "\u{00B0}C", detail: "1 h peak \(Int(peak.rounded())) \u{00B0}C", headline: "\(Int(last.rounded())) \u{00B0}C", health: health, alerts: ["Warm", "Hot"], visual: .spark(points, 20...100, unit: "degrees Celsius"))
             }
             guard let thermal = series({ $0.thermal.map(Double.init) }).last.map({ min(Int($0.value), 3) }) else { return nil }
             let word = ["Normal", "Moderate", "Heavy", "Critical"][thermal]
-            return Measure(module: module, title: "Thermal", value: word, detail: ["No throttling", "Throttling may start", "Throttling", "Throttling hard"][thermal], headline: "Thermal \(word.lowercased())", health: Health(Double(thermal), warning: 1, critical: 2), alerts: ["Warm", "Hot"], visual: .steps(thermal))
+            return Measure(module: module, name: "Thermal", value: word, detail: ["No throttling", "Throttling may start", "Throttling", "Throttling hard"][thermal], headline: "Thermal \(word.lowercased())", health: Health(Double(thermal), warning: 1, critical: 2), alerts: ["Warm", "Hot"], visual: .steps(thermal))
         case .disk:
             let (value, unit) = amount(disk)
-            return Measure(module: module, title: "Disk", value: value, unit: unit, detail: "\(amount(megabytes: disk.totalMB - disk.usedMB, rounded: true)) free", headline: "\(Int((disk.fraction * 100).rounded()))% disk", health: Health(disk.fraction, warning: 0.9, critical: 0.95), alerts: ["Disk nearly full", "Disk full"], visual: .bar(disk.fraction))
+            return Measure(module: module, value: value, unit: unit, detail: "\(amount(megabytes: disk.totalMB - disk.usedMB, rounded: true)) free", headline: "\(Int((disk.fraction * 100).rounded()))% disk", health: Health(disk.fraction, warning: 0.9, critical: 0.95), alerts: ["Disk nearly full", "Disk full"], visual: .bar(disk.fraction))
         case .network:
             let down = series { $0.rx.map(Double.init) }
             let up = series { $0.tx.map(Double.init) }
             guard let received = down.last?.value, let sent = up.last?.value else { return nil }
-            return Measure(module: module, title: "Network", value: "\u{2193} \(rate(received))", detail: "\u{2191} \(rate(sent))", headline: "\u{2193} \(rate(received))", visual: .traffic(down: down, up: up))
+            return Measure(module: module, value: "\u{2193} \(rate(received))", detail: "\u{2191} \(rate(sent))", headline: "\u{2193} \(rate(received))", visual: .traffic(down: down, up: up))
         }
     }
 }
@@ -180,7 +184,7 @@ struct ScopeCaption: View {
     let machine: Machine
     let answers: Bool
     let now: Date
-    @AppStorage("monitorModules") private var modules = Modules.defaults
+    @AppStorage(Defaults.modules) private var modules = Modules.defaults
 
     var body: some View {
         HStack(spacing: 0) {
@@ -214,7 +218,7 @@ struct Monitor: View {
     let name: String
     let machine: Machine
     let now: Date
-    @AppStorage("monitorModules") private var modules = Modules.defaults
+    @AppStorage(Defaults.modules) private var modules = Modules.defaults
 
     private var rows: [[Measure]] {
         var rows: [[Measure]] = []
@@ -240,11 +244,25 @@ struct Monitor: View {
             ForEach(rows, id: \.first?.module) { row in
                 GridRow {
                     ForEach(row, id: \.module) { measure in
-                        if measure.module == .network {
-                            WideCard(name: name, measure: measure, now: now)
+                        switch measure.visual {
+                        case let .spark(points, domain, _):
+                            Card(name: name, measure: measure, now: now) {
+                                ZStack {
+                                    Spark(points: points, domain: domain, color: measure.health.color, now: now)
+                                        .id(name)
+                                }
+                            }
+                        case let .bar(fraction):
+                            Card(name: name, measure: measure, now: now) {
+                                Level(fraction: fraction, tint: measure.health.color)
+                            }
+                        case let .steps(level):
+                            Card(name: name, measure: measure, now: now) {
+                                Steps(level: level, tint: measure.health.color)
+                            }
+                        case let .traffic(down, up):
+                            WideCard(name: name, measure: measure, down: down, up: up, now: now)
                                 .gridCellColumns(2)
-                        } else {
-                            Card(name: name, measure: measure, now: now)
                         }
                     }
                 }
@@ -267,10 +285,11 @@ struct CardLabel: View {
     }
 }
 
-struct Card: View {
+struct Card<Graphic: View>: View {
     let name: String
     let measure: Measure
     let now: Date
+    @ViewBuilder let graphic: Graphic
 
     private var tint: Color {
         measure.health.color
@@ -293,22 +312,8 @@ struct Card: View {
             .padding(.top, 3)
             .animation(.easeOut(duration: 0.2), value: measure.value)
             Spacer(minLength: 6)
-            Group {
-                switch measure.visual {
-                case let .spark(points, domain, _):
-                    ZStack {
-                        Spark(points: points, domain: domain, color: tint, now: now)
-                            .id(name)
-                    }
-                case let .bar(fraction):
-                    Level(fraction: fraction, tint: tint)
-                case let .steps(level):
-                    Steps(level: level, tint: tint)
-                case .traffic:
-                    EmptyView()
-                }
-            }
-            .frame(height: 22, alignment: .bottom)
+            graphic
+                .frame(height: 22, alignment: .bottom)
             Text(measure.detail)
                 .font(.footnote)
                 .monospacedDigit()
@@ -329,6 +334,8 @@ struct Card: View {
 struct WideCard: View {
     let name: String
     let measure: Measure
+    let down: [Point]
+    let up: [Point]
     let now: Date
 
     var body: some View {
@@ -348,13 +355,11 @@ struct WideCard: View {
             .fixedSize()
             .animation(.easeOut(duration: 0.2), value: measure.value)
             Spacer(minLength: 0)
-            if case let .traffic(down, up) = measure.visual {
-                ZStack {
-                    Traffic(down: down, up: up, now: now)
-                        .id(name)
-                }
-                .frame(width: 180, height: 40)
+            ZStack {
+                Traffic(down: down, up: up, now: now)
+                    .id(name)
             }
+            .frame(width: 180, height: 40)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -382,9 +387,11 @@ struct Plot {
     let start: Date
     let end: Date
 
+    static let window: TimeInterval = 60 * 60
+
     init(_ points: [Point], now: Date) {
-        end = latest(points.last?.at.timeIntervalSince1970, now: now)
-        start = end.addingTimeInterval(-window(from: points.first?.at.timeIntervalSince1970, to: end.timeIntervalSince1970))
+        end = max(now, points.last?.at ?? now)
+        start = end.addingTimeInterval(-min(Plot.window, max(60, end.timeIntervalSince(points.first?.at ?? end))))
         self.points = points.count == 1 ? [start, end].map { Point(at: $0, value: points[0].value) } : points
     }
 }
@@ -497,7 +504,7 @@ struct SparkDescriptor: AXChartDescriptorRepresentable {
     func makeChartDescriptor() -> AXChartDescriptor {
         let end = Plot(points, now: now).end
         let values = points.map(\.value)
-        let minutes = AXNumericDataAxisDescriptor(title: "Minutes ago", range: -historyWindow / 60...0, gridlinePositions: []) { "\(Int(-$0)) minutes ago" }
+        let minutes = AXNumericDataAxisDescriptor(title: "Minutes ago", range: -Plot.window / 60...0, gridlinePositions: []) { "\(Int(-$0)) minutes ago" }
         let value = AXNumericDataAxisDescriptor(title: unit, range: domain, gridlinePositions: []) { "\(Int($0.rounded())) \(unit)" }
         return AXChartDescriptor(
             title: title,
@@ -513,15 +520,14 @@ struct SparkDescriptor: AXChartDescriptorRepresentable {
 struct Usage: View {
     let session: Session
     let now: Date
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var readings: [CPUReading] {
-        session.cpuHistory ?? []
+    private var points: [Point] {
+        (session.cpuHistory ?? []).map { Point(at: Date(timeIntervalSince1970: $0.at), value: Double($0.cpu)) }
     }
 
     var body: some View {
         HStack(spacing: 8) {
-            Trend(points: trend(readings.map { ($0.at, Double($0.cpu)) }, top: max(100, Double(readings.map(\.cpu).max() ?? 0)), now: now), color: Color(nsColor: .secondaryLabelColor), delay: 0.1)
+            Spark(points: points, domain: 0...max(100, points.map(\.value).max() ?? 0), color: Color(nsColor: .secondaryLabelColor), now: now)
                 .frame(width: 44, height: 16)
             VStack(alignment: .trailing, spacing: 0) {
                 Text("\(session.cpu)%")
