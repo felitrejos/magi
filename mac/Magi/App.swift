@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let icon = NSImageView()
     private let count = NSImageView()
+    private let stack = NSStackView()
     private let panel = Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let menu = NSMenu()
     private let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
@@ -47,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         icon.setAccessibilityElement(false)
         count.setAccessibilityElement(false)
-        let stack = NSStackView(views: [icon, count])
+        [icon, count].forEach(stack.addArrangedSubview)
         stack.spacing = 3
         stack.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -114,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             count.image?.isTemplate = true
         }
         count.isHidden = !UserDefaults.standard.bool(forKey: "showsCount") || glance.waiting.isEmpty
+        item.length = stack.fittingSize.width
         item.button?.setAccessibilityLabel(glance.label)
         shown = glance
     }
