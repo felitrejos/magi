@@ -266,7 +266,10 @@ struct SessionRow: View {
             .lineLimit(1)
             .truncationMode(.middle)
             .frame(maxWidth: .infinity, alignment: .leading)
-            Group {
+            HStack(spacing: 6) {
+                if let route = row.route {
+                    HostIcon(host: route.host)
+                }
                 if usage {
                     Usage(session: row.session, now: now)
                 } else {
@@ -278,7 +281,6 @@ struct SessionRow: View {
                         .animation(.easeOut(duration: 0.2), value: elapsed)
                 }
             }
-            .opacity(opens ? 0 : 1)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -290,26 +292,18 @@ struct SessionRow: View {
             }
         }
         .contentShape(.rect)
+        .onTapGesture {
+            row.route.map(open)
+        }
+        .help(row.route.map { "Open in \($0.host.name)" } ?? "")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibility)
+        .accessibilityAddTraits(row.route == nil ? [] : .isButton)
         .accessibilityActions {
             if let route = row.route {
                 Button("Open in \(route.host.name)") { open(route) }
             }
         }
-        .overlay(alignment: .topTrailing) {
-            if let route = row.route {
-                OpenButton(host: route.host) { open(route) }
-                    .padding(.top, 4)
-                    .padding(.trailing, 8)
-                    .opacity(opens ? 1 : 0)
-                    .allowsHitTesting(opens)
-            }
-        }
-    }
-
-    private var opens: Bool {
-        highlighted && row.route != nil
     }
 
     private var accessibility: String {
@@ -319,23 +313,13 @@ struct SessionRow: View {
     }
 }
 
-struct OpenButton: View {
+struct HostIcon: View {
     let host: Host
-    let action: () -> Void
-    @State private var hovered = false
 
     var body: some View {
-        Button(action: action) {
-            icon
-                .frame(width: 22, height: 22)
-                .background(.quaternary.opacity(hovered ? 1 : 0), in: .circle)
-                .contentShape(.circle)
-        }
-        .buttonStyle(Press())
-        .onHover { hovered = $0 }
-        .animation(.easeOut(duration: 0.15), value: hovered)
-        .help("Open in \(host.name)")
-        .accessibilityLabel("Open in \(host.name)")
+        icon
+            .frame(width: 16, height: 16)
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder private var icon: some View {
@@ -343,7 +327,6 @@ struct OpenButton: View {
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.high)
-                .frame(width: 16, height: 16)
         } else {
             Image(systemName: "terminal")
                 .font(.system(size: 12, weight: .medium))
