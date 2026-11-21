@@ -133,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard await permission.request() else { return }
             for id in ids {
                 guard let waiting = shown?.waiting[id] else { continue }
-                try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: waiting.content, trigger: nil))
+                try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: waiting.content(), trigger: nil))
             }
         }
     }

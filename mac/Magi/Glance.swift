@@ -45,22 +45,26 @@ struct Waiting: Equatable {
     let machine: String
     let folder: String
     let on: String?
+    let host: Host?
 
     var announcement: String {
         "\(title) on \(machine) is waiting on you"
     }
 
-    var content: UNNotificationContent {
+    @MainActor func content() throws -> UNNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = title
         content.subtitle = "\(machine) \u{00B7} \(folder)"
         content.body = on ?? "Waiting on you."
+        if let host {
+            content.attachments = [try UNNotificationAttachment(identifier: host.name, url: host.iconFile())]
+        }
         return content
     }
 }
 
 extension Waiting {
-    init(row: Row) {
-        self.init(title: row.session.title, machine: row.machine, folder: row.session.folderName, on: row.session.waitingOn)
+    @MainActor init(row: Row) {
+        self.init(title: row.session.title, machine: row.machine, folder: row.session.folderName, on: row.session.waitingOn, host: row.route?.host)
     }
 }

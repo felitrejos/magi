@@ -35,6 +35,23 @@ enum Host {
     var symbol: String {
         self == .browser ? "globe" : "terminal"
     }
+
+    @MainActor func iconFile() throws -> URL {
+        let side = 256.0
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(side), pixelsHigh: Int(side), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        if let icon = bundle.flatMap(Apps.icon) {
+            icon.draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+        } else {
+            let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!.withSymbolConfiguration(.init(pointSize: side / 2, weight: .medium).applying(.init(paletteColors: [.systemGray])))!
+            glyph.draw(in: NSRect(x: (side - glyph.size.width) / 2, y: (side - glyph.size.height) / 2, width: glyph.size.width, height: glyph.size.height))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        let file = FileManager.default.temporaryDirectory.appending(path: "magi-\(UUID().uuidString).png")
+        try rep.representation(using: .png, properties: [:])!.write(to: file)
+        return file
+    }
 }
 
 enum Route: Equatable {
