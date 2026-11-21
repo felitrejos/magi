@@ -2,38 +2,36 @@ import AppKit
 import SwiftUI
 
 @main
+struct Magi: App {
+    @NSApplicationDelegateAdaptor private var app: AppDelegate
+    @AppStorage("welcomed") private var welcomed = false
+
+    var body: some Scene {
+        WindowGroup("Welcome to magi", id: Welcome.id, for: String.self) { _ in
+            Welcome(store: app.store)
+        }
+        .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
+        .defaultLaunchBehavior(welcomed ? .suppressed : .presented)
+        Settings {
+            SettingsView(store: app.store)
+        }
+    }
+}
+
 @MainActor
-final class App: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let store = Store(home: .homeDirectory.appending(path: ".magi"))
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let icon = NSImageView()
     private let count = NSImageView()
     private let panel = Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let menu = NSMenu()
-    private let store: Store
-    private let scenes: NSHostingSceneRepresentation<Scenes>
-    private lazy var settings = NSWindow.settings(store: store) { [scenes] in scenes.environment.openWindow(id: Welcome.id, value: Welcome.id) }
     private let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
     private var host: NSView?
     private var monitor: Any?
     private var shown: Glance?
     private var dotted: Bool?
-
-    override init() {
-        let store = Store(home: .homeDirectory.appending(path: ".magi"))
-        self.store = store
-        scenes = NSHostingSceneRepresentation { Scenes(store: store) }
-        super.init()
-    }
-
-    static func main() {
-        let app = App()
-        NSApplication.shared.delegate = app
-        NSApplication.shared.run()
-    }
-
-    func applicationWillFinishLaunching(_ notification: Notification) {
-        NSApplication.shared.addSceneRepresentation(scenes)
-    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let button = item.button!
@@ -79,7 +77,6 @@ final class App: NSObject, NSApplicationDelegate {
         }
         if !UserDefaults.standard.bool(forKey: "welcomed") {
             NSApp.activate()
-            scenes.environment.openWindow(id: Welcome.id, value: Welcome.id)
         }
     }
 
@@ -119,7 +116,7 @@ final class App: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         close()
         NSApp.activate()
-        settings.makeKeyAndOrderFront(nil)
+        EnvironmentValues().openSettings()
     }
 
     private func open() {
@@ -168,7 +165,7 @@ final class App: NSObject, NSApplicationDelegate {
 }
 
 @available(macOS 27, *)
-extension App: @MainActor NSStatusItemExpandedInterfaceDelegate {
+extension AppDelegate: @MainActor NSStatusItemExpandedInterfaceDelegate {
     func statusItem(_ statusItem: NSStatusItem, didBegin session: NSStatusItemExpandedInterfaceSession) {
         host == nil ? open() : session.cancel()
     }
@@ -197,18 +194,6 @@ struct Glance: Equatable {
         if !waiting.isEmpty { return "magi, \(waiting.count) waiting on you" }
         if !hasMachines { return "magi, not set up" }
         return answering.isEmpty ? "magi, no machine is answering" : "magi"
-    }
-}
-
-struct Scenes: Scene {
-    let store: Store
-
-    var body: some Scene {
-        WindowGroup("Welcome to magi", id: Welcome.id, for: String.self) { _ in
-            Welcome(store: store)
-        }
-        .windowResizability(.contentSize)
-        .restorationBehavior(.disabled)
     }
 }
 

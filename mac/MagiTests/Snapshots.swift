@@ -73,28 +73,27 @@ struct Snapshots {
         let full = try await store(machines(sessions: true))
         let bare = try await store([:])
         let quiet = try await store(machines(sessions: false).mapValues { $0.merging(["answering": false]) { $1 } })
+        let scenes = NSHostingSceneRepresentation { Settings { SettingsView(store: full) } }
+        NSApplication.shared.addSceneRepresentation(scenes)
+        let before = Set(NSApp.windows)
+        scenes.environment.openSettings()
+        try await Task.sleep(for: .milliseconds(500))
+        let window = try #require(NSApp.windows.first { !before.contains($0) })
+        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
         for scheme in [ColorScheme.light, .dark] {
             let suffix = scheme == .light ? "light" : "dark"
+            NSApp.appearance = NSAppearance(named: scheme == .light ? .aqua : .darkAqua)
             for pane in Pane.allCases {
                 UserDefaults.standard.set(pane.rawValue, forKey: "pane")
-                try await settings("settings-\(pane.rawValue)-\(suffix)", full, scheme)
-            }
-            for query in ["badge", "net"] {
-                try await settings("settings-search-\(query)-\(suffix)", full, scheme) { window in
-                    @MainActor func field(_ view: NSView) -> NSTextField? {
-                        if let field = view as? NSTextField, field.isEditable {
-                            return field
-                        }
-                        return view.subviews.compactMap(field).first
-                    }
-                    window.makeFirstResponder(field(window.contentView!.superview!))
-                    (window.firstResponder as! NSTextView).insertText(query, replacementRange: NSRange(location: NSNotFound, length: 0))
-                }
+                try await Task.sleep(for: .milliseconds(800))
+                try capture(window, "settings-\(pane.rawValue)-\(suffix)")
             }
             for (name, store) in [("first-run", full), ("first-run-not-set-up", bare), ("first-run-quiet", quiet)] {
                 try await render("\(name)-\(suffix)", Welcome(store: store).background(SettingsColor.content), scheme)
             }
         }
+        window.close()
+        NSApp.appearance = nil
         UserDefaults.standard.removeObject(forKey: "pane")
     }
 
@@ -144,18 +143,6 @@ struct Snapshots {
         try await Task.sleep(for: .milliseconds(300))
         try capture(window, name)
         window.orderOut(nil)
-    }
-
-    private func settings(_ name: String, _ store: Store, _ scheme: ColorScheme, act: (NSWindow) -> Void = { _ in }) async throws {
-        let window = NSWindow.settings(store: store) {}
-        window.appearance = NSAppearance(named: scheme == .light ? .aqua : .darkAqua)
-        window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
-        window.orderFrontRegardless()
-        try await Task.sleep(for: .milliseconds(500))
-        act(window)
-        try await Task.sleep(for: .milliseconds(500))
-        try capture(window, name)
-        window.close()
     }
 
     private func capture(_ window: NSWindow, _ name: String) throws {
