@@ -420,11 +420,11 @@ func TestTheLiveFileSaysHowToOpenASession(t *testing.T) {
 	f.isolatedTmux()
 	server := f.serverHome()
 	started := filepath.Join(t.TempDir(), "pid")
-	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{window_id}", `sh -c 'sleep 60 & echo $! > "$0"; wait' `+started+`; :`).Output()
+	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{pane_id}", `sh -c 'sleep 60 & echo $! > "$0"; wait' `+started+`; :`).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	window := strings.TrimSpace(string(out))
+	pane := strings.TrimSpace(string(out))
 	if !waitForFile(t, started, 10*time.Second) {
 		t.Fatal("the session process never started")
 	}
@@ -434,14 +434,105 @@ func TestTheLiveFileSaysHowToOpenASession(t *testing.T) {
 	go newWatcher("server", "me@server", f.remoteHost(), log.New(io.Discard, "", 0), "").follow("")
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
 		if live := readLive(t, "server"); len(live.Sessions) == 1 {
-			if s := live.Sessions[0]; s.RemoteControl != "https://claude.ai/code/session_42" || s.Tmux != window || live.SSH != "me@server" {
-				t.Errorf("a session two processes below its pane opens through %q and tmux window %q (want %s), the machine over ssh %q", s.RemoteControl, s.Tmux, window, live.SSH)
+			if s := live.Sessions[0]; s.RemoteControl != "https://claude.ai/code/session_42" || s.Tmux != pane || live.SSH != "me@server" {
+				t.Errorf("a session two processes below its pane opens through %q and tmux pane %q (want %s), the machine over ssh %q", s.RemoteControl, s.Tmux, pane, live.SSH)
 			}
 			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the session never reached the live file")
 		}
+	}
+}
+
+func sessionsOnce(t *testing.T, m sh.Machine, w *watcher) {
+	t.Helper()
+	cmd := m.Command(watchScript, "", "claude")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	for lines := bufio.NewScanner(stdout); lines.Scan(); {
+		w.hear(lines.Text(), time.Now())
+		if lines.Text() == "sessions" {
+			w.hear("stats 10 1 100 200 300 400 0 0 1794928938", time.Now())
+			return
+		}
+	}
+	t.Fatal("the watcher never reported its sessions")
+}
+
+func (f *fixture) sleeper(env ...string) int {
+	f.t.Helper()
+	cmd := exec.Command("sleep", "60")
+	cmd.Env = append(os.Environ(), env...)
+	if err := cmd.Start(); err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	return cmd.Process.Pid
+}
+
+func TestAMacSessionSaysWhichAppAndTerminalItRunsIn(t *testing.T) {
+	f := newFixture(t)
+	desktop, ghostty, tmux := f.sleeper(), f.sleeper(), f.sleeper()
+	sessions := filepath.Join(f.home, ".claude", "sessions")
+	for pid, fields := range map[int]string{
+		desktop: `"entrypoint":"claude-desktop","hostSessionId":"local_7cbf"`,
+		ghostty: `"entrypoint":"cli","hostSessionId":"local_none"`,
+		tmux:    `"entrypoint":"cli"`,
+	} {
+		f.write(sessions, fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"0f0f0f0f-1111-2222-3333-%012d","cwd":"/srv","status":"idle",%s}`, pid, pid, fields))
+	}
+	f.write(f.home, "ps-table", fmt.Sprintf("%d 900 ??\n900 901 ??\n901 1 ??\n%d 910 ttys004\n910 911 ttys004\n911 912 ttys004\n912 1 ??\n%d 950 ttys009\n950 951 ttys009\n951 1 ??\n960 961 ttys007\n961 912 ttys007\n970 971 ttys008\n971 1 ??\n", desktop, ghostty, tmux))
+	f.write(f.home, "ps-comm", "900 /Applications/Claude.app/Contents/Helpers/disclaimer\n901 /Applications/Claude.app/Contents/MacOS/Claude\n910 -zsh\n911 login\n912 /Users/sam/Sam's Apps/Ghostty.app/Contents/MacOS/ghostty\n960 tmux\n961 login\n970 tmux\n971 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal\n")
+	f.tool("uname", "#!/bin/sh\necho Darwin\n")
+	f.tool("ps", `#!/bin/sh
+case "$*" in
+"-A -o pid= -o ppid= -o tty=") cat "$HOME/ps-table" ;;
+"-o pid= -o comm= -p "*) awk -v want=",$6," 'index(want, "," $1 ",")' "$HOME/ps-comm" ;;
+esac
+`)
+	f.tool("tmux", "#!/bin/sh\nprintf '%s\\n' 'pane 950 %4' 'client 1700000100 960 /dev/ttys007' 'client 1700000000 970 /dev/ttys008'\n")
+	f.tool("plutil", `#!/bin/sh
+case "$*" in
+"-extract CFBundleIdentifier raw -o - /Applications/Claude.app/Contents/Info.plist") echo com.anthropic.claudefordesktop ;;
+"-extract CFBundleIdentifier raw -o - /Users/sam/Sam's Apps/Ghostty.app/Contents/Info.plist") echo com.mitchellh.ghostty ;;
+esac
+`)
+	w := newWatcher("mac", "", nil, log.New(io.Discard, "", 0), "")
+	sessionsOnce(t, f.machine(), w)
+	got := map[int]string{}
+	for _, s := range readLive(t, "mac").Sessions {
+		var pid int
+		fmt.Sscanf(s.ID[len(s.ID)-12:], "%d", &pid)
+		got[pid] = fmt.Sprintf("%s|%s|%s|%s|%v", s.HostSession, s.Tmux, s.TTY, s.App, s.Rex)
+	}
+	want := map[int]string{
+		desktop: "local_7cbf|||com.anthropic.claudefordesktop|<nil>",
+		ghostty: "||/dev/ttys004|com.mitchellh.ghostty|<nil>",
+		tmux:    "|%4|/dev/ttys007|com.mitchellh.ghostty|<nil>",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("sessions run in %v, want %v", got, want)
+	}
+}
+
+func TestALinuxSessionInRexSaysItsSessionAndBlock(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only Linux shows other processes their environment")
+	}
+	f := newFixture(t)
+	pid := f.sleeper("REX_SESSION=session:01a1", "REX_BLOCK=block:01a2")
+	f.write(filepath.Join(f.home, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"0f0f0f0f-1111-2222-3333-555555555562","cwd":"/srv","status":"idle"}`, pid))
+	w := newWatcher("box", "", nil, log.New(io.Discard, "", 0), "")
+	sessionsOnce(t, f.machine(), w)
+	if s := readLive(t, "box").Sessions; len(s) != 1 || s[0].Rex == nil || *s[0].Rex != (rex{Session: "session:01a1", Block: "block:01a2"}) || s[0].App != "" || s[0].TTY != "" {
+		t.Errorf("live sessions = %+v, want the Rex session and block from its environment", s)
 	}
 }
 

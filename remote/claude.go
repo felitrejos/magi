@@ -55,14 +55,16 @@ func sessionFiles(m sh.Machine, transcriptPath string) (sessionFileSet, error) {
 }
 
 type liveSession struct {
-	PID        int    `json:"pid"`
-	SessionID  string `json:"sessionId"`
-	Cwd        string `json:"cwd"`
-	StartedAt  int64  `json:"startedAt"`
-	Status     string `json:"status"`
-	WaitingFor string `json:"waitingFor"`
-	Name       string `json:"name"`
-	StatusAt   int64  `json:"statusUpdatedAt"`
+	PID           int    `json:"pid"`
+	SessionID     string `json:"sessionId"`
+	Cwd           string `json:"cwd"`
+	StartedAt     int64  `json:"startedAt"`
+	Status        string `json:"status"`
+	WaitingFor    string `json:"waitingFor"`
+	Name          string `json:"name"`
+	StatusAt      int64  `json:"statusUpdatedAt"`
+	Entrypoint    string `json:"entrypoint"`
+	HostSessionID string `json:"hostSessionId"`
 	fromRegistry
 }
 

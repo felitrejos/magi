@@ -8,7 +8,7 @@ if [ -n "$name" ]; then
     index($0, ENVIRON["loop"]) && index($0, ".magi/watchers") { parent[$1] = $2 }
     END { for (p in parent) { top = p; while (parent[top] in parent) top = parent[top]; if (parent[top] == 1) print p } }' | while read -r pid; do kill "$pid"; done
 fi
-tick=0 registry=- os=$(uname -s)
+tick=0 registry=- placed='' os=$(uname -s)
 battery() {
   if [ "$os" = Darwin ]; then
     pmset -g batt
@@ -40,6 +40,68 @@ sensor() {
       fi
     done
   done
+}
+places() {
+  {
+    if [ "$os" = Darwin ]; then
+      tmux list-panes -a -F 'pane #{pane_pid} #{pane_id}' \; list-clients -F 'client #{client_activity} #{client_pid} #{client_tty}' 2>/dev/null
+      ps -A -o pid= -o ppid= -o tty=
+    else
+      tmux list-panes -a -F 'pane #{pane_pid} #{pane_id}' 2>/dev/null
+      ps -A -o pid= -o ppid=
+      for pid in $1; do
+        tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n "s/^REX_SESSION=/rex $pid session /p; s/^REX_BLOCK=/rex $pid block /p"
+      done
+    fi
+  } | awk -v pids="$1" -v os="$os" '
+    function place(pid, key, value) {
+      if (value != "") print "place", pid, key, value
+    }
+    $1 == "pane" { pane[$2] = $3 }
+    $1 == "client" && $2 >= active { active = $2; client = $3; seat = $4 }
+    $1 == "rex" { rex[$2, $3] = $4 }
+    $1 ~ /^[0-9]+$/ { parent[$1] = $2; tty[$1] = $3 }
+    END {
+      n = split(pids, p, " ")
+      for (i = 1; i <= n; i++) {
+        s = p[i]
+        for (q = s; q > 1 && !(q in pane); q = parent[q] + 0) continue
+        if (q in pane) {
+          place(s, "tmux", pane[q])
+          place(s, "tty", seat)
+          top[s] = client
+        } else {
+          if (tty[s] ~ /^tty/) place(s, "tty", "/dev/" tty[s])
+          if ((s, "session") in rex && (s, "block") in rex) place(s, "rex", rex[s, "session"] " " rex[s, "block"])
+          top[s] = s
+        }
+        for (q = top[s]; q > 1; q = parent[q] + 0) chain[q] = 1
+      }
+      if (os != "Darwin") exit
+      list = ""
+      for (q in chain) list = list "," q
+      if (list == "") exit
+      read = "ps -o pid= -o comm= -p " substr(list, 2)
+      while ((read | getline line) > 0) {
+        q = line + 0
+        sub(/^ *[0-9]+ +/, "", line)
+        if ((at = index(line, ".app/")) > 0) bundle[q] = substr(line, 1, at + 3)
+      }
+      close(read)
+      for (i = 1; i <= n; i++) {
+        b = ""
+        for (q = top[p[i]]; q > 1; q = parent[q] + 0) if (q in bundle) b = bundle[q]
+        if (b == "") continue
+        if (!(b in id)) {
+          path = b "/Contents/Info.plist"
+          gsub(/\047/, "\047\\\047\047", path)
+          read = "plutil -extract CFBundleIdentifier raw -o - \047" path "\047"
+          read | getline id[b]
+          close(read)
+        }
+        place(p[i], "app", id[b])
+      }
+    }'
 }
 sensor=$(sensor) critical=
 if [ -r "${sensor%_input}_crit" ]; then read -r critical < "${sensor%_input}_crit"; fi
@@ -94,25 +156,17 @@ while :; do
 "
     pids="$pids $pid"
   done
-  if [ "$live" != "$registry" ]; then
-    registry=$live
-    case $live in *'"status":"waiting"'*) live="${live}waiting $("$cli" agents --json | tr -d '\n')
+  if [ "$live" != "$registry" ] || [ $((tick % 15)) -eq 0 ]; then
+    found=$(places "$pids")
+    if [ "$live$found" != "$registry$placed" ]; then
+      registry=$live placed=$found
+      case $live in *'"status":"waiting"'*) live="${live}waiting $("$cli" agents --json | tr -d '\n')
 " ;; esac
-    tabs=$({ tmux list-panes -a -F 'pane #{pane_pid} #{window_id}' 2>/dev/null; ps -A -o pid= -o ppid= | sed 's/^/process /'; } | awk -v pids="$pids" '
-      $1 == "pane" { pane[$2] = $3 }
-      $1 == "process" { parent[$2] = $3 }
-      END {
-        n = split(pids, p, " ")
-        for (i = 1; i <= n; i++) {
-          q = p[i]
-          while (q > 1 && !(q in pane)) q = parent[q] + 0
-          if (q in pane) print "tab", p[i], pane[q]
-        }
-      }')
-    if [ -n "$tabs" ]; then live="$live$tabs
+      if [ -n "$found" ]; then live="$live$found
 "; fi
-    printf '%s' "$live"
-    echo sessions
+      printf '%s' "$live"
+      echo sessions
+    fi
   fi
   if [ $((tick % 15)) -eq 0 ]; then
     printf 'stats %s%s\n' "$({ load; df -Pk "$HOME"; usage; battery; } | awk -v roots="$pids" '

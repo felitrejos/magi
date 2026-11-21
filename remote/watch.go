@@ -320,18 +320,31 @@ type battery struct {
 }
 
 type liveEntry struct {
-	ID            string       `json:"id"`
-	Title         string       `json:"title"`
-	Folder        string       `json:"folder"`
-	State         string       `json:"state"`
-	WaitingOn     string       `json:"waitingOn,omitempty"`
-	Since         time.Time    `json:"since,omitzero"`
-	RemoteControl string       `json:"remoteControl,omitempty"`
-	Tmux          string       `json:"tmux,omitempty"`
-	CPU           int          `json:"cpu"`
-	MemoryMB      int          `json:"memoryMB"`
-	CPUHistory    []cpuReading `json:"cpuHistory,omitempty"`
-	pid           int
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Folder        string    `json:"folder"`
+	State         string    `json:"state"`
+	WaitingOn     string    `json:"waitingOn,omitempty"`
+	Since         time.Time `json:"since,omitzero"`
+	RemoteControl string    `json:"remoteControl,omitempty"`
+	HostSession   string    `json:"hostSession,omitempty"`
+	location
+	CPU        int          `json:"cpu"`
+	MemoryMB   int          `json:"memoryMB"`
+	CPUHistory []cpuReading `json:"cpuHistory,omitempty"`
+	pid        int
+}
+
+type location struct {
+	Tmux string `json:"tmux,omitempty"`
+	Rex  *rex   `json:"rex,omitempty"`
+	App  string `json:"app,omitempty"`
+	TTY  string `json:"tty,omitempty"`
+}
+
+type rex struct {
+	Session string `json:"session"`
+	Block   string `json:"block"`
 }
 
 type use struct {
@@ -393,7 +406,7 @@ func (w *watcher) follow(me string) error {
 func (w *watcher) hear(line string, now time.Time) {
 	kind, rest, _ := strings.Cut(line, " ")
 	switch kind {
-	case "claude", "waiting", "tab":
+	case "claude", "waiting", "place":
 		w.block = append(w.block, line)
 		return
 	case "sessions":
@@ -417,7 +430,7 @@ func (w *watcher) hear(line string, now time.Time) {
 func (w *watcher) sessions() {
 	var sessions []liveSession
 	waiting := map[int]string{}
-	windows := map[int]string{}
+	places := map[int]location{}
 	for _, line := range w.block {
 		kind, rest, _ := strings.Cut(line, " ")
 		switch kind {
@@ -432,17 +445,33 @@ func (w *watcher) sessions() {
 			for _, s := range listed {
 				waiting[s.PID] = s.WaitingFor
 			}
-		case "tab":
-			pid, window, _ := strings.Cut(rest, " ")
+		case "place":
+			pid, rest, _ := strings.Cut(rest, " ")
+			key, value, _ := strings.Cut(rest, " ")
 			n, _ := strconv.Atoi(pid)
-			windows[n] = window
+			p := places[n]
+			switch key {
+			case "tmux":
+				p.Tmux = value
+			case "rex":
+				session, block, _ := strings.Cut(value, " ")
+				p.Rex = &rex{Session: session, Block: block}
+			case "app":
+				p.App = value
+			case "tty":
+				p.TTY = value
+			}
+			places[n] = p
 		}
 	}
 	w.block = nil
 	entries := []liveEntry{}
 	at := map[string]int{}
 	for _, s := range sessions {
-		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], RemoteControl: s.remoteControl(), Tmux: windows[s.PID], pid: s.PID}
+		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], RemoteControl: s.remoteControl(), location: places[s.PID], pid: s.PID}
+		if s.Entrypoint == "claude-desktop" {
+			e.HostSession = s.HostSessionID
+		}
 		if s.StatusAt > 0 {
 			e.Since = time.UnixMilli(s.StatusAt)
 		}
