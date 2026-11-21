@@ -237,22 +237,19 @@ struct SessionRow: View {
         row.session.state == "waiting"
     }
 
-    private var folder: String {
-        URL(filePath: row.session.folder).lastPathComponent
-    }
-
     private var elapsed: String? {
         guard let since = row.session.since, now.timeIntervalSince(since) >= 60 else { return nil }
         return span(now.timeIntervalSince(since))
     }
 
     var body: some View {
+        let route = row.route
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             StateSymbol(state: row.session.state)
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.session.title)
                     .font(.body.weight(waiting ? .semibold : .regular))
-                Text(showsMachine ? "\(folder) \u{00B7} \(row.machine)" : folder)
+                Text(showsMachine ? "\(row.session.folderName) \u{00B7} \(row.machine)" : row.session.folderName)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 if waiting, let question = row.session.waitingOn {
@@ -267,7 +264,7 @@ struct SessionRow: View {
             .truncationMode(.middle)
             .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 6) {
-                if let route = row.route {
+                if let route {
                     HostIcon(host: route.host)
                 }
                 if usage {
@@ -293,14 +290,14 @@ struct SessionRow: View {
         }
         .contentShape(.rect)
         .onTapGesture {
-            row.route.map(open)
+            route.map(open)
         }
-        .help(row.route.map { "Open in \($0.host.name)" } ?? "")
+        .help(route.map { "Open in \($0.host.name)" } ?? "")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibility)
-        .accessibilityAddTraits(row.route == nil ? [] : .isButton)
+        .accessibilityAddTraits(route == nil ? [] : .isButton)
         .accessibilityActions {
-            if let route = row.route {
+            if let route {
                 Button("Open in \(route.host.name)") { open(route) }
             }
         }
@@ -313,7 +310,7 @@ struct SessionRow: View {
         default: row.session.state
         }
         let detail = usage ? "CPU \(row.session.cpu)%, memory \(row.session.memory)" : elapsed.map { "for \($0)" }
-        return [row.session.title, state, "\(folder) on \(row.machine)", detail].compactMap(\.self).joined(separator: ", ")
+        return [row.session.title, state, "\(row.session.folderName) on \(row.machine)", detail].compactMap(\.self).joined(separator: ", ")
     }
 }
 

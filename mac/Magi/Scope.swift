@@ -138,22 +138,22 @@ extension Machine {
             let points = series { $0.cpu.map(Double.init) }
             guard let last = points.last?.value else { return nil }
             let sustained = min(last, points.dropLast().last?.value ?? last)
-            return Measure(module: module, value: "\(Int(last))", unit: "%", detail: "Load \(tenths(load)) \u{00B7} \(cores) cores", headline: "\(Int(last))% CPU", health: Health(sustained, warning: 75, critical: 90), alerts: ["Busy", "Very busy"], visual: .spark(points, 0...100, unit: "percent"))
+            return Measure(module: module, value: "\(Int(last))", unit: "%", detail: "Load \(tenths(load)) \u{00B7} \(cores) \(cores == 1 ? "core" : "cores")", headline: "\(Int(last))% CPU", health: Health(sustained, warning: 75, critical: 90), alerts: ["Busy", "Very busy"], visual: .spark(points, 0...100, unit: "percent"))
         case .memory:
             let (value, unit) = amount(memory)
-            let notes = [pressure.map { "Pressure \($0.word)" }, swap.map { $0.usedMB > 0 ? "\(amount(megabytes: $0.usedMB)) swap" : "No swap" }].compactMap(\.self)
+            let notes = [pressure.map { "pressure \($0.word)" }, swap.map { $0.usedMB > 0 ? "\(amount(megabytes: $0.usedMB)) swap" : "no swap" }].compactMap(\.self).joined(separator: " \u{00B7} ")
             let health: Health = switch pressure {
             case .warning: .warning
             case .critical: .critical
             case .normal, nil: .fine
             }
-            return Measure(module: module, value: value, unit: unit, detail: notes.joined(separator: " \u{00B7} "), headline: "\(Int((memory.fraction * 100).rounded()))% memory", health: health, alerts: ["Low memory", "Out of memory"], visual: .bar(memory.fraction))
+            return Measure(module: module, value: value, unit: unit, detail: notes.prefix(1).uppercased() + notes.dropFirst(), headline: "\(Int((memory.fraction * 100).rounded()))% memory", health: health, alerts: ["Low memory", "Out of memory"], visual: .bar(memory.fraction))
         case .temperature:
             let points = series(\.temp)
             if let last = points.last?.value {
                 let peak = points.map(\.value).max() ?? last
                 let health: Health = last >= (critical.map { $0 - 10 } ?? 90) ? .critical : last >= 80 ? .warning : .fine
-                return Measure(module: module, name: "CPU temp", value: "\(Int(last.rounded()))", unit: "\u{00B0}C", detail: "1 h peak \(Int(peak.rounded())) \u{00B0}C", headline: "\(Int(last.rounded())) \u{00B0}C", health: health, alerts: ["Warm", "Hot"], visual: .spark(points, 20...100, unit: "degrees Celsius"))
+                return Measure(module: module, name: "CPU temp", value: "\(Int(last.rounded()))", unit: "\u{00B0}C", detail: "1h peak\(Int(peak.rounded())) \u{00B0}C", headline: "\(Int(last.rounded())) \u{00B0}C", health: health, alerts: ["Warm", "Hot"], visual: .spark(points, 20...100, unit: "degrees Celsius"))
             }
             guard let thermal = series({ $0.thermal.map(Double.init) }).last.map({ min(Int($0.value), 3) }) else { return nil }
             let word = ["Normal", "Moderate", "Heavy", "Critical"][thermal]
@@ -291,10 +291,6 @@ struct Card<Graphic: View>: View {
     let now: Date
     @ViewBuilder let graphic: Graphic
 
-    private var tint: Color {
-        measure.health.color
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             CardLabel(measure: measure)
@@ -317,7 +313,7 @@ struct Card<Graphic: View>: View {
             Text(measure.detail)
                 .font(.footnote)
                 .monospacedDigit()
-                .foregroundStyle(measure.health == .fine ? AnyShapeStyle(.secondary) : AnyShapeStyle(tint))
+                .foregroundStyle(measure.health == .fine ? AnyShapeStyle(.secondary) : AnyShapeStyle(measure.health.color))
                 .lineLimit(1)
                 .contentTransition(.opacity)
                 .animation(.easeOut(duration: 0.2), value: measure.detail)

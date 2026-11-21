@@ -106,13 +106,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !started.isEmpty, UserDefaults.standard.bool(forKey: "playsSound") {
             Chime.play()
         }
-        if !started.isEmpty, UserDefaults.standard.bool(forKey: "notifies") {
-            notify(Array(started.keys))
+        let posted = Array(started.keys) + glance.asking(after: shown)
+        if !posted.isEmpty, UserDefaults.standard.bool(forKey: "notifies") {
+            notify(posted)
         }
         if shown == nil {
             withdrawStale()
         }
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: glance.stopped(after: shown))
+        withdraw(glance.stopped(after: shown))
         for line in started.values.map(\.announcement).sorted() + (shown?.answering.subtracting(glance.answering).sorted() ?? []).map({ "\($0) stopped answering" }) {
             NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
         }
@@ -127,10 +128,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shown = glance
     }
 
-    private func notify(_ started: [String]) {
+    private func notify(_ ids: [String]) {
         Task {
             guard await permission.request() else { return }
-            for id in started {
+            for id in ids {
                 guard let waiting = shown?.waiting[id] else { continue }
                 try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: waiting.content, trigger: nil))
             }
@@ -141,13 +142,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             let delivered = await UNUserNotificationCenter.current().deliveredNotifications().map(\.request.identifier)
             guard let shown else { return }
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: shown.stale(delivered))
+            withdraw(shown.stale(delivered))
         }
+    }
+
+    private func withdraw(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
     }
 
     fileprivate func respond(to id: String) {
         guard let route = store.rows.first(where: { $0.id == id })?.route else { return open() }
         Opener.open(route)
+        close()
     }
 
     @objc private func clicked(_ button: NSStatusBarButton) {
@@ -163,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func open() {
         guard host == nil, let window = item.button?.window, let screen = window.screen else { return }
+        Apps.forgetMissing()
         let height = min(560, screen.visibleFrame.height * 0.7)
         let host = NSHostingView(rootView: PanelView(store: store, height: height) { [weak self] in self?.close() }.padding([.horizontal, .bottom], PanelView.margin))
         host.sizingOptions = []

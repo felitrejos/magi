@@ -44,10 +44,10 @@ sensor() {
 places() {
   {
     if [ "$os" = Darwin ]; then
-      tmux list-panes -a -F 'pane #{pane_pid} #{pane_id}' \; list-clients -F 'client #{client_activity} #{client_pid} #{client_tty}' 2>/dev/null
+      tmux list-panes -a -F 'pane #{pane_pid} #{pane_id} #{session_id}' \; list-clients -F 'client #{client_activity} #{client_pid} #{client_tty} #{session_id}' 2>/dev/null
       ps -A -o pid= -o ppid= -o tty=
     else
-      tmux list-panes -a -F 'pane #{pane_pid} #{pane_id}' 2>/dev/null
+      tmux list-panes -a -F 'pane #{pane_pid} #{pane_id} #{session_id}' 2>/dev/null
       ps -A -o pid= -o ppid=
       for pid in $1; do
         tr '\0' '\n' 2>/dev/null < "/proc/$pid/environ" | sed -n "s/^REX_SESSION=/rex $pid session /p; s/^REX_BLOCK=/rex $pid block /p"
@@ -57,8 +57,8 @@ places() {
     function place(pid, key, value) {
       if (value != "") print "place", pid, key, value
     }
-    $1 == "pane" { pane[$2] = $3 }
-    $1 == "client" && $2 >= active { active = $2; client = $3; seat = $4 }
+    $1 == "pane" { pane[$2] = $3; sessions[$2] = sessions[$2] " " $4 }
+    $1 == "client" && (!($5 in active) || $2 >= active[$5]) { active[$5] = $2 + 0; client[$5] = $3; seat[$5] = $4 }
     $1 == "rex" && $3 == "session" { rs[$2] = $4 }
     $1 == "rex" && $3 == "block" { rb[$2] = $4 }
     $1 ~ /^[0-9]+$/ { parent[$1] = $2; tty[$1] = $3 }
@@ -69,8 +69,13 @@ places() {
         for (q = s; q > 1 && !(q in pane); q = parent[q] + 0) continue
         if (q in pane) {
           place(s, "tmux", pane[q])
-          place(s, "tty", seat)
-          top[s] = client
+          k = split(sessions[q], linked, " ")
+          held = ""
+          for (j = 1; j <= k; j++) if (linked[j] in active && (held == "" || active[linked[j]] > active[held])) held = linked[j]
+          if (held != "") {
+            place(s, "tty", seat[held])
+            top[s] = client[held]
+          }
         } else {
           if (tty[s] ~ /^tty/) place(s, "tty", "/dev/" tty[s])
           if (s in rs && s in rb) place(s, "rex", rs[s] " " rb[s])

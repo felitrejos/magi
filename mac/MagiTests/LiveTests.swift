@@ -91,27 +91,8 @@ struct LiveTests {
         #expect(Row.ordered(urgent, keeping: frozen).map(\.id) == ["a/idle", "b/early", "a/late", "a/busy", "b/busy"])
     }
 
-    @MainActor @Test func opensEachSessionWhereItRunsOrNotAtAll() {
-        let link = URL(string: "https://claude.ai/code/session_01")!
-        let ghostty = "com.mitchellh.ghostty"
-        func route(_ remote: String?, _ session: Session) -> Route? {
-            Row(machine: "m", remote: remote, session: session).route
-        }
-        #expect(route(nil, session(hostSession: "local_7c", app: "com.anthropic.claudefordesktop")) == .link(URL(string: "claude://code/continue?session=local_7c")!))
-        #expect(route("box", session(hostSession: "local_7c", remoteControl: link)) == .remoteControl(link))
-        #expect(route("homelab", session(rex: RexBlock(session: "session:01", block: "block:02"), remoteControl: link)) == .rex(ssh: "homelab", session: "session:01", block: "block:02"))
-        #expect(route("homelab", session(rex: RexBlock(session: "session:01", block: "-h"), remoteControl: link)) == .remoteControl(link))
-        let tmuxInGhostty = route(nil, session(tmux: "%3", app: ghostty, tty: "/dev/ttys007"))
-        #expect(tmuxInGhostty == .tmux(pane: "%3", client: "/dev/ttys007", app: ghostty) && tmuxInGhostty?.host == .ghostty)
-        #expect(route(nil, session(tmux: "%3", app: "com.apple.Terminal", tty: "/dev/ttys007"))?.host == .tmux)
-        #expect(route(nil, session(tmux: "%3")) == .attach(pane: "%3", ssh: nil))
-        #expect(route("homelab", session(tmux: "%3", app: ghostty, tty: "/dev/pts/2")) == .attach(pane: "%3", ssh: "homelab"))
-        #expect(route(nil, session(app: ghostty, tty: "/dev/ttys004", remoteControl: link)) == .ghostty(tty: "/dev/ttys004"))
-        #expect(route(nil, session(app: "com.apple.Terminal", tty: "/dev/ttys004", remoteControl: link)) == .remoteControl(link))
-        #expect(route(nil, session(app: "com.apple.Terminal", tty: "/dev/ttys004")) == nil)
-    }
+}
 
-    private func session(_ id: String = "a", state: String = "idle", since: TimeInterval = 0, hostSession: String? = nil, tmux: String? = nil, rex: RexBlock? = nil, app: String? = nil, tty: String? = nil, remoteControl: URL? = nil) -> Session {
-        Session(id: id, title: id, folder: "/", state: state, waitingOn: nil, since: Date(timeIntervalSince1970: since), cpu: 0, memoryMB: 0, cpuHistory: nil, remoteControl: remoteControl, hostSession: hostSession, tmux: tmux, rex: rex, app: app, tty: tty)
-    }
+func session(_ id: String = "a", state: String = "idle", since: TimeInterval = 0, hostSession: String? = nil, tmux: String? = nil, rex: RexBlock? = nil, app: String? = nil, tty: String? = nil, remoteControl: URL? = nil) -> Session {
+    Session(id: id, title: id, folder: "/", state: state, waitingOn: nil, since: Date(timeIntervalSince1970: since), cpu: 0, memoryMB: 0, cpuHistory: nil, remoteControl: remoteControl, hostSession: hostSession, tmux: tmux, rex: rex, app: app, tty: tty)
 }

@@ -59,6 +59,10 @@ struct Session: Decodable {
     let rex: RexBlock?
     let app: String?
     let tty: String?
+
+    var folderName: String {
+        URL(filePath: folder).lastPathComponent
+    }
 }
 
 struct RexBlock: Decodable, Equatable {

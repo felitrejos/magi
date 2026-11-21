@@ -21,6 +21,10 @@ struct Glance: Equatable {
         return waiting.filter { shown.waiting[$0.key] == nil }
     }
 
+    func asking(after shown: Glance?) -> [String] {
+        waiting.filter { id, now in shown?.waiting[id].map { $0.on != now.on } ?? false }.map(\.key)
+    }
+
     func stopped(after shown: Glance?) -> [String] {
         shown?.waiting.keys.filter { waiting[$0] == nil } ?? []
     }
@@ -57,6 +61,6 @@ struct Waiting: Equatable {
 
 extension Waiting {
     init(row: Row) {
-        self.init(title: row.session.title, machine: row.machine, folder: URL(filePath: row.session.folder).lastPathComponent, on: row.session.waitingOn)
+        self.init(title: row.session.title, machine: row.machine, folder: row.session.folderName, on: row.session.waitingOn)
     }
 }

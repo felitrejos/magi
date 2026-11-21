@@ -6,7 +6,8 @@ struct GlanceTests {
 
     @Test func notifiesOncePerChangeToWaitingAndWithdrawsItWhenTheWaitEnds() throws {
         let launch = glance([id: question])
-        #expect(launch.started(after: nil).isEmpty)
+        #expect(launch.started(after: nil).isEmpty && launch.asking(after: nil).isEmpty)
+        #expect(launch.stale([id, "box/ee27a88a"]) == ["box/ee27a88a"])
 
         let idle = glance([:])
         #expect(idle.started(after: launch).isEmpty && idle.stopped(after: launch) == [id])
@@ -18,14 +19,13 @@ struct GlanceTests {
         #expect([content.title, content.subtitle, content.body] == ["Shop checkout fix", "laptop \u{00B7} shop", "Allow Bash to run npm test?"])
 
         let still = glance([id: question])
-        #expect(still.started(after: waiting).isEmpty && still.stopped(after: waiting).isEmpty)
+        #expect(still.started(after: waiting).isEmpty && still.asking(after: waiting).isEmpty && still.stopped(after: waiting).isEmpty)
+
+        let asked = glance([id: Waiting(title: question.title, machine: question.machine, folder: question.folder, on: "Allow Edit of package.json?")])
+        #expect(asked.started(after: still).isEmpty && asked.asking(after: still) == [id] && asked.stopped(after: still).isEmpty)
 
         let gone = glance([:])
-        #expect(gone.started(after: still).isEmpty && gone.stopped(after: still) == [id])
-    }
-
-    @Test func withdrawsNotificationsFromBeforeLaunchUnlessTheSessionStillWaits() {
-        #expect(glance([id: question]).stale([id, "box/ee27a88a"]) == ["box/ee27a88a"])
+        #expect(gone.started(after: asked).isEmpty && gone.asking(after: asked).isEmpty && gone.stopped(after: asked) == [id])
     }
 
     private func glance(_ waiting: [String: Waiting]) -> Glance {

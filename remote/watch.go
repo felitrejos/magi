@@ -485,7 +485,7 @@ func (w *watcher) sessions() {
 }
 
 func (w *watcher) stats(line string, now time.Time) error {
-	l := &w.live
+	l, t, n := w.live, w.ticks, w.traffic
 	var booted int64
 	if _, err := fmt.Sscan(line, &l.Cores, &l.Load, &l.Memory.UsedMB, &l.Memory.TotalMB, &l.Disk.UsedMB, &l.Disk.TotalMB, &l.Swap.UsedMB, &l.Swap.TotalMB, &booted); err != nil {
 		return err
@@ -502,7 +502,7 @@ func (w *watcher) stats(line string, now time.Time) error {
 	usage := map[int]use{}
 	for _, field := range strings.Fields(line)[9:] {
 		if key, value, ok := strings.Cut(field, "="); ok {
-			if err := w.measure(key, value, &r, now); err != nil {
+			if err := measure(key, value, now, &l, &r, &t, &n); err != nil {
 				return err
 			}
 			continue
@@ -524,12 +524,11 @@ func (w *watcher) stats(line string, now time.Time) error {
 		cpu[id] = recent(readings, func(r cpuReading) int64 { return r.At }, now)
 	}
 	l.History = recent(append(l.History, r), func(r reading) int64 { return r.At }, now)
-	w.usage, w.cpu = usage, cpu
+	w.live, w.ticks, w.traffic, w.usage, w.cpu = l, t, n, usage, cpu
 	return nil
 }
 
-func (w *watcher) measure(key, value string, r *reading, now time.Time) error {
-	l := &w.live
+func measure(key, value string, now time.Time, l *liveMachine, r *reading, cpu *ticks, net *traffic) error {
 	switch key {
 	case "pressure":
 		l.Pressure = value
@@ -546,10 +545,10 @@ func (w *watcher) measure(key, value string, r *reading, now time.Time) error {
 		if _, err := fmt.Sscanf(value, "%d:%d", &t.busy, &t.total); err != nil {
 			return err
 		}
-		if last := w.ticks; last.total > 0 && t.total > last.total {
-			r.CPU = new(int(math.Round(float64(t.busy-last.busy) / float64(t.total-last.total) * 100)))
+		if cpu.total > 0 && t.total > cpu.total {
+			r.CPU = new(int(math.Round(float64(t.busy-cpu.busy) / float64(t.total-cpu.total) * 100)))
 		}
-		w.ticks = t
+		*cpu = t
 	case "temp":
 		r.Temp = new(float64)
 		var critical float64
@@ -569,11 +568,11 @@ func (w *watcher) measure(key, value string, r *reading, now time.Time) error {
 		if _, err := fmt.Sscanf(value, "%d:%d:%s", &t.received, &t.sent, &t.iface); err != nil {
 			return err
 		}
-		if last := w.traffic; last.iface == t.iface && t.received >= last.received && t.sent >= last.sent {
-			seconds := now.Sub(last.at).Seconds()
-			r.Received, r.Sent = new(int64(math.Round(float64(t.received-last.received)/seconds))), new(int64(math.Round(float64(t.sent-last.sent)/seconds)))
+		if t.iface == net.iface && t.received >= net.received && t.sent >= net.sent {
+			seconds := now.Sub(net.at).Seconds()
+			r.Received, r.Sent = new(int64(math.Round(float64(t.received-net.received)/seconds))), new(int64(math.Round(float64(t.sent-net.sent)/seconds)))
 		}
-		w.traffic = t
+		*net = t
 	}
 	return nil
 }
