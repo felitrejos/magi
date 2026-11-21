@@ -18,9 +18,9 @@ struct Snapshots {
         for scheme in [ColorScheme.light, .dark] {
             let suffix = scheme == .light ? "light" : "dark"
             try await shot("main-\(suffix)", full, scheme)
-            try await shot("waiting-row-\(suffix)", full, scheme, act: { window in
-                window.sendEvent(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{F701}", charactersIgnoringModifiers: "\u{F701}", isARepeat: false, keyCode: 125)!)
-            })
+            try await shot("waiting-row-\(suffix)", full, scheme, act: { down($0, times: 1) })
+            try await shot("open-claude-row-\(suffix)", full, scheme, act: { down($0, times: 2) })
+            try await shot("open-ghostty-row-\(suffix)", full, scheme, act: { down($0, times: 3) })
             try await shot("scope-\(suffix)", full, scheme, height: 900, act: { right($0, times: 2) })
             try await shot("scope-laptop-\(suffix)", full, scheme, height: 900, act: { right($0, times: 3) })
             try await shot("scope-alert-\(suffix)", strained, scheme, height: 900, act: { right($0, times: 3) })
@@ -166,8 +166,16 @@ struct Snapshots {
     }
 
     private func right(_ window: NSWindow, times: Int) {
+        press(window, "\u{F703}", keyCode: 124, times: times)
+    }
+
+    private func down(_ window: NSWindow, times: Int) {
+        press(window, "\u{F701}", keyCode: 125, times: times)
+    }
+
+    private func press(_ window: NSWindow, _ key: String, keyCode: UInt16, times: Int) {
         for _ in 0..<times {
-            window.sendEvent(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{F703}", charactersIgnoringModifiers: "\u{F703}", isARepeat: false, keyCode: 124)!)
+            window.sendEvent(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: keyCode)!)
         }
     }
 
@@ -206,10 +214,10 @@ struct Snapshots {
     }
 
     private func machines(sessions: Bool, critical: Bool = false) -> [String: [String: Any]] {
-        func session(_ title: String, _ folder: String, _ state: String, _ minutes: Double, cpu: Int, memory: Int, waitingOn: String? = nil) -> [String: Any] {
+        func session(_ title: String, _ folder: String, _ state: String, _ minutes: Double, cpu: Int, memory: Int, waitingOn: String? = nil, runs place: [String: Any] = [:]) -> [String: Any] {
             var session: [String: Any] = ["id": UUID().uuidString, "title": title, "folder": folder, "state": state, "since": stamp(now.addingTimeInterval(-minutes * 60)), "cpu": cpu, "memoryMB": memory]
             session["waitingOn"] = waitingOn
-            return session
+            return session.merging(place) { $1 }
         }
         return [
             "laptop": [
@@ -218,9 +226,9 @@ struct Snapshots {
                 "bootedAt": stamp(now.addingTimeInterval(-3 * 86_400)), "battery": ["percent": critical ? 14 : 64, "onBattery": true],
                 "sample": ["cpu": critical ? 61 : 18, "thermal": critical ? 1 : 0],
                 "sessions": sessions ? [
-                    session("Shop checkout fix", "/Users/sam/code/shop", "waiting", 4, cpu: 0, memory: 229, waitingOn: "Allow Bash to run npm test in the shop folder?"),
-                    session("magi README demo videos", "/Users/sam/code/magi", "busy", 12, cpu: 34, memory: 547),
-                    session("Blog drafts", "/Users/sam/code/blog", "idle", 190, cpu: 0, memory: 212),
+                    session("Shop checkout fix", "/Users/sam/code/shop", "waiting", 4, cpu: 0, memory: 229, waitingOn: "Allow Bash to run npm test in the shop folder?", runs: ["hostSession": "local_7cbf", "app": "com.anthropic.claudefordesktop"]),
+                    session("magi README demo videos", "/Users/sam/code/magi", "busy", 12, cpu: 34, memory: 547, runs: ["app": "com.mitchellh.ghostty", "tty": "/dev/ttys004"]),
+                    session("Blog drafts", "/Users/sam/code/blog", "idle", 190, cpu: 0, memory: 212, runs: ["tmux": "%3"]),
                 ] : [],
             ],
             "homelab": [
@@ -229,9 +237,9 @@ struct Snapshots {
                 "bootedAt": stamp(now.addingTimeInterval(-6 * 60)),
                 "sample": ["cpu": 26, "temp": critical ? 83 : 54],
                 "sessions": sessions ? [
-                    session("Nightly backup audit with a long title that runs out of room", "/home/sam/ops/backups/nightly", "waiting", 11, cpu: 0, memory: 310, waitingOn: "Which retention policy should I keep for the nightly snapshots, 30 days or 90 days?"),
-                    session("shop-db migration", "/home/sam/code/shop", "busy", 20, cpu: 82, memory: 1100),
-                    session("infra notes", "/home/sam/notes", "idle", 1_500, cpu: 0, memory: 180),
+                    session("Nightly backup audit with a long title that runs out of room", "/home/sam/ops/backups/nightly", "waiting", 11, cpu: 0, memory: 310, waitingOn: "Which retention policy should I keep for the nightly snapshots, 30 days or 90 days?", runs: ["rex": ["session": "session:01a1", "block": "block:01a2"]]),
+                    session("shop-db migration", "/home/sam/code/shop", "busy", 20, cpu: 82, memory: 1100, runs: ["tmux": "%7"]),
+                    session("infra notes", "/home/sam/notes", "idle", 1_500, cpu: 0, memory: 180, runs: ["remoteControl": "https://claude.ai/code/session_01"]),
                 ] : [],
             ],
             "box": [

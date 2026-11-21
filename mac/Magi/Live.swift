@@ -53,6 +53,17 @@ struct Session: Decodable {
     let cpu: Int
     let memoryMB: Int
     let cpuHistory: [CPUReading]?
+    let remoteControl: URL?
+    let hostSession: String?
+    let tmux: String?
+    let rex: RexBlock?
+    let app: String?
+    let tty: String?
+}
+
+struct RexBlock: Decodable, Equatable {
+    let session: String
+    let block: String
 }
 
 struct Reading: Decodable {
@@ -73,6 +84,7 @@ struct CPUReading: Decodable {
 
 struct Row: Identifiable {
     let machine: String
+    let remote: String?
     let session: Session
 
     var id: String {

@@ -18,6 +18,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.felitrejos.magi
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSAppleEventsUsageDescription: magi brings the Ghostty window a session runs in to the front.
     scheme:
       testTargets: [magiTests]
   magiTests:
@@ -27,6 +28,7 @@ targets:
       - path: MagiTests
         excludes: [Fixtures]
       - Magi/Live.swift
+      - Magi/Open.swift
       - Magi/Store.swift
       - Magi/PanelView.swift
       - Magi/Scope.swift

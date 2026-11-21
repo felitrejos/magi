@@ -47,7 +47,7 @@ struct PanelView: View {
                                 .padding([.horizontal, .bottom], 16)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else if !rows.isEmpty || scope != nil {
-                            SessionList(rows: rows, scope: scope, machine: scope.flatMap { store.machines[$0] }, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order)
+                            SessionList(rows: rows, scope: scope, machine: scope.flatMap { store.machines[$0] }, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order, open: open)
                         }
                         if names.count > 1 {
                             strip(now: context.date)
@@ -74,6 +74,11 @@ struct PanelView: View {
                 }
             }
             .onMoveCommand { move($0, proxy) }
+            .onKeyPress(.return) {
+                guard let route = rows.first(where: { $0.id == highlight })?.route else { return .ignored }
+                open(route)
+                return .handled
+            }
             .onExitCommand { scope == nil ? close() : (scope = nil) }
         }
     }
@@ -121,6 +126,11 @@ struct PanelView: View {
         .buttonStyle(Press())
     }
 
+    private func open(_ route: Route) {
+        Opener.open(route)
+        close()
+    }
+
     private func move(_ direction: MoveCommandDirection, _ proxy: ScrollViewProxy) {
         if direction == .left || direction == .right {
             let index = scope.flatMap(names.firstIndex(of:))
@@ -160,6 +170,7 @@ struct SessionList: View {
     let now: Date
     @Binding var highlight: String?
     @Binding var order: [String]?
+    let open: (Route) -> Void
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -183,7 +194,7 @@ struct SessionList: View {
                     }
                 }
                 ForEach(rows) { row in
-                    SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now)
+                    SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now, open: open)
                         .id(row.id)
                         .transition(.blurReplace)
                         .onHover { inside in
@@ -218,6 +229,7 @@ struct SessionRow: View {
     let highlighted: Bool
     let usage: Bool
     let now: Date
+    let open: (Route) -> Void
 
     private var waiting: Bool {
         row.session.state == "waiting"
@@ -238,9 +250,12 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.session.title)
                     .font(.body.weight(waiting ? .semibold : .regular))
-                Text(showsMachine ? "\(folder) \u{00B7} \(row.machine)" : folder)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    HostIcon(host: row.session.host)
+                    Text(showsMachine ? "\(folder) \u{00B7} \(row.machine)" : folder)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
                 if waiting, let question = row.session.waitingOn {
                     Text(question)
                         .font(.callout)
@@ -252,16 +267,19 @@ struct SessionRow: View {
             .lineLimit(1)
             .truncationMode(.middle)
             .frame(maxWidth: .infinity, alignment: .leading)
-            if usage {
-                Usage(session: row.session, now: now)
-            } else {
-                Text(elapsed ?? "now")
-                    .font(.subheadline)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.opacity)
-                    .animation(.easeOut(duration: 0.2), value: elapsed)
+            Group {
+                if usage {
+                    Usage(session: row.session, now: now)
+                } else {
+                    Text(elapsed ?? "now")
+                        .font(.subheadline)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .contentTransition(.opacity)
+                        .animation(.easeOut(duration: 0.2), value: elapsed)
+                }
             }
+            .opacity(opens ? 0 : 1)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -275,12 +293,66 @@ struct SessionRow: View {
         .contentShape(.rect)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibility)
+        .overlay(alignment: .topTrailing) {
+            if let route = row.route {
+                OpenButton(title: row.session.title) { open(route) }
+                    .padding(.top, 4)
+                    .padding(.trailing, 8)
+                    .opacity(opens ? 1 : 0)
+                    .allowsHitTesting(opens)
+            }
+        }
+    }
+
+    private var opens: Bool {
+        highlighted && row.route != nil
     }
 
     private var accessibility: String {
         let state = waiting ? "waiting on you" + (row.session.waitingOn.map { ": \($0)" } ?? "") : row.session.state
         let detail = usage ? "CPU \(row.session.cpu)%, memory \(row.session.memory)" : elapsed.map { "for \($0)" }
-        return [row.session.title, state, "\(folder) on \(row.machine)", detail].compactMap(\.self).joined(separator: ", ")
+        return [row.session.title, state, "\(folder) on \(row.machine)", "in \(row.session.host.name)", detail].compactMap(\.self).joined(separator: ", ")
+    }
+}
+
+struct HostIcon: View {
+    let host: Host
+
+    var body: some View {
+        Group {
+            if let bundle = host.bundle, let icon = AppIcons.icon(bundle) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+            } else {
+                Image(systemName: "terminal")
+                    .font(.system(size: 10, weight: .medium))
+            }
+        }
+        .frame(width: 14, height: 14)
+        .accessibilityHidden(true)
+    }
+}
+
+struct OpenButton: View {
+    let title: String
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image("Claude", bundle: .magi)
+                .resizable()
+                .frame(width: 13, height: 13)
+                .frame(width: 22, height: 22)
+                .background(.quaternary.opacity(hovered ? 1 : 0), in: .circle)
+                .contentShape(.circle)
+        }
+        .buttonStyle(Press())
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.15), value: hovered)
+        .help("Open")
+        .accessibilityLabel("Open \(title)")
     }
 }
 

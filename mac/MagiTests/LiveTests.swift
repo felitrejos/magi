@@ -32,6 +32,9 @@ struct LiveTests {
         #expect(laptop.history?.last.map { [$0.cpu, $0.thermal, $0.rx, $0.tx] } == [31, 1, 2_400_000, 310_000] && laptop.history?.first?.cpu == nil)
         #expect(box.critical == 105 && laptop.critical == nil)
         #expect(box.history == nil && box.sessions[0].cpuHistory == nil)
+        #expect(waiting.hostSession == "local_7cbf1d10" && waiting.app == "com.anthropic.claudefordesktop" && waiting.tmux == nil)
+        #expect(laptop.sessions[1].tmux == "%3" && laptop.sessions[1].tty == "/dev/ttys007" && laptop.sessions[1].app == "com.mitchellh.ghostty")
+        #expect(box.sessions[0].rex == RexBlock(session: "session:01a1", block: "block:01a2") && box.sessions[0].remoteControl?.absoluteString == "https://claude.ai/code/session_01AbCdEfGhIjKlMnOpQrStUv")
     }
 
     @Test func stopsAnsweringWhenQuietForFortySecondsOrSaysSo() throws {
@@ -72,12 +75,42 @@ struct LiveTests {
 
     @Test func putsWaitingFirstLongestWaitingFirstThenBusyThenIdleAndKeepsAFrozenOrder() {
         func row(_ machine: String, _ id: String, _ state: String, _ since: TimeInterval) -> Row {
-            Row(machine: machine, session: Session(id: id, title: id, folder: "/", state: state, waitingOn: nil, since: Date(timeIntervalSince1970: since), cpu: 0, memoryMB: 0, cpuHistory: nil))
+            Row(machine: machine, remote: nil, session: session(id, state: state, since: since))
         }
         let rows = [row("a", "idle", "idle", 1), row("a", "busy", "busy", 2), row("a", "late", "waiting", 9), row("b", "early", "waiting", 3), row("b", "busy", "busy", 1)]
         let urgent = Row.urgent(rows)
         #expect(urgent.map(\.id) == ["b/early", "a/late", "a/busy", "b/busy", "a/idle"])
         let frozen = ["a/idle", "b/early", "gone/x"]
         #expect(Row.ordered(urgent, keeping: frozen).map(\.id) == ["a/idle", "b/early", "a/late", "a/busy", "b/busy"])
+    }
+
+    @Test func opensEachSessionWhereItRunsOrNotAtAll() {
+        let link = URL(string: "https://claude.ai/code/session_01")!
+        let ghostty = "com.mitchellh.ghostty"
+        func route(_ remote: String?, _ session: Session) -> Route? {
+            Row(machine: "m", remote: remote, session: session).route
+        }
+        #expect(route(nil, session(hostSession: "local_7c", app: "com.anthropic.claudefordesktop")) == .link(URL(string: "claude://code/continue?session=local_7c")!))
+        #expect(route("box", session(hostSession: "local_7c", remoteControl: link)) == .remoteControl(link))
+        #expect(route("homelab", session(rex: RexBlock(session: "s", block: "b"), remoteControl: link)) == .rex(host: "homelab", session: "s", block: "b"))
+        #expect(route(nil, session(tmux: "%3", app: ghostty, tty: "/dev/ttys007")) == .tmux(pane: "%3", client: "/dev/ttys007", app: ghostty))
+        #expect(route(nil, session(tmux: "%3")) == .attach(pane: "%3", host: nil))
+        #expect(route("homelab", session(tmux: "%3", app: ghostty, tty: "/dev/pts/2")) == .attach(pane: "%3", host: "homelab"))
+        #expect(route(nil, session(app: ghostty, tty: "/dev/ttys004", remoteControl: link)) == .ghostty(tty: "/dev/ttys004"))
+        #expect(route(nil, session(app: "com.apple.Terminal", tty: "/dev/ttys004", remoteControl: link)) == .remoteControl(link))
+        #expect(route(nil, session(app: "com.apple.Terminal", tty: "/dev/ttys004")) == nil)
+    }
+
+    @Test func namesTheAppEachSessionRunsIn() {
+        #expect(session(hostSession: "local_7c").host == .claude)
+        #expect(session(rex: RexBlock(session: "s", block: "b")).host == .rex)
+        #expect(session(app: "com.superlogical.rex.server").host == .rex)
+        #expect(session(tmux: "%3", app: "com.mitchellh.ghostty").host == .ghostty)
+        #expect(session(tmux: "%3").host == .terminal)
+        #expect(session(app: "com.apple.Terminal").host == .terminal)
+    }
+
+    private func session(_ id: String = "a", state: String = "idle", since: TimeInterval = 0, hostSession: String? = nil, tmux: String? = nil, rex: RexBlock? = nil, app: String? = nil, tty: String? = nil, remoteControl: URL? = nil) -> Session {
+        Session(id: id, title: id, folder: "/", state: state, waitingOn: nil, since: Date(timeIntervalSince1970: since), cpu: 0, memoryMB: 0, cpuHistory: nil, remoteControl: remoteControl, hostSession: hostSession, tmux: tmux, rex: rex, app: app, tty: tty)
     }
 }
