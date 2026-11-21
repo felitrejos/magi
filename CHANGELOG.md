@@ -4,6 +4,12 @@ What changed in each version of magi.
 [docs/support.md](docs/support.md#versions) says what a version number
 promises.
 
+## 1.0.1, 2026-11-21
+
+- A notification now shows the app the session runs in as its picture:
+  the Claude desktop app, Rex or Ghostty, or a terminal symbol for
+  anything else. A session magi can't open shows none.
+
 ## 1.0.0, 2026-11-21
 
 The first stable release. [docs/support.md](docs/support.md#versions)
