@@ -85,6 +85,8 @@ breaking one of these needs 2.0.
   `setup`, `services` and `ports` in `.magi.toml`. A key magi no longer
   uses is ignored.
 - The fields of `~/.magi/live/<machine>.json`, which can gain new ones.
+  A session's `tmux` field is a tmux pane id such as `%3`, not a window
+  id.
 - The lines of `~/.magi/handoffs.jsonl`, which can gain new fields.
 
 Anything else can change in any release. That includes message wording,

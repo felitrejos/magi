@@ -132,7 +132,7 @@ unit on Linux. It runs as you, never as root, and starts at login.
   from the machine the request is on.
 - Every 2 seconds the loop reads Claude Code's own record of each live
   session in `~/.claude/sessions`, on the laptop too. When that changes,
-  it asks tmux which window each session's process runs in.
+  it asks tmux which pane each session's process runs in.
   When a session is waiting, it runs `claude agents --json` once to learn
   on what.
 - About every 30 seconds it reads load, memory, memory pressure, swap,
@@ -151,7 +151,7 @@ unit on Linux. It runs as you, never as root, and starts at login.
   SSH destination, load, memory, memory pressure, swap, disk, boot time,
   battery, whether it's reached through a relay, and each session's id,
   title, folder, state, CPU, memory, Remote Control link and tmux
-  window. The file holds no conversation text and no file contents.
+  pane. The file holds no conversation text and no file contents.
 - Its log holds machine names, short session ids, folder paths, branch
   and file names, and errors.
 
