@@ -2,9 +2,9 @@
 
 magi is one program, `magi`, that runs on your own machines. The Claude
 Code plugin runs it, and you ask Claude for what you need. It reaches your
-other machines only through your own `ssh`. Its other connections are two
-HTTPS downloads from GitHub, the release binary and the tested versions
-list. It opens no network listener except the ports you ask it to
+other machines only through your own `ssh`. Its other connections are
+HTTPS downloads from GitHub: the release binary, the tested versions list
+and, on a Mac, the menu bar app. It opens no network listener except the ports you ask it to
 forward, which listen on `127.0.0.1`.
 
 ## What runs where
@@ -31,7 +31,8 @@ shell script every hook and tool goes through.
   damaged download, not a bad release. Releases aren't signed, so you
   trust GitHub's TLS and whoever can write releases to that repository.
 - `MAGI_VERSION` and `MAGI_RELEASE_URL` in the environment change which
-  version runs and where it downloads from, `file://` included.
+  version runs and where it and the menu bar app download from, `file://`
+  included.
 
 Release builds come from GitHub Actions, with actions pinned to commit
 hashes, when a `v*` tag is pushed. A release publishes only after the
@@ -47,15 +48,16 @@ test suite passes on macOS, Ubuntu and Alpine.
 - On the other machine it adds the marketplace `felitrejos/magi`, installs
   or updates the plugin with the `claude plugin` commands, and runs the
   launcher once. It installs nothing else and uses no `sudo`.
-- Here it installs the watcher service described below.
+- Here it installs the watcher service described below and, on a Mac,
+  the menu bar app.
 - It reads the tool versions and the claude.ai login on both machines.
 - It moves a session in a throwaway `magi-try-*` folder there and back,
   then removes it on both machines. That is three Claude turns on your
   account.
 
 `uninstall` removes the watcher service here and `~/.magi/bin`. It keeps
-your config and the rest of `~/.magi` and changes nothing on other
-machines.
+your config, the rest of `~/.magi` and the menu bar app, and changes
+nothing on other machines.
 
 ## SSH
 
@@ -173,6 +175,22 @@ unit on Linux. It runs as you, never as root, and starts at login.
 
 ## The menu bar app
 
+`setup_machine` on a Mac installs the app, and the watcher keeps it at
+magi's version when magi updates.
+
+- It downloads `magi.app.zip` and `checksums.txt` from the same release
+  as the binary, and installs nothing unless the zip's SHA-256 matches.
+- The app is signed with magi's own certificate, the same for every
+  release, so macOS keeps its permissions across updates. It isn't
+  notarized: magi downloads it with `curl`, which marks nothing as
+  quarantined, so Gatekeeper doesn't check it.
+- magi installs nothing unless `codesign` verifies the app and it
+  satisfies the requirement pinned in magi, `remote/app.requirement`,
+  which names the bundle id and the certificate's SHA-1.
+- It quits the running app, swaps `/Applications/magi.app` for the new
+  one in a single rename, unregisters other copies of the app from
+  LaunchServices, and opens the app again.
+
 The macOS menu bar app reads `~/.magi/live` and shows what is in it. To
 open a session where it runs, it opens apps and links through macOS and
 runs `osascript`, `rex` and `tmux` itself, never `ssh` or `magi`.
@@ -265,7 +283,8 @@ State is in `~/.magi`.
 | `ssh/`, `tested.json` | SSH control sockets, and the downloaded tested versions list |
 
 Outside those, magi writes the project and session files it moves, the
-trust entry in `~/.claude.json`, and the watcher's service file and log.
+trust entry in `~/.claude.json`, the watcher's service file and log, and
+on a Mac `/Applications/magi.app`.
 
 
 ## Reporting a problem

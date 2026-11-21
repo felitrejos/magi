@@ -69,6 +69,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
+	t.Setenv("MAGI_RELEASE_URL", "file://"+t.TempDir())
 	builtin, err := parseTested(builtinTested)
 	if err != nil {
 		t.Fatal(err)

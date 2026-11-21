@@ -170,6 +170,7 @@ func watch() error {
 	}()
 	go heartbeat(logger, quit)
 	go followTailnet(logger)
+	go updateApp(logger)
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		watchHost(newWatcher(local.Name(), "", nil, logger, ""), "", func() (sh.Machine, error) { return local, nil })

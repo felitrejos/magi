@@ -28,8 +28,8 @@ moves or starts anything and never types into a session.
 - A first run that checks magi is set up and offers notifications and
   launch at login. You can skip every step.
 - Idle CPU near 0%, measured and published.
-- magi installs it and keeps it at the plugin's version. It ships without
-  notarization.
+- magi installs it and keeps it at the plugin's version. It ships signed
+  with magi's own certificate, without notarization.
 
 ### Not in 1.0
 

@@ -155,6 +155,13 @@ func TestUninstallStopsTheWatcherAndRemovesTheBinariesOnly(t *testing.T) {
 	}
 }
 
+func TestSetupMachineWithoutAHostSetsUpOnlyThisMachine(t *testing.T) {
+	f := newFixture(t)
+	if text, failed := f.call("setup_machine", map[string]any{}); failed || !strings.Contains(text, "magi watch runs in the background") || strings.Contains(text, "Saved") {
+		t.Errorf("setup_machine without a host:\n%s", text)
+	}
+}
+
 func TestSetupMachineRefusesWSLOnEitherMachine(t *testing.T) {
 	f := newFixture(t)
 	server := f.serverHome()
