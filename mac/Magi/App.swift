@@ -8,13 +8,12 @@ final class App: NSObject, NSApplicationDelegate {
     private let icon = NSImageView()
     private let count = NSImageView()
     private let panel = Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-    private let glass = NSGlassEffectView()
     private let menu = NSMenu()
     private let store: Store
     private let scenes: NSHostingSceneRepresentation<Scenes>
     private lazy var settings = NSWindow.settings { [scenes] in scenes.environment.openWindow(id: Welcome.id, value: Welcome.id) }
     private let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
-    private var host: Host?
+    private var host: NSView?
     private var monitor: Any?
     private var shown: Glance?
     private var dotted: Bool?
@@ -61,15 +60,9 @@ final class App: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit magi", action: #selector(NSApplication.terminate), keyEquivalent: "q")
-        glass.cornerRadius = PanelView.radius
-        glass.wantsLayer = true
-        glass.layer?.cornerRadius = PanelView.radius
-        glass.layer?.cornerCurve = .continuous
-        glass.layer?.masksToBounds = true
-        panel.contentView = glass
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.level = .popUpMenu
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -130,34 +123,20 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     private func open() {
-        let host = Host(rootView: PanelView(store: store) { [weak self] in self?.close() })
-        host.resized = { [weak self] in self?.fit(animate: true) }
-        glass.contentView = host
+        guard let window = item.button?.window, let screen = window.screen else { return }
+        let height = min(560, screen.visibleFrame.height * 0.7)
+        let host = NSHostingView(rootView: PanelView(store: store, height: height) { [weak self] in self?.close() }.padding([.horizontal, .bottom], PanelView.margin))
+        host.sizingOptions = []
+        panel.contentView = host
         self.host = host
-        fit(animate: false)
+        let x = min(window.frame.minX, screen.visibleFrame.maxX - PanelView.width) - PanelView.margin
+        panel.setFrame(NSRect(x: x, y: window.frame.minY - height - PanelView.margin, width: PanelView.width + 2 * PanelView.margin, height: height + PanelView.margin), display: true)
         panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
         NSAnimationContext.animate(.easeOut(duration: 0.18)) {
             panel.animator().alphaValue = 1
         }
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in self?.close() }
-    }
-
-    private func fit(animate: Bool) {
-        guard let host, let window = item.button?.window, let screen = window.screen else { return }
-        let size = host.fittingSize
-        let height = min(size.height, 560, screen.visibleFrame.height * 0.7)
-        let frame = NSRect(x: min(window.frame.minX, screen.visibleFrame.maxX - size.width), y: window.frame.minY - height, width: size.width, height: height)
-        guard frame != panel.frame else { return }
-        guard animate, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            panel.setFrame(frame, display: true)
-            return panel.invalidateShadow()
-        }
-        NSAnimationContext.animate(.smooth(duration: 0.4)) {
-            panel.animator().setFrame(frame, display: true)
-        } completion: { [panel] in
-            panel.invalidateShadow()
-        }
     }
 
     private func close() {
@@ -184,7 +163,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     private func remove() {
         panel.orderOut(nil)
-        glass.contentView = nil
+        panel.contentView = nil
     }
 }
 
@@ -230,15 +209,6 @@ struct Scenes: Scene {
         }
         .windowResizability(.contentSize)
         .restorationBehavior(.disabled)
-    }
-}
-
-final class Host: NSHostingView<PanelView> {
-    var resized: () -> Void = {}
-
-    override func invalidateIntrinsicContentSize() {
-        super.invalidateIntrinsicContentSize()
-        Task { [resized] in resized() }
     }
 }
 

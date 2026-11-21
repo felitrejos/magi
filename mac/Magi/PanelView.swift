@@ -3,8 +3,11 @@ import SwiftUI
 
 struct PanelView: View {
     static let radius: CGFloat = 16
+    static let width: CGFloat = 360
+    static let margin: CGFloat = 24
 
     let store: Store
+    let height: CGFloat
     let close: () -> Void
     @State private var scope: String?
     @State private var highlight: String?
@@ -33,28 +36,33 @@ struct PanelView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            TimelineView(.everyMinute) { context in
-                VStack(spacing: 0) {
-                    header(now: context.date)
-                    if store.machines.isEmpty {
-                        Text("Ask Claude to \u{201C}set up magi with my homelab\u{201D}, and your machines and sessions show here.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .padding([.horizontal, .bottom], 16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else if !rows.isEmpty || scope != nil {
-                        SessionList(rows: rows, scope: scope, machine: scope.flatMap { store.machines[$0] }, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order)
-                    }
-                    if names.count > 1 {
-                        strip(now: context.date)
+            Cap(height: height) {
+                TimelineView(.everyMinute) { context in
+                    VStack(spacing: 0) {
+                        header(now: context.date)
+                        if store.machines.isEmpty {
+                            Text("Ask Claude to \u{201C}set up magi with my homelab\u{201D}, and your machines and sessions show here.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .padding([.horizontal, .bottom], 16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else if !rows.isEmpty || scope != nil {
+                            SessionList(rows: rows, scope: scope, machine: scope.flatMap { store.machines[$0] }, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order)
+                        }
+                        if names.count > 1 {
+                            strip(now: context.date)
+                        }
                     }
                 }
+                .frame(width: PanelView.width)
+                .scaleEffect(shown || reduceMotion ? 1 : 0.96, anchor: .top)
+                .blur(radius: shown || reduceMotion ? 0 : 6)
+                .opacity(shown ? 1 : 0)
+                .containerShape(.rect(cornerRadius: PanelView.radius))
+                .glassEffect(.regular, in: .rect(cornerRadius: PanelView.radius))
+                .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
             }
-            .frame(width: 360)
-            .scaleEffect(shown || reduceMotion ? 1 : 0.96, anchor: .top)
-            .blur(radius: shown || reduceMotion ? 0 : 6)
-            .opacity(shown ? 1 : 0)
-            .containerShape(.rect(cornerRadius: PanelView.radius))
+            .frame(maxHeight: .infinity, alignment: .top)
             .animation(reduceMotion ? nil : .smooth(duration: 0.4), value: scope)
             .focusable()
             .focusEffectDisabled()
@@ -76,7 +84,7 @@ struct PanelView: View {
                 Text(status)
                     .font(.title3.weight(.semibold))
                     .contentTransition(.opacity)
-                    .animation(.snappy(duration: 0.35), value: status)
+                    .transaction(value: status) { $0.animation = $0.animation ?? .snappy(duration: 0.35) }
                 if let scope, let machine = store.machines[scope] {
                     ScopeCaption(machine: machine, answers: store.answering.contains(scope), now: now)
                 }
@@ -131,6 +139,19 @@ struct PanelView: View {
     }
 }
 
+struct Cap: Layout {
+    let height: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let ideal = subviews[0].sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return ideal.height > height ? subviews[0].sizeThatFits(ProposedViewSize(width: proposal.width, height: height)) : ideal
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+        subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
 struct SessionList: View {
     let rows: [Row]
     let scope: String?
@@ -148,7 +169,7 @@ struct SessionList: View {
                 if let scope, let machine {
                     ScopeSummary(name: scope, machine: machine, now: now)
                         .padding(.bottom, 8)
-                        .transition(.opacity)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 ForEach(rows) { row in
                     SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now)
@@ -165,8 +186,8 @@ struct SessionList: View {
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
-            .animation(reduceMotion ? nil : .snappy(duration: 0.35), value: rows.map(\.id))
-            .animation(.easeOut(duration: 0.15), value: highlight)
+            .transaction(value: rows.map(\.id)) { [reduceMotion] in $0.animation = $0.animation ?? (reduceMotion ? nil : .snappy(duration: 0.35)) }
+            .transaction(value: highlight) { $0.animation = $0.animation ?? .easeOut(duration: 0.15) }
         }
         .scrollIndicators(.never)
         .scrollBounceBehavior(.basedOnSize)
@@ -439,7 +460,6 @@ struct Tile: View {
         .background { plate }
         .opacity(answers ? 1 : 0.6)
         .animation(.easeOut(duration: 0.15), value: hovered)
-        .animation(.smooth(duration: 0.3), value: selected)
         .contentShape(.rect)
         .onHover { hovered = $0 }
         .accessibilityElement(children: .ignore)
