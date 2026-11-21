@@ -252,12 +252,9 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.session.title)
                     .font(.body.weight(waiting ? .semibold : .regular))
-                HStack(spacing: 4) {
-                    HostIcon(host: row.session.host)
-                    Text(showsMachine ? "\(folder) \u{00B7} \(row.machine)" : folder)
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                Text(showsMachine ? "\(folder) \u{00B7} \(row.machine)" : folder)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 if waiting, let question = row.session.waitingOn {
                     Text(question)
                         .font(.callout)
@@ -295,9 +292,14 @@ struct SessionRow: View {
         .contentShape(.rect)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibility)
+        .accessibilityActions {
+            if let route = row.route {
+                Button("Open in \(route.host.name)") { open(route) }
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if let route = row.route {
-                OpenButton(title: row.session.title) { open(route) }
+                OpenButton(host: route.host) { open(route) }
                     .padding(.top, 4)
                     .padding(.trailing, 8)
                     .opacity(opens ? 1 : 0)
@@ -313,39 +315,18 @@ struct SessionRow: View {
     private var accessibility: String {
         let state = waiting ? "waiting on you" + (row.session.waitingOn.map { ": \($0)" } ?? "") : row.session.state
         let detail = usage ? "CPU \(row.session.cpu)%, memory \(row.session.memory)" : elapsed.map { "for \($0)" }
-        return [row.session.title, state, "\(folder) on \(row.machine)", "in \(row.session.host.name)", detail].compactMap(\.self).joined(separator: ", ")
-    }
-}
-
-struct HostIcon: View {
-    let host: Host
-
-    var body: some View {
-        Group {
-            if let bundle = host.bundle, let icon = AppIcons.icon(bundle) {
-                Image(nsImage: icon)
-                    .resizable()
-                    .interpolation(.high)
-            } else {
-                Image(systemName: "terminal")
-                    .font(.system(size: 10, weight: .medium))
-            }
-        }
-        .frame(width: 14, height: 14)
-        .accessibilityHidden(true)
+        return [row.session.title, state, "\(folder) on \(row.machine)", detail].compactMap(\.self).joined(separator: ", ")
     }
 }
 
 struct OpenButton: View {
-    let title: String
+    let host: Host
     let action: () -> Void
     @State private var hovered = false
 
     var body: some View {
         Button(action: action) {
-            Image("Claude", bundle: .magi)
-                .resizable()
-                .frame(width: 13, height: 13)
+            icon
                 .frame(width: 22, height: 22)
                 .background(.quaternary.opacity(hovered ? 1 : 0), in: .circle)
                 .contentShape(.circle)
@@ -353,8 +334,21 @@ struct OpenButton: View {
         .buttonStyle(Press())
         .onHover { hovered = $0 }
         .animation(.easeOut(duration: 0.15), value: hovered)
-        .help("Open")
-        .accessibilityLabel("Open \(title)")
+        .help("Open in \(host.name)")
+        .accessibilityLabel("Open in \(host.name)")
+    }
+
+    @ViewBuilder private var icon: some View {
+        if let bundle = host.bundle, let image = AppIcons.icon(bundle) {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 16, height: 16)
+        } else {
+            Image(systemName: "terminal")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

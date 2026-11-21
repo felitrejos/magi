@@ -18,9 +18,9 @@ struct Snapshots {
         for scheme in [ColorScheme.light, .dark] {
             let suffix = scheme == .light ? "light" : "dark"
             try await shot("main-\(suffix)", full, scheme)
-            try await shot("waiting-row-\(suffix)", full, scheme, act: { down($0, times: 1) })
-            try await shot("open-claude-row-\(suffix)", full, scheme, act: { down($0, times: 2) })
-            try await shot("open-ghostty-row-\(suffix)", full, scheme, act: { down($0, times: 3) })
+            for (times, host) in ["rex", "claude", "ghostty", "tmux"].enumerated() {
+                try await shot("open-\(host)-row-\(suffix)", full, scheme, act: { down($0, times: times + 1) })
+            }
             try await shot("scope-\(suffix)", full, scheme, height: 900, act: { right($0, times: 2) })
             try await shot("scope-laptop-\(suffix)", full, scheme, height: 900, act: { right($0, times: 3) })
             try await shot("scope-alert-\(suffix)", strained, scheme, height: 900, act: { right($0, times: 3) })

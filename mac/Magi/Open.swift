@@ -2,14 +2,14 @@ import AppKit
 import SystemConfiguration
 
 enum Host {
-    case claude, rex, ghostty, terminal
+    case claude, rex, ghostty, tmux
 
     var bundle: String? {
         switch self {
         case .claude: "com.anthropic.claudefordesktop"
         case .rex: "com.superlogical.rex"
         case .ghostty: "com.mitchellh.ghostty"
-        case .terminal: nil
+        case .tmux: nil
         }
     }
 
@@ -18,7 +18,7 @@ enum Host {
         case .claude: "Claude"
         case .rex: "Rex"
         case .ghostty: "Ghostty"
-        case .terminal: "a terminal"
+        case .tmux: "tmux"
         }
     }
 }
@@ -32,15 +32,14 @@ enum Route: Equatable {
     case ghostty(tty: String)
 }
 
-extension Session {
+extension Route {
     var host: Host {
-        if hostSession != nil { return .claude }
-        if rex != nil { return .rex }
-        return switch app {
-        case Host.claude.bundle: .claude
-        case "com.superlogical.rex.server": .rex
-        case Host.ghostty.bundle: .ghostty
-        default: .terminal
+        switch self {
+        case .link, .remoteControl: .claude
+        case .rex: .rex
+        case let .tmux(_, _, app): app == Host.ghostty.bundle ? .ghostty : .tmux
+        case .attach: .tmux
+        case .ghostty: .ghostty
         }
     }
 }
@@ -209,12 +208,6 @@ private extension JSONDecoder {
         return decoder
     }()
 }
-
-extension Bundle {
-    static let magi = Bundle(for: BundleMarker.self)
-}
-
-private final class BundleMarker {}
 
 @MainActor
 enum AppIcons {

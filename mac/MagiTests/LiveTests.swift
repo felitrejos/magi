@@ -101,13 +101,14 @@ struct LiveTests {
         #expect(route(nil, session(app: "com.apple.Terminal", tty: "/dev/ttys004")) == nil)
     }
 
-    @Test func namesTheAppEachSessionRunsIn() {
-        #expect(session(hostSession: "local_7c").host == .claude)
-        #expect(session(rex: RexBlock(session: "s", block: "b")).host == .rex)
-        #expect(session(app: "com.superlogical.rex.server").host == .rex)
-        #expect(session(tmux: "%3", app: "com.mitchellh.ghostty").host == .ghostty)
-        #expect(session(tmux: "%3").host == .terminal)
-        #expect(session(app: "com.apple.Terminal").host == .terminal)
+    @Test func namesWhereEachRouteOpens() {
+        let link = URL(string: "https://claude.ai/code/session_01")!
+        #expect(Route.link(link).host == .claude && Route.remoteControl(link).host == .claude)
+        #expect(Route.rex(host: "homelab", session: "s", block: "b").host == .rex)
+        #expect(Route.tmux(pane: "%3", client: "/dev/ttys007", app: "com.mitchellh.ghostty").host == .ghostty)
+        #expect(Route.tmux(pane: "%3", client: "/dev/ttys007", app: "com.apple.Terminal").host == .tmux)
+        #expect(Route.attach(pane: "%3", host: nil).host == .tmux)
+        #expect(Route.ghostty(tty: "/dev/ttys004").host == .ghostty)
     }
 
     private func session(_ id: String = "a", state: String = "idle", since: TimeInterval = 0, hostSession: String? = nil, tmux: String? = nil, rex: RexBlock? = nil, app: String? = nil, tty: String? = nil, remoteControl: URL? = nil) -> Session {
