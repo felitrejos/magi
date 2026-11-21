@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -177,23 +178,70 @@ func firstStats(t *testing.T, m sh.Machine) string {
 	return ""
 }
 
-func TestAMacReportsItsMemoryPressureSwapBootTimeAndBattery(t *testing.T) {
+func TestAMacReportsItsMemoryPressureSwapBootTimeBatteryAndSamples(t *testing.T) {
 	f := newFixture(t)
 	f.tool("uname", "#!/bin/sh\necho Darwin\n")
 	f.tool("sysctl", macSysctl)
 	f.tool("pmset", "#!/bin/sh\nprintf \"Now drawing from 'Battery Power'\\n -InternalBattery-0 (id=4653155)\\t85%%; discharging; 4:10 remaining present: true\\n\"\n")
+	f.tool("iostat", "#!/bin/sh\n[ \"$*\" = '-n 0 -C -c 2 -w 1' ] && printf '      cpu    load average\\n us sy id   1m   5m   15m\\n 18  5 77  2.36 1.85 1.87\\n  6  5 89  2.36 1.85 1.87\\n'\n")
+	f.tool("notifyutil", "#!/bin/sh\n[ \"$*\" = '-g com.apple.system.thermalpressurelevel' ] && echo 'com.apple.system.thermalpressurelevel 2'\n")
+	f.tool("route", "#!/bin/sh\n[ \"$*\" = '-n get default' ] && printf '   route to: default\\ndestination: default\\n  interface: en0\\n'\n")
+	f.tool("netstat", `#!/bin/sh
+[ "$*" = -ibn ] && printf '%s\n' \
+'Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll' \
+'lo0        16384 <Link#1>                          9183     0    1180112     9183     0    1180112     0' \
+'en0        1500  <Link#14>   72:ae:25:19:37:bb 32971209     0 39134580381 12891787     0 6549722863     0' \
+'en0        1500  192.168.0     192.168.0.48    32971209     - 39134580381 12891787     - 6549722863     -'
+`)
 	w := newWatcher("mac", "", nil, log.New(io.Discard, "", 0), "")
-	w.hear(firstStats(t, f.machine()), time.Now())
+	stats := firstStats(t, f.machine())
+	w.hear(stats, time.Now())
 	live := readLive(t, "mac")
 	if live.Pressure != "warning" || live.Swap != (space{UsedMB: 1095, TotalMB: 2048}) || !live.BootedAt.Equal(time.Unix(1794928938, 0)) {
 		t.Errorf("pressure %q, swap %+v, booted at %s; want warning, 1095 of 2048 MB, %s", live.Pressure, live.Swap, live.BootedAt, time.Unix(1794928938, 0))
 	}
-	if live.Battery == nil || *live.Battery != (battery{Percent: 85, OnBattery: true}) {
-		t.Errorf("battery = %+v, want 85%% and on battery", live.Battery)
+	if live.Battery == nil || *live.Battery != (battery{Percent: 85, OnBattery: true, MinutesLeft: 250}) {
+		t.Errorf("battery = %+v, want 85%%, on battery, 250 minutes left", live.Battery)
+	}
+	if last := live.History[len(live.History)-1]; last.CPU == nil || *last.CPU != 11 || last.Thermal == nil || *last.Thermal != 2 || !strings.HasSuffix(stats, " net=39134580381:6549722863:en0") {
+		t.Errorf("stats line %q, want the second iostat sample's 11%% busy, thermal pressure 2 and en0's link counters", stats)
 	}
 }
 
-func TestALinuxMachineReportsItsMemoryPressureSwapBootTimeAndBattery(t *testing.T) {
+func TestTheWatcherTurnsCountersIntoRates(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	start := time.Unix(1_800_000_000, 0)
+	for i, fields := range []string{
+		"ticks=1000:4000 net=1000:500:eth0 temp=54.3:105",
+		"ticks=1300:5000 net=31000:3500:eth0 temp=61.0",
+		"ticks=10:100 net=91000:6500:wlan0",
+		"net=121000:6500:wlan0 cpu=17 thermal=1",
+	} {
+		w.hear("stats 10 1 100 200 300 400 0 0 1794928938 "+fields, start.Add(time.Duration(i)*30*time.Second))
+		if i == 0 && (w.live.Critical == nil || *w.live.Critical != 105) {
+			t.Errorf("critical = %v, want 105 °C", w.live.Critical)
+		}
+	}
+	live := readLive(t, "server")
+	got := []string{}
+	for _, r := range live.History {
+		got = append(got, strings.Join([]string{value(r.CPU), value(r.Temp), value(r.Thermal), value(r.Received), value(r.Sent)}, " "))
+	}
+	want := []string{"- 54.3 - - -", "30 61 - 1000 100", "- - - - -", "17 - 1 1000 0"}
+	if fmt.Sprint(got) != fmt.Sprint(want) || live.Critical != nil {
+		t.Errorf("readings %q with critical %v, want %q and no critical once the line stops saying it", got, live.Critical, want)
+	}
+}
+
+func value[T any](p *T) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprint(*p)
+}
+
+func TestALinuxMachineReportsItsMemoryPressureSwapBootTimeBatteryAndCounters(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("reads /proc/loadavg")
 	}
@@ -209,7 +257,11 @@ case $* in
 esac
 `)
 	w := newWatcher("linux", "", nil, log.New(io.Discard, "", 0), "")
-	w.hear(firstStats(t, f.machine()), time.Now())
+	stats := firstStats(t, f.machine())
+	w.hear(stats, time.Now())
+	if !regexp.MustCompile(` ticks=\d+:\d+( temp=\d+\.\d(:\d+)?)? net=\d+:\d+:\S+$`).MatchString(stats) {
+		t.Errorf("stats line %q, want CPU ticks, the temperature where a sensor is known and the default route's byte counters", stats)
+	}
 	live := readLive(t, "linux")
 	if live.Pressure != "warning" || live.Swap != (space{UsedMB: 1024, TotalMB: 2048}) || !live.BootedAt.Equal(time.Unix(1794928938, 0)) {
 		t.Errorf("pressure %q, swap %+v, booted at %s; want warning from avg60, 1024 of 2048 MB, %s", live.Pressure, live.Swap, live.BootedAt, time.Unix(1794928938, 0))

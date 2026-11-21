@@ -260,6 +260,18 @@ type watcher struct {
 	measured bool
 	usage    map[int]use
 	cpu      map[string][]cpuReading
+	ticks    ticks
+	traffic  traffic
+}
+
+type ticks struct {
+	busy, total int64
+}
+
+type traffic struct {
+	iface          string
+	received, sent int64
+	at             time.Time
 }
 
 type liveMachine struct {
@@ -274,15 +286,21 @@ type liveMachine struct {
 	Swap      space       `json:"swap,omitzero"`
 	BootedAt  time.Time   `json:"bootedAt,omitzero"`
 	Battery   *battery    `json:"battery,omitempty"`
+	Critical  *float64    `json:"critical,omitempty"`
 	Relayed   bool        `json:"relayed,omitempty"`
 	History   []reading   `json:"history,omitempty"`
 	Sessions  []liveEntry `json:"sessions"`
 }
 
 type reading struct {
-	At       int64   `json:"at"`
-	Load     float64 `json:"load"`
-	MemoryMB int     `json:"memoryMB"`
+	At       int64    `json:"at"`
+	Load     float64  `json:"load"`
+	MemoryMB int      `json:"memoryMB"`
+	CPU      *int     `json:"cpu,omitempty"`
+	Temp     *float64 `json:"temp,omitempty"`
+	Thermal  *int     `json:"thermal,omitempty"`
+	Received *int64   `json:"rx,omitempty"`
+	Sent     *int64   `json:"tx,omitempty"`
 }
 
 type cpuReading struct {
@@ -296,8 +314,9 @@ type space struct {
 }
 
 type battery struct {
-	Percent   int  `json:"percent"`
-	OnBattery bool `json:"onBattery"`
+	Percent     int  `json:"percent"`
+	OnBattery   bool `json:"onBattery"`
+	MinutesLeft int  `json:"minutesLeft,omitempty"`
 }
 
 type liveEntry struct {
@@ -445,9 +464,9 @@ func (w *watcher) stats(line string, now time.Time) error {
 	if _, err := fmt.Sscan(line, &l.Cores, &l.Load, &l.Memory.UsedMB, &l.Memory.TotalMB, &l.Disk.UsedMB, &l.Disk.TotalMB, &l.Swap.UsedMB, &l.Swap.TotalMB, &booted); err != nil {
 		return err
 	}
-	l.BootedAt, l.Pressure, l.Battery = time.Unix(booted, 0), "", nil
+	l.BootedAt, l.Pressure, l.Battery, l.Critical = time.Unix(booted, 0), "", nil, nil
 	l.Relayed = relayed(l.SSH)
-	l.History = recent(append(l.History, reading{At: now.Unix(), Load: l.Load, MemoryMB: l.Memory.UsedMB}), func(r reading) int64 { return r.At }, now)
+	r := reading{At: now.Unix(), Load: l.Load, MemoryMB: l.Memory.UsedMB}
 	ids := map[int]string{}
 	cpu := map[string][]cpuReading{}
 	for _, s := range l.Sessions {
@@ -456,13 +475,8 @@ func (w *watcher) stats(line string, now time.Time) error {
 	}
 	usage := map[int]use{}
 	for _, field := range strings.Fields(line)[9:] {
-		if pressure, ok := strings.CutPrefix(field, "pressure="); ok {
-			l.Pressure = pressure
-			continue
-		}
-		if charge, ok := strings.CutPrefix(field, "battery="); ok {
-			l.Battery = &battery{}
-			if _, err := fmt.Sscanf(charge, "%d:%t", &l.Battery.Percent, &l.Battery.OnBattery); err != nil {
+		if key, value, ok := strings.Cut(field, "="); ok {
+			if err := w.measure(key, value, &r, now); err != nil {
 				return err
 			}
 			continue
@@ -483,7 +497,59 @@ func (w *watcher) stats(line string, now time.Time) error {
 	for id, readings := range cpu {
 		cpu[id] = recent(readings, func(r cpuReading) int64 { return r.At }, now)
 	}
+	l.History = recent(append(l.History, r), func(r reading) int64 { return r.At }, now)
 	w.usage, w.cpu = usage, cpu
+	return nil
+}
+
+func (w *watcher) measure(key, value string, r *reading, now time.Time) error {
+	l := &w.live
+	switch key {
+	case "pressure":
+		l.Pressure = value
+	case "battery":
+		l.Battery = &battery{}
+		if n, err := fmt.Sscanf(value, "%d:%t:%d", &l.Battery.Percent, &l.Battery.OnBattery, &l.Battery.MinutesLeft); n < 2 {
+			return err
+		}
+	case "cpu":
+		r.CPU = new(int)
+		_, err := fmt.Sscan(value, r.CPU)
+		return err
+	case "ticks":
+		var t ticks
+		if _, err := fmt.Sscanf(value, "%d:%d", &t.busy, &t.total); err != nil {
+			return err
+		}
+		if last := w.ticks; last.total > 0 && t.total > last.total {
+			r.CPU = new(int(math.Round(float64(t.busy-last.busy) / float64(t.total-last.total) * 100)))
+		}
+		w.ticks = t
+	case "temp":
+		r.Temp = new(float64)
+		var critical float64
+		n, err := fmt.Sscanf(value, "%g:%g", r.Temp, &critical)
+		if n == 0 {
+			return err
+		}
+		if n == 2 {
+			l.Critical = &critical
+		}
+	case "thermal":
+		r.Thermal = new(int)
+		_, err := fmt.Sscan(value, r.Thermal)
+		return err
+	case "net":
+		t := traffic{at: now}
+		if _, err := fmt.Sscanf(value, "%d:%d:%s", &t.received, &t.sent, &t.iface); err != nil {
+			return err
+		}
+		if last := w.traffic; last.iface == t.iface && t.received >= last.received && t.sent >= last.sent {
+			seconds := now.Sub(last.at).Seconds()
+			r.Received, r.Sent = new(int64(math.Round(float64(t.received-last.received)/seconds))), new(int64(math.Round(float64(t.sent-last.sent)/seconds)))
+		}
+		w.traffic = t
+	}
 	return nil
 }
 

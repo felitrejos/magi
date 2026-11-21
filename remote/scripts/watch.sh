@@ -23,6 +23,51 @@ usage() {
     ps -A -o pid= -o ppid= -o time= -o rss=
   fi
 }
+sensor() {
+  for want in 'coretemp Package id 0' 'k10temp Tdie' 'k10temp Tctl'; do
+    for label in /sys/class/hwmon/hwmon*/temp*_label; do
+      if [ -r "$label" ] && read -r chip < "${label%/*}/name" && read -r text < "$label" && [ "$chip $text" = "$want" ]; then
+        echo "${label%_label}_input"
+        return
+      fi
+    done
+  done
+  for want in x86_pkg_temp cpu-thermal; do
+    for zone in /sys/class/thermal/thermal_zone*; do
+      if [ -r "$zone/type" ] && read -r kind < "$zone/type" && [ "$kind" = "$want" ]; then
+        echo "$zone/temp"
+        return
+      fi
+    done
+  done
+}
+sensor=$(sensor) critical=
+if [ -r "${sensor%_input}_crit" ]; then read -r critical < "${sensor%_input}_crit"; fi
+sample() {
+  if [ "$os" = Darwin ]; then
+    { iostat -n 0 -C -c 2 -w 1; notifyutil -g com.apple.system.thermalpressurelevel; route -n get default 2>/dev/null; netstat -ibn; } | awk '
+      NR == 4 { printf " cpu=%d", $1 + $2 }
+      $1 == "com.apple.system.thermalpressurelevel" { printf " thermal=%d", $2 }
+      $1 == "interface:" { iface = $2 }
+      $1 == iface && $3 ~ /^<Link/ { printf " net=%s:%s:%s", $(NF - 4), $(NF - 1), iface }'
+    return
+  fi
+  read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
+  printf ' ticks=%s:%s' $((user + nice + system + irq + softirq + steal)) $((user + nice + system + idle + iowait + irq + softirq + steal))
+  if [ -n "$sensor" ]; then
+    read -r milli < "$sensor"
+    printf ' temp=%d.%d' $((milli / 1000)) $((milli % 1000 / 100))
+    if [ -n "$critical" ]; then printf ':%d' $((critical / 1000)); fi
+  fi
+  iface=
+  while read -r name destination _; do
+    case $name in lo | veth* | docker* | br-* | tailscale*) continue ;; esac
+    if [ -z "$iface" ] && [ "$destination" = 00000000 ]; then iface=$name; fi
+  done < /proc/net/route
+  while IFS=': ' read -r name received _ _ _ _ _ _ _ sent _; do
+    if [ "$name" = "$iface" ]; then printf ' net=%s:%s:%s' "$received" "$sent" "$iface"; fi
+  done < /proc/net/dev
+}
 while :; do
   if [ -n "$name" ]; then
     touch "$HOME/.magi/watchers/$name"
@@ -70,14 +115,14 @@ while :; do
     echo sessions
   fi
   if [ $((tick % 15)) -eq 0 ]; then
-    printf 'stats %s\n' "$({ load; df -Pk "$HOME"; usage; battery; } | awk -v roots="$pids" '
+    printf 'stats %s%s\n' "$({ load; df -Pk "$HOME"; usage; battery; } | awk -v roots="$pids" '
       function seconds(t, n, p, i, s) {
         n = split(t, p, /[-:]/)
         for (i = 1; i <= n; i++) s = s * (i == 2 && t ~ /-/ ? 24 : 60) + p[i]
         return s
       }
       /^Now drawing from / { discharging = /Battery Power/; next }
-      /^ -InternalBattery/ { split($0, b, /\t|; /); battery = b[2] + 0; next }
+      /^ -InternalBattery/ { split($0, b, /\t|; /); battery = b[2] + 0; if (discharging && b[4] ~ /^[0-9]+:[0-9]+ remaining/) { split(b[4], r, /[: ]/); left = r[1] * 60 + r[2] } next }
       /^\/sys\/class\/power_supply\// { split($0, f, /[\/:]/); supply[f[5], f[6]] = f[7]; if (f[6] == "type") type[f[5]] = f[7]; next }
       NR == 1 { cores = $1 }
       NR == 2 { load = $1 }
@@ -98,10 +143,10 @@ while :; do
         }
         printf "%s %s %.0f %.0f %s %s %s", cores, load, used / 1048576, total / 1048576, disk, swap, booted
         if (pressure != "") printf " pressure=%s", pressure
-        if (battery != "") printf " battery=%d:%d", battery, discharging
+        if (battery != "") printf " battery=%d:%d%s", battery, discharging, (left == "" ? "" : ":" left)
         for (i = 1; i <= n; i++) printf " %s:%.2f:%.0f", r[i], c[r[i]], m[r[i]] / 1024
         print ""
-      }')"
+      }')" "$(sample)"
   fi
   tick=$((tick + 1))
   sleep 2
