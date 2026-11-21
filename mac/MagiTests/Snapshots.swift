@@ -118,11 +118,12 @@ struct Snapshots {
 
     private func shot(_ name: String, _ store: Store, _ scheme: ColorScheme, opaque: Bool = false, environment: (AnyView) -> AnyView = { $0 }, act: (NSWindow) -> Void = { _ in }) async throws {
         let fill = opaque ? Color(nsColor: .windowBackgroundColor) : (scheme == .light ? Color(white: 0.97, opacity: 0.94) : Color(white: 0.14, opacity: 0.94))
-        let root = environment(AnyView(PanelView(store: store) {}))
+        let root = environment(AnyView(PanelView(store: store, height: 560) {}))
             .background(fill, in: .rect(cornerRadius: PanelView.radius))
             .environment(\.colorScheme, scheme)
         let host = NSHostingView(rootView: root)
-        let window = KeyWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: host.fittingSize), styleMask: .borderless, backing: .buffered, defer: false)
+        let window = KeyWindow(contentRect: CGRect(origin: .zero, size: host.fittingSize), styleMask: .borderless, backing: .buffered, defer: false)
+        window.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopWindow)) - 1)
         window.appearance = NSAppearance(named: scheme == .light ? .aqua : .darkAqua)
         window.backgroundColor = scheme == .light ? NSColor(white: 0.55, alpha: 1) : NSColor(white: 0.08, alpha: 1)
         window.contentView = host
@@ -133,9 +134,7 @@ struct Snapshots {
         try await Task.sleep(for: .milliseconds(900))
         window.setContentSize(CGSize(width: host.fittingSize.width, height: min(host.fittingSize.height, 560)))
         try await Task.sleep(for: .milliseconds(300))
-        let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
-        host.cacheDisplay(in: host.bounds, to: rep)
-        try rep.representation(using: .png, properties: [:])!.write(to: out.appending(path: "\(name).png"))
+        try capture(window, name)
         window.orderOut(nil)
     }
 
@@ -147,9 +146,12 @@ struct Snapshots {
         try await Task.sleep(for: .milliseconds(500))
         act(window)
         try await Task.sleep(for: .milliseconds(500))
-        let capture = try Process.run(URL(filePath: "/usr/sbin/screencapture"), arguments: ["-o", "-x", "-l", "\(window.windowNumber)", out.appending(path: "\(name).png").path])
-        capture.waitUntilExit()
+        try capture(window, name)
         window.close()
+    }
+
+    private func capture(_ window: NSWindow, _ name: String) throws {
+        try Process.run(URL(filePath: "/usr/sbin/screencapture"), arguments: ["-o", "-x", "-l", "\(window.windowNumber)", out.appending(path: "\(name).png").path]).waitUntilExit()
     }
 
     private func render(_ name: String, _ view: some View, _ scheme: ColorScheme) async throws {
