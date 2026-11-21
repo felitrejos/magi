@@ -107,9 +107,8 @@ extension NSWindow {
         let host = NSHostingController(rootView: SettingsView(welcome: welcome))
         host.sceneBridgingOptions = [.toolbars]
         let window = NSWindow(contentViewController: host)
-        window.styleMask.insert(.fullSizeContentView)
+        window.styleMask = [.titled, .closable, .fullSizeContentView]
         window.title = "magi Settings"
-        window.setContentSize(NSSize(width: 806, height: 792))
         window.center()
         return window
     }
@@ -130,35 +129,21 @@ struct SettingsView: View {
         NavigationSplitView {
             SettingsSidebar(shown: shown, query: $query, go: go)
         } detail: {
-            Group {
-                if let shown {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 15) {
-                            switch shown {
-                            case .general: General(welcome: welcome)
-                            case .menuBar: MenuBar()
-                            case .sound: Sound()
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 14)
-                        .padding(.bottom, 20)
+            ZStack(alignment: .topLeading) {
+                ForEach(Pane.allCases) { pane in
+                    if pane == shown {
+                        content(pane)
+                            .environment(\.query, pane.title.matches(query) ? "" : query)
+                    } else {
+                        content(pane)
+                            .hidden()
                     }
-                    .environment(\.query, shown.title.matches(query) ? "" : query)
-                    .scrollEdgeEffectHidden(true, for: .top)
-                    .mask {
-                        VStack(spacing: 0) {
-                            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                                .frame(height: 56)
-                            Color.black
-                        }
-                        .ignoresSafeArea()
-                    }
-                } else {
+                }
+                if shown == nil {
                     ContentUnavailableView.search(text: query)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(SettingsColor.content)
             .toolbar {
                 ToolbarItemGroup(placement: .navigation) {
@@ -176,7 +161,20 @@ struct SettingsView: View {
             }
             .toolbar(removing: .title)
         }
-        .frame(minWidth: 700, minHeight: 500)
+        .frame(width: 806)
+    }
+
+    private func content(_ pane: Pane) -> some View {
+        VStack(alignment: .leading, spacing: 15) {
+            switch pane {
+            case .general: General(welcome: welcome)
+            case .menuBar: MenuBar()
+            case .sound: Sound()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 20)
     }
 
     private func go(_ next: Pane) {
@@ -485,13 +483,13 @@ struct Welcome: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 15) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 PaneTile(symbol: step == 0 ? "checkmark.seal.fill" : "power", colors: Pane.general.colors, size: 36)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(step == 0 ? "Is magi set up here?" : "Open magi at login?")
                         .font(.title3.weight(.semibold))
-                    Text("Step \(step + 1) of 2. You can skip it and run it again from Settings.")
+                    Text("You can skip it and run it again from Settings.")
                         .font(subtitleFont)
                         .foregroundStyle(.secondary)
                 }
@@ -509,8 +507,11 @@ struct Welcome: View {
                     LoginItem()
                 }
             }
-            Spacer(minLength: 0)
             HStack {
+                Text("Step \(step + 1) of 2")
+                    .font(subtitleFont)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button(step == 1 ? "Done" : store.answering.isEmpty ? "Skip" : "Continue") {
                     if step == 0 {
@@ -523,7 +524,9 @@ struct Welcome: View {
             }
         }
         .padding(20)
-        .frame(width: 480, height: 320)
+        .frame(width: 420)
+        .fixedSize(horizontal: false, vertical: true)
+        .windowResizeAnchor(.top)
         .containerBackground(SettingsColor.content, for: .window)
         .onDisappear {
             welcomed = true
