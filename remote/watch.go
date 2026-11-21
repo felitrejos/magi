@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -208,7 +209,7 @@ func heartbeat(logger *log.Logger, restart func()) {
 	self, _ := filepath.EvalSymlinks(link)
 	config, _ := os.ReadFile(path)
 	var appTried time.Time
-	appCurrent := false
+	var appCurrent, appUpdating atomic.Bool
 	for range time.Tick(heartbeatEvery) {
 		moves, err := sweepMoves()
 		if err != nil {
@@ -230,8 +231,13 @@ func heartbeat(logger *log.Logger, restart func()) {
 			logger.Printf("%s; restarting once no session is being taken back", changed)
 			taking.Lock()
 			restart()
-		} else if !appCurrent && time.Since(appTried) >= time.Hour {
-			appTried, appCurrent = time.Now(), updateApp(logger)
+		} else if !appCurrent.Load() && !appUpdating.Load() && time.Since(appTried) >= time.Hour {
+			appTried = time.Now()
+			appUpdating.Store(true)
+			go func() {
+				appCurrent.Store(updateApp(logger))
+				appUpdating.Store(false)
+			}()
 		}
 	}
 }

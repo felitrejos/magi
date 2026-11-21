@@ -204,7 +204,7 @@ func TestSetupRefusesAnAppItCantReplace(t *testing.T) {
 			fakeApp(t, dir, appBundleID, "0.9.0")
 			readOnly(t, dir)
 		}},
-		{"an app owned by another user", "owned by another user", func(t *testing.T, dir string) {
+		{"an app this account can't write", "can't write to", func(t *testing.T, dir string) {
 			readOnly(t, fakeApp(t, dir, appBundleID, "0.9.0"))
 		}},
 		{"an install in progress", "another magi is installing", func(t *testing.T, _ string) {
@@ -244,7 +244,7 @@ func TestTheWatcherUpdatesOnlyAStaleApp(t *testing.T) {
 		{"absent", "1.0.0", "", false},
 		{"dev", "dev", "0.9.0", false},
 		{"older", "1.0.0", "0.9.0", true},
-		{"newer", "0.9.0", "1.0.0", true},
+		{"newer", "0.9.0", "1.0.0", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			withVersion(t, tc.magi)

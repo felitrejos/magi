@@ -183,7 +183,7 @@ magi's version when magi updates.
 - The app is signed with magi's own certificate, the same for every
   release, so macOS keeps its permissions across updates. Its private
   key is in this repository's GitHub Actions secrets, for the release
-  workflow, and in the owner's offline copy. The app isn't notarized:
+  workflow, and in the owner's copy on their Mac. The app isn't notarized:
   magi downloads it with `curl`, which marks nothing as quarantined, so
   Gatekeeper doesn't check it.
 - magi installs nothing unless `magi.app` in the zip is a folder, not a

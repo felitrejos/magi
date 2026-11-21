@@ -62,6 +62,10 @@ func setUpApp(out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if newer(installed) {
+		fmt.Fprintf(out, "magi's menu bar app %s in %s is newer than this magi (%s), so magi leaves it.\n", installed, appPath, version)
+		return nil
+	}
 	if installed == version && verifyApp(appPath) == nil {
 		found, err := findApps()
 		if err != nil {
@@ -97,7 +101,7 @@ func updateApp(logger *log.Logger) bool {
 		}
 		defer unlock()
 		installed, err := installedApp()
-		if err != nil || installed == "" || installed == version {
+		if err != nil || installed == "" || installed == version || newer(installed) {
 			return err
 		}
 		fmt.Fprintf(&b, "Updating the menu bar app from %s to %s.\n", installed, version)
@@ -105,6 +109,10 @@ func updateApp(logger *log.Logger) bool {
 	}()
 	if said := strings.TrimSpace(b.String()); said != "" {
 		logger.Print(said)
+	}
+	if errors.Is(err, errInstalling) {
+		logger.Printf("another magi is installing the menu bar app, so the watcher checks it again in an hour")
+		return false
 	}
 	if err != nil {
 		logger.Printf("updating the menu bar app to %s failed, so the watcher tries again in an hour: %v", version, err)
@@ -118,7 +126,15 @@ func lockApp() (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	return store.Lock(path, errors.New("another magi is installing the menu bar app right now"))
+	return store.Lock(path, errInstalling)
+}
+
+var errInstalling = errors.New("another magi is installing the menu bar app right now")
+
+func newer(installed string) bool {
+	have, ok := parseVersion(installed)
+	want, wantOK := parseVersion(version)
+	return ok && wantOK && compareVersions(have, want) > 0
 }
 
 func installedApp() (string, error) {
@@ -141,7 +157,7 @@ func appWritable() error {
 		return fmt.Errorf("installing the menu bar app needs an administrator account: this account can't write to %s", dir)
 	}
 	if err := unix.Access(appPath, unix.W_OK); err != nil && !errors.Is(err, unix.ENOENT) {
-		return fmt.Errorf("%s is owned by another user, so this account can't replace it", appPath)
+		return fmt.Errorf("this account can't write to %s, so it can't replace it", appPath)
 	}
 	return nil
 }
@@ -189,10 +205,13 @@ func installApp(out io.Writer, open bool) error {
 	if _, err := runQuiet(lsregister, "-f", appPath); err != nil {
 		fmt.Fprintf(out, "Registering %s with LaunchServices failed: %v\n", appPath, err)
 	}
-	if open || len(found.Pids) > 0 {
-		return errors.Join(quitErr, openApp())
+	if quitErr != nil {
+		fmt.Fprintf(out, "The new menu bar app is installed, but the old one didn't quit (%v); quit it from the menu bar to use the new one.\n", quitErr)
 	}
-	return quitErr
+	if open || len(found.Pids) > 0 {
+		return openApp()
+	}
+	return nil
 }
 
 func findApps() (appCopies, error) {
