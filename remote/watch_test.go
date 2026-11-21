@@ -491,17 +491,18 @@ func (f *fixture) sleeper(env ...string) int {
 
 func TestAMacSessionSaysWhichAppAndTerminalItRunsIn(t *testing.T) {
 	f := newFixture(t)
-	desktop, ghostty, tmux, alone := f.sleeper(), f.sleeper(), f.sleeper(), f.sleeper()
+	desktop, ghostty, tmux, alone, linked := f.sleeper(), f.sleeper(), f.sleeper(), f.sleeper(), f.sleeper()
 	sessions := filepath.Join(f.home, ".claude", "sessions")
 	for pid, fields := range map[int]string{
 		desktop: `"entrypoint":"claude-desktop","hostSessionId":"local_7cbf"`,
 		ghostty: `"entrypoint":"cli","hostSessionId":"local_none"`,
 		tmux:    `"entrypoint":"cli"`,
 		alone:   `"entrypoint":"cli"`,
+		linked:  `"entrypoint":"cli"`,
 	} {
 		f.write(sessions, fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"0f0f0f0f-1111-2222-3333-%012d","cwd":"/srv","status":"idle",%s}`, pid, pid, fields))
 	}
-	f.write(f.home, "ps-table", fmt.Sprintf("%d 900 ??\n900 901 ??\n901 1 ??\n%d 910 ttys004\n910 911 ttys004\n911 912 ttys004\n912 1 ??\n%d 950 ttys009\n950 951 ttys009\n951 1 ??\n%d 955 ttys010\n955 1 ??\n960 961 ttys007\n961 912 ttys007\n970 971 ttys008\n971 1 ??\n", desktop, ghostty, tmux, alone))
+	f.write(f.home, "ps-table", fmt.Sprintf("%d 900 ??\n900 901 ??\n901 1 ??\n%d 910 ttys004\n910 911 ttys004\n911 912 ttys004\n912 1 ??\n%d 950 ttys009\n950 951 ttys009\n951 1 ??\n%d 955 ttys010\n955 1 ??\n%d 957 ttys011\n957 1 ??\n960 961 ttys007\n961 912 ttys007\n970 971 ttys008\n971 1 ??\n", desktop, ghostty, tmux, alone, linked))
 	f.write(f.home, "ps-comm", "900 /Applications/Claude.app/Contents/Helpers/disclaimer\n901 /Applications/Claude.app/Contents/MacOS/Claude\n910 -zsh\n911 login\n912 /Users/sam/Sam's Apps/Ghostty.app/Contents/MacOS/ghostty\n960 tmux\n961 login\n970 tmux\n971 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal\n")
 	f.tool("uname", "#!/bin/sh\necho Darwin\n")
 	f.tool("ps", `#!/bin/sh
@@ -510,7 +511,7 @@ case "$*" in
 "-o pid= -o comm= -p "*) awk -v want=",$6," 'index(want, "," $1 ",")' "$HOME/ps-comm" ;;
 esac
 `)
-	f.tool("tmux", "#!/bin/sh\nprintf '%s\\n' 'pane 950 %4 $1' 'pane 955 %5 $3' 'client 1700000100 960 /dev/ttys007 $2' 'client 1700000000 970 /dev/ttys008 $1'\n")
+	f.tool("tmux", "#!/bin/sh\nprintf '%s\\n' 'pane 950 %4 $1' 'pane 955 %5 $3' 'pane 957 %6 $1' 'pane 957 %6 $2' 'client 1700000100 960 /dev/ttys007 $2' 'client 1700000000 970 /dev/ttys008 $1'\n")
 	f.tool("plutil", `#!/bin/sh
 case "$*" in
 "-extract CFBundleIdentifier raw -o - /Applications/Claude.app/Contents/Info.plist") echo com.anthropic.claudefordesktop ;;
@@ -531,6 +532,7 @@ esac
 		ghostty: "||/dev/ttys004|com.mitchellh.ghostty|<nil>",
 		tmux:    "|%4|/dev/ttys008|com.apple.Terminal|<nil>",
 		alone:   "|%5|||<nil>",
+		linked:  "|%6|/dev/ttys007|com.mitchellh.ghostty|<nil>",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("sessions run in %v, want %v", got, want)

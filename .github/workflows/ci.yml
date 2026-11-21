@@ -61,6 +61,7 @@ jobs:
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
       - run: xcodegen generate
+      - run: brew install --cask ghostty
       - run: xcodebuild -project magi.xcodeproj -scheme magi -derivedDataPath build -destination platform=macOS test
 
   core-busybox:

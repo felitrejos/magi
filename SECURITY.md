@@ -178,15 +178,24 @@ open a session where it runs, it opens apps and links through macOS and
 runs `osascript`, `rex` and `tmux` itself, never `ssh` or `magi`.
 
 - It runs your login shell with `command -v rex` or `command -v tmux` to
-  find those tools on your `PATH`, once per launch for each.
+  find those tools on your `PATH`, once per launch for each, and again
+  after a lookup that failed.
+- It reads `~/.claude.json` for the one setting that says which terminal
+  you last used (`deepLinkTerminal`); it reads nothing else there.
+- When opening a session fails, it writes the route (the link, SSH
+  destination, Rex ids or tty), the command, its exit status and its
+  error output to the macOS system log, where they are not redacted.
+- A notification shows the session's title, machine, folder and the
+  question it waits on, and macOS may show it on the lock screen.
 - `osascript` sends Apple Events to Terminal or Ghostty, which macOS
   asks you to allow once per app: it brings the window holding the
   session's terminal to the front, or opens a new Ghostty window.
 - A session in tmux with no terminal attached opens in a new window
   running `tmux attach`, through `ssh -t` for another machine. In
   Terminal that window runs a temporary `.command` file that deletes
-  itself first. Apart from its own settings and the `~/.magi/live`
-  folder, that is the only file the app writes.
+  itself first. Apart from its own settings, and creating the
+  `~/.magi/live` folder when it is missing, that is the only file the
+  app writes.
 
 ## Sending work
 

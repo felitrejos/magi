@@ -90,7 +90,6 @@ struct LiveTests {
         let frozen = ["a/idle", "b/early", "gone/x"]
         #expect(Row.ordered(urgent, keeping: frozen).map(\.id) == ["a/idle", "b/early", "a/late", "a/busy", "b/busy"])
     }
-
 }
 
 func session(_ id: String = "a", state: String = "idle", since: TimeInterval = 0, hostSession: String? = nil, tmux: String? = nil, rex: RexBlock? = nil, app: String? = nil, tty: String? = nil, remoteControl: URL? = nil) -> Session {

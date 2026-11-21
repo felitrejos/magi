@@ -241,11 +241,13 @@ enum Opener {
                 if let client = try Script.rexClient(await run(rex, ["-S", label, "client", "ls", "--json"], until: deadline), label: name) {
                     do {
                         try await run(rex, ["-S", label, "-C", client, "do", "session.select", "session_id=\(session)"], until: deadline)
-                        try await run(rex, ["-S", label, "block", "focus", "-s", session, block], until: deadline)
-                        return
                     } catch {
                         failure = error
+                        try await Task.sleep(for: .milliseconds(250))
+                        continue
                     }
+                    try await run(rex, ["-S", label, "block", "focus", "-s", session, block], until: deadline)
+                    return
                 }
                 try await Task.sleep(for: .milliseconds(250))
             }

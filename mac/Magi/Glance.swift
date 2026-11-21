@@ -22,7 +22,7 @@ struct Glance: Equatable {
     }
 
     func asking(after shown: Glance?) -> [String] {
-        waiting.filter { id, now in shown?.waiting[id].map { $0.on != now.on } ?? false }.map(\.key)
+        waiting.filter { id, now in now.on != nil && shown?.waiting[id].map { $0.on != now.on } ?? false }.map(\.key)
     }
 
     func stopped(after shown: Glance?) -> [String] {

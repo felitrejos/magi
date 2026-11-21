@@ -153,7 +153,7 @@ extension Machine {
             if let last = points.last?.value {
                 let peak = points.map(\.value).max() ?? last
                 let health: Health = last >= (critical.map { $0 - 10 } ?? 90) ? .critical : last >= 80 ? .warning : .fine
-                return Measure(module: module, name: "CPU temp", value: "\(Int(last.rounded()))", unit: "\u{00B0}C", detail: "1h peak\(Int(peak.rounded())) \u{00B0}C", headline: "\(Int(last.rounded())) \u{00B0}C", health: health, alerts: ["Warm", "Hot"], visual: .spark(points, 20...100, unit: "degrees Celsius"))
+                return Measure(module: module, name: "CPU temp", value: "\(Int(last.rounded()))", unit: "\u{00B0}C", detail: "1h peak \(Int(peak.rounded())) \u{00B0}C", headline: "\(Int(last.rounded())) \u{00B0}C", health: health, alerts: ["Warm", "Hot"], visual: .spark(points, 20...100, unit: "degrees Celsius"))
             }
             guard let thermal = series({ $0.thermal.map(Double.init) }).last.map({ min(Int($0.value), 3) }) else { return nil }
             let word = ["Normal", "Moderate", "Heavy", "Critical"][thermal]
