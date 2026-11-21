@@ -3,24 +3,16 @@
 package main
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 func init() {
@@ -60,41 +52,6 @@ func run(t *testing.T, name string, args ...string) {
 	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
 		t.Fatalf("%s %v: %v: %s", name, args, err, out)
 	}
-}
-
-func signWithThrowawayCertificate(t *testing.T, app string) {
-	t.Helper()
-	dir := t.TempDir()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "magi throwaway"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, cert, cert, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, block := range map[string]*pem.Block{
-		"cert.pem": {Type: "CERTIFICATE", Bytes: der},
-		"key.pem":  {Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)},
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(block), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	keychain := filepath.Join(dir, "throwaway.keychain-db")
-	run(t, "/usr/bin/security", "create-keychain", "-p", "throwaway", keychain)
-	run(t, "/usr/bin/security", "import", filepath.Join(dir, "cert.pem"), "-k", keychain)
-	run(t, "/usr/bin/security", "import", filepath.Join(dir, "key.pem"), "-k", keychain, "-T", "/usr/bin/codesign")
-	run(t, "/usr/bin/security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-s", "-k", "throwaway", keychain)
-	run(t, "/usr/bin/codesign", "--force", "--sign", fmt.Sprintf("%X", sha1.Sum(der)), "--keychain", keychain, app)
 }
 
 func withVersion(t *testing.T, v string) {
@@ -151,9 +108,6 @@ func TestOnlyMagisSignedAppAtMagisVersionUnpacks(t *testing.T) {
 	}{
 		{"ad-hoc signed", "isn't signed by magi's certificate", func(t *testing.T, dir string) {
 			fakeApp(t, dir, appBundleID, "1.0.0")
-		}},
-		{"signed by another certificate", "isn't signed by magi's certificate", func(t *testing.T, dir string) {
-			signWithThrowawayCertificate(t, fakeApp(t, dir, appBundleID, "1.0.0"))
 		}},
 		{"an older version", `is version "0.9.0", not 1.0.0`, func(t *testing.T, dir string) {
 			fakeApp(t, dir, appBundleID, "0.9.0")

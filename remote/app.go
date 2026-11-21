@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -51,6 +52,10 @@ type appCopies struct {
 func setUpApp(out io.Writer) error {
 	if _, ok := parseVersion(version); !ok {
 		fmt.Fprintf(out, "This magi is a %s build, so it doesn't install the menu bar app.\n", version)
+		return nil
+	}
+	if macOS, err := unix.Sysctl("kern.osproductversion"); err != nil || !atLeast(macOS, 26) {
+		fmt.Fprintf(out, "magi's menu bar app needs macOS 26 or later, and this Mac runs macOS %s, so it isn't installed.\n", macOS)
 		return nil
 	}
 	unlock, err := lockApp()
@@ -130,6 +135,11 @@ func lockApp() (func(), error) {
 }
 
 var errInstalling = errors.New("another magi is installing the menu bar app right now")
+
+func atLeast(macOS string, major int) bool {
+	n, err := strconv.Atoi(strings.SplitN(macOS, ".", 2)[0])
+	return err == nil && n >= major
+}
 
 func newer(installed string) bool {
 	have, ok := parseVersion(installed)
