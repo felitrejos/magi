@@ -34,7 +34,7 @@ jobs:
           cache-dependency-path: remote/go.sum
       - run: if [ "$RUNNER_OS" = macOS ]; then brew install tmux; else sudo apt-get install -y tmux fish tcsh git-lfs; fi
       - if: runner.os == 'Linux'
-        run: shellcheck --severity=style scripts/*.sh internal/*/scripts/*.sh ../ci/*.sh ../plugin/bin/magi
+        run: shellcheck --severity=style scripts/*.sh internal/*/scripts/*.sh ../ci/*.sh ../mac/release.sh ../plugin/bin/magi
       - run: go vet ./... && go vet -tags contract ./...
       - if: runner.os == 'Linux'
         run: |
@@ -42,6 +42,23 @@ jobs:
           go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -tags contract ./...
           go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - run: go test -count=1 ./...
+
+  mac:
+    name: menu bar app
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    defaults:
+      run:
+        working-directory: mac
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ../ci/xcodegen.sh "$RUNNER_TEMP"
+      - run: xcodegen generate
+      - run: brew install --cask ghostty
+      - run: xcodebuild -project magi.xcodeproj -scheme magi -derivedDataPath build -destination platform=macOS test
 
   core-busybox:
     name: magi on BusyBox

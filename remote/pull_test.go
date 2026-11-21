@@ -119,7 +119,7 @@ func TestWatchTakesBackASessionTheServerAsksItTo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go newWatcher("server", remote, log.New(&logged, "", 0), "").follow(me)
+	go newWatcher("server", "", remote, log.New(&logged, "", 0), "").follow(me)
 	t.Cleanup(func() { t.Log(logged.String()) })
 	wantedFile, _ := store.SessionPath("wanted", id, ".json")
 	staleFile, _ := store.SessionPath("wanted", stale, ".json")

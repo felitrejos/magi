@@ -2,10 +2,10 @@
 
 magi is one program, `magi`, that runs on your own machines. The Claude
 Code plugin runs it, and you ask Claude for what you need. It reaches your
-other machines only through your own `ssh`. Its other connections are two
-HTTPS downloads from GitHub, the release binary and the tested versions
-list. It opens no network listener except the ports you ask it to
-forward, which listen on `127.0.0.1`.
+other machines only through your own `ssh`. Its other connections are
+HTTPS downloads from GitHub: the release binary, the tested versions list
+and, on a Mac, the menu bar app. It opens no network listener except the
+ports you ask it to forward, which listen on `127.0.0.1`.
 
 ## What runs where
 
@@ -31,7 +31,8 @@ shell script every hook and tool goes through.
   damaged download, not a bad release. Releases aren't signed, so you
   trust GitHub's TLS and whoever can write releases to that repository.
 - `MAGI_VERSION` and `MAGI_RELEASE_URL` in the environment change which
-  version runs and where it downloads from, `file://` included.
+  version runs and where it and the menu bar app download from, `file://`
+  included.
 
 Release builds come from GitHub Actions, with actions pinned to commit
 hashes, when a `v*` tag is pushed. A release publishes only after the
@@ -47,15 +48,16 @@ test suite passes on macOS, Ubuntu and Alpine.
 - On the other machine it adds the marketplace `felitrejos/magi`, installs
   or updates the plugin with the `claude plugin` commands, and runs the
   launcher once. It installs nothing else and uses no `sudo`.
-- Here it installs the watcher service described below.
+- Here it installs the watcher service described below and, on a Mac,
+  the menu bar app.
 - It reads the tool versions and the claude.ai login on both machines.
 - It moves a session in a throwaway `magi-try-*` folder there and back,
   then removes it on both machines. That is three Claude turns on your
   account.
 
 `uninstall` removes the watcher service here and `~/.magi/bin`. It keeps
-your config and the rest of `~/.magi` and changes nothing on other
-machines.
+your config, the rest of `~/.magi` and the menu bar app, and changes
+nothing on other machines.
 
 ## SSH
 
@@ -131,18 +133,100 @@ unit on Linux. It runs as you, never as root, and starts at login.
   writes on the far machine. It can only make the laptop pull a session
   from the machine the request is on.
 - Every 2 seconds the loop reads Claude Code's own record of each live
-  session in `~/.claude/sessions`, on the laptop too. When a session is
-  waiting, it runs `claude agents --json` once to learn on what.
-- About every 30 seconds it reads load, memory, the disk your home folder
-  is on, and every process's number, parent, CPU time and memory.
+  session in `~/.claude/sessions`, on the laptop too. When that changes,
+  and every 30 seconds, it works out where each session runs: it asks
+  tmux for every pane and its tmux session, and every attached client
+  with its tty, process and last activity, and lists every process's
+  number and parent. On Linux it reads `REX_SESSION` and `REX_BLOCK` from
+  each session process's `/proc/<pid>/environ`. On macOS it lists every
+  process's tty, follows the parent chain of each session or its tmux
+  client with `ps`, and runs `plutil` on the `Info.plist` of the app
+  bundle at the top of that chain to read its bundle id. When a session
+  is waiting, it runs `claude agents --json` once to learn on what.
+- About every 30 seconds it reads load, memory, memory pressure, swap,
+  the boot time, the disk your home folder is on, the battery's charge
+  and whether the machine runs on it, and every process's number,
+  parent, CPU time and memory. It also samples CPU use, the network
+  interface of the default route and its byte counters, and the
+  temperature. On macOS that's `sysctl`, `pmset -g batt`, `iostat`,
+  `notifyutil -g com.apple.system.thermalpressurelevel`,
+  `route -n get default` and `netstat -ibn`; on Linux, files in `/proc`
+  (`/proc/stat`, `/proc/net/route` and `/proc/net/dev` among them),
+  `/sys/class/power_supply`, and the CPU temperature sensor in
+  `/sys/class/hwmon` or `/sys/class/thermal`.
+- On the laptop, the watcher runs `tailscale status --json` for each
+  other machine about every 30 seconds, when Tailscale is installed, to
+  learn whether the connection goes through a Tailscale relay.
 - When a loop starts, it lists every process with its command line once,
   to stop older copies of itself that lost their connection.
 - The watcher writes what it hears to `~/.magi/live/<machine>.json` on the
   laptop, readable only by you. That is whether the machine answers, its
-  load, memory and disk, and each session's id, title, folder, state, CPU
-  and memory. It holds no conversation text and no file contents.
+  SSH destination, load, memory, memory pressure, swap, disk, boot time,
+  battery, whether it's reached through a relay, the last hour of CPU,
+  temperature, thermal level and network traffic, and each session's id,
+  title, folder, state, what it waits on, CPU and its last hour, memory,
+  Remote Control link, Claude desktop session id (`hostSession`), tmux
+  pane, Rex session and block ids, and on macOS the bundle id of the app
+  it runs in (`app`) and its terminal device (`tty`). The file holds no
+  conversation text beyond what a session waits on, and no file
+  contents.
 - Its log holds machine names, short session ids, folder paths, branch
   and file names, and errors.
+
+## The menu bar app
+
+`setup_machine` on a Mac installs the app, and the watcher keeps it at
+magi's version when magi updates.
+
+- It downloads `magi.app.zip` and `checksums.txt` from the same release
+  as the binary, and installs nothing unless the zip's SHA-256 matches.
+- The app is signed with magi's own certificate, the same for every
+  release, so macOS keeps its permissions across updates. Its private
+  key is in this repository's GitHub Actions secrets, for the release
+  workflow, and in the owner's copy on their Mac. The app isn't notarized:
+  magi downloads it with `curl`, which marks nothing as quarantined, so
+  Gatekeeper doesn't check it.
+- magi installs nothing unless `magi.app` in the zip is a folder, not a
+  link, its version is magi's, and `codesign` verifies it against the
+  requirement pinned in magi, `remote/app.requirement`, which names the
+  bundle id and the certificate's SHA-1. The pin covers the app only:
+  the `magi` binary is checked against its checksum but isn't signed.
+- It replaces `/Applications/magi.app` only when that is magi's app, by
+  its bundle id. Writing to `/Applications` needs an administrator
+  account, and magi refuses before it changes anything when this
+  account can't.
+- It swaps `/Applications/magi.app` for the new one in a single rename,
+  then quits every running app with magi's bundle id and unregisters
+  other copies of it from LaunchServices. `setup_machine` opens the
+  app. The watcher reopens it only if it was running, and if an update
+  fails it tries again once an hour.
+- When the app is already installed at magi's version and passes the
+  pinned requirement, `setup_machine` leaves it as it is and only opens
+  it if it isn't running.
+
+The macOS menu bar app reads `~/.magi/live` and shows what is in it. To
+open a session where it runs, it opens apps and links through macOS and
+runs `osascript`, `rex` and `tmux` itself, never `ssh` or `magi`.
+
+- It runs your login shell with `command -v rex` or `command -v tmux` to
+  find those tools on your `PATH`, once per launch for each, and again
+  after a lookup that failed.
+- It reads `~/.claude.json` for the one setting that says which terminal
+  you last used (`deepLinkTerminal`); it reads nothing else there.
+- When opening a session fails, it writes the route (the link, SSH
+  destination, Rex ids or tty), the command, its exit status and its
+  error output to the macOS system log, where they are not redacted.
+- A notification shows the session's title, machine, folder and the
+  question it waits on, and macOS may show it on the lock screen.
+- `osascript` sends Apple Events to Terminal or Ghostty, which macOS
+  asks you to allow once per app: it brings the window holding the
+  session's terminal to the front, or opens a new Ghostty window.
+- A session in tmux with no terminal attached opens in a new window
+  running `tmux attach`, through `ssh -t` for another machine. In
+  Terminal that window runs a temporary `.command` file that deletes
+  itself first. Apart from its own settings, and creating the
+  `~/.magi/live` folder when it is missing, that is the only file the
+  app writes.
 
 ## Sending work
 
@@ -202,7 +286,7 @@ State is in `~/.magi`.
 |---|---|
 | `bin/` | The downloaded magi binaries and the link `magi` to the current one |
 | `armed/`, `wanted/` | A session set to move when its turn ends, and hand-back requests |
-| `watchers/`, `watch.lock` | One file per laptop watching this machine, and the watcher's lock |
+| `watchers/`, `watch.lock`, `app.lock` | One file per laptop watching this machine, the watcher's lock, and the menu bar app's install lock |
 | `live/` | One file per machine, written by `magi watch` |
 | `moved/`, `handoffs.jsonl` | Where each session went, and a log of handoffs and settled moves |
 | `moves/` | One journal per move in progress or cut off |
@@ -212,7 +296,8 @@ State is in `~/.magi`.
 | `ssh/`, `tested.json` | SSH control sockets, and the downloaded tested versions list |
 
 Outside those, magi writes the project and session files it moves, the
-trust entry in `~/.claude.json`, and the watcher's service file and log.
+trust entry in `~/.claude.json`, the watcher's service file and log, and
+on a Mac `/Applications/magi.app`.
 
 
 ## Reporting a problem

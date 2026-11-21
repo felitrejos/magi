@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -152,6 +153,16 @@ func TestUninstallStopsTheWatcherAndRemovesTheBinariesOnly(t *testing.T) {
 	}
 	if calls := f.read(f.home, "service-calls"); !strings.Contains(calls, "bootout") && !strings.Contains(calls, "disable --now") {
 		t.Errorf("the watcher wasn't stopped: %q", calls)
+	}
+}
+
+func TestSetupMachineWithoutAHostSetsUpOnlyThisMachine(t *testing.T) {
+	f := newFixture(t)
+	text, failed := f.call("setup_machine", map[string]any{})
+	app := strings.Contains(text, "menu bar app")
+	if failed || !strings.Contains(text, "magi watch runs in the background") || strings.Contains(text, "Saved") || strings.Contains(text, "✗") ||
+		app != (runtime.GOOS == "darwin") || app && !strings.Contains(text, "This magi is a dev build, so it doesn't install the menu bar app.\n") {
+		t.Errorf("setup_machine without a host:\n%s", text)
 	}
 }
 

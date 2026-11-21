@@ -1,2 +1,4 @@
 /DESIGN.md
 .DS_Store
+/mac/magi.xcodeproj
+/mac/build

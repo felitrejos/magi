@@ -10,12 +10,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/felitrejos/magi/remote/internal/sh"
 )
 
 func readLive(t *testing.T, name string) liveMachine {
@@ -69,7 +73,7 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	}
 	session("busy", busySince)
 	r := f.remoteHost()
-	w := newWatcher("server", r, log.New(io.Discard, "", 0), "")
+	w := newWatcher("server", "", r, log.New(io.Discard, "", 0), "")
 	cmd := r.Command(watchScript, "", "claude")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -107,8 +111,8 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 		t.Errorf("stats line = %q, want the session's tree summed with its child's CPU and memory", heard[len(heard)-1])
 	}
 	now := time.Now()
-	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 %d:10:150", pid), now)
-	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 %d:13:150", pid), now.Add(3*time.Second))
+	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 0 0 1794928938 %d:10:150", pid), now)
+	w.hear(fmt.Sprintf("stats 10 1.5 100 200 300 400 0 0 1794928938 %d:13:150", pid), now.Add(3*time.Second))
 	live := readLive(t, "server")
 	if len(live.Sessions) != 1 {
 		t.Fatalf("live sessions = %+v", live.Sessions)
@@ -131,11 +135,11 @@ func TestWatchStreamsWhatChanges(t *testing.T) {
 	}
 	var sessionLines []string
 	for _, line := range heard {
-		if !strings.HasPrefix(line, "stats") {
+		if strings.HasPrefix(line, "claude") {
 			sessionLines = append(sessionLines, line)
 		}
 	}
-	if len(sessionLines) != 4 || !strings.Contains(sessionLines[0], `"busy"`) || !strings.Contains(sessionLines[2], `"idle"`) {
+	if len(sessionLines) != 2 || !strings.Contains(sessionLines[0], `"busy"`) || !strings.Contains(sessionLines[1], `"idle"`) {
 		t.Errorf("session lines = %q, want one snapshot when busy and one when idle", sessionLines)
 	}
 }
@@ -148,7 +152,15 @@ func TestWatchCountsTheCPUOfChildrenThatExited(t *testing.T) {
 	server := f.serverHome()
 	pid := f.worker(`(` + burn + `); : > "$1"; sleep 60; :`)
 	f.write(filepath.Join(server, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"0f0f0f0f-1111-2222-3333-555555555556","cwd":"/srv/api","status":"idle"}`, pid))
-	cmd := f.remoteHost().Command(watchScript, "", "claude")
+	stats := firstStats(t, f.remoteHost())
+	if used, _ := usedBy(t, stats, pid); used < 0.1 {
+		t.Errorf("stats line = %q, want the session's CPU to count its child that exited", stats)
+	}
+}
+
+func firstStats(t *testing.T, m sh.Machine) string {
+	t.Helper()
+	cmd := m.Command(watchScript, "", "claude")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -159,13 +171,206 @@ func TestWatchCountsTheCPUOfChildrenThatExited(t *testing.T) {
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
 	for lines := bufio.NewScanner(stdout); lines.Scan(); {
 		if strings.HasPrefix(lines.Text(), "stats") {
-			if used, _ := usedBy(t, lines.Text(), pid); used < 0.1 {
-				t.Errorf("stats line = %q, want the session's CPU to count its child that exited", lines.Text())
-			}
-			return
+			return lines.Text()
 		}
 	}
 	t.Fatal("the watcher never reported stats")
+	return ""
+}
+
+func TestAMacReportsItsMemoryPressureSwapBootTimeBatteryAndSamples(t *testing.T) {
+	f := newFixture(t)
+	f.tool("uname", "#!/bin/sh\necho Darwin\n")
+	f.tool("sysctl", macSysctl)
+	f.tool("pmset", "#!/bin/sh\nprintf \"Now drawing from 'Battery Power'\\n -InternalBattery-0 (id=4653155)\\t85%%; discharging; 4:10 remaining present: true\\n\"\n")
+	f.tool("iostat", "#!/bin/sh\n[ \"$*\" = '-n 0 -C -c 2 -w 1' ] && printf '      cpu    load average\\n us sy id   1m   5m   15m\\n 18  5 77  2.36 1.85 1.87\\n  6  5 89  2.36 1.85 1.87\\n'\n")
+	f.tool("notifyutil", "#!/bin/sh\n[ \"$*\" = '-g com.apple.system.thermalpressurelevel' ] && echo 'com.apple.system.thermalpressurelevel 2'\n")
+	f.tool("route", "#!/bin/sh\n[ \"$*\" = '-n get default' ] && printf '   route to: default\\ndestination: default\\n  interface: en0\\n'\n")
+	f.tool("netstat", `#!/bin/sh
+[ "$*" = -ibn ] && printf '%s\n' \
+'Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll' \
+'lo0        16384 <Link#1>                          9183     0    1180112     9183     0    1180112     0' \
+'en0        1500  <Link#14>   72:ae:25:19:37:bb 32971209     0 39134580381 12891787     0 6549722863     0' \
+'en0        1500  192.168.0     192.168.0.48    32971209     - 39134580381 12891787     - 6549722863     -'
+`)
+	w := newWatcher("mac", "", nil, log.New(io.Discard, "", 0), "")
+	stats := firstStats(t, f.machine())
+	w.hear(stats, time.Now())
+	live := readLive(t, "mac")
+	if live.Pressure != "warning" || live.Swap != (space{UsedMB: 1095, TotalMB: 2048}) || !live.BootedAt.Equal(time.Unix(1794928938, 0)) {
+		t.Errorf("pressure %q, swap %+v, booted at %s; want warning, 1095 of 2048 MB, %s", live.Pressure, live.Swap, live.BootedAt, time.Unix(1794928938, 0))
+	}
+	if live.Battery == nil || *live.Battery != (battery{Percent: 85, OnBattery: true}) {
+		t.Errorf("battery = %+v, want 85%%, on battery", live.Battery)
+	}
+	if last := live.History[len(live.History)-1]; last.CPU == nil || *last.CPU != 11 || last.Thermal == nil || *last.Thermal != 2 || !strings.HasSuffix(stats, " net=39134580381:6549722863:en0") {
+		t.Errorf("stats line %q, want the second iostat sample's 11%% busy, thermal pressure 2 and en0's link counters", stats)
+	}
+}
+
+func TestTheWatcherTurnsCountersIntoRates(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	start := time.Unix(1_800_000_000, 0)
+	for i, fields := range []string{
+		"ticks=1000:4000 net=1000:500:eth0 temp=54.3:105",
+		"ticks=1300:5000 net=31000:3500:eth0 temp=61.0",
+		"ticks=10:100 net=91000:6500:wlan0",
+		"net=121000:6500:wlan0 cpu=17 thermal=1",
+	} {
+		w.hear("stats 10 1 100 200 300 400 0 0 1794928938 "+fields, start.Add(time.Duration(i)*30*time.Second))
+		if i == 0 && (w.live.Critical == nil || *w.live.Critical != 105) {
+			t.Errorf("critical = %v, want 105 °C", w.live.Critical)
+		}
+	}
+	live := readLive(t, "server")
+	got := []string{}
+	for _, r := range live.History {
+		got = append(got, strings.Join([]string{value(r.CPU), value(r.Temp), value(r.Thermal), value(r.Received), value(r.Sent)}, " "))
+	}
+	want := []string{"- 54.3 - - -", "30 61 - 1000 100", "- - - - -", "17 - 1 1000 0"}
+	if fmt.Sprint(got) != fmt.Sprint(want) || live.Critical != nil {
+		t.Errorf("readings %q with critical %v, want %q and no critical once the line stops saying it", got, live.Critical, want)
+	}
+}
+
+func TestAStatsLineThatBreaksPartWayChangesNothing(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	start := time.Unix(1_800_000_000, 0)
+	w.hear("stats 10 1 100 200 300 400 0 0 1794928938 pressure=normal ticks=1000:4000 net=1000:500:eth0 temp=54.3:105", start)
+	live, ticks, traffic := w.live, w.ticks, w.traffic
+	w.hear("stats 12 3 150 200 350 400 0 0 1794928999 pressure=critical battery=40:true ticks=1300:5000 net=31000:3500:eth0 temp=61.0:99 thermal=x", start.Add(30*time.Second))
+	if !reflect.DeepEqual(w.live, live) || w.ticks != ticks || w.traffic != traffic {
+		t.Errorf("after an unreadable line the watcher holds %+v, %+v, %+v; want %+v, %+v, %+v", w.live, w.ticks, w.traffic, live, ticks, traffic)
+	}
+}
+
+func value[T any](p *T) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprint(*p)
+}
+
+func TestALinuxMachineReportsItsMemoryPressureSwapBootTimeBatteryAndCounters(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads /proc/loadavg")
+	}
+	f := newFixture(t)
+	f.tool("cat", `#!/bin/sh
+[ "$1" = /proc/meminfo ] || exec /bin/cat "$@"
+printf 'MemTotal: 16000000 kB\nMemAvailable: 8000000 kB\nSwapTotal: 2097152 kB\nSwapFree: 1048576 kB\nbtime 1794928938\n'
+`)
+	f.tool("grep", `#!/bin/sh
+case $* in
+*/proc/pressure/memory) echo 'some avg10=45.00 avg60=12.50 avg300=3.00 total=1' ;;
+*) printf '%s\n' /sys/class/power_supply/AC/type:Mains /sys/class/power_supply/BAT0/type:Battery /sys/class/power_supply/BAT0/capacity:64 /sys/class/power_supply/BAT0/status:Discharging /sys/class/power_supply/hidpp_battery_0/type:Battery /sys/class/power_supply/hidpp_battery_0/scope:Device /sys/class/power_supply/hidpp_battery_0/capacity:10 /sys/class/power_supply/hidpp_battery_0/status:Charging ;;
+esac
+`)
+	w := newWatcher("linux", "", nil, log.New(io.Discard, "", 0), "")
+	stats := firstStats(t, f.machine())
+	w.hear(stats, time.Now())
+	if !regexp.MustCompile(` ticks=\d+:\d+( temp=\d+\.\d(:\d+)?)? net=\d+:\d+:\S+$`).MatchString(stats) {
+		t.Errorf("stats line %q, want CPU ticks, the temperature where a sensor is known and the default route's byte counters", stats)
+	}
+	live := readLive(t, "linux")
+	if live.Pressure != "warning" || live.Swap != (space{UsedMB: 1024, TotalMB: 2048}) || !live.BootedAt.Equal(time.Unix(1794928938, 0)) {
+		t.Errorf("pressure %q, swap %+v, booted at %s; want warning from avg60, 1024 of 2048 MB, %s", live.Pressure, live.Swap, live.BootedAt, time.Unix(1794928938, 0))
+	}
+	if live.Battery == nil || *live.Battery != (battery{Percent: 64, OnBattery: true}) {
+		t.Errorf("battery = %+v, want the system battery at 64%% and discharging", live.Battery)
+	}
+}
+
+func hourOfStats(w *watcher, start time.Time) {
+	for i, at := range []time.Duration{0, 30 * time.Second, time.Hour, time.Hour + 30*time.Second} {
+		w.hear(fmt.Sprintf("stats 10 %d 100 200 300 400 0 0 1794928938 42:%d:150 cpu=%d", i, 3*i, 10*i), start.Add(at))
+	}
+}
+
+func TestTheLiveFileKeepsTheLastHourOfMachineAndSessionCPU(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	w.live.Sessions = []liveEntry{{ID: "a", pid: 42}}
+	start := time.Unix(1_800_000_000, 0)
+	hourOfStats(w, start)
+	live := readLive(t, "server")
+	from := start.Add(30 * time.Second).Unix()
+	want := []reading{{At: from, CPU: new(10)}, {At: from + 3570, CPU: new(20)}, {At: from + 3600, CPU: new(30)}}
+	if !reflect.DeepEqual(live.History, want) {
+		t.Errorf("history = %+v, want the readings of the last hour %+v", live.History, want)
+	}
+	wantCPU := []cpuReading{{At: from, CPU: 10}, {At: from + 3570, CPU: 0}, {At: from + 3600, CPU: 10}}
+	if fmt.Sprint(live.Sessions[0].CPUHistory) != fmt.Sprint(wantCPU) {
+		t.Errorf("session CPU history = %+v, want %+v", live.Sessions[0].CPUHistory, wantCPU)
+	}
+}
+
+func TestARestartedWatcherKeepsWhatTheLiveFileSaysUntilItHearsStats(t *testing.T) {
+	f := newFixture(t)
+	f.serverHome()
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	w.live.Sessions = []liveEntry{{ID: "a", pid: 42}}
+	hourOfStats(w, time.Unix(1_800_000_000, 0))
+	kept := readLive(t, "server")
+	restarted := newWatcher("server", "me@server", f.remoteHost(), log.New(io.Discard, "", 0), "")
+	restarted.hear("sessions", time.Now())
+	if live := readLive(t, "server"); !reflect.DeepEqual(live, kept) {
+		t.Errorf("before its first stats a restarted watcher wrote %+v", live)
+	}
+	f.write(f.home, "ssh-down", "")
+	restarted.follow("")
+	kept.SSH, kept.Answering, kept.Sessions = "me@server", false, []liveEntry{}
+	if live := readLive(t, "server"); !reflect.DeepEqual(live, kept) || fmt.Sprint(restarted.cpu) != fmt.Sprint(w.cpu) {
+		t.Errorf("a restarted watcher that never connected wrote %+v with CPU %+v, want %+v with %+v", live, restarted.cpu, kept, w.cpu)
+	}
+}
+
+func TestASessionInTwoProcessesIsOneEntryWithTheLatestState(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	id := "0f0f0f0f-1111-2222-3333-555555555561"
+	start := time.Unix(1_800_000_000, 0)
+	for _, line := range []string{
+		`claude {"pid":42,"sessionId":"` + id + `","cwd":"/srv/api","status":"busy","statusUpdatedAt":2000}`,
+		`claude {"pid":41,"sessionId":"` + id + `","cwd":"/srv/api","status":"idle","statusUpdatedAt":1000}`,
+		"sessions",
+		"stats 10 1 100 200 300 400 0 0 1794928938 41:1:100 42:1:200",
+	} {
+		w.hear(line, start)
+	}
+	w.hear("stats 10 1 100 200 300 400 0 0 1794928938 41:31:100 42:4:200", start.Add(30*time.Second))
+	live := readLive(t, "server")
+	if len(live.Sessions) != 1 || live.Sessions[0].State != "busy" || live.Sessions[0].MemoryMB != 200 || fmt.Sprint(live.Sessions[0].CPUHistory) != fmt.Sprint([]cpuReading{{At: start.Unix() + 30, CPU: 10}}) {
+		t.Errorf("live sessions = %+v, want one busy entry with only its own process's CPU", live.Sessions)
+	}
+}
+
+func TestAMachineReachedThroughATailscaleRelayIsMarkedRelayed(t *testing.T) {
+	f := newFixture(t)
+	t.Cleanup(func() { tailnet.peers = nil })
+	f.tool("tailscale", `#!/bin/sh
+[ "$*" = "status --json" ] && echo '{"Peer":{
+"nodekey:1":{"HostName":"homelab","DNSName":"homelab.tail1.ts.net.","TailscaleIPs":["100.64.0.1"],"CurAddr":"","Relay":"fra","Online":true},
+"nodekey:2":{"HostName":"Studio","DNSName":"studio.tail1.ts.net.","TailscaleIPs":["100.64.0.2"],"CurAddr":"192.168.1.20:41641","Relay":"fra","Online":true},
+"nodekey:3":{"HostName":"pi","DNSName":"pi.tail1.ts.net.","TailscaleIPs":["100.64.0.3"],"CurAddr":"","Relay":"fra","Online":false}}}'
+`)
+	var logged strings.Builder
+	logger := log.New(&logged, "", 0)
+	readTailnet(logger)
+	for ssh, want := range map[string]bool{"me@homelab": true, "homelab.tail1.ts.net": true, "100.64.0.1": true, "studio": false, "Studio": false, "pi": false, "elsewhere": false} {
+		w := newWatcher(ssh, ssh, nil, logger, "")
+		w.hear("stats 10 1.5 100 200 300 400 0 0 1794928938", time.Now())
+		if got := readLive(t, ssh).Relayed; got != want {
+			t.Errorf("%s reads as relayed %t, want %t", ssh, got, want)
+		}
+	}
+	f.tool("tailscale", "#!/bin/sh\necho '{\"Peer\":'\n")
+	readTailnet(logger)
+	if relayed("homelab") || !strings.Contains(logged.String(), "tailscale's status is unreadable") {
+		t.Errorf("after unreadable JSON homelab reads as relayed %t and the log says %q", relayed("homelab"), logged.String())
+	}
 }
 
 func TestWatchMarksAMachineThatStopsAnswering(t *testing.T) {
@@ -178,7 +383,7 @@ func TestWatchMarksAMachineThatStopsAnswering(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopped := make(chan error)
-	go func() { stopped <- newWatcher("server", r, log.New(io.Discard, "", 0), "").follow("") }()
+	go func() { stopped <- newWatcher("server", "", r, log.New(io.Discard, "", 0), "").follow("") }()
 	for deadline := time.Now().Add(10 * time.Second); !readLive(t, "server").Answering; time.Sleep(100 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the machine was never marked as answering")
@@ -219,6 +424,132 @@ func TestStoppingTheWatcherMarksEveryMachineAsNotAnswering(t *testing.T) {
 		if readLive(t, name).Answering {
 			t.Errorf("after the watcher stopped, %s still reads as answering", name)
 		}
+	}
+}
+
+func TestTheLiveFileSaysHowToOpenASession(t *testing.T) {
+	f := newFixture(t)
+	f.isolatedTmux()
+	server := f.serverHome()
+	started := filepath.Join(t.TempDir(), "pid")
+	out, err := exec.Command("tmux", "new-session", "-d", "-P", "-F", "#{pane_id}", `sh -c 'sleep 60 & echo $! > "$0"; wait' `+started+`; :`).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pane := strings.TrimSpace(string(out))
+	if !waitForFile(t, started, 10*time.Second) {
+		t.Fatal("the session process never started")
+	}
+	data, _ := os.ReadFile(started)
+	pid := strings.TrimSpace(string(data))
+	f.write(filepath.Join(server, ".claude", "sessions"), pid+".json", `{"pid":`+pid+`,"sessionId":"0f0f0f0f-1111-2222-3333-555555555559","cwd":"/srv/api","status":"idle","bridgeSessionId":"session_42"}`)
+	go newWatcher("server", "me@server", f.remoteHost(), log.New(io.Discard, "", 0), "").follow("")
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		if live := readLive(t, "server"); len(live.Sessions) == 1 {
+			if s := live.Sessions[0]; s.RemoteControl != "https://claude.ai/code/session_42" || s.Tmux != pane || live.SSH != "me@server" {
+				t.Errorf("a session two processes below its pane opens through %q and tmux pane %q (want %s), the machine over ssh %q", s.RemoteControl, s.Tmux, pane, live.SSH)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the session never reached the live file")
+		}
+	}
+}
+
+func sessionsOnce(t *testing.T, m sh.Machine, w *watcher) {
+	t.Helper()
+	cmd := m.Command(watchScript, "", "claude")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	for lines := bufio.NewScanner(stdout); lines.Scan(); {
+		w.hear(lines.Text(), time.Now())
+		if lines.Text() == "sessions" {
+			w.hear("stats 10 1 100 200 300 400 0 0 1794928938", time.Now())
+			return
+		}
+	}
+	t.Fatal("the watcher never reported its sessions")
+}
+
+func (f *fixture) sleeper(env ...string) int {
+	f.t.Helper()
+	cmd := exec.Command("sleep", "60")
+	cmd.Env = append(os.Environ(), env...)
+	if err := cmd.Start(); err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	return cmd.Process.Pid
+}
+
+func TestAMacSessionSaysWhichAppAndTerminalItRunsIn(t *testing.T) {
+	f := newFixture(t)
+	desktop, ghostty, tmux, alone, linked := f.sleeper(), f.sleeper(), f.sleeper(), f.sleeper(), f.sleeper()
+	sessions := filepath.Join(f.home, ".claude", "sessions")
+	for pid, fields := range map[int]string{
+		desktop: `"entrypoint":"claude-desktop","hostSessionId":"local_7cbf"`,
+		ghostty: `"entrypoint":"cli","hostSessionId":"local_none"`,
+		tmux:    `"entrypoint":"cli"`,
+		alone:   `"entrypoint":"cli"`,
+		linked:  `"entrypoint":"cli"`,
+	} {
+		f.write(sessions, fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"0f0f0f0f-1111-2222-3333-%012d","cwd":"/srv","status":"idle",%s}`, pid, pid, fields))
+	}
+	f.write(f.home, "ps-table", fmt.Sprintf("%d 900 ??\n900 901 ??\n901 1 ??\n%d 910 ttys004\n910 911 ttys004\n911 912 ttys004\n912 1 ??\n%d 950 ttys009\n950 951 ttys009\n951 1 ??\n%d 955 ttys010\n955 1 ??\n%d 957 ttys011\n957 1 ??\n960 961 ttys007\n961 912 ttys007\n970 971 ttys008\n971 1 ??\n", desktop, ghostty, tmux, alone, linked))
+	f.write(f.home, "ps-comm", "900 /Applications/Claude.app/Contents/Helpers/disclaimer\n901 /Applications/Claude.app/Contents/MacOS/Claude\n910 -zsh\n911 login\n912 /Users/sam/Sam's Apps/Ghostty.app/Contents/MacOS/ghostty\n960 tmux\n961 login\n970 tmux\n971 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal\n")
+	f.tool("uname", "#!/bin/sh\necho Darwin\n")
+	f.tool("ps", `#!/bin/sh
+case "$*" in
+"-A -o pid= -o ppid= -o tty=") cat "$HOME/ps-table" ;;
+"-o pid= -o comm= -p "*) awk -v want=",$6," 'index(want, "," $1 ",")' "$HOME/ps-comm" ;;
+esac
+`)
+	f.tool("tmux", "#!/bin/sh\nprintf '%s\\n' 'pane 950 %4 $1' 'pane 955 %5 $3' 'pane 957 %6 $1' 'pane 957 %6 $2' 'client 1700000100 960 /dev/ttys007 $2' 'client 1700000000 970 /dev/ttys008 $1'\n")
+	f.tool("plutil", `#!/bin/sh
+case "$*" in
+"-extract CFBundleIdentifier raw -o - /Applications/Claude.app/Contents/Info.plist") echo com.anthropic.claudefordesktop ;;
+"-extract CFBundleIdentifier raw -o - /Users/sam/Sam's Apps/Ghostty.app/Contents/Info.plist") echo com.mitchellh.ghostty ;;
+"-extract CFBundleIdentifier raw -o - /System/Applications/Utilities/Terminal.app/Contents/Info.plist") echo com.apple.Terminal ;;
+esac
+`)
+	w := newWatcher("mac", "", nil, log.New(io.Discard, "", 0), "")
+	sessionsOnce(t, f.machine(), w)
+	got := map[int]string{}
+	for _, s := range readLive(t, "mac").Sessions {
+		var pid int
+		fmt.Sscanf(s.ID[len(s.ID)-12:], "%d", &pid)
+		got[pid] = fmt.Sprintf("%s|%s|%s|%s|%v", s.HostSession, s.Tmux, s.TTY, s.App, s.Rex)
+	}
+	want := map[int]string{
+		desktop: "local_7cbf|||com.anthropic.claudefordesktop|<nil>",
+		ghostty: "||/dev/ttys004|com.mitchellh.ghostty|<nil>",
+		tmux:    "|%4|/dev/ttys008|com.apple.Terminal|<nil>",
+		alone:   "|%5|||<nil>",
+		linked:  "|%6|/dev/ttys007|com.mitchellh.ghostty|<nil>",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("sessions run in %v, want %v", got, want)
+	}
+}
+
+func TestALinuxSessionInRexSaysItsSessionAndBlock(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only Linux shows other processes their environment")
+	}
+	f := newFixture(t)
+	pid := f.sleeper("REX_SESSION=session:01a1", "REX_BLOCK=block:01a2")
+	f.write(filepath.Join(f.home, ".claude", "sessions"), fmt.Sprint(pid, ".json"), fmt.Sprintf(`{"pid":%d,"sessionId":"0f0f0f0f-1111-2222-3333-555555555562","cwd":"/srv","status":"idle"}`, pid))
+	w := newWatcher("box", "", nil, log.New(io.Discard, "", 0), "")
+	sessionsOnce(t, f.machine(), w)
+	if s := readLive(t, "box").Sessions; len(s) != 1 || s[0].Rex == nil || *s[0].Rex != (rex{Session: "session:01a1", Block: "block:01a2"}) || s[0].App != "" || s[0].TTY != "" {
+		t.Errorf("live sessions = %+v, want the Rex session and block from its environment", s)
 	}
 }
 

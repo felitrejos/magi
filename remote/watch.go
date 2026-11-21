@@ -11,10 +11,14 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -23,9 +27,12 @@ import (
 )
 
 const (
-	watcherFresh = 15 * time.Second
-	watchRetry   = time.Minute
-	watchBackoff = time.Minute
+	watcherFresh  = 15 * time.Second
+	historyKept   = time.Hour
+	watchRetry    = time.Minute
+	watchBackoff  = time.Minute
+	tailscaleWait = 5 * time.Second
+	tailnetEvery  = 30 * time.Second
 )
 
 type wanted struct {
@@ -163,9 +170,10 @@ func watch() error {
 		quit()
 	}()
 	go heartbeat(logger, quit)
+	go followTailnet(logger)
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		watchHost(newWatcher(local.Name(), nil, logger, ""), "", func() (sh.Machine, error) { return local, nil })
+		watchHost(newWatcher(local.Name(), "", nil, logger, ""), "", func() (sh.Machine, error) { return local, nil })
 	})
 	for _, name := range cfg.Order {
 		host := cfg.host(name)
@@ -174,7 +182,7 @@ func watch() error {
 			return err
 		}
 		wg.Go(func() {
-			watchHost(newWatcher(name, nil, logger, string(said)), local.Name(), func() (sh.Machine, error) {
+			watchHost(newWatcher(name, host.SSH, nil, logger, string(said)), local.Name(), func() (sh.Machine, error) {
 				return newRemote(context.Background(), host)
 			})
 		})
@@ -200,6 +208,8 @@ func heartbeat(logger *log.Logger, restart func()) {
 	}
 	self, _ := filepath.EvalSymlinks(link)
 	config, _ := os.ReadFile(path)
+	var appTried time.Time
+	var appCurrent, appUpdating atomic.Bool
 	for range time.Tick(heartbeatEvery) {
 		moves, err := sweepMoves()
 		if err != nil {
@@ -221,6 +231,13 @@ func heartbeat(logger *log.Logger, restart func()) {
 			logger.Printf("%s; restarting once no session is being taken back", changed)
 			taking.Lock()
 			restart()
+		} else if !appCurrent.Load() && !appUpdating.Load() && time.Since(appTried) >= time.Hour {
+			appTried = time.Now()
+			appUpdating.Store(true)
+			go func() {
+				appCurrent.Store(updateApp(logger))
+				appUpdating.Store(false)
+			}()
 		}
 	}
 }
@@ -244,23 +261,59 @@ func watchHost(w *watcher, me string, connect func() (sh.Machine, error)) {
 }
 
 type watcher struct {
-	name   string
-	m      sh.Machine
-	copies string
-	logger *log.Logger
-	live   liveMachine
-	block  []string
-	usage  map[int]use
+	name     string
+	m        sh.Machine
+	copies   string
+	logger   *log.Logger
+	live     liveMachine
+	block    []string
+	measured bool
+	usage    map[int]use
+	cpu      map[string][]cpuReading
+	ticks    ticks
+	traffic  traffic
+}
+
+type ticks struct {
+	busy, total int64
+}
+
+type traffic struct {
+	iface          string
+	received, sent int64
+	at             time.Time
 }
 
 type liveMachine struct {
 	Answering bool        `json:"answering"`
 	Heard     time.Time   `json:"heard,omitzero"`
+	SSH       string      `json:"ssh,omitempty"`
 	Cores     int         `json:"cores"`
 	Load      float64     `json:"load"`
 	Memory    space       `json:"memory"`
 	Disk      space       `json:"disk"`
+	Pressure  string      `json:"pressure,omitempty"`
+	Swap      space       `json:"swap,omitzero"`
+	BootedAt  time.Time   `json:"bootedAt,omitzero"`
+	Battery   *battery    `json:"battery,omitempty"`
+	Critical  *float64    `json:"critical,omitempty"`
+	Relayed   bool        `json:"relayed,omitempty"`
+	History   []reading   `json:"history,omitempty"`
 	Sessions  []liveEntry `json:"sessions"`
+}
+
+type reading struct {
+	At       int64    `json:"at"`
+	CPU      *int     `json:"cpu,omitempty"`
+	Temp     *float64 `json:"temp,omitempty"`
+	Thermal  *int     `json:"thermal,omitempty"`
+	Received *int64   `json:"rx,omitempty"`
+	Sent     *int64   `json:"tx,omitempty"`
+}
+
+type cpuReading struct {
+	At  int64 `json:"at"`
+	CPU int   `json:"cpu"`
 }
 
 type space struct {
@@ -268,16 +321,37 @@ type space struct {
 	TotalMB int `json:"totalMB"`
 }
 
+type battery struct {
+	Percent   int  `json:"percent"`
+	OnBattery bool `json:"onBattery"`
+}
+
 type liveEntry struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Folder    string    `json:"folder"`
-	State     string    `json:"state"`
-	WaitingOn string    `json:"waitingOn,omitempty"`
-	Since     time.Time `json:"since,omitzero"`
-	CPU       int       `json:"cpu"`
-	MemoryMB  int       `json:"memoryMB"`
-	pid       int
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Folder        string    `json:"folder"`
+	State         string    `json:"state"`
+	WaitingOn     string    `json:"waitingOn,omitempty"`
+	Since         time.Time `json:"since,omitzero"`
+	RemoteControl string    `json:"remoteControl,omitempty"`
+	HostSession   string    `json:"hostSession,omitempty"`
+	location
+	CPU        int          `json:"cpu"`
+	MemoryMB   int          `json:"memoryMB"`
+	CPUHistory []cpuReading `json:"cpuHistory,omitempty"`
+	pid        int
+}
+
+type location struct {
+	Tmux string `json:"tmux,omitempty"`
+	Rex  *rex   `json:"rex,omitempty"`
+	App  string `json:"app,omitempty"`
+	TTY  string `json:"tty,omitempty"`
+}
+
+type rex struct {
+	Session string `json:"session"`
+	Block   string `json:"block"`
 }
 
 type use struct {
@@ -286,12 +360,28 @@ type use struct {
 	cpu, memoryMB int
 }
 
-func newWatcher(name string, m sh.Machine, logger *log.Logger, copies string) *watcher {
-	return &watcher{name: name, m: m, copies: copies, logger: logger, live: liveMachine{Sessions: []liveEntry{}}}
+func newWatcher(name, ssh string, m sh.Machine, logger *log.Logger, copies string) *watcher {
+	w := &watcher{name: name, m: m, copies: copies, logger: logger, cpu: map[string][]cpuReading{}}
+	if path, err := livePath(name); err == nil {
+		store.ReadJSON(path, &w.live)
+	}
+	for _, s := range w.live.Sessions {
+		w.cpu[s.ID] = s.CPUHistory
+	}
+	w.live.SSH, w.live.Answering, w.live.Sessions = ssh, false, []liveEntry{}
+	return w
+}
+
+func recent[T any](readings []T, at func(T) int64, now time.Time) []T {
+	from := now.Add(-historyKept).Unix()
+	for len(readings) > 0 && at(readings[0]) < from {
+		readings = readings[1:]
+	}
+	return readings
 }
 
 func (w *watcher) follow(me string) error {
-	w.block = nil
+	w.block, w.measured = nil, false
 	cmd := w.m.Command(watchScript, me, w.m.Claude(), w.copies)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -323,7 +413,7 @@ func (w *watcher) follow(me string) error {
 func (w *watcher) hear(line string, now time.Time) {
 	kind, rest, _ := strings.Cut(line, " ")
 	switch kind {
-	case "claude", "waiting":
+	case "claude", "waiting", "place":
 		w.block = append(w.block, line)
 		return
 	case "sessions":
@@ -333,6 +423,10 @@ func (w *watcher) hear(line string, now time.Time) {
 			w.logger.Printf("%s: unreadable stats %q: %v", w.name, rest, err)
 			return
 		}
+		w.measured = true
+	}
+	if !w.measured {
+		return
 	}
 	w.live.Answering, w.live.Heard = true, now
 	if err := w.save(); err != nil {
@@ -343,6 +437,7 @@ func (w *watcher) hear(line string, now time.Time) {
 func (w *watcher) sessions() {
 	var sessions []liveSession
 	waiting := map[int]string{}
+	places := map[int]location{}
 	for _, line := range w.block {
 		kind, rest, _ := strings.Cut(line, " ")
 		switch kind {
@@ -357,27 +452,71 @@ func (w *watcher) sessions() {
 			for _, s := range listed {
 				waiting[s.PID] = s.WaitingFor
 			}
+		case "place":
+			pid, rest, _ := strings.Cut(rest, " ")
+			key, value, _ := strings.Cut(rest, " ")
+			n, _ := strconv.Atoi(pid)
+			p := places[n]
+			switch key {
+			case "tmux":
+				p.Tmux = value
+			case "rex":
+				session, block, _ := strings.Cut(value, " ")
+				p.Rex = &rex{Session: session, Block: block}
+			case "app":
+				p.App = value
+			case "tty":
+				p.TTY = value
+			}
+			places[n] = p
 		}
 	}
 	w.block = nil
 	entries := []liveEntry{}
+	at := map[string]int{}
 	for _, s := range sessions {
-		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], pid: s.PID}
+		e := liveEntry{ID: s.SessionID, Title: sessionTitle(s), Folder: s.Cwd, State: s.Status, WaitingOn: waiting[s.PID], RemoteControl: s.remoteControl(), location: places[s.PID], pid: s.PID}
+		if s.Entrypoint == "claude-desktop" {
+			e.HostSession = s.HostSessionID
+		}
 		if s.StatusAt > 0 {
 			e.Since = time.UnixMilli(s.StatusAt)
 		}
+		if i, ok := at[e.ID]; ok {
+			if e.Since.After(entries[i].Since) {
+				entries[i] = e
+			}
+			continue
+		}
+		at[e.ID] = len(entries)
 		entries = append(entries, e)
 	}
 	w.live.Sessions = entries
 }
 
 func (w *watcher) stats(line string, now time.Time) error {
-	l := &w.live
-	if _, err := fmt.Sscan(line, &l.Cores, &l.Load, &l.Memory.UsedMB, &l.Memory.TotalMB, &l.Disk.UsedMB, &l.Disk.TotalMB); err != nil {
+	l, t, n := w.live, w.ticks, w.traffic
+	var booted int64
+	if _, err := fmt.Sscan(line, &l.Cores, &l.Load, &l.Memory.UsedMB, &l.Memory.TotalMB, &l.Disk.UsedMB, &l.Disk.TotalMB, &l.Swap.UsedMB, &l.Swap.TotalMB, &booted); err != nil {
 		return err
 	}
+	l.BootedAt, l.Pressure, l.Battery, l.Critical = time.Unix(booted, 0), "", nil, nil
+	l.Relayed = relayed(l.SSH)
+	r := reading{At: now.Unix()}
+	ids := map[int]string{}
+	cpu := map[string][]cpuReading{}
+	for _, s := range l.Sessions {
+		ids[s.pid] = s.ID
+		cpu[s.ID] = w.cpu[s.ID]
+	}
 	usage := map[int]use{}
-	for _, field := range strings.Fields(line)[6:] {
+	for _, field := range strings.Fields(line)[9:] {
+		if key, value, ok := strings.Cut(field, "="); ok {
+			if err := measure(key, value, now, &l, &r, &t, &n); err != nil {
+				return err
+			}
+			continue
+		}
 		var pid int
 		u := use{at: now}
 		if _, err := fmt.Sscanf(field, "%d:%g:%d", &pid, &u.seconds, &u.memoryMB); err != nil {
@@ -385,17 +524,117 @@ func (w *watcher) stats(line string, now time.Time) error {
 		}
 		if last, ok := w.usage[pid]; ok {
 			u.cpu = int(math.Round(max(0, (u.seconds-last.seconds)/now.Sub(last.at).Seconds()*100)))
+			if id, ok := ids[pid]; ok {
+				cpu[id] = append(cpu[id], cpuReading{At: now.Unix(), CPU: u.cpu})
+			}
 		}
 		usage[pid] = u
 	}
-	w.usage = usage
+	for id, readings := range cpu {
+		cpu[id] = recent(readings, func(r cpuReading) int64 { return r.At }, now)
+	}
+	l.History = recent(append(l.History, r), func(r reading) int64 { return r.At }, now)
+	w.live, w.ticks, w.traffic, w.usage, w.cpu = l, t, n, usage, cpu
 	return nil
+}
+
+func measure(key, value string, now time.Time, l *liveMachine, r *reading, cpu *ticks, net *traffic) error {
+	switch key {
+	case "pressure":
+		l.Pressure = value
+	case "battery":
+		l.Battery = &battery{}
+		_, err := fmt.Sscanf(value, "%d:%t", &l.Battery.Percent, &l.Battery.OnBattery)
+		return err
+	case "cpu":
+		r.CPU = new(int)
+		_, err := fmt.Sscan(value, r.CPU)
+		return err
+	case "ticks":
+		var t ticks
+		if _, err := fmt.Sscanf(value, "%d:%d", &t.busy, &t.total); err != nil {
+			return err
+		}
+		if cpu.total > 0 && t.total > cpu.total {
+			r.CPU = new(int(math.Round(float64(t.busy-cpu.busy) / float64(t.total-cpu.total) * 100)))
+		}
+		*cpu = t
+	case "temp":
+		r.Temp = new(float64)
+		var critical float64
+		n, err := fmt.Sscanf(value, "%g:%g", r.Temp, &critical)
+		if n == 0 {
+			return err
+		}
+		if n == 2 {
+			l.Critical = &critical
+		}
+	case "thermal":
+		r.Thermal = new(int)
+		_, err := fmt.Sscan(value, r.Thermal)
+		return err
+	case "net":
+		t := traffic{at: now}
+		if _, err := fmt.Sscanf(value, "%d:%d:%s", &t.received, &t.sent, &t.iface); err != nil {
+			return err
+		}
+		if t.iface == net.iface && t.received >= net.received && t.sent >= net.sent {
+			seconds := now.Sub(net.at).Seconds()
+			r.Received, r.Sent = new(int64(math.Round(float64(t.received-net.received)/seconds))), new(int64(math.Round(float64(t.sent-net.sent)/seconds)))
+		}
+		*net = t
+	}
+	return nil
+}
+
+type peer struct {
+	HostName, DNSName, CurAddr, Relay string
+	TailscaleIPs                      []string
+	Online                            bool
+}
+
+var tailnet struct {
+	sync.Mutex
+	peers map[string]peer
+}
+
+func followTailnet(logger *log.Logger) {
+	for {
+		readTailnet(logger)
+		time.Sleep(tailnetEvery)
+	}
+}
+
+func readTailnet(logger *log.Logger) {
+	var status struct{ Peer map[string]peer }
+	ctx, cancel := context.WithTimeout(context.Background(), tailscaleWait)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "tailscale", "status", "--json").Output(); err == nil {
+		if err := json.Unmarshal(out, &status); err != nil {
+			logger.Printf("tailscale's status is unreadable: %v", err)
+		}
+	}
+	tailnet.Lock()
+	defer tailnet.Unlock()
+	tailnet.peers = status.Peer
+}
+
+func relayed(ssh string) bool {
+	host := ssh[strings.LastIndex(ssh, "@")+1:]
+	tailnet.Lock()
+	defer tailnet.Unlock()
+	for _, p := range tailnet.peers {
+		if p.HostName == host || strings.HasPrefix(p.DNSName, host+".") || slices.Contains(p.TailscaleIPs, host) {
+			return p.Online && p.CurAddr == "" && p.Relay != ""
+		}
+	}
+	return false
 }
 
 func (w *watcher) save() error {
 	for i := range w.live.Sessions {
 		s := &w.live.Sessions[i]
-		s.CPU, s.MemoryMB = w.usage[s.pid].cpu, w.usage[s.pid].memoryMB
+		s.CPU, s.MemoryMB, s.CPUHistory = w.usage[s.pid].cpu, w.usage[s.pid].memoryMB, w.cpu[s.ID]
 	}
 	path, err := livePath(w.name)
 	if err != nil {

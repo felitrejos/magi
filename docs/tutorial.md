@@ -19,8 +19,8 @@ Run these in Claude Code on your Mac.
 
 Then say "set up magi with my homelab". Claude tells you what it will
 install and waits for your yes. Setup installs the plugin on `homelab`,
-starts a background watcher on your Mac, checks both machines, and moves a
-throwaway session there and back. That takes a minute or two and three
+starts a background watcher on your Mac, installs the menu bar app there,
+checks both machines, and moves a throwaway session there and back. That takes a minute or two and three
 short Claude turns on your account. When everything passes, the result
 ends with a line that starts "magi works with homelab".
 
@@ -73,6 +73,28 @@ the file needs a new yes.
 After that, each move runs `setup` and each service in a tmux pane beside
 the session. After a handoff, `localhost:3000` on the machine you left
 reaches the session's server until the session comes back.
+
+## 6. Use the menu bar app
+
+Setup put magi's app in `/Applications` and opened it. It needs macOS 26
+or later. The first time, a window checks that your machines answer and
+offers to open magi at login. You can skip both steps. The app's icon in
+the menu bar gets a badge when a session is waiting on you.
+
+- **Click the icon.** The panel lists the sessions on all your machines,
+  the waiting ones first. Click a session to open it where it runs. The
+  first time that is a Ghostty or Terminal window, macOS asks once
+  whether magi may control that app. Allow it, then click again if
+  nothing came to the front.
+- **Click a machine's tile** at the bottom for its CPU, memory,
+  temperature and disk. Click it again to go back.
+- **Notifications.** The first time a session starts waiting, macOS asks
+  whether magi may send notifications. After that you get one per wait,
+  and a click on it opens the session.
+- **Settings.** Right-click the icon and choose Settings. General has
+  Open at Login, which is off until you turn it on.
+
+The app updates by itself when the plugin does.
 
 "Run the tests on my homelab" sends work there and brings the result
 back. The [README](../README.md#what-you-can-ask) lists what else you can

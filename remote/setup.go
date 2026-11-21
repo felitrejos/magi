@@ -26,13 +26,18 @@ var projectFolders = []string{"~/Developer", "~/developer", "~/Projects", "~/pro
 const findClaudeScript = `for c in "$HOME/.local/bin/claude" "$(command -v claude 2>/dev/null)" /opt/homebrew/bin/claude /usr/local/bin/claude; do if [ -x "$c" ]; then printf '%s' "$c" | sed "s|^$HOME/|~/|"; break; fi; done`
 
 type setupInput struct {
-	Host       string   `json:"host" jsonschema:"the name the user calls that machine by, for example homelab; it's how they'll say \"hand this off to my homelab\""`
+	Host       string   `json:"host,omitempty" jsonschema:"the name the user calls that machine by, for example homelab; it's how they'll say \"hand this off to my homelab\". Leave out to set up only this machine, such as installing the menu bar app on this Mac"`
 	SSH        string   `json:"ssh,omitempty" jsonschema:"the ssh destination, such as user@homelab or a Tailscale name; defaults to host, or to what the config already has"`
 	Roots      []string `json:"roots,omitempty" jsonschema:"folders projects live in on that machine, each starting with / or ~/; new projects go in the first. Leave out to keep what the config has, or to use the usual folders that exist there, such as ~/developer or ~/projects"`
 	LocalRoots []string `json:"local_roots,omitempty" jsonschema:"folders projects live in on this machine. Leave out to keep what the config has, or to use the usual folders that exist here"`
 }
 
 func setupMachine(in setupInput) (string, error) {
+	if in.Host == "" {
+		var b strings.Builder
+		setUpHere(&b)
+		return b.String(), nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	local, err := sh.NewLocal(ctx)
@@ -109,9 +114,7 @@ func setupMachine(in setupInput) (string, error) {
 	fmt.Fprintf(&b, "Saved %s to %s.\n", in.Host, path)
 	plugin, note, pluginErr := installPlugin(remote, sh.ExpandHome(h.Claude, remote.Home()))
 	fmt.Fprint(&b, note)
-	if err := installWatch(&b); err != nil {
-		(&checks{out: &b}).fail("magi watch couldn't start here", err.Error())
-	}
+	setUpHere(&b)
 	if err := doctor(cfg, in.Host, h, plugin, pluginErr, &b); err != nil {
 		fmt.Fprintf(&b, "\n%v, so the round trip didn't run. Fix what failed above, then call setup_machine again.\n", err)
 		return b.String(), nil
@@ -120,6 +123,15 @@ func setupMachine(in setupInput) (string, error) {
 		fmt.Fprintf(&b, "\nThe round trip to %s failed: %v\n", in.Host, err)
 	}
 	return b.String(), nil
+}
+
+func setUpHere(b *strings.Builder) {
+	if err := installWatch(b); err != nil {
+		failLine(b, "magi watch couldn't start here", err.Error())
+	}
+	if err := setUpApp(b); err != nil {
+		failLine(b, "magi's menu bar app wasn't installed", err.Error())
+	}
 }
 
 func existing(m sh.Machine, candidates []string) []string {
@@ -220,7 +232,11 @@ func (c *checks) pass(what string) {
 
 func (c *checks) fail(what, fix string) {
 	c.failed++
-	fmt.Fprintf(c.out, "  ✗ %s\n      %s\n", what, fix)
+	failLine(c.out, what, fix)
+}
+
+func failLine(out io.Writer, what, fix string) {
+	fmt.Fprintf(out, "  ✗ %s\n      %s\n", what, fix)
 }
 
 func (c *checks) warn(what, note string) {

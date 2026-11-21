@@ -1,0 +1,42 @@
+name: magi
+options:
+  deploymentTarget:
+    macOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    CODE_SIGN_IDENTITY: "-"
+targets:
+  magi:
+    type: application
+    platform: macOS
+    sources: [Magi]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.felitrejos.magi
+        GENERATE_INFOPLIST_FILE: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: magi.entitlements
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSAppleEventsUsageDescription: magi brings the terminal window a session runs in to the front, or opens one.
+    scheme:
+      testTargets: [magiTests]
+  magiTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MagiTests
+        excludes: [Fixtures]
+      - Magi/Glance.swift
+      - Magi/Live.swift
+      - Magi/Open.swift
+      - Magi/Store.swift
+      - Magi/PanelView.swift
+      - Magi/Scope.swift
+      - Magi/Settings.swift
+      - Magi/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.felitrejos.magi.tests
+        GENERATE_INFOPLIST_FILE: YES

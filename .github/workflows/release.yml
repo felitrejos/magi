@@ -11,8 +11,46 @@ jobs:
   checks:
     uses: ./.github/workflows/ci.yml
 
-  release:
+  app:
     needs: checks
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/xcodegen.sh "$RUNNER_TEMP"
+      - name: Import the signing identity
+        env:
+          P12: ${{ secrets.MAGI_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.MAGI_SIGNING_P12_PASSWORD }}
+        run: |
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          printf %s "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          password=${P12_PASSWORD//\\/\\\\}
+          password=${password//\"/\\\"}
+          on_stdin() { printf '%s\n' "$1" | security -q -i; }
+          on_stdin "create-keychain -p \"$password\" \"$keychain\""
+          security set-keychain-settings -lut 21600 "$keychain"
+          on_stdin "unlock-keychain -p \"$password\" \"$keychain\""
+          on_stdin "import \"$RUNNER_TEMP/signing.p12\" -k \"$keychain\" -f pkcs12 -P \"$password\" -T /usr/bin/codesign"
+          on_stdin "set-key-partition-list -S apple-tool:,apple: -s -k \"$password\" \"$keychain\"" >/dev/null
+      - name: Build, sign and package the menu bar app
+        run: mac/release.sh "$(jq -r .version plugin/.claude-plugin/plugin.json)" "$RUNNER_TEMP/signing.keychain-db" "$GITHUB_WORKSPACE/dist"
+      - name: Remove the signing identity
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/signing.p12"
+          [ ! -e "$RUNNER_TEMP/signing.keychain-db" ] || security delete-keychain "$RUNNER_TEMP/signing.keychain-db"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app
+          path: dist/magi.app.zip
+          if-no-files-found: error
+
+  release:
+    needs: [checks, app]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -30,6 +68,10 @@ jobs:
         run: |
           version=$(jq -r .version plugin/.claude-plugin/plugin.json)
           [ "$TAG" = "v$version" ] || { echo "tag $TAG doesn't match plugin.json's version $version" >&2; exit 1; }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: app
+          path: dist
       - name: Build and package
         working-directory: remote
         env:
@@ -43,7 +85,7 @@ jobs:
             GOOS=${target%_*} GOARCH=${target#*_} go build -trimpath -ldflags "-s -w -X main.version=${TAG#v}" -o "$out/magi" .
             tar -czf "$GITHUB_WORKSPACE/dist/magi_$target.tar.gz" -C "$out" magi -C "$GITHUB_WORKSPACE" LICENSE README.md
           done
-          (cd "$GITHUB_WORKSPACE/dist" && shasum -a 256 magi_*.tar.gz > checksums.txt)
+          (cd "$GITHUB_WORKSPACE/dist" && shasum -a 256 magi_*.tar.gz magi.app.zip > checksums.txt)
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
