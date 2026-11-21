@@ -34,7 +34,7 @@ jobs:
           cache-dependency-path: remote/go.sum
       - run: if [ "$RUNNER_OS" = macOS ]; then brew install tmux; else sudo apt-get install -y tmux fish tcsh git-lfs; fi
       - if: runner.os == 'Linux'
-        run: shellcheck --severity=style scripts/*.sh internal/*/scripts/*.sh ../ci/*.sh ../plugin/bin/magi
+        run: shellcheck --severity=style scripts/*.sh internal/*/scripts/*.sh ../ci/*.sh ../mac/release.sh ../plugin/bin/magi
       - run: go vet ./... && go vet -tags contract ./...
       - if: runner.os == 'Linux'
         run: |
@@ -55,11 +55,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: |
-          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip
-          echo "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c
-          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - run: ../ci/xcodegen.sh "$RUNNER_TEMP"
       - run: xcodegen generate
       - run: brew install --cask ghostty
       - run: xcodebuild -project magi.xcodeproj -scheme magi -derivedDataPath build -destination platform=macOS test

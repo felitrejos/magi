@@ -6,7 +6,7 @@ echo "== GNU"
 docker run --rm -v "$PWD":/src -w /src/remote golang:1.27 sh -ec "
   apt-get update -qq >/dev/null && apt-get install -y -qq tmux fish tcsh git-lfs shellcheck >/dev/null
   useradd -m -u $uid ci
-  su ci -c 'export PATH=/usr/local/go/bin:\$PATH GOFLAGS=-buildvcs=false GOTOOLCHAIN=auto; $setup; shellcheck --severity=style scripts/*.sh internal/*/scripts/*.sh ../ci/*.sh ../plugin/bin/magi && go vet ./... && go test -count=1 ./...'
+  su ci -c 'export PATH=/usr/local/go/bin:\$PATH GOFLAGS=-buildvcs=false GOTOOLCHAIN=auto; $setup; shellcheck --severity=style scripts/*.sh internal/*/scripts/*.sh ../ci/*.sh ../mac/release.sh ../plugin/bin/magi && go vet ./... && go test -count=1 ./...'
 "
 echo "== BusyBox"
 docker run --rm -v "$PWD":/src -w /src/remote alpine:3.20 sh -ec "

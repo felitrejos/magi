@@ -7,7 +7,6 @@ settings:
     SWIFT_VERSION: "6.0"
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     CODE_SIGN_IDENTITY: "-"
-    ENABLE_HARDENED_RUNTIME: NO
 targets:
   magi:
     type: application
@@ -17,6 +16,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.felitrejos.magi
         GENERATE_INFOPLIST_FILE: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: magi.entitlements
         INFOPLIST_KEY_LSUIElement: YES
         INFOPLIST_KEY_NSAppleEventsUsageDescription: magi brings the terminal window a session runs in to the front, or opens one.
     scheme:
