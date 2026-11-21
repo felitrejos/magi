@@ -116,6 +116,71 @@ magi settles a move that was cut off by itself, and
 copies were used after the cut, so magi stops neither. Claude tells you
 where each one is, and you choose.
 
+## The menu bar app
+
+**The app's icon isn't in the menu bar**
+
+Ask Claude to "set up magi on this Mac". Setup installs the app when it
+is missing and opens it when it isn't running, and its result says which.
+The app needs macOS 26 or later. On a MacBook with many menu bar icons,
+macOS hides the ones that don't fit beside the notch, so quit another
+menu bar app to make room. After you quit magi's app yourself, open it
+again from `/Applications`.
+
+**`installing the menu bar app needs an administrator account`**
+
+Only an administrator can write to `/Applications`. Log in to an
+administrator account on the Mac, open Claude Code and ask it to set up
+magi there. The rest of magi works without the app.
+
+**`/Applications/magi.app isn't magi's menu bar app, so magi leaves it alone`**
+
+Another app with that name is in `/Applications`. Move it somewhere else
+and ask Claude to set up magi again.
+
+**`magi.app.zip doesn't match its checksum`** or **`isn't signed by magi's certificate`**
+
+magi installed nothing. Ask again, and report it if it repeats.
+
+**macOS says the app can't be opened or that Apple can't check it**
+
+That copy came from a browser download, which macOS blocks because the
+app isn't notarized. Delete it and ask Claude to set up magi, which
+installs the same app without that block.
+
+**No notification when a session starts waiting**
+
+In the app's Settings, Notifications, check that Notify When a Session
+Waits is on. If it says notifications for magi are off in System
+Settings, click Open Notification Settings and allow them. macOS asks
+for this permission the first time a session starts waiting, and
+quitting the app while it asks counts as a no. A Focus still holds
+notifications back. Sessions already waiting when the app starts get no
+notification.
+
+**A click on a session does nothing, or beeps**
+
+The first time a session opens in Ghostty or Terminal, macOS asks
+whether magi may control that app. Allow it and click again. If you
+said no, turn it on under System Settings, Privacy & Security,
+Automation, magi. A row with no app icon has nowhere to open: the
+session isn't in a terminal the app can reach and has no Remote Control
+link. When a click beeps, Console shows the reason under the subsystem
+`io.github.felitrejos.magi`.
+
+**Open at Login is on but the app didn't start**
+
+Open Settings, General. If it says macOS needs your approval, click
+Open Login Items and allow magi. If the switch is on and it still
+doesn't start, turn it off and on again.
+
+**A machine says `not answering`**
+
+The app shows what the watcher last heard. Check that the machine is on
+and reachable, then ask "check magi on my homelab". If every machine
+says it, the watcher on this Mac isn't running: ask Claude to set up
+magi again, and read `~/Library/Logs/magi-watch.log`.
+
 ## Still stuck
 
 Ask "check magi on my homelab". Claude runs every check and the round
