@@ -273,11 +273,11 @@ esac
 
 func hourOfStats(w *watcher, start time.Time) {
 	for i, at := range []time.Duration{0, 30 * time.Second, time.Hour, time.Hour + 30*time.Second} {
-		w.hear(fmt.Sprintf("stats 10 %d 100 200 300 400 0 0 1794928938 42:%d:150", i, 3*i), start.Add(at))
+		w.hear(fmt.Sprintf("stats 10 %d 100 200 300 400 0 0 1794928938 42:%d:150 cpu=%d", i, 3*i, 10*i), start.Add(at))
 	}
 }
 
-func TestTheLiveFileKeepsTheLastHourOfLoadMemoryAndSessionCPU(t *testing.T) {
+func TestTheLiveFileKeepsTheLastHourOfMachineAndSessionCPU(t *testing.T) {
 	newFixture(t)
 	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
 	w.live.Sessions = []liveEntry{{ID: "a", pid: 42}}
@@ -285,8 +285,8 @@ func TestTheLiveFileKeepsTheLastHourOfLoadMemoryAndSessionCPU(t *testing.T) {
 	hourOfStats(w, start)
 	live := readLive(t, "server")
 	from := start.Add(30 * time.Second).Unix()
-	want := []reading{{At: from, Load: 1, MemoryMB: 100}, {At: from + 3570, Load: 2, MemoryMB: 100}, {At: from + 3600, Load: 3, MemoryMB: 100}}
-	if fmt.Sprint(live.History) != fmt.Sprint(want) {
+	want := []reading{{At: from, CPU: new(10)}, {At: from + 3570, CPU: new(20)}, {At: from + 3600, CPU: new(30)}}
+	if !reflect.DeepEqual(live.History, want) {
 		t.Errorf("history = %+v, want the readings of the last hour %+v", live.History, want)
 	}
 	wantCPU := []cpuReading{{At: from, CPU: 10}, {At: from + 3570, CPU: 0}, {At: from + 3600, CPU: 10}}

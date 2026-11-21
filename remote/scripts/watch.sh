@@ -50,7 +50,7 @@ places() {
       tmux list-panes -a -F 'pane #{pane_pid} #{pane_id}' 2>/dev/null
       ps -A -o pid= -o ppid=
       for pid in $1; do
-        tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n "s/^REX_SESSION=/rex $pid session /p; s/^REX_BLOCK=/rex $pid block /p"
+        tr '\0' '\n' 2>/dev/null < "/proc/$pid/environ" | sed -n "s/^REX_SESSION=/rex $pid session /p; s/^REX_BLOCK=/rex $pid block /p"
       done
     fi
   } | awk -v pids="$1" -v os="$os" '
@@ -59,7 +59,8 @@ places() {
     }
     $1 == "pane" { pane[$2] = $3 }
     $1 == "client" && $2 >= active { active = $2; client = $3; seat = $4 }
-    $1 == "rex" { rex[$2, $3] = $4 }
+    $1 == "rex" && $3 == "session" { rs[$2] = $4 }
+    $1 == "rex" && $3 == "block" { rb[$2] = $4 }
     $1 ~ /^[0-9]+$/ { parent[$1] = $2; tty[$1] = $3 }
     END {
       n = split(pids, p, " ")
@@ -72,7 +73,7 @@ places() {
           top[s] = client
         } else {
           if (tty[s] ~ /^tty/) place(s, "tty", "/dev/" tty[s])
-          if ((s, "session") in rex && (s, "block") in rex) place(s, "rex", rex[s, "session"] " " rex[s, "block"])
+          if (s in rs && s in rb) place(s, "rex", rs[s] " " rb[s])
           top[s] = s
         }
         for (q = top[s]; q > 1; q = parent[q] + 0) chain[q] = 1
@@ -116,18 +117,17 @@ sample() {
   fi
   read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
   printf ' ticks=%s:%s' $((user + nice + system + irq + softirq + steal)) $((user + nice + system + idle + iowait + irq + softirq + steal))
-  if [ -n "$sensor" ]; then
-    read -r milli < "$sensor"
+  if [ -n "$sensor" ] && read -r milli 2>/dev/null < "$sensor"; then
     printf ' temp=%d.%d' $((milli / 1000)) $((milli % 1000 / 100))
     if [ -n "$critical" ]; then printf ':%d' $((critical / 1000)); fi
   fi
   iface=
-  while read -r name destination _; do
-    case $name in lo | veth* | docker* | br-* | tailscale*) continue ;; esac
-    if [ -z "$iface" ] && [ "$destination" = 00000000 ]; then iface=$name; fi
+  while read -r device destination _; do
+    case $device in lo | veth* | docker* | br-* | tailscale*) continue ;; esac
+    if [ -z "$iface" ] && [ "$destination" = 00000000 ]; then iface=$device; fi
   done < /proc/net/route
-  while IFS=': ' read -r name received _ _ _ _ _ _ _ sent _; do
-    if [ "$name" = "$iface" ]; then printf ' net=%s:%s:%s' "$received" "$sent" "$iface"; fi
+  while IFS=': ' read -r device received _ _ _ _ _ _ _ sent _; do
+    if [ "$device" = "$iface" ]; then printf ' net=%s:%s:%s' "$received" "$sent" "$iface"; fi
   done < /proc/net/dev
 }
 while :; do

@@ -294,8 +294,6 @@ type liveMachine struct {
 
 type reading struct {
 	At       int64    `json:"at"`
-	Load     float64  `json:"load"`
-	MemoryMB int      `json:"memoryMB"`
 	CPU      *int     `json:"cpu,omitempty"`
 	Temp     *float64 `json:"temp,omitempty"`
 	Thermal  *int     `json:"thermal,omitempty"`
@@ -494,7 +492,7 @@ func (w *watcher) stats(line string, now time.Time) error {
 	}
 	l.BootedAt, l.Pressure, l.Battery, l.Critical = time.Unix(booted, 0), "", nil, nil
 	l.Relayed = relayed(l.SSH)
-	r := reading{At: now.Unix(), Load: l.Load, MemoryMB: l.Memory.UsedMB}
+	r := reading{At: now.Unix()}
 	ids := map[int]string{}
 	cpu := map[string][]cpuReading{}
 	for _, s := range l.Sessions {
