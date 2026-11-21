@@ -2,7 +2,7 @@ import Charts
 import SwiftUI
 
 enum Module: String, CaseIterable, Identifiable {
-    case cpu, memory, temperature, disk, network, battery
+    case cpu, memory, temperature, disk, network
 
     var id: Self { self }
 
@@ -13,7 +13,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .temperature: "Temperature"
         case .disk: "Disk"
         case .network: "Network"
-        case .battery: "Battery"
         }
     }
 
@@ -24,7 +23,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .temperature: "\u{00B0}C on Linux, thermal pressure on a Mac"
         case .disk: "Space used on the home volume"
         case .network: "Download and upload speed"
-        case .battery: "Only on laptops"
         }
     }
 
@@ -35,7 +33,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .temperature: "thermometer.medium"
         case .disk: "internaldrive"
         case .network: "arrow.up.arrow.down"
-        case .battery: "battery.75percent"
         }
     }
 
@@ -46,13 +43,12 @@ enum Module: String, CaseIterable, Identifiable {
         case .temperature: [.orange, Color(red: 0.9, green: 0.35, blue: 0.1)]
         case .disk: [Color(white: 0.55), Color(white: 0.3)]
         case .network: [.cyan, .blue]
-        case .battery: [.green, Color(red: 0.2, green: 0.6, blue: 0.2)]
         }
     }
 }
 
 struct Modules: RawRepresentable, Equatable {
-    static let defaults = Modules([.cpu, .memory, .temperature, .disk, .battery])
+    static let defaults = Modules([.cpu, .memory, .temperature, .disk])
 
     var enabled: [Module]
 
@@ -166,11 +162,6 @@ extension Machine {
             let up = series { $0.tx.map(Double.init) }
             guard let received = down.last?.value, let sent = up.last?.value else { return nil }
             return Measure(module: module, title: "Network", value: "\u{2193} \(rate(received))", detail: "\u{2191} \(rate(sent))", headline: "\u{2193} \(rate(received))", visual: .traffic(down: down, up: up))
-        case .battery:
-            guard let battery else { return nil }
-            let left = battery.minutesLeft.map { Duration.seconds($0 * 60).formatted(.units(allowed: [.hours, .minutes], width: .narrow)) + " left" }
-            let health: Health = !battery.onBattery ? .fine : battery.percent < 10 ? .critical : battery.percent < 20 ? .warning : .fine
-            return Measure(module: module, title: "Battery", value: "\(battery.percent)", unit: "%", detail: battery.onBattery ? left ?? "On battery" : "On power", headline: "\(battery.percent)% battery", health: health, alerts: ["Battery low", "Battery very low"], visual: .bar(Double(battery.percent) / 100))
         }
     }
 }
@@ -225,20 +216,10 @@ struct Monitor: View {
     let now: Date
     @AppStorage("monitorModules") private var modules = Modules.defaults
 
-    var body: some View {
-        MonitorGrid(name: name, measures: machine.measures(modules.enabled), now: now)
-    }
-}
-
-struct MonitorGrid: View {
-    let name: String
-    let measures: [Measure]
-    let now: Date
-
     private var rows: [[Measure]] {
         var rows: [[Measure]] = []
         var pending: [Measure] = []
-        for measure in measures {
+        for measure in machine.measures(modules.enabled) {
             if measure.module == .network {
                 if !pending.isEmpty { rows.append(pending) }
                 rows.append([measure])
@@ -315,7 +296,10 @@ struct Card: View {
             Group {
                 switch measure.visual {
                 case let .spark(points, domain, _):
-                    Spark(points: points, domain: domain, color: tint, now: now)
+                    ZStack {
+                        Spark(points: points, domain: domain, color: tint, now: now)
+                            .id(name)
+                    }
                 case let .bar(fraction):
                     Level(fraction: fraction, tint: tint)
                 case let .steps(level):
@@ -365,8 +349,11 @@ struct WideCard: View {
             .animation(.easeOut(duration: 0.2), value: measure.value)
             Spacer(minLength: 0)
             if case let .traffic(down, up) = measure.visual {
-                Traffic(down: down, up: up, now: now)
-                    .frame(width: 180, height: 40)
+                ZStack {
+                    Traffic(down: down, up: up, now: now)
+                        .id(name)
+                }
+                .frame(width: 180, height: 40)
             }
         }
         .padding(10)

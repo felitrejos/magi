@@ -41,7 +41,6 @@ enum Pressure: String, Decodable {
 struct Battery: Decodable {
     let percent: Int
     let onBattery: Bool
-    let minutesLeft: Int?
 }
 
 struct Session: Decodable {
