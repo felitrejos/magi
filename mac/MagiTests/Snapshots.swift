@@ -74,7 +74,7 @@ struct Snapshots {
         let bare = try await store([:])
         let quiet = try await store(machines(sessions: false).mapValues { $0.merging(["answering": false]) { $1 } })
         UserDefaults.standard.set("cpu,memory,temperature,disk,network", forKey: "monitorModules")
-        let scenes = NSHostingSceneRepresentation { Settings { SettingsView(store: full) } }
+        let scenes = NSHostingSceneRepresentation { Settings { SettingsView(store: full, permission: Permission()) } }
         NSApplication.shared.addSceneRepresentation(scenes)
         let before = Set(NSApp.windows)
         scenes.environment.openSettings()

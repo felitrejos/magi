@@ -1,6 +1,7 @@
 import AppKit
 import ServiceManagement
 import SwiftUI
+import UserNotifications
 
 enum Chime {
     static let name = "Glass"
@@ -11,6 +12,23 @@ enum Chime {
         let sound = NSSound(named: UserDefaults.standard.string(forKey: "sound") ?? name)
         sound?.volume = Float(UserDefaults.standard.object(forKey: "volume") as? Double ?? volume)
         sound?.play()
+    }
+}
+
+@MainActor
+@Observable
+final class Permission {
+    private(set) var status = UNAuthorizationStatus.notDetermined
+
+    @discardableResult
+    func request() async -> Bool {
+        let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])) == true
+        await refresh()
+        return granted
+    }
+
+    func refresh() async {
+        status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
     }
 }
 
@@ -58,6 +76,7 @@ enum Pane: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     let store: Store
+    let permission: Permission
     @AppStorage("pane") private var pane = Pane.general
 
     var body: some View {
@@ -67,7 +86,9 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 15) {
                         switch pane {
                         case .general: General()
-                        case .notifications: SettingSection(title: "Sound") { Sound() }
+                        case .notifications:
+                            SettingSection(title: "Notifications") { Notify(permission: permission) }
+                            SettingSection(title: "Sound") { Sound() }
                         case .monitor: MonitorPane(store: store)
                         }
                     }
@@ -413,6 +434,31 @@ struct ModuleRow: View {
         .frame(height: 47)
         .contentShape(.rect)
         .accessibilityElement(children: .combine)
+    }
+}
+
+struct Notify: View {
+    let permission: Permission
+    @AppStorage("notifies") private var notifies = true
+
+    var body: some View {
+        SettingCard {
+            SettingRow(title: "Notify When a Session Waits", subtitle: permission.status == .denied ? "Notifications for magi are off in System Settings." : "Once, with what it waits on. Click it to open the session.") {
+                if permission.status == .denied {
+                    Button("Open Notification Settings") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier!)")!)
+                    }
+                    .buttonStyle(FillButton())
+                } else {
+                    SettingSwitch(isOn: $notifies)
+                }
+            }
+        }
+        .onChange(of: notifies) {
+            if notifies {
+                Task { await permission.request() }
+            }
+        }
     }
 }
 

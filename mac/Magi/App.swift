@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @main
 struct Magi: App {
@@ -14,7 +15,7 @@ struct Magi: App {
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(welcomed ? .suppressed : .presented)
         Settings {
-            SettingsView(store: app.store)
+            SettingsView(store: app.store, permission: app.permission)
         }
     }
 }
@@ -22,6 +23,7 @@ struct Magi: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = Store(home: .homeDirectory.appending(path: ".magi"))
+    let permission = Permission()
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let icon = NSImageView()
     private let count = NSImageView()
@@ -65,6 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.settings = { [weak self] in self?.openSettings() }
+        UNUserNotificationCenter.current().delegate = self
+        Task { await permission.refresh() }
         Task { [store] in
             for await glance in Observations({ Glance(store: store) }) where glance != shown {
                 show(glance)
@@ -80,6 +84,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task { await permission.refresh() }
+    }
+
     private func show(_ glance: Glance) {
         let dotted = UserDefaults.standard.bool(forKey: "dot") && !glance.waiting.isEmpty
         if dotted != self.dotted {
@@ -89,14 +97,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if glance.symbol != shown?.symbol {
             icon.image = NSImage(symbolName: glance.symbol, bundle: .main, variableValue: 0)
         }
-        if let shown {
-            let started = glance.waiting.filter { shown.waiting[$0.key] == nil }
-            if !started.isEmpty, UserDefaults.standard.bool(forKey: "playsSound") {
-                Chime.play()
-            }
-            for line in started.values.sorted() + shown.answering.subtracting(glance.answering).sorted().map({ "\($0) stopped answering" }) {
-                NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
-            }
+        let started = glance.started(after: shown)
+        if !started.isEmpty, UserDefaults.standard.bool(forKey: "playsSound") {
+            Chime.play()
+        }
+        if !started.isEmpty, UserDefaults.standard.object(forKey: "notifies") as? Bool ?? true {
+            notify(started)
+        }
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: glance.stopped(after: shown))
+        for line in started.values.map(\.announcement).sorted() + (shown?.answering.subtracting(glance.answering).sorted() ?? []).map({ "\($0) stopped answering" }) {
+            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
         }
         if glance.waiting.count != shown?.waiting.count {
             let digits = NSAttributedString(string: "\(glance.waiting.count)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)])
@@ -106,6 +116,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         count.isHidden = !UserDefaults.standard.bool(forKey: "showsCount") || glance.waiting.isEmpty
         item.button?.setAccessibilityLabel(glance.label)
         shown = glance
+    }
+
+    private func notify(_ started: [String: Waiting]) {
+        Task {
+            guard await permission.request() else { return }
+            for (id, waiting) in started where shown?.waiting[id] == waiting {
+                try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: waiting.content, trigger: nil))
+            }
+        }
+    }
+
+    fileprivate func respond(to id: String) {
+        guard let route = store.rows.first(where: { $0.id == id })?.route else { return open() }
+        Opener.open(route)
     }
 
     @objc private func clicked(_ button: NSStatusBarButton) {
@@ -175,25 +199,13 @@ extension AppDelegate: @MainActor NSStatusItemExpandedInterfaceDelegate {
     }
 }
 
-struct Glance: Equatable {
-    let waiting: [String: String]
-    let answering: Set<String>
-    let hasMachines: Bool
-
-    var symbol: String {
-        waiting.isEmpty ? answering.isEmpty ? "orbit.slash" : "orbit" : "orbit.badge"
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .list]
     }
 
-    @MainActor init(store: Store) {
-        waiting = Dictionary(uniqueKeysWithValues: store.rows.filter { $0.session.state == "waiting" }.map { ($0.id, "\($0.session.title) on \($0.machine) is waiting on you") })
-        answering = store.answering
-        hasMachines = !store.machines.isEmpty
-    }
-
-    var label: String {
-        if !waiting.isEmpty { return "magi, \(waiting.count) waiting on you" }
-        if !hasMachines { return "magi, not set up" }
-        return answering.isEmpty ? "magi, no machine is answering" : "magi"
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        await respond(to: response.notification.request.identifier)
     }
 }
 
