@@ -314,9 +314,8 @@ type space struct {
 }
 
 type battery struct {
-	Percent     int  `json:"percent"`
-	OnBattery   bool `json:"onBattery"`
-	MinutesLeft int  `json:"minutesLeft,omitempty"`
+	Percent   int  `json:"percent"`
+	OnBattery bool `json:"onBattery"`
 }
 
 type liveEntry struct {
@@ -509,9 +508,8 @@ func (w *watcher) measure(key, value string, r *reading, now time.Time) error {
 		l.Pressure = value
 	case "battery":
 		l.Battery = &battery{}
-		if n, err := fmt.Sscanf(value, "%d:%t:%d", &l.Battery.Percent, &l.Battery.OnBattery, &l.Battery.MinutesLeft); n < 2 {
-			return err
-		}
+		_, err := fmt.Sscanf(value, "%d:%t", &l.Battery.Percent, &l.Battery.OnBattery)
+		return err
 	case "cpu":
 		r.CPU = new(int)
 		_, err := fmt.Sscan(value, r.CPU)

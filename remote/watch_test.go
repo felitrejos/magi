@@ -200,8 +200,8 @@ func TestAMacReportsItsMemoryPressureSwapBootTimeBatteryAndSamples(t *testing.T)
 	if live.Pressure != "warning" || live.Swap != (space{UsedMB: 1095, TotalMB: 2048}) || !live.BootedAt.Equal(time.Unix(1794928938, 0)) {
 		t.Errorf("pressure %q, swap %+v, booted at %s; want warning, 1095 of 2048 MB, %s", live.Pressure, live.Swap, live.BootedAt, time.Unix(1794928938, 0))
 	}
-	if live.Battery == nil || *live.Battery != (battery{Percent: 85, OnBattery: true, MinutesLeft: 250}) {
-		t.Errorf("battery = %+v, want 85%%, on battery, 250 minutes left", live.Battery)
+	if live.Battery == nil || *live.Battery != (battery{Percent: 85, OnBattery: true}) {
+		t.Errorf("battery = %+v, want 85%%, on battery", live.Battery)
 	}
 	if last := live.History[len(live.History)-1]; last.CPU == nil || *last.CPU != 11 || last.Thermal == nil || *last.Thermal != 2 || !strings.HasSuffix(stats, " net=39134580381:6549722863:en0") {
 		t.Errorf("stats line %q, want the second iostat sample's 11%% busy, thermal pressure 2 and en0's link counters", stats)

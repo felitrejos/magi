@@ -122,7 +122,7 @@ while :; do
         return s
       }
       /^Now drawing from / { discharging = /Battery Power/; next }
-      /^ -InternalBattery/ { split($0, b, /\t|; /); battery = b[2] + 0; if (discharging && b[4] ~ /^[0-9]+:[0-9]+ remaining/) { split(b[4], r, /[: ]/); left = r[1] * 60 + r[2] } next }
+      /^ -InternalBattery/ { split($0, b, /\t|; /); battery = b[2] + 0; next }
       /^\/sys\/class\/power_supply\// { split($0, f, /[\/:]/); supply[f[5], f[6]] = f[7]; if (f[6] == "type") type[f[5]] = f[7]; next }
       NR == 1 { cores = $1 }
       NR == 2 { load = $1 }
@@ -143,7 +143,7 @@ while :; do
         }
         printf "%s %s %.0f %.0f %s %s %s", cores, load, used / 1048576, total / 1048576, disk, swap, booted
         if (pressure != "") printf " pressure=%s", pressure
-        if (battery != "") printf " battery=%d:%d%s", battery, discharging, (left == "" ? "" : ":" left)
+        if (battery != "") printf " battery=%d:%d", battery, discharging
         for (i = 1; i <= n; i++) printf " %s:%.2f:%.0f", r[i], c[r[i]], m[r[i]] / 1024
         print ""
       }')" "$(sample)"

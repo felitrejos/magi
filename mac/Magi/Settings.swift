@@ -59,9 +59,6 @@ enum Pane: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     let store: Store
     @AppStorage("pane") private var pane = Pane.general
-    @State private var heights: [Pane: CGFloat] = [:]
-    @State private var height: CGFloat?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         TabView(selection: $pane) {
@@ -78,14 +75,8 @@ struct SettingsView: View {
                     .padding(.top, 14)
                     .padding(.bottom, 20)
                     .fixedSize(horizontal: false, vertical: true)
-                    .onGeometryChange(for: CGFloat.self, of: \.size.height) { heights[pane] = $0 }
-                    .frame(width: 574, height: height, alignment: .top)
+                    .frame(width: 574)
                 }
-            }
-        }
-        .onChange(of: heights[pane]) { _, new in
-            withAnimation(height == nil || reduceMotion ? nil : .smooth(duration: 0.4)) {
-                height = new
             }
         }
         .containerBackground(SettingsColor.content, for: .window)
@@ -328,7 +319,7 @@ struct MonitorPane: View {
                     .menuIndicator(.hidden)
                     .fixedSize()
                 }
-                MonitorGrid(name: name, measures: Array(machine.measures(modules.enabled).filter { $0.module != .network }.prefix(4)), now: .now)
+                Monitor(name: name, machine: machine, now: .now)
                     .frame(width: 328)
                     .containerShape(.rect)
                     .frame(maxWidth: .infinity)

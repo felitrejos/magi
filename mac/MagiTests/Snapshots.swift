@@ -24,7 +24,7 @@ struct Snapshots {
             try await shot("scope-\(suffix)", full, scheme, height: 900, act: { right($0, times: 2) })
             try await shot("scope-laptop-\(suffix)", full, scheme, height: 900, act: { right($0, times: 3) })
             try await shot("scope-alert-\(suffix)", strained, scheme, height: 900, act: { right($0, times: 3) })
-            UserDefaults.standard.set("cpu,memory,temperature,disk,network,battery", forKey: "monitorModules")
+            UserDefaults.standard.set("cpu,memory,temperature,disk,network", forKey: "monitorModules")
             try await shot("scope-network-\(suffix)", full, scheme, height: 900, act: { right($0, times: 2) })
             UserDefaults.standard.removeObject(forKey: "monitorModules")
             try await shot("empty-\(suffix)", quiet, scheme)
@@ -73,6 +73,7 @@ struct Snapshots {
         let full = try await store(machines(sessions: true))
         let bare = try await store([:])
         let quiet = try await store(machines(sessions: false).mapValues { $0.merging(["answering": false]) { $1 } })
+        UserDefaults.standard.set("cpu,memory,temperature,disk,network", forKey: "monitorModules")
         let scenes = NSHostingSceneRepresentation { Settings { SettingsView(store: full) } }
         NSApplication.shared.addSceneRepresentation(scenes)
         let before = Set(NSApp.windows)
@@ -95,6 +96,7 @@ struct Snapshots {
         window.close()
         NSApp.appearance = nil
         UserDefaults.standard.removeObject(forKey: "pane")
+        UserDefaults.standard.removeObject(forKey: "monitorModules")
     }
 
     @Test func glyph() throws {
@@ -213,7 +215,7 @@ struct Snapshots {
             "laptop": [
                 "answering": true, "ssh": "", "cores": 10, "load": 2.4, "pressure": critical ? "warning" : "normal",
                 "memory": ["usedMB": 13100, "totalMB": 16384], "disk": ["usedMB": 282192, "totalMB": 471482], "swap": ["usedMB": 1536, "totalMB": 4096],
-                "bootedAt": stamp(now.addingTimeInterval(-3 * 86_400)), "battery": ["percent": critical ? 14 : 64, "onBattery": true, "minutesLeft": critical ? 41 : 383],
+                "bootedAt": stamp(now.addingTimeInterval(-3 * 86_400)), "battery": ["percent": critical ? 14 : 64, "onBattery": true],
                 "sample": ["cpu": critical ? 61 : 18, "thermal": critical ? 1 : 0],
                 "sessions": sessions ? [
                     session("Shop checkout fix", "/Users/sam/code/shop", "waiting", 4, cpu: 0, memory: 229, waitingOn: "Allow Bash to run npm test in the shop folder?"),

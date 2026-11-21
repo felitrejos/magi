@@ -30,7 +30,7 @@ struct LiveTests {
         #expect(laptop.history?.first.map { [$0.at, $0.load, Double($0.memoryMB)] } == [1795189563, 1.82, 12210])
         #expect(laptop.history?.count == 3 && laptop.sessions[1].cpuHistory?.map(\.cpu) == [4, 6])
         #expect(laptop.history?.last.map { [$0.cpu, $0.thermal, $0.rx, $0.tx] } == [31, 1, 2_400_000, 310_000] && laptop.history?.first?.cpu == nil)
-        #expect(laptop.battery?.minutesLeft == 383 && box.critical == 105 && laptop.critical == nil)
+        #expect(box.critical == 105 && laptop.critical == nil)
         #expect(box.history == nil && box.sessions[0].cpuHistory == nil)
     }
 
@@ -44,14 +44,14 @@ struct LiveTests {
     }
 
     @Test func measuresEachModuleWithDataAndColorsItByItsThresholds() {
-        func machine(_ readings: [(cpu: Int?, temp: Double?, thermal: Int?)] = [], critical: Double? = nil, disk: Int = 100, battery: Battery? = nil, pressure: Pressure? = nil) -> Machine {
+        func machine(_ readings: [(cpu: Int?, temp: Double?, thermal: Int?)] = [], critical: Double? = nil, disk: Int = 100, pressure: Pressure? = nil) -> Machine {
             let history = readings.enumerated().map { Reading(at: Double($0.offset * 30), load: 1, memoryMB: 1, cpu: $0.element.cpu, temp: $0.element.temp, thermal: $0.element.thermal, rx: nil, tx: nil) }
-            return Machine(answering: true, heard: nil, ssh: nil, cores: 10, load: 1, memory: Space(usedMB: 1, totalMB: 2), disk: Space(usedMB: disk, totalMB: 1000), sessions: [], pressure: pressure, swap: nil, bootedAt: nil, battery: battery, critical: critical, relayed: nil, history: history)
+            return Machine(answering: true, heard: nil, ssh: nil, cores: 10, load: 1, memory: Space(usedMB: 1, totalMB: 2), disk: Space(usedMB: disk, totalMB: 1000), sessions: [], pressure: pressure, swap: nil, bootedAt: nil, battery: nil, critical: critical, relayed: nil, history: history)
         }
         func health(_ machine: Machine, _ module: Module) -> Health? {
             machine.measures([module]).first?.health
         }
-        #expect(machine().measures([.cpu, .temperature, .network, .battery]).isEmpty)
+        #expect(machine().measures([.cpu, .temperature, .network]).isEmpty)
         #expect(machine().measures([.memory, .disk]).map(\.module) == [.memory, .disk])
         #expect([[74, 95], [75, 95], [90, 91], [95]].map { health(machine($0.map { ($0, nil, nil) }), .cpu) } == [.fine, .warning, .critical, .critical])
         #expect([79.9, 80, 90].map { health(machine([(nil, $0, nil)]), .temperature) } == [.fine, .warning, .critical])
@@ -59,7 +59,6 @@ struct LiveTests {
         #expect([0, 1, 2, 4].map { health(machine([(nil, nil, $0)]), .temperature) } == [.fine, .warning, .critical, .critical])
         #expect(machine([(nil, nil, 4)]).measures([.temperature]).first?.value == "Critical")
         #expect([899, 900, 950].map { health(machine(disk: $0), .disk) } == [.fine, .warning, .critical])
-        #expect([(20, true), (19, true), (9, true), (5, false)].map { health(machine(battery: Battery(percent: $0.0, onBattery: $0.1, minutesLeft: nil)), .battery) } == [.fine, .warning, .critical, .fine])
         #expect([Pressure.normal, .warning, .critical].map { health(machine(pressure: $0), .memory) } == [.fine, .warning, .critical])
         let strained = machine([(nil, 85, nil)], disk: 960, pressure: .critical)
         #expect(strained.alert([.temperature, .disk, .memory])?.alert == "Disk full")
@@ -67,8 +66,8 @@ struct LiveTests {
     }
 
     @Test func storesTheEnabledModulesInOrderAndSkipsUnknownOnes() {
-        #expect(Modules(rawValue: "disk,gpu,cpu").enabled == [.disk, .cpu])
-        #expect(Modules.defaults.rawValue == "cpu,memory,temperature,disk,battery")
+        #expect(Modules(rawValue: "disk,gpu,battery,cpu").enabled == [.disk, .cpu])
+        #expect(Modules.defaults.rawValue == "cpu,memory,temperature,disk")
     }
 
     @Test func putsWaitingFirstLongestWaitingFirstThenBusyThenIdleAndKeepsAFrozenOrder() {
