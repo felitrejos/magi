@@ -33,13 +33,9 @@ struct PanelView: View {
         return store.machines[scope]?.detail(module, on: scope)
     }
 
-    private var entries: [Entry] {
-        (detail?.entries ?? []).ordered(keeping: order)
-    }
-
     private var choices: [(id: String, route: Route?)] {
-        guard detail != nil else { return rows.map { ($0.id, $0.route) } }
-        return entries.compactMap { entry in entry.row?.route.map { (entry.id, $0) } }
+        guard let detail else { return rows.map { ($0.id, $0.route) } }
+        return detail.entries.ordered(keeping: order).compactMap { entry in entry.row?.route.map { (entry.id, $0) } }
     }
 
     private var status: String {
@@ -53,11 +49,12 @@ struct PanelView: View {
     }
 
     var body: some View {
+        let detail = detail
         ScrollViewReader { proxy in
             Cap(height: height) {
                 TimelineView(.everyMinute) { context in
                     VStack(spacing: 0) {
-                        header(now: context.date)
+                        header(detail, now: context.date)
                         if store.machines.isEmpty {
                             Text("Ask Claude to \u{201C}set up magi with my homelab\u{201D}, and your machines and sessions show here.")
                                 .font(.callout)
@@ -65,7 +62,7 @@ struct PanelView: View {
                                 .padding([.horizontal, .bottom], 16)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else if !rows.isEmpty || scope != nil {
-                            SessionList(rows: rows, place: place, machine: scope.flatMap { store.machines[$0] }, detail: detail, entries: entries, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order, open: open) { place.module = $0 }
+                            SessionList(rows: rows, place: place, machine: scope.flatMap { store.machines[$0] }, detail: detail, entries: (detail?.entries ?? []).ordered(keeping: order), showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order, open: open) { place.module = $0 }
                         }
                         if names.count > 1 {
                             strip(now: context.date)
@@ -83,6 +80,7 @@ struct PanelView: View {
             .frame(maxHeight: .infinity, alignment: .top)
             .animation(reduceMotion ? nil : .smooth(duration: 0.4), value: place)
             .onChange(of: place) { highlight = nil }
+            .onChange(of: detail == nil) { place = place.settled(in: store.machines) }
             .focusable()
             .focusEffectDisabled()
             .focused($focused)
@@ -105,7 +103,7 @@ struct PanelView: View {
         }
     }
 
-    private func header(now: Date) -> some View {
+    private func header(_ detail: Detail?, now: Date) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -193,7 +191,12 @@ struct Place: Hashable {
 
     mutating func show(_ name: String?, in machines: [String: Machine]) {
         machine = name
-        guard let module, let name, machines[name]?.detail(module, on: name) != nil else { return self.module = nil }
+        self = settled(in: machines)
+    }
+
+    func settled(in machines: [String: Machine]) -> Place {
+        guard let module, let machine, machines[machine]?.detail(module, on: machine) != nil else { return Place(machine: machine) }
+        return self
     }
 
     var back: Place? {
@@ -251,13 +254,7 @@ struct SessionList: View {
                             .padding(.bottom, 6)
                             .transition(.move(edge: .top).combined(with: .opacity))
                         if !rows.isEmpty {
-                            Text("Sessions")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8)
-                                .padding(.bottom, 2)
-                                .accessibilityAddTraits(.isHeader)
+                            section("Sessions")
                                 .transition(.opacity)
                         }
                     }
@@ -265,13 +262,7 @@ struct SessionList: View {
                         SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now, open: open)
                             .id(row.id)
                             .transition(.blurReplace)
-                            .onHover { inside in
-                                if inside {
-                                    highlight = row.id
-                                } else if highlight == row.id {
-                                    highlight = nil
-                                }
-                            }
+                            .highlights(row.id, in: $highlight)
                     }
                 }
             }
@@ -346,28 +337,7 @@ struct SessionRow: View {
                 }
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .frame(minHeight: waiting && row.session.waitingOn != nil ? 62 : 44)
-        .background {
-            if highlighted {
-                ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true)
-                    .fill(.quaternary)
-            }
-        }
-        .contentShape(.rect)
-        .onTapGesture {
-            route.map(open)
-        }
-        .help(route.map { "Open in \($0.host.name)" } ?? "")
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibility)
-        .accessibilityAddTraits(route == nil ? [] : .isButton)
-        .accessibilityActions {
-            if let route {
-                Button("Open in \(route.host.name)") { open(route) }
-            }
-        }
+        .choice(route, highlighted: highlighted, height: waiting && row.session.waitingOn != nil ? 62 : 44, label: accessibility, open: open)
     }
 
     private var accessibility: String {
@@ -378,6 +348,60 @@ struct SessionRow: View {
         }
         let detail = usage ? "CPU \(row.session.cpu)%, memory \(row.session.memory)" : elapsed.map { "for \($0)" }
         return [row.session.title, state, "\(row.session.folderName) on \(row.machine)", detail].compactMap(\.self).joined(separator: ", ")
+    }
+}
+
+@MainActor func section(_ title: String, scale: String? = nil) -> some View {
+    HStack(alignment: .firstTextBaseline) {
+        Text(title)
+            .font(.footnote.weight(.semibold))
+            .accessibilityAddTraits(.isHeader)
+        Spacer(minLength: 8)
+        if let scale {
+            Text(scale)
+                .font(.footnote)
+        }
+    }
+    .foregroundStyle(.secondary)
+    .padding(.horizontal, 8)
+    .padding(.bottom, 2)
+}
+
+extension View {
+    func highlights(_ id: String, in highlight: Binding<String?>, when selectable: Bool = true) -> some View {
+        onHover { inside in
+            if inside, selectable {
+                highlight.wrappedValue = id
+            } else if highlight.wrappedValue == id {
+                highlight.wrappedValue = nil
+            }
+        }
+    }
+
+    func choice(_ route: Route?, highlighted: Bool, height: CGFloat, label: String, value: String = "", open: @escaping (Route) -> Void) -> some View {
+        padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(minHeight: height)
+            .background {
+                if highlighted {
+                    ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true)
+                        .fill(.quaternary)
+                }
+            }
+            .contentShape(.rect)
+            .onTapGesture {
+                route.map(open)
+            }
+            .help(route.map { "Open in \($0.host.name)" } ?? "")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .accessibilityValue(value)
+            .accessibilityAddTraits(route == nil ? [] : .isButton)
+            .accessibilityActions {
+                if let route {
+                    Button("Open in \(route.host.name)") { open(route) }
+                }
+            }
     }
 }
 

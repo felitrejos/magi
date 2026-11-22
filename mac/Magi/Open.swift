@@ -333,37 +333,43 @@ enum Opener {
             process.standardOutput = output
             process.standardError = errors
             let ended = DispatchGroup()
-            let collect = { @Sendable (pipe: Pipe) -> OSAllocatedUnfairLock<Data> in
-                let data = OSAllocatedUnfairLock(initialState: Data())
-                ended.enter()
-                pipe.fileHandleForReading.readabilityHandler = { handle in
-                    let chunk = handle.availableData
-                    guard chunk.isEmpty else { return data.withLock { $0.append(chunk) } }
-                    handle.readabilityHandler = nil
-                    ended.leave()
-                }
-                return data
-            }
-            let out = collect(output)
-            let said = collect(errors)
             ended.enter()
             process.terminationHandler = { _ in ended.leave() }
             do {
                 try process.run()
             } catch {
-                output.fileHandleForReading.readabilityHandler = nil
-                errors.fileHandleForReading.readabilityHandler = nil
+                process.terminationHandler = nil
+                ended.leave()
                 return finish(.failure(error))
             }
+            let collect = { @Sendable (pipe: Pipe) -> (data: @Sendable () -> Data, stop: @Sendable () -> Void) in
+                let state = OSAllocatedUnfairLock(initialState: (data: Data(), open: true))
+                let stop = { @Sendable in
+                    guard state.withLock({ state in defer { state.open = false }; return state.open }) else { return }
+                    pipe.fileHandleForReading.readabilityHandler = nil
+                    ended.leave()
+                }
+                ended.enter()
+                pipe.fileHandleForReading.readabilityHandler = { handle in
+                    let chunk = handle.availableData
+                    guard chunk.isEmpty else { return state.withLock { $0.data.append(chunk) } }
+                    stop()
+                }
+                return ({ state.withLock(\.data) }, stop)
+            }
+            let out = collect(output)
+            let said = collect(errors)
             DispatchQueue.global().asyncAfter(deadline: .now() + (deadline - .now) / .seconds(1)) {
                 if process.isRunning {
                     process.terminate()
                 }
                 finish(.failure(Failure.timedOut(command: command)))
+                out.stop()
+                said.stop()
             }
             ended.notify(queue: .global()) {
-                guard process.terminationStatus != 0 else { return finish(.success(out.withLock { $0 })) }
-                finish(.failure(Failure.exited(command: command, status: process.terminationStatus, stderr: String(decoding: said.withLock { $0 }, as: UTF8.self))))
+                guard process.terminationStatus != 0 else { return finish(.success(out.data())) }
+                finish(.failure(Failure.exited(command: command, status: process.terminationStatus, stderr: String(decoding: said.data(), as: UTF8.self))))
             }
         }
     }

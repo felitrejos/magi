@@ -11,24 +11,23 @@ struct DetailTests {
     }
 
     @Test func readsTheDetailFieldsOrAnOlderWatcherWithoutThem() {
-        let claude = homelab.top?.cpu?.first
-        #expect(claude?.pid == 4121 && claude?.name == "claude" && claude?.cpu == 41 && claude?.memoryMB == 820 && claude?.session == "660b4a59-d508-4dec-8af1-9a047faa9dc6")
-        #expect(homelab.top?.memory?.first?.name == "Google Chrome" && homelab.top?.memory?.first?.memoryMB == 4900 && homelab.top?.memory?.first?.session == nil)
-        #expect(homelab.memoryParts?.map(\.kind) == ["app", "wired", "compressed", "cached", "free"] && homelab.memoryParts?.map(\.mb) == [14100, 3200, 1000, 3000, 14700])
-        #expect(homelab.volumes?.first.map { [$0.name, $0.mount] } == ["Macintosh HD", "/"] && homelab.volumes?.first.map { [$0.usedMB, $0.totalMB] } == [512_000, 994_000])
-        #expect(homelab.interfaces?.first?.name == "en0" && homelab.interfaces?.first.map { [$0.rx, $0.tx] } == [1_600_000, 310_000])
-        #expect(homelab.sensors?.first?.name == "Package id 0" && homelab.sensors?.map(\.temp) == [51, 42.5] && homelab.sensors?.map(\.critical) == [100, nil])
+        #expect(homelab.top?.cpu?.first.map { "\($0.pid) \($0.name) \($0.cpu) \($0.session ?? "")" } == "4121 claude 41 660b4a59-d508-4dec-8af1-9a047faa9dc6")
+        #expect(homelab.top?.memory?.first.map { "\($0.pid) \($0.name) \($0.memoryMB) \($0.session ?? "none")" } == "811 Google Chrome 4900 none")
+        #expect(homelab.memoryParts?.first.map { "\($0.kind) \($0.mb)" } == "app 14100")
+        #expect(homelab.volumes?.first.map { "\($0.name) \($0.mount) \($0.usedMB) \($0.totalMB)" } == "Macintosh HD / 512000 994000")
+        #expect(homelab.interfaces?.first.map { "\($0.name) \($0.rx) \($0.tx)" } == "en0 1600000 310000")
+        #expect(homelab.sensors?.map { "\($0.name) \($0.temp) \($0.critical ?? 0)" } == ["Package id 0 51.0 100.0", "nvme 42.5 0.0"])
         #expect(laptop.top == nil && laptop.memoryParts == nil && laptop.volumes == nil && laptop.interfaces == nil && laptop.sensors == nil)
     }
 
     @Test func opensADetailOnlyFromACardWithItsData() throws {
-        #expect(Module.allCases.filter { homelab.detail($0, on: "homelab") != nil } == Module.allCases)
-        #expect(Module.allCases.filter { laptop.detail($0, on: "laptop") != nil }.isEmpty)
+        #expect(Module.allCases.filter(homelab.hasDetail) == Module.allCases && Module.allCases.filter { homelab.detail($0, on: "homelab") != nil } == Module.allCases)
+        #expect(Module.allCases.filter(laptop.hasDetail).isEmpty)
         let firstSample = try machine {
             $0["top"] = ["cpu": [Any]()]
             $0["sensors"] = nil
         }
-        #expect(Module.allCases.filter { firstSample.detail($0, on: "homelab") != nil } == [.disk, .network])
+        #expect(Module.allCases.filter(firstSample.hasDetail) == [.disk, .network])
     }
 
     @Test func drawsTheKnownMemoryPartsInTheirOrder() throws {
@@ -39,7 +38,7 @@ struct DetailTests {
 
     @Test func measuresEachRowOnTheWholeMachineScale() throws {
         let cpu = try #require(homelab.detail(.cpu, on: "homelab"))
-        #expect(cpu.entries.map(\.fraction) == [0.41, 2.5] && cpu.entries.map(\.figures) == [["41%"], ["250%"]] && cpu.columns == [["800%"]])
+        #expect(cpu.entries.map(\.fraction) == [0.41, 2.5] && cpu.entries.map(\.figures) == [["41%"], ["250%"]] && cpu.columns == [["999%"]])
         #expect(cpu.entries.map(\.spoken) == ["41 percent of one core", "250 percent of one core"])
         #expect(cpu.entries.map { $0.row?.session.title } == ["Upgrade Postgres to 17", nil] && cpu.entries[0].row?.route(rexInstalled: false) == .attach(pane: "%7", ssh: "homelab"))
 
@@ -48,13 +47,21 @@ struct DetailTests {
         #expect(memory.scale == amount(homelab.memory).unit && memory.columns == [["999 MB", "\(tenths(36000 / 1024.0)) GB"]])
 
         let disk = try #require(homelab.detail(.disk, on: "homelab"))
-        #expect(disk.entries.map(\.fraction) == [512_000 / 994_000.0, 0.95] && disk.entries.map(\.health) == [.fine, .critical])
+        #expect(disk.entries.map(\.fraction) == [512_000 / 994_000.0, 0.95] && disk.entries.map(\.health) == [.fine, .critical] && disk.entries[1].spoken.hasSuffix(" free, full"))
 
         let network = try #require(homelab.detail(.network, on: "homelab"))
         #expect(network.entries.map(\.fraction) == [1, 382_000 / 1_910_000.0] && network.entries[1].figures == ["\u{2193} \(rate(382_000))", "\u{2191} \(rate(0))"])
 
         let temperature = try #require(homelab.detail(.temperature, on: "homelab"))
-        #expect(temperature.entries.map(\.fraction) == [0.51, 0.425] && temperature.entries.map(\.figures) == [["51 \u{00B0}C"], ["43 \u{00B0}C"]])
+        #expect(temperature.entries.map(\.fraction) == [0.51, 0.425] && temperature.entries.map(\.figures) == [["51 \u{00B0}C"], ["43 \u{00B0}C"]] && temperature.entries.map(\.id) == ["Package id 0", "nvme"])
+        let hot = try #require(try machine { $0["sensors"] = [["name": "nvme", "temp": 80.0, "critical": 84.85]] }.detail(.temperature, on: "homelab"))
+        #expect(hot.entries[0].health == .critical && hot.entries[0].spoken == "80 degrees Celsius, critical at 84 degrees, critical")
+    }
+
+    @Test func warnsTenDegreesBeforeASensorRunsHot() {
+        #expect([64.84, 64.85, 74.85].map { Health(celsius: $0, critical: 84.85) } == [.fine, .warning, .critical])
+        #expect([79.9, 80, 90].map { Health(celsius: $0, critical: 100) } == [.fine, .warning, .critical])
+        #expect([79.9, 80, 90].map { Health(celsius: $0, critical: nil) } == [.fine, .warning, .critical])
     }
 
     @Test func printsRatesAndSizesWithAStableWidth() {
@@ -74,6 +81,8 @@ struct DetailTests {
         #expect(place == Place())
         #expect(Place(machine: "lab", module: .network).back == Place(machine: "lab"))
         #expect(Place(machine: "lab").back == Place() && Place().back == nil)
+        #expect(Place(machine: "lab", module: .cpu).settled(in: ["lab": laptop]) == Place(machine: "lab"))
+        #expect(Place(machine: "lab", module: .cpu).settled(in: machines) == Place(machine: "lab", module: .cpu))
     }
 
     private func machine(_ change: (inout [String: Any]) -> Void) throws -> Machine {

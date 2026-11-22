@@ -26,6 +26,16 @@ enum Module: String, CaseIterable, Identifiable {
         }
     }
 
+    var heading: String {
+        switch self {
+        case .cpu: "Processes"
+        case .memory: "Programs"
+        case .temperature: "Sensors"
+        case .disk: "Volumes"
+        case .network: "Interfaces"
+        }
+    }
+
     var symbol: String {
         switch self {
         case .cpu: "cpu"
@@ -73,7 +83,12 @@ enum Health: Int, Comparable {
     }
 
     init(celsius: Double, critical: Double?) {
-        self.init(celsius, warning: 80, critical: critical.map { $0 - 10 } ?? 90)
+        let hot = (critical ?? 100) - 10
+        self.init(celsius, warning: min(80, hot - 10), critical: hot)
+    }
+
+    func alert(_ words: [String]) -> String? {
+        self == .fine ? nil : words[rawValue - 1]
     }
 
     static func < (lhs: Health, rhs: Health) -> Bool {
@@ -125,7 +140,7 @@ struct Measure {
     }
 
     var alert: String? {
-        health == .fine ? nil : alerts[health.rawValue - 1]
+        health.alert(alerts)
     }
 }
 
@@ -254,9 +269,7 @@ struct Monitor: View {
             ForEach(rows, id: \.first?.module) { row in
                 GridRow {
                     ForEach(row, id: \.module) { measure in
-                        Plate(name: name, measure: measure, now: now, heading: open.flatMap { _ in machine.detail(measure.module, on: name)?.heading }) {
-                            open?(measure.module)
-                        } content: {
+                        Plate(name: name, measure: measure, now: now, open: machine.hasDetail(measure.module) ? open.map { open in { open(measure.module) } } : nil) {
                             switch measure.visual {
                             case let .spark(points, domain, _):
                                 Card(measure: measure) {
@@ -303,23 +316,22 @@ struct Plate<Content: View>: View {
     let name: String
     let measure: Measure
     let now: Date
-    let heading: String?
-    let open: () -> Void
+    let open: (() -> Void)?
     @ViewBuilder let content: Content
     @State private var hovered = false
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityShowBorders) private var showBorders
 
     var body: some View {
-        if let heading {
+        if let open {
             Button(action: open) {
                 plated
             }
             .buttonStyle(Press())
             .onHover { hovered = $0 }
-            .help("Show \(heading.lowercased())")
+            .help("Show \(measure.module.heading.lowercased())")
             .spoken(name: name, measure: measure, now: now)
-            .accessibilityHint("Shows \(heading.lowercased())")
+            .accessibilityHint("Shows \(measure.module.heading.lowercased())")
         } else {
             plated
                 .spoken(name: name, measure: measure, now: now)
@@ -333,7 +345,7 @@ struct Plate<Content: View>: View {
                 shape
                     .fill(hovered ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.quaternary))
                     .overlay {
-                        if heading != nil, contrast == .increased || showBorders {
+                        if open != nil, contrast == .increased || showBorders {
                             shape.stroke(.separator)
                         }
                     }

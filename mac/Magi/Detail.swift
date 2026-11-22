@@ -2,7 +2,6 @@ import SwiftUI
 
 struct Detail {
     let measure: Measure
-    let heading: String
     var scale: String?
     let columns: [[String]]
     let entries: [Entry]
@@ -55,40 +54,51 @@ extension Machine {
         MemoryKind.allCases.compactMap { kind in memoryParts?.first { $0.kind == kind.rawValue }.map { Share(kind: kind, mb: $0.mb) } }
     }
 
+    func hasDetail(_ module: Module) -> Bool {
+        switch module {
+        case .cpu: top?.cpu?.isEmpty == false
+        case .memory: top?.memory?.isEmpty == false
+        case .disk: volumes?.isEmpty == false
+        case .network: interfaces?.isEmpty == false
+        case .temperature: sensors?.isEmpty == false
+        }
+    }
+
     func detail(_ module: Module, on name: String) -> Detail? {
-        guard let measure = measures([module]).first else { return nil }
+        guard hasDetail(module), let measure = measures([module]).first else { return nil }
         let detail: Detail
         switch module {
         case .cpu:
-            detail = Detail(measure: measure, heading: "Processes", scale: "% of one core", columns: [["\(cores * 100)%"]], entries: (top?.cpu ?? []).map { program in
-                Entry(id: "\(program.pid)", name: program.name, row: row(program, on: name), fraction: Double(program.cpu) / 100, figures: ["\(program.cpu)%"], spoken: "\(program.cpu) percent of one core")
+            detail = Detail(measure: measure, scale: "% of one core", columns: [["999%"]], entries: (top?.cpu ?? []).map { program in
+                Entry(id: "\(program.pid)", name: program.name, row: row(program.session, on: name), fraction: Double(program.cpu) / 100, figures: ["\(program.cpu)%"], spoken: "\(program.cpu) percent of one core")
             })
         case .memory:
-            detail = Detail(measure: measure, heading: "Programs", scale: amount(memory).unit, columns: [["999 MB", amount(megabytes: memory.totalMB)]], entries: (top?.memory ?? []).map { program in
-                Entry(id: "\(program.pid)", name: program.name, row: row(program, on: name), fraction: Double(program.memoryMB) / Double(memory.totalMB), figures: [amount(megabytes: program.memoryMB)], spoken: "\(amount(megabytes: program.memoryMB)) \(amount(memory).unit)")
+            detail = Detail(measure: measure, scale: amount(memory).unit, columns: [["999 MB", amount(megabytes: memory.totalMB)]], entries: (top?.memory ?? []).map { program in
+                Entry(id: "\(program.pid)", name: program.name, row: row(program.session, on: name), fraction: Double(program.memoryMB) / Double(memory.totalMB), figures: [amount(megabytes: program.memoryMB)], spoken: "\(amount(megabytes: program.memoryMB)) \(amount(memory).unit)")
             }, parts: parts)
         case .disk:
-            detail = Detail(measure: measure, heading: "Volumes", columns: [["\(figure(99.9)) of \(figure(99.9)) GB"]], entries: (volumes ?? []).map { volume in
+            detail = Detail(measure: measure, columns: [["\(figure(99.9)) of \(figure(99.9)) GB"]], entries: (volumes ?? []).map { volume in
                 let space = Space(usedMB: volume.usedMB, totalMB: volume.totalMB)
                 let (used, total) = amount(space)
-                return Entry(id: volume.mount, name: volume.name, fraction: space.fraction, figures: ["\(used) \(total)"], spoken: "\(used) \(total) used, \(amount(megabytes: volume.totalMB - volume.usedMB, rounded: true)) free", health: space.health)
+                return Entry(id: volume.mount, name: volume.name, fraction: space.fraction, figures: ["\(used) \(total)"], spoken: ["\(used) \(total) used, \(amount(megabytes: volume.totalMB - volume.usedMB, rounded: true)) free", space.health.alert(["nearly full", "full"])].compactMap(\.self).joined(separator: ", "), health: space.health)
             })
         case .network:
             let busiest = (interfaces ?? []).reduce(1) { max($0, $1.rx + $1.tx) }
-            detail = Detail(measure: measure, heading: "Interfaces", columns: [["\u{2193} \(rate(99_900_000))"], ["\u{2191} \(rate(99_900_000))"]], entries: (interfaces ?? []).map { interface in
+            detail = Detail(measure: measure, columns: [["\u{2193} \(rate(99_900_000))"], ["\u{2191} \(rate(99_900_000))"]], entries: (interfaces ?? []).map { interface in
                 let (down, up) = (rate(Double(interface.rx)), rate(Double(interface.tx)))
                 return Entry(id: interface.name, name: interface.name, fraction: Double(interface.rx + interface.tx) / Double(busiest), figures: ["\u{2193} \(down)", "\u{2191} \(up)"], spoken: "\(down) down, \(up) up")
             })
         case .temperature:
-            detail = Detail(measure: measure, heading: "Sensors", columns: [[degrees(100)]], entries: (sensors ?? []).enumerated().map { index, sensor in
-                Entry(id: "\(index)", name: sensor.name, fraction: sensor.temp / (sensor.critical ?? 100), figures: [degrees(sensor.temp)], spoken: "\(Int(sensor.temp.rounded())) degrees Celsius" + (sensor.critical.map { ", critical at \(Int($0)) degrees" } ?? ""), health: Health(celsius: sensor.temp, critical: sensor.critical))
+            detail = Detail(measure: measure, columns: [[degrees(100)]], entries: (sensors ?? []).map { sensor in
+                let health = Health(celsius: sensor.temp, critical: sensor.critical)
+                return Entry(id: sensor.name, name: sensor.name, fraction: sensor.temp / (sensor.critical ?? 100), figures: [degrees(sensor.temp)], spoken: ["\(Int(sensor.temp.rounded())) degrees Celsius", sensor.critical.map { "critical at \(Int($0)) degrees" }, health.alert(["hot", "critical"])].compactMap(\.self).joined(separator: ", "), health: health)
             })
         }
-        return detail.entries.isEmpty ? nil : detail
+        return detail
     }
 
-    private func row(_ program: Program, on name: String) -> Row? {
-        program.session.flatMap { id in sessions.first { $0.id == id } }.map { Row(machine: name, remote: remote, session: $0) }
+    private func row(_ session: String?, on name: String) -> Row? {
+        session.flatMap { id in sessions.first { $0.id == id } }.map { Row(machine: name, remote: remote, session: $0) }
     }
 }
 
@@ -99,10 +109,16 @@ struct DetailCaption: View {
         let value = Text([measure.value, measure.unit].compactMap(\.self).joined(separator: measure.unit == "%" ? "" : " "))
             .fontWeight(.medium)
             .foregroundStyle(measure.health == .fine ? AnyShapeStyle(.primary) : AnyShapeStyle(measure.health.color))
-        Text("\(value) \u{00B7} \(measure.detail)")
-            .foregroundStyle(.secondary)
-            .font(.subheadline)
-            .monospacedDigit()
+        let phrases = [value] + measure.detail.components(separatedBy: " \u{00B7} ").map { Text($0) }
+        Flow(spacing: 4) {
+            ForEach(phrases.indices, id: \.self) { index in
+                index == phrases.count - 1 ? phrases[index] : Text("\(phrases[index]) \u{00B7}")
+            }
+        }
+        .foregroundStyle(.secondary)
+        .font(.subheadline)
+        .monospacedDigit()
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -126,7 +142,7 @@ struct MemoryBar: View {
             .frame(height: 6)
             .clipShape(.capsule)
             .accessibilityHidden(true)
-            Legend(spacing: 10) {
+            Flow(spacing: 10) {
                 ForEach(parts) { part in
                     HStack(spacing: 5) {
                         Circle()
@@ -144,7 +160,7 @@ struct MemoryBar: View {
     }
 }
 
-struct Legend: Layout {
+struct Flow: Layout {
     let spacing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
@@ -184,29 +200,11 @@ struct DetailList: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(detail.heading)
-                    .font(.footnote.weight(.semibold))
-                    .accessibilityAddTraits(.isHeader)
-                Spacer(minLength: 8)
-                if let scale = detail.scale {
-                    Text(scale)
-                        .font(.footnote)
-                }
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.bottom, 2)
+            section(detail.measure.module.heading, scale: detail.scale)
             ForEach(entries) { entry in
                 DetailRow(entry: entry, columns: detail.columns, highlighted: highlight == entry.id, open: open)
                     .id(entry.id)
-                    .onHover { inside in
-                        if inside, entry.row?.route != nil {
-                            highlight = entry.id
-                        } else if highlight == entry.id {
-                            highlight = nil
-                        }
-                    }
+                    .highlights(entry.id, in: $highlight, when: entry.row?.route != nil)
             }
         }
     }
@@ -217,6 +215,7 @@ struct DetailRow: View {
     let columns: [[String]]
     let highlighted: Bool
     let open: (Route) -> Void
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiate
 
     var body: some View {
         let route = entry.row?.route
@@ -230,17 +229,24 @@ struct DetailRow: View {
                 HStack(spacing: 6) {
                     if let route {
                         HostIcon(host: route.host)
+                    } else if differentiate, entry.health != .fine {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(entry.health.color)
+                            .frame(width: 16, height: 16)
+                            .accessibilityHidden(true)
                     }
                     Level(fraction: entry.fraction, tint: entry.health == .fine ? Color(nsColor: .secondaryLabelColor) : entry.health.color, minimum: 0)
                         .frame(width: 44)
                         .animation(.easeOut(duration: 0.2), value: entry.fraction)
                     ForEach(entry.figures.indices, id: \.self) { index in
                         ZStack(alignment: .trailing) {
-                            ForEach(columns[index], id: \.self) { widest in
-                                Text(widest)
+                            ForEach(columns[index].indices, id: \.self) { widest in
+                                Text(columns[index][widest])
                                     .hidden()
                             }
                             Text(entry.figures[index])
+                                .foregroundStyle(entry.health == .fine ? AnyShapeStyle(.primary) : AnyShapeStyle(entry.health.color))
                                 .contentTransition(.opacity)
                         }
                     }
@@ -257,28 +263,6 @@ struct DetailRow: View {
                     .lineLimit(1)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .frame(minHeight: entry.row == nil ? 32 : 44)
-        .background {
-            if highlighted {
-                ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true)
-                    .fill(.quaternary)
-            }
-        }
-        .contentShape(.rect)
-        .onTapGesture {
-            route.map(open)
-        }
-        .help(route.map { "Open in \($0.host.name)" } ?? "")
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel([entry.name, entry.row?.session.title].compactMap(\.self).joined(separator: ", "))
-        .accessibilityValue(entry.spoken)
-        .accessibilityAddTraits(route == nil ? [] : .isButton)
-        .accessibilityActions {
-            if let route {
-                Button("Open in \(route.host.name)") { open(route) }
-            }
-        }
+        .choice(route, highlighted: highlighted, height: entry.row == nil ? 32 : 44, label: [entry.name, entry.row?.session.title].compactMap(\.self).joined(separator: ", "), value: entry.spoken, open: open)
     }
 }
