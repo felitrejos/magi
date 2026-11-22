@@ -282,14 +282,10 @@ struct LoginItem: View {
 }
 
 struct MenuBar: View {
-    @AppStorage("showsCount") private var showsCount = false
     @AppStorage("dot") private var dot = false
 
     var body: some View {
         SettingCard {
-            SettingRow(title: "Show Waiting Count", subtitle: "The number of sessions waiting on you, next to the icon.") {
-                SettingSwitch(isOn: $showsCount)
-            }
             SettingRow(title: "Color the Badge", subtitle: "A colored dot instead of a cutout, so it stands out.") {
                 SettingSwitch(isOn: $dot)
             }

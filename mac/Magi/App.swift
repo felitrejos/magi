@@ -26,11 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let permission = Permission()
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let icon = NSImageView()
-    private let count = NSImageView()
-    private let stack = NSStackView()
     private let panel = Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let menu = NSMenu()
-    private let plain = NSImage.SymbolConfiguration(textStyle: .body, scale: .large)
+    private let plain = NSImage.SymbolConfiguration(pointSize: 14.5, weight: .regular, scale: .large)
     private var host: NSView?
     private var monitor: Any?
     private var shown: Glance?
@@ -51,16 +49,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         icon.setAccessibilityElement(false)
-        count.setAccessibilityElement(false)
-        [icon, count].forEach(stack.addArrangedSubview)
-        stack.spacing = 3
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        button.addSubview(stack)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(icon)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: button.trailingAnchor),
-            stack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            icon.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: button.centerYAnchor),
         ])
         menu.addItem(withTitle: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(.separator())
@@ -117,13 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for line in started.values.map(\.announcement).sorted() + (shown?.answering.subtracting(glance.answering).sorted() ?? []).map({ "\($0) stopped answering" }) {
             NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [.announcement: line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
         }
-        if glance.waiting.count != shown?.waiting.count {
-            let digits = NSAttributedString(string: "\(glance.waiting.count)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)])
-            count.image = NSImage(size: digits.size(), flipped: false) { _ in digits.draw(at: .zero); return true }
-            count.image?.isTemplate = true
-        }
-        count.isHidden = !UserDefaults.standard.bool(forKey: "showsCount") || glance.waiting.isEmpty
-        item.length = stack.fittingSize.width
+        item.length = icon.fittingSize.width
         item.button?.setAccessibilityLabel(glance.label)
         shown = glance
     }
