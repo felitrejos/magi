@@ -1,0 +1,6 @@
+Filesystem                        1024-blocks      Used  Available Capacity Mounted on
+/dev/mapper/ubuntu--vg-ubuntu--lv    98497780  41256092   52188300      45% /
+/dev/nvme0n1p2                        1992552    282432    1588880      16% /boot
+/dev/nvme0n1p1                        1098632      6228    1092404       1% /boot/efi
+/dev/sda1                          1921725720 612340876 1211694844      34% /mnt/media library
+/dev/sda1                          1921725720 612340876 1211694844      34% /srv/media

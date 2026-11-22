@@ -1,0 +1,28 @@
+/sys/class/hwmon/hwmon0/name:acpitz
+/sys/class/hwmon/hwmon1/name:nvme
+/sys/class/hwmon/hwmon2/name:coretemp
+/sys/class/hwmon/hwmon3/name:iwlwifi_1
+/sys/class/hwmon/hwmon0/temp1_input:53000
+/sys/class/hwmon/hwmon1/temp1_input:38850
+/sys/class/hwmon/hwmon1/temp2_input:36850
+/sys/class/hwmon/hwmon1/temp3_input:42850
+/sys/class/hwmon/hwmon2/temp1_input:51000
+/sys/class/hwmon/hwmon2/temp2_input:48000
+/sys/class/hwmon/hwmon2/temp3_input:50000
+/sys/class/hwmon/hwmon2/temp4_input:47000
+/sys/class/hwmon/hwmon2/temp5_input:49000
+/sys/class/hwmon/hwmon1/temp1_label:Composite
+/sys/class/hwmon/hwmon1/temp2_label:Sensor 1
+/sys/class/hwmon/hwmon1/temp3_label:Sensor 2
+/sys/class/hwmon/hwmon2/temp1_label:Package id 0
+/sys/class/hwmon/hwmon2/temp2_label:Core 0
+/sys/class/hwmon/hwmon2/temp3_label:Core 4
+/sys/class/hwmon/hwmon2/temp4_label:Core 8
+/sys/class/hwmon/hwmon2/temp5_label:Core 12
+/sys/class/hwmon/hwmon0/temp1_crit:119000
+/sys/class/hwmon/hwmon1/temp1_crit:84850
+/sys/class/hwmon/hwmon2/temp1_crit:100000
+/sys/class/hwmon/hwmon2/temp2_crit:100000
+/sys/class/hwmon/hwmon2/temp3_crit:100000
+/sys/class/hwmon/hwmon2/temp4_crit:100000
+/sys/class/hwmon/hwmon2/temp5_crit:100000

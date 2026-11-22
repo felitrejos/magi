@@ -1,0 +1,9 @@
+   Device Identifier:         disk3s1s1
+   Device Node:               /dev/disk3s1s1
+   Whole:                     No
+   Part of Whole:             disk3
+
+   Volume Name:               Macintosh HD
+   Mounted:                   Yes
+   Mount Point:               /
+

@@ -8,7 +8,8 @@ if [ -n "$name" ]; then
     index($0, ENVIRON["loop"]) && index($0, ".magi/watchers") { parent[$1] = $2 }
     END { for (p in parent) { top = p; while (parent[top] in parent) top = parent[top]; if (parent[top] == 1) print p } }' | while read -r pid; do kill "$pid"; done
 fi
-tick=0 registry=- placed='' os=$(uname -s)
+tick=0 registry=- placed='' was='' os=$(uname -s) nl='
+'
 battery() {
   if [ "$os" = Darwin ]; then
     pmset -g batt
@@ -17,10 +18,14 @@ battery() {
   fi
 }
 usage() {
-  if [ -r /proc/self/stat ]; then
-    cat /proc/[0-9]*/stat 2>/dev/null | sed 's/^\([0-9]*\) (.*) /\1 /' | awk -v hz="$(getconf CLK_TCK)" -v page="$(getconf PAGESIZE)" '{ print $1, $3, ($13 + $14 + $15 + $16) / hz, $23 * page / 1024 }'
+  if [ "$os" = Darwin ]; then
+    ps -A -o pid= -o ppid= -o time= -o time= -o rss= -o ucomm=
   else
-    ps -A -o pid= -o ppid= -o time= -o rss=
+    cat /proc/[0-9]*/stat 2>/dev/null | awk -v hz="$(getconf CLK_TCK)" -v page="$(getconf PAGESIZE)" '{
+      match($0, /.*\)/)
+      split(substr($0, RLENGTH + 2), f, " ")
+      printf "%s %s %.2f %.2f %.0f %s\n", $1, f[2], (f[12] + f[13] + f[14] + f[15]) / hz, (f[12] + f[13]) / hz, f[22] * page / 1024, substr($0, index($0, "(") + 1, RLENGTH - index($0, "(") - 1)
+    }'
   fi
 }
 sensor() {
@@ -111,15 +116,78 @@ places() {
 }
 sensor=$(sensor) critical=
 if [ -r "${sensor%_input}_crit" ]; then read -r critical < "${sensor%_input}_crit"; fi
+if [ "$os" = Darwin ]; then root=$(diskutil info / | sed -n 's/^ *Volume Name: *//p'); fi
+escape='function escape(s) { gsub(/%/, "%25", s); gsub(/ /, "%20", s); gsub(/:/, "%3A", s); return s }'
+volumes() {
+  if [ "$os" = Darwin ]; then
+    mount
+  else
+    cat /proc/mounts
+  fi | awk -v os="$os" -v root="$root" "$escape"'
+    os == "Darwin" { mount = $0; sub(/^[^ ]+ on /, "", mount); sub(/ \([^(]*\)$/, "", mount); kept = mount == "/" || (mount ~ /^\/Volumes\// && !/nobrowse/) }
+    os != "Darwin" { mount = $2; gsub(/\\040/, " ", mount); kept = $3 != "squashfs" }
+    $1 ~ /^\/dev\// && kept && !($1 in seen) {
+      seen[$1] = 1
+      name[mount] = os != "Darwin" ? mount : mount == "/" ? root : substr(mount, 10)
+      gsub(/\047/, "\047\\\047\047", mount)
+      list = list " \047" mount "\047"
+    }
+    END {
+      if (list == "") exit
+      read = "df -Pk" list
+      while ((read | getline line) > 0) {
+        split(line, f, " ")
+        mount = line
+        sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "", mount)
+        if (mount in name) printf " vol=%.0f:%.0f:%s:%s", (f[2] - f[4]) / 1024, f[2] / 1024, escape(mount), escape(name[mount])
+      }
+    }'
+}
 sample() {
   if [ "$os" = Darwin ]; then
-    { iostat -n 0 -C -c 2 -w 1; notifyutil -g com.apple.system.thermalpressurelevel; route -n get default 2>/dev/null; netstat -ibn; } | awk '
+    { iostat -n 0 -C -c 2 -w 1; notifyutil -g com.apple.system.thermalpressurelevel; route -n get default 2>/dev/null; netstat -ibn; vm_stat; } | awk '
       NR == 4 { printf " cpu=%d", $1 + $2 }
       $1 == "com.apple.system.thermalpressurelevel" { printf " thermal=%d", $2 }
       $1 == "interface:" { iface = $2 }
-      $1 == iface && $3 ~ /^<Link/ { printf " net=%s:%s:%s", $(NF - 4), $(NF - 1), iface }'
+      $1 == iface && $3 ~ /^<Link/ { printf " net=%s:%s:%s", $(NF - 4), $(NF - 1), iface }
+      $3 ~ /^<Link/ && $1 !~ /^lo/ && $(NF - 4) + $(NF - 1) > 0 { name = $1; sub(/\*$/, "", name); printf " nic=%s:%s:%s", $(NF - 4), $(NF - 1), name }
+      /^Mach Virtual Memory Statistics:/ { page = $(NF - 1) / 1048576 }
+      /^Pages free:/ { free = $NF }
+      /^Pages wired down:/ { wired = $NF }
+      /^Pages purgeable:/ { purgeable = $NF }
+      /^File-backed pages:/ { file = $NF }
+      /^Anonymous pages:/ { anonymous = $NF }
+      /^Pages occupied by compressor:/ { compressor = $NF }
+      END { printf " part=app:%.0f part=wired:%.0f part=compressed:%.0f part=cached:%.0f part=free:%.0f", (anonymous - purgeable) * page, wired * page, compressor * page, (file + purgeable) * page, free * page }'
     return
   fi
+  { cat /proc/meminfo /proc/net/dev; grep -s . /dev/null /sys/class/hwmon/hwmon*/name /sys/class/hwmon/hwmon*/temp*_input /sys/class/hwmon/hwmon*/temp*_label /sys/class/hwmon/hwmon*/temp*_crit; } | awk "$escape"'
+    /^\/sys\// {
+      at = index($0, ":")
+      split(substr($0, 1, at - 1), path, "/")
+      split(path[6], file, "_")
+      if (path[6] == "name") chip[path[5]] = substr($0, at + 1)
+      else { reading[path[5] " " file[1], file[2]] = substr($0, at + 1); hwmon[path[5] " " file[1]] = path[5] }
+      next
+    }
+    /^MemTotal:/ { total = $2 }
+    /^MemFree:/ { free = $2 }
+    /^MemAvailable:/ { available = $2 }
+    (at = index($0, ":")) && split(substr($0, at + 1), f, " ") == 16 {
+      name = substr($0, 1, at - 1)
+      gsub(/ /, "", name)
+      if (name != "lo" && name !~ /^veth/ && f[1] + f[9] > 0) printf " nic=%s:%s:%s", f[1], f[9], name
+    }
+    END {
+      if (available < free) free = available
+      printf " part=app:%.0f part=cached:%.0f part=free:%.0f", (total - available) / 1024, (available - free) / 1024, free / 1024
+      for (s in hwmon) {
+        if (!((s, "input") in reading)) continue
+        printf " sensor=%d.%d:", reading[s, "input"] / 1000, reading[s, "input"] % 1000 / 100
+        if ((s, "crit") in reading) printf "%d", reading[s, "crit"] / 1000
+        printf ":%s", escape((s, "label") in reading ? reading[s, "label"] : chip[hwmon[s]])
+      }
+    }'
   read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
   printf ' ticks=%s:%s' $((user + nice + system + irq + softirq + steal)) $((user + nice + system + idle + iowait + irq + softirq + steal))
   if [ -n "$sensor" ] && read -r milli 2>/dev/null < "$sensor"; then
@@ -174,7 +242,16 @@ while :; do
     fi
   fi
   if [ $((tick % 15)) -eq 0 ]; then
-    printf 'stats %s%s\n' "$({ load; df -Pk "$HOME"; usage; battery; } | awk -v roots="$pids" '
+    measured=$({ load; df -Pk "$HOME"; if [ -n "$was" ]; then printf '%s\n' "$was"; fi; usage; battery; } | awk -v roots="$pids" -v os="$os" "$escape"'
+      function pick(v, list, k, p, best) {
+        for (k = 0; k < 8; k++) {
+          best = ""
+          for (p in v) if (!((list, p) in got) && (best == "" || v[p] > v[best])) best = p
+          if (best == "") return
+          got[list, best] = 1
+          shown[best] = 1
+        }
+      }
       function seconds(t, n, p, i, s) {
         n = split(t, p, /[-:]/)
         for (i = 1; i <= n; i++) s = s * (i == 2 && t ~ /-/ ? 24 : 60) + p[i]
@@ -188,7 +265,14 @@ while :; do
       NR == 3 { total = $1; used = $1 - $2 }
       NR == 4 { swap = $1 " " $2; booted = $3; pressure = $4 }
       NR == 6 { disk = sprintf("%.0f %.0f", $3 / 1024, $2 / 1024) }
-      NR > 6 { parent[$1] = $2; cpu[$1] = seconds($3); rss[$1] = $4 }
+      /^was / { was[$2] = $3; sampled = 1; next }
+      NR > 6 {
+        parent[$1] = $2; cpu[$1] = seconds($3); own[$1] = seconds($4); rss[$1] = $5
+        title = $0
+        sub(/^ *[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ /, "", title)
+        sub(/ +$/, "", title)
+        name[$1] = title
+      }
       END {
         for (s in type) {
           if (type[s] == "Battery" && supply[s, "scope"] != "Device") { battery = supply[s, "capacity"] + 0; discharging = supply[s, "status"] == "Discharging" }
@@ -198,14 +282,34 @@ while :; do
         for (p in parent) {
           q = p
           while (q > 0 && !(q in root)) q = (q in parent) ? parent[q] : 0
-          if (q in root) { c[q] += cpu[p]; m[q] += rss[p] }
+          if (q in root) { c[q] += cpu[p]; m[q] += rss[p]; owner[p] = q }
         }
         printf "%s %s %.0f %.0f %s %s %s", cores, load, used / 1048576, total / 1048576, disk, swap, booted
         if (pressure != "") printf " pressure=%s", pressure
         if (battery != "") printf " battery=%d:%d", battery, discharging
         for (i = 1; i <= n; i++) printf " %s:%.2f:%.0f", r[i], c[r[i]], m[r[i]] / 1024
+        if (sampled) {
+          for (p in own) spent[p] = p in was && own[p] >= was[p] ? own[p] - was[p] : own[p]
+          pick(spent, "cpu")
+          pick(rss, "memory")
+          if (os == "Darwin") {
+            list = ""
+            for (p in shown) list = list "," p
+            read = "ps -o pid= -o comm= -p " substr(list, 2)
+            while ((read | getline line) > 0) {
+              q = line + 0
+              sub(/^ *[0-9]+ /, "", line)
+              k = split(line, path, "/")
+              if (path[k] == name[q] || (length(name[q]) == 16 && index(path[k], name[q]) == 1)) name[q] = path[k]
+            }
+          }
+          for (p in shown) printf " proc=%s:%.2f:%.0f:%d:%s", p, spent[p], rss[p] / 1024, owner[p], escape(name[p])
+        }
         print ""
-      }')" "$(sample)"
+        for (p in own) print "was", p, own[p]
+      }')
+    printf 'stats %s%s%s\n' "${measured%%"$nl"*}" "$(sample)" "$(volumes)"
+    was=${measured#*"$nl"}
   fi
   tick=$((tick + 1))
   sleep 2

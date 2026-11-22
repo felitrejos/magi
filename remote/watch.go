@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -272,6 +274,8 @@ type watcher struct {
 	cpu      map[string][]cpuReading
 	ticks    ticks
 	traffic  traffic
+	nics     map[string]traffic
+	sampled  time.Time
 }
 
 type ticks struct {
@@ -300,6 +304,56 @@ type liveMachine struct {
 	Relayed   bool        `json:"relayed,omitempty"`
 	History   []reading   `json:"history,omitempty"`
 	Sessions  []liveEntry `json:"sessions"`
+
+	Top         *top         `json:"top,omitempty"`
+	MemoryParts []memoryPart `json:"memoryParts,omitempty"`
+	Volumes     []volume     `json:"volumes,omitempty"`
+	Interfaces  []nic        `json:"interfaces,omitempty"`
+	Sensors     []sensor     `json:"sensors,omitempty"`
+}
+
+type top struct {
+	CPU    []process `json:"cpu"`
+	Memory []process `json:"memory"`
+}
+
+type process struct {
+	PID      int    `json:"pid"`
+	Name     string `json:"name"`
+	CPU      int    `json:"cpu"`
+	MemoryMB int    `json:"memoryMB"`
+	Session  string `json:"session,omitempty"`
+	seconds  float64
+	root     int
+}
+
+type memoryPart struct {
+	Kind string `json:"kind"`
+	MB   int    `json:"mb"`
+}
+
+type volume struct {
+	Name    string `json:"name"`
+	Mount   string `json:"mount"`
+	UsedMB  int    `json:"usedMB"`
+	TotalMB int    `json:"totalMB"`
+}
+
+type nic struct {
+	Name     string `json:"name"`
+	Received int64  `json:"rx"`
+	Sent     int64  `json:"tx"`
+}
+
+type sensor struct {
+	Name     string   `json:"name"`
+	Temp     float64  `json:"temp"`
+	Critical *float64 `json:"critical,omitempty"`
+}
+
+type details struct {
+	procs []process
+	nics  map[string]traffic
 }
 
 type reading struct {
@@ -501,6 +555,8 @@ func (w *watcher) stats(line string, now time.Time) error {
 		return err
 	}
 	l.BootedAt, l.Pressure, l.Battery, l.Critical = time.Unix(booted, 0), "", nil, nil
+	l.Top, l.MemoryParts, l.Volumes, l.Interfaces, l.Sensors = nil, nil, nil, nil, nil
+	d := details{nics: map[string]traffic{}}
 	l.Relayed = relayed(l.SSH)
 	r := reading{At: now.Unix()}
 	ids := map[int]string{}
@@ -512,7 +568,7 @@ func (w *watcher) stats(line string, now time.Time) error {
 	usage := map[int]use{}
 	for _, field := range strings.Fields(line)[9:] {
 		if key, value, ok := strings.Cut(field, "="); ok {
-			if err := measure(key, value, now, &l, &r, &t, &n); err != nil {
+			if err := measure(key, value, now, &l, &r, &t, &n, &d); err != nil {
 				return err
 			}
 			continue
@@ -534,11 +590,40 @@ func (w *watcher) stats(line string, now time.Time) error {
 		cpu[id] = recent(readings, func(r cpuReading) int64 { return r.At }, now)
 	}
 	l.History = recent(append(l.History, r), func(r reading) int64 { return r.At }, now)
-	w.live, w.ticks, w.traffic, w.usage, w.cpu = l, t, n, usage, cpu
+	if len(d.procs) > 0 {
+		for i := range d.procs {
+			p := &d.procs[i]
+			p.CPU, p.Session = int(math.Round(p.seconds/now.Sub(w.sampled).Seconds()*100)), ids[p.root]
+		}
+		l.Top = &top{CPU: largest(d.procs, func(p process) float64 { return p.seconds }), Memory: largest(d.procs, func(p process) float64 { return float64(p.MemoryMB) })}
+	}
+	for name, t := range d.nics {
+		if received, sent, ok := t.since(w.nics[name]); ok && received+sent > 0 {
+			l.Interfaces = append(l.Interfaces, nic{Name: name, Received: received, Sent: sent})
+		}
+	}
+	l.Interfaces = largest(l.Interfaces, func(n nic) float64 { return float64(n.Received + n.Sent) })
+	l.Volumes = largest(l.Volumes, func(v volume) float64 { return float64(v.TotalMB) })
+	l.Sensors = largest(l.Sensors, func(s sensor) float64 { return s.Temp })
+	w.live, w.ticks, w.traffic, w.usage, w.cpu, w.nics, w.sampled = l, t, n, usage, cpu, d.nics, now
 	return nil
 }
 
-func measure(key, value string, now time.Time, l *liveMachine, r *reading, cpu *ticks, net *traffic) error {
+func largest[T any](items []T, size func(T) float64) []T {
+	items = slices.Clone(items)
+	slices.SortStableFunc(items, func(a, b T) int { return cmp.Compare(size(b), size(a)) })
+	return items[:min(len(items), 8)]
+}
+
+func (t traffic) since(was traffic) (received, sent int64, ok bool) {
+	if t.iface != was.iface || t.received < was.received || t.sent < was.sent {
+		return 0, 0, false
+	}
+	seconds := t.at.Sub(was.at).Seconds()
+	return int64(math.Round(float64(t.received-was.received) / seconds)), int64(math.Round(float64(t.sent-was.sent) / seconds)), true
+}
+
+func measure(key, value string, now time.Time, l *liveMachine, r *reading, cpu *ticks, net *traffic, d *details) error {
 	switch key {
 	case "pressure":
 		l.Pressure = value
@@ -578,11 +663,70 @@ func measure(key, value string, now time.Time, l *liveMachine, r *reading, cpu *
 		if _, err := fmt.Sscanf(value, "%d:%d:%s", &t.received, &t.sent, &t.iface); err != nil {
 			return err
 		}
-		if t.iface == net.iface && t.received >= net.received && t.sent >= net.sent {
-			seconds := now.Sub(net.at).Seconds()
-			r.Received, r.Sent = new(int64(math.Round(float64(t.received-net.received)/seconds))), new(int64(math.Round(float64(t.sent-net.sent)/seconds)))
+		if received, sent, ok := t.since(*net); ok {
+			r.Received, r.Sent = &received, &sent
 		}
 		*net = t
+	case "nic":
+		t := traffic{at: now}
+		if _, err := fmt.Sscanf(value, "%d:%d:%s", &t.received, &t.sent, &t.iface); err != nil {
+			return err
+		}
+		d.nics[t.iface] = t
+	case "proc":
+		var p process
+		if _, err := fmt.Sscanf(value, "%d:%g:%d:%d:%s", &p.PID, &p.seconds, &p.MemoryMB, &p.root, &p.Name); err != nil {
+			return err
+		}
+		if err := unescape(&p.Name); err != nil {
+			return err
+		}
+		d.procs = append(d.procs, p)
+	case "part":
+		kind, mb, _ := strings.Cut(value, ":")
+		n, err := strconv.Atoi(mb)
+		l.MemoryParts = append(l.MemoryParts, memoryPart{Kind: kind, MB: n})
+		return err
+	case "vol":
+		var v volume
+		var where string
+		if _, err := fmt.Sscanf(value, "%d:%d:%s", &v.UsedMB, &v.TotalMB, &where); err != nil {
+			return err
+		}
+		v.Mount, v.Name, _ = strings.Cut(where, ":")
+		if err := unescape(&v.Mount, &v.Name); err != nil {
+			return err
+		}
+		l.Volumes = append(l.Volumes, v)
+	case "sensor":
+		temp, rest, _ := strings.Cut(value, ":")
+		critical, name, _ := strings.Cut(rest, ":")
+		s := sensor{Name: name}
+		if err := unescape(&s.Name); err != nil {
+			return err
+		}
+		var err error
+		if s.Temp, err = strconv.ParseFloat(temp, 64); err != nil {
+			return err
+		}
+		if critical != "" {
+			s.Critical = new(float64)
+			if *s.Critical, err = strconv.ParseFloat(critical, 64); err != nil {
+				return err
+			}
+		}
+		l.Sensors = append(l.Sensors, s)
+	}
+	return nil
+}
+
+func unescape(fields ...*string) error {
+	for _, f := range fields {
+		s, err := url.PathUnescape(*f)
+		if err != nil {
+			return err
+		}
+		*f = s
 	}
 	return nil
 }

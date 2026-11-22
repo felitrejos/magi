@@ -1,0 +1,16 @@
+sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+udev /dev devtmpfs rw,nosuid,relatime,size=8105368k,nr_inodes=2026342,mode=755,inode64 0 0
+devpts /dev/pts devpts rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=000 0 0
+tmpfs /run tmpfs rw,nosuid,nodev,noexec,relatime,size=1630344k,mode=755,inode64 0 0
+/dev/mapper/ubuntu--vg-ubuntu--lv / ext4 rw,relatime 0 0
+securityfs /sys/kernel/security securityfs rw,nosuid,nodev,noexec,relatime 0 0
+tmpfs /dev/shm tmpfs rw,nosuid,nodev,inode64 0 0
+cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot 0 0
+/dev/loop0 /snap/core22/1380 squashfs ro,nodev,relatime,errors=continue,threads=single 0 0
+/dev/nvme0n1p2 /boot ext4 rw,relatime 0 0
+/dev/nvme0n1p1 /boot/efi vfat rw,relatime,fmask=0077,dmask=0077,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro 0 0
+/dev/sda1 /mnt/media\040library ext4 rw,relatime 0 0
+/dev/sda1 /srv/media ext4 rw,relatime 0 0
+overlay /var/lib/docker/overlay2/4f1c0d6e/merged overlay rw,relatime,lowerdir=/var/lib/docker/overlay2/l/ABC:/var/lib/docker/overlay2/l/DEF,upperdir=/var/lib/docker/overlay2/4f1c0d6e/diff,workdir=/var/lib/docker/overlay2/4f1c0d6e/work 0 0
+tmpfs /run/user/1000 tmpfs rw,nosuid,nodev,relatime,size=1630340k,nr_inodes=407585,mode=700,uid=1000,gid=1000,inode64 0 0
