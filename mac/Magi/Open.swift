@@ -332,9 +332,27 @@ enum Opener {
             let errors = Pipe()
             process.standardOutput = output
             process.standardError = errors
+            let ended = DispatchGroup()
+            let collect = { @Sendable (pipe: Pipe) -> OSAllocatedUnfairLock<Data> in
+                let data = OSAllocatedUnfairLock(initialState: Data())
+                ended.enter()
+                pipe.fileHandleForReading.readabilityHandler = { handle in
+                    let chunk = handle.availableData
+                    guard chunk.isEmpty else { return data.withLock { $0.append(chunk) } }
+                    handle.readabilityHandler = nil
+                    ended.leave()
+                }
+                return data
+            }
+            let out = collect(output)
+            let said = collect(errors)
+            ended.enter()
+            process.terminationHandler = { _ in ended.leave() }
             do {
                 try process.run()
             } catch {
+                output.fileHandleForReading.readabilityHandler = nil
+                errors.fileHandleForReading.readabilityHandler = nil
                 return finish(.failure(error))
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + (deadline - .now) / .seconds(1)) {
@@ -343,17 +361,8 @@ enum Opener {
                 }
                 finish(.failure(Failure.timedOut(command: command)))
             }
-            let said = OSAllocatedUnfairLock(initialState: Data())
-            let reading = DispatchGroup()
-            DispatchQueue.global().async(group: reading) {
-                let data = errors.fileHandleForReading.readDataToEndOfFile()
-                said.withLock { $0 = data }
-            }
-            DispatchQueue.global().async {
-                let data = output.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                reading.wait()
-                guard process.terminationStatus != 0 else { return finish(.success(data)) }
+            ended.notify(queue: .global()) {
+                guard process.terminationStatus != 0 else { return finish(.success(out.withLock { $0 })) }
                 finish(.failure(Failure.exited(command: command, status: process.terminationStatus, stderr: String(decoding: said.withLock { $0 }, as: UTF8.self))))
             }
         }
