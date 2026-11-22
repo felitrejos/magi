@@ -46,7 +46,8 @@ On a Mac with macOS 26 or later, magi adds a menu bar app.
 - **Notifications.** You get one when a session starts waiting on you. A
   click on it opens that session.
 - **Monitor.** Click a machine for its CPU, memory, temperature and disk
-  over the last hour, and what each session there uses.
+  over the last hour, and what each session there uses. Click a card for
+  its list, such as the busiest processes.
 
 The app only shows and opens sessions. It never moves or starts
 anything, and never types into one.

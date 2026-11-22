@@ -70,9 +70,16 @@ numbers come from `proc_pid_rusage`, read every 30 seconds, which also
 counts the commands a process ran and waited for. The app woke 133
 times, about once every two seconds.
 
+Since 1.1 the watch loop runs a few more short commands on each stats
+tick, for the monitor's lists. Two ten-minute runs side by side on the
+Mac measured the watcher at 0.88% of one core before and 0.90% after,
+which is within noise. Each stats line grew from about 165 bytes to
+about 1 KB, once every 32 seconds or so. The table above is from before
+that change.
+
 The watch loop on Linux used 0.24% of one core and 2.1 MB over ten
 minutes on 20 November 2026, before it read CPU, temperature and
-network. It hasn't been measured since.
+network, and before the lists. It hasn't been measured since.
 
 ## Known limits
 
@@ -94,6 +101,14 @@ network. It hasn't been measured since.
   tested version. The list of failing versions is edited by hand.
 - On macOS, per-session CPU misses a child process that started and
   exited between two samples. Linux counts it.
+- The monitor's lists refresh about every 30 seconds, and a process's
+  CPU is its average over that time. On a Mac the CPU card's figure is a
+  1-second sample, so the two can differ during a burst.
+- On Linux a process's name is the kernel's, cut at 15 characters.
+- On Linux the volume list leaves out network and FUSE filesystems. It
+  keeps `fuseblk`, such as an NTFS disk.
+- The temperature list is Linux only. macOS gives no sensor readings
+  without root, so on a Mac that card opens no list.
 - If the watcher is killed outright, the files in `~/.magi/live` keep
   their last content. A reader treats a `heard` time older than about 40
   seconds as the machine not answering.
@@ -115,6 +130,7 @@ breaking one of these needs 2.0.
   `setup`, `services` and `ports` in `.magi.toml`. A key magi no longer
   uses is ignored.
 - The fields of `~/.magi/live/<machine>.json`, which can gain new ones.
+  1.1 only added fields.
   A session's `tmux` field is a tmux pane id such as `%3`, not a window
   id.
 - The lines of `~/.magi/handoffs.jsonl`, which can gain new fields.

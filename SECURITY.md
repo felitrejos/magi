@@ -154,6 +154,21 @@ unit on Linux. It runs as you, never as root, and starts at login.
   (`/proc/stat`, `/proc/net/route` and `/proc/net/dev` among them),
   `/sys/class/power_supply`, and the CPU temperature sensor in
   `/sys/class/hwmon` or `/sys/class/thermal`.
+- On the same tick it reads what the monitor's lists show.
+  - Every process's name. On macOS that's `ps`'s `ucomm`. For the
+    processes it lists, 16 at most, it also runs `ps -o comm` for the
+    program's path, and checks that the file exists when the name was
+    cut short. On Linux it's the name in `/proc/<pid>/stat`. A name
+    never includes arguments or a command line.
+  - Memory's parts, from `vm_stat` and `sysctl hw.memsize` on macOS and
+    `/proc/meminfo` on Linux.
+  - The real volumes, from `mount` on macOS or `/proc/mounts` on Linux,
+    and `df` for their sizes. On macOS it runs `diskutil info /` once,
+    when the loop starts, for the startup volume's name.
+  - Every network interface's byte counters, from the same `netstat -ibn`
+    or `/proc/net/dev`.
+  - On Linux, every temperature sensor in `/sys/class/hwmon`: its chip's
+    name, its label, its reading and its critical value.
 - On the laptop, the watcher runs `tailscale status --json` for each
   other machine about every 30 seconds, when Tailscale is installed, to
   learn whether the connection goes through a Tailscale relay.
@@ -167,9 +182,15 @@ unit on Linux. It runs as you, never as root, and starts at login.
   title, folder, state, what it waits on, CPU and its last hour, memory,
   Remote Control link, Claude desktop session id (`hostSession`), tmux
   pane, Rex session and block ids, and on macOS the bundle id of the app
-  it runs in (`app`) and its terminal device (`tty`). The file holds no
-  conversation text beyond what a session waits on, and no file
-  contents.
+  it runs in (`app`) and its terminal device (`tty`). For the monitor's
+  lists it also holds the 8 processes that use the most CPU and the 8
+  that use the most memory, each with its process number, name, CPU or
+  memory, and the session it belongs to, if any; memory's parts; each
+  volume's name, mount point, used and total size; each network
+  interface's name and rates; and each sensor's name, temperature and
+  critical value. The file holds no conversation text beyond what a
+  session waits on, no file contents, and no process arguments or
+  command lines.
 - Its log holds machine names, short session ids, folder paths, branch
   and file names, and errors.
 
@@ -182,8 +203,9 @@ magi's version when magi updates.
   as the binary, and installs nothing unless the zip's SHA-256 matches.
 - The app is signed with magi's own certificate, the same for every
   release, so macOS keeps its permissions across updates. Its private
-  key is in this repository's GitHub Actions secrets, for the release
-  workflow, and in the owner's copy on their Mac. The app isn't notarized:
+  key is in this repository's `release` environment on GitHub, which
+  only `v*` tags can use, for the release workflow, and in the owner's
+  copy on their Mac. The app isn't notarized:
   magi downloads it with `curl`, which marks nothing as quarantined, so
   Gatekeeper doesn't check it.
 - magi installs nothing unless `magi.app` in the zip is a folder, not a

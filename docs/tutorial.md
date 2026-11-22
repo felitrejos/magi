@@ -88,6 +88,11 @@ the menu bar gets a badge when a session is waiting on you.
   nothing came to the front.
 - **Click a machine's tile** at the bottom for its CPU, memory,
   temperature and disk. Click it again to go back.
+- **Click a card** for its list: the busiest processes for CPU and
+  memory, the volumes for disk, the interfaces for network, and on
+  Linux the sensors for temperature. A process that belongs to a session
+  shows the session's title, and a click opens it. Escape steps back one
+  level.
 - **Notifications.** The first time a session starts waiting, macOS asks
   whether magi may send notifications. After that you get one per wait,
   and a click on it opens the session.

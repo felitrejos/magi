@@ -4,6 +4,24 @@ What changed in each version of magi.
 [docs/support.md](docs/support.md#versions) says what a version number
 promises.
 
+## 1.1.0
+
+- In a machine's monitor, a click on a card opens its list: the 8
+  busiest processes for CPU and for memory, the volumes for disk, each
+  interface's rates for network, and each sensor for temperature on
+  Linux. A process that belongs to a session shows the session's title,
+  and a click opens it. Memory also shows a bar split into its parts.
+  Escape steps back one level.
+- The menu bar icon is smaller. The Show Waiting Count setting is gone:
+  a waiting session shows as the icon's badge, an orange dot with Color
+  the Badge on.
+- The Disk card's used space is now the disk's size minus what's
+  available, so it counts space the system reserves and matches the
+  volume list.
+- Opening a session no longer hangs when the Mac is busy.
+- Releases are signed from a GitHub environment that only `v*` tags can
+  use.
+
 ## 1.0.1, 2026-11-21
 
 - A notification now shows the app the session runs in as its picture:
