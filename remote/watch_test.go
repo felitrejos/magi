@@ -189,12 +189,8 @@ func heardStats(t *testing.T, m sh.Machine, w *watcher, n int, apart time.Durati
 	return nil
 }
 
-func (f *fixture) served(name, fixture string) {
+func (f *fixture) served(name, path string) {
 	f.t.Helper()
-	path, err := filepath.Abs(filepath.Join("testdata", fixture))
-	if err != nil {
-		f.t.Fatal(err)
-	}
 	f.tool(name, "#!/bin/sh\nexec /bin/cat '"+path+"'\n")
 }
 
@@ -207,12 +203,8 @@ func testdata(t *testing.T, name string) string {
 	return string(data)
 }
 
-func (f *fixture) df(fixture string) {
+func (f *fixture) df(path string) {
 	f.t.Helper()
-	path, err := filepath.Abs(filepath.Join("testdata", fixture))
-	if err != nil {
-		f.t.Fatal(err)
-	}
 	f.tool("df", `#!/bin/sh
 shift
 if [ "$1" = "$HOME" ]; then exec head -2 '`+path+`'; fi
@@ -225,10 +217,10 @@ func listed(live liveMachine) []string {
 	var got []string
 	if live.Top != nil {
 		for _, p := range live.Top.CPU {
-			got = append(got, fmt.Sprintf("cpu %d %s %d%% %dMB %s", p.PID, p.Name, p.CPU, p.MemoryMB, p.Session))
+			got = append(got, fmt.Sprintf("cpu %d %s %d%% %s", p.PID, p.Name, p.CPU, p.Session))
 		}
 		for _, p := range live.Top.Memory {
-			got = append(got, fmt.Sprintf("memory %d %s %d%% %dMB %s", p.PID, p.Name, p.CPU, p.MemoryMB, p.Session))
+			got = append(got, fmt.Sprintf("memory %d %s %dMB %s", p.PID, p.Name, p.MemoryMB, p.Session))
 		}
 	}
 	for _, p := range live.MemoryParts {
@@ -269,10 +261,10 @@ func TestTheLiveFileListsEachSamplesProcessesMemoryVolumesInterfacesAndSensors(t
 	}
 	w.hear("stats 10 1 100 200 300 400 0 0 1794928938"+nics+" nic=7:7:utun0 nic=10:10:awdl0"+procs+volumes+" part=app:250", start.Add(30*time.Second))
 	want := []string{
-		"cpu 108 Helper (Renderer):8 80% 100MB ", "cpu 107 Helper (Renderer):7 70% 200MB a", "cpu 106 Helper (Renderer):6 60% 300MB ", "cpu 105 Helper (Renderer):5 50% 400MB a",
-		"cpu 104 Helper (Renderer):4 40% 500MB ", "cpu 103 Helper (Renderer):3 30% 600MB a", "cpu 102 Helper (Renderer):2 20% 700MB ", "cpu 101 Helper (Renderer):1 10% 800MB a",
-		"memory 100 Helper (Renderer):0 0% 900MB ", "memory 101 Helper (Renderer):1 10% 800MB a", "memory 102 Helper (Renderer):2 20% 700MB ", "memory 103 Helper (Renderer):3 30% 600MB a",
-		"memory 104 Helper (Renderer):4 40% 500MB ", "memory 105 Helper (Renderer):5 50% 400MB a", "memory 106 Helper (Renderer):6 60% 300MB ", "memory 107 Helper (Renderer):7 70% 200MB a",
+		"cpu 108 Helper (Renderer):8 80% ", "cpu 107 Helper (Renderer):7 70% a", "cpu 106 Helper (Renderer):6 60% ", "cpu 105 Helper (Renderer):5 50% a",
+		"cpu 104 Helper (Renderer):4 40% ", "cpu 103 Helper (Renderer):3 30% a", "cpu 102 Helper (Renderer):2 20% ", "cpu 101 Helper (Renderer):1 10% a",
+		"memory 100 Helper (Renderer):0 900MB ", "memory 101 Helper (Renderer):1 800MB a", "memory 102 Helper (Renderer):2 700MB ", "memory 103 Helper (Renderer):3 600MB a",
+		"memory 104 Helper (Renderer):4 500MB ", "memory 105 Helper (Renderer):5 400MB a", "memory 106 Helper (Renderer):6 300MB ", "memory 107 Helper (Renderer):7 200MB a",
 		"part app 250",
 		"volume Disk 8 /Volumes/Disk 8 8/8000", "volume Disk 7 /Volumes/Disk 7 7/7000", "volume Disk 6 /Volumes/Disk 6 6/6000", "volume Disk 5 /Volumes/Disk 5 5/5000",
 		"volume Disk 4 /Volumes/Disk 4 4/4000", "volume Disk 3 /Volumes/Disk 3 3/3000", "volume Disk 2 /Volumes/Disk 2 2/2000", "volume Disk 1 /Volumes/Disk 1 1/1000",
@@ -349,6 +341,18 @@ func TestAStatsLineThatBreaksPartWayChangesNothing(t *testing.T) {
 	w.hear("stats 12 3 150 200 350 400 0 0 1794928999 pressure=critical battery=40:true ticks=1300:5000 net=31000:3500:eth0 nic=31000:3500:eth0 proc=7:1:2:0:sh part=app:1 vol=1:2:/:root sensor=50.0::cpu temp=61.0:99 thermal=x", start.Add(30*time.Second))
 	if !reflect.DeepEqual(w.live, live) || w.ticks != ticks || w.traffic != traffic || !reflect.DeepEqual(w.nics, nics) {
 		t.Errorf("after an unreadable line the watcher holds %+v, %+v, %+v, %+v; want %+v, %+v, %+v, %+v", w.live, w.ticks, w.traffic, w.nics, live, ticks, traffic, nics)
+	}
+}
+
+func TestAnEmptyNameIsRead(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	start := time.Unix(1_800_000_000, 0)
+	w.hear("stats 10 1 100 200 300 400 0 0 1794928938", start)
+	w.hear("stats 10 1 100 200 300 400 0 0 1794928938 proc=7:3:2:0: vol=1:2:%2F: sensor=40.0::", start.Add(30*time.Second))
+	want := []string{"cpu 7  10% ", "memory 7  2MB ", "volume  / 1/2", "sensor  40 -"}
+	if got := listed(readLive(t, "server")); !reflect.DeepEqual(got, want) {
+		t.Errorf("the live file lists %q, want %q", got, want)
 	}
 }
 
@@ -784,9 +788,20 @@ func TestAMacListsItsBusiestProcessesMemoryPartsVolumesAndInterfaces(t *testing.
 	pid := f.sleeper()
 	id := "0f0f0f0f-1111-2222-3333-555555555563"
 	f.session(pid, id)
-	f.write(f.home, "ps-1", testdata(t, "darwin/ps-1.txt")+fmt.Sprintf("%d 1 0:01.00 0:01.00 2048 claude\n99001 %d 0:30.00 0:30.00 1024 ssh\n", pid, pid))
-	f.write(f.home, "ps-2", testdata(t, "darwin/ps-2.txt")+fmt.Sprintf("%d 1 0:01.50 0:01.50 2048 claude\n99001 %d 0:38.00 0:38.00 1024 ssh\n", pid, pid))
-	f.write(f.home, "comm", testdata(t, "darwin/comm.txt")+fmt.Sprintf("99001 ssh: /Users/sam/.magi/ssh/99e025c35b39f398887e16f50e350caa0e0c34a6 [mux]\n%d /Users/sam/Library/Application Support/Claude/claude-code/2.1.330/4262a1273231/claude.app/Contents/MacOS/claude\n", pid))
+	root := t.TempDir()
+	comm := ""
+	for line := range strings.Lines(testdata(t, "darwin/comm.txt") + fmt.Sprintf("99001 ssh: /Users/sam/.magi/ssh/99e025c35b39f398887e16f50e350caa0e0c34a6 [mux]\n%d /Users/sam/Library/Application Support/Claude/claude-code/2.1.330/4262a1273231/claude.app/Contents/MacOS/claude\n", pid)) {
+		n, path, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if strings.HasPrefix(path, "/") {
+			path = root + path
+			f.write(filepath.Dir(path), filepath.Base(path), "")
+		}
+		comm += n + " " + path + "\n"
+	}
+	comm += "99002 " + root + "/Applications/Dia.app/Contents/Frameworks/ArcCore.framework/Helpers/Browser Helper (Aperitif Renderer).app/Contents/MacOS/Browser Helper (Aperitif Renderer) --type=renderer --secret=1\n"
+	f.write(f.home, "comm", comm)
+	f.write(f.home, "ps-1", testdata(t, "darwin/ps-1.txt")+fmt.Sprintf("%d 1 0:01.00 0:01.00 2048 claude\n99001 %d 0:30.00 0:30.00 1024 ssh\n99002 47883 0:10.00 0:10.00 1024 Browser Helper (\n", pid, pid))
+	f.write(f.home, "ps-2", testdata(t, "darwin/ps-2.txt")+fmt.Sprintf("%d 1 0:01.50 0:01.50 2048 claude\n99001 %d 0:38.00 0:38.00 1024 ssh\n99002 47883 0:15.00 0:15.00 1024 Browser Helper (\n", pid, pid))
 	f.tool("ps", `#!/bin/sh
 case "$*" in
 "-A -o pid= -o ppid= -o time= -o time= -o rss= -o ucomm=") if [ -f "$HOME/ps-1" ]; then /bin/cat "$HOME/ps-1"; rm "$HOME/ps-1"; else /bin/cat "$HOME/ps-2"; fi ;;
@@ -799,74 +814,170 @@ esac
 	f.tool("sysctl", macSysctl)
 	f.tool("iostat", "#!/bin/sh\nprintf '      cpu    load average\\n us sy id   1m   5m   15m\\n 18  5 77  2.36 1.85 1.87\\n  6  5 89  2.36 1.85 1.87\\n'\n")
 	f.tool("route", "#!/bin/sh\n")
-	f.served("netstat", "darwin/netstat.txt")
-	f.served("vm_stat", "darwin/vm_stat.txt")
-	f.served("mount", "darwin/mount.txt")
-	f.served("diskutil", "darwin/diskutil.txt")
-	f.df("darwin/df.txt")
+	f.served("netstat", fixturePath(t, "darwin/netstat.txt"))
+	f.served("vm_stat", fixturePath(t, "darwin/vm_stat.txt"))
+	f.served("mount", fixturePath(t, "darwin/mount.txt"))
+	f.served("diskutil", fixturePath(t, "darwin/diskutil.txt"))
+	f.df(fixturePath(t, "darwin/df.txt"))
 	w := newWatcher("mac", "", nil, log.New(io.Discard, "", 0), "")
 	stats := heardStats(t, f.machine(), w, 2, 10*time.Second)
 	if !strings.Contains(stats[1], " nic=19650959258:1647554020:en0 nic=16985283:2210815:awdl0 nic=0:7500:nan0 nic=17711752:18086155:utun4 ") || strings.Contains(stats[1], "lo0") || strings.Contains(stats[1], ":gif0") {
 		t.Errorf("stats line %q, want the byte counters of every interface with traffic but loopback", stats[1])
 	}
 	want := []string{
-		fmt.Sprintf("cpu 99001 ssh 80%% 1MB %s", id), "cpu 374 mds 54% 44MB ", "cpu 417 WindowServer 11% 85MB ", "cpu 35178 Claude Helper 8% 66MB ",
-		fmt.Sprintf("cpu %d claude 5%% 2MB %s", pid, id), "cpu 35197 Claude Helper (Renderer) 4% 632MB ", "cpu 35301 claude 4% 382MB ", "cpu 308 NotificationCenter 3% 59MB ",
-		"memory 35197 Claude Helper (Renderer) 4% 632MB ", "memory 47883 Dia 1% 421MB ", "memory 35301 claude 4% 382MB ", "memory 4836 claude 0% 317MB ",
-		"memory 35175 Claude 0% 305MB ", "memory 66745 Browser Helper (Aperitif Renderer) 0% 293MB ", "memory 65068 WhatsApp 2% 235MB ", "memory 61804 Browser Helper (Aperitif Renderer) 0% 215MB ",
-		"part app 4527", "part wired 2331", "part compressed 4773", "part cached 3361", "part free 759",
+		"cpu 99001 ssh 80% " + id, "cpu 374 mds 54% ", "cpu 99002 Browser Helper ( 50% ", "cpu 417 WindowServer 11% ",
+		"cpu 35178 Claude Helper 8% ", fmt.Sprintf("cpu %d claude 5%% %s", pid, id), "cpu 35197 Claude Helper (Renderer) 4% ", "cpu 35301 claude 4% ",
+		"memory 35197 Claude Helper (Renderer) 632MB ", "memory 47883 Dia 421MB ", "memory 35301 claude 382MB ", "memory 4836 claude 317MB ",
+		"memory 35175 Claude 305MB ", "memory 66745 Browser Helper (Aperitif Renderer) 293MB ", "memory 65068 WhatsApp 235MB ", "memory 61804 Browser Helper (Aperitif Renderer) 215MB ",
+		"part app 4527", "part wired 2964", "part compressed 4773", "part cached 3361", "part free 759",
 		"volume Macintosh HD / 297762/471482", "volume Test Drive /Volumes/Test Drive 1/40",
 	}
-	if got := listed(readLive(t, "mac")); !reflect.DeepEqual(got, want) {
+	live := readLive(t, "mac")
+	if got := listed(live); !reflect.DeepEqual(got, want) {
 		t.Errorf("the Mac lists\n%q\nwant\n%q", got, want)
+	}
+	if live.Disk != (space{UsedMB: 297762, TotalMB: 471482}) || parts(live) != live.Memory.TotalMB {
+		t.Errorf("disk %+v and memory parts adding up to %d MB of %d, want the disk's size less what is available and parts that add up to all memory", live.Disk, parts(live), live.Memory.TotalMB)
 	}
 }
 
-func TestALinuxMachineListsItsBusiestProcessesMemoryPartsVolumesInterfacesAndSensors(t *testing.T) {
-	f := newFixture(t)
-	pid := f.sleeper()
-	id := "0f0f0f0f-1111-2222-3333-555555555564"
-	f.session(pid, id)
-	for _, n := range []string{"1", "2"} {
-		f.write(f.home, "stat-"+n, strings.ReplaceAll(testdata(t, "linux/stat-"+n+".txt"), "SESSION", fmt.Sprint(pid)))
-	}
-	data, err := filepath.Abs("testdata/linux")
+func fixturePath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := filepath.Abs(filepath.Join("testdata", name))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return path
+}
+
+func parts(live liveMachine) int {
+	sum := 0
+	for _, p := range live.MemoryParts {
+		sum += p.MB
+	}
+	return sum
+}
+
+func stat(pid int, comm string, ppid, ticks, pages int) string {
+	return fmt.Sprintf("%d (%s) S %d %d %d 0 -1 4194560 2361 13453 2 18 %d 0 0 0 20 0 1 0 25 %d %d 18446744073709551615 1 1 0 0 0 0 0 4096 1260 0 0 0 17 2 0 0 0 0 0 0 0 0 0 0 0 0 0\n", pid, comm, ppid, pid, pid, ticks, pages*4096, pages)
+}
+
+type linuxSample struct {
+	pid   int
+	id    string
+	stats []string
+	live  liveMachine
+}
+
+func sampleLinux(t *testing.T, files map[string]string) linuxSample {
+	t.Helper()
+	f := newFixture(t)
+	s := linuxSample{pid: f.sleeper(), id: "0f0f0f0f-1111-2222-3333-555555555564"}
+	f.session(s.pid, s.id)
+	data := t.TempDir()
+	for _, name := range []string{"meminfo", "net-dev", "mounts", "df", "hwmon", "stat-1", "stat-2"} {
+		body, ok := files[name]
+		if !ok {
+			body = testdata(t, "linux/"+name+".txt")
+		}
+		f.write(data, name, strings.ReplaceAll(body, "SESSION", fmt.Sprint(s.pid)))
+	}
 	f.tool("cat", `#!/bin/sh
+d='`+data+`'
 case "$*" in
-"/proc/meminfo /proc/stat") /bin/cat '`+data+`/meminfo.txt'; echo 'btime 1794928938' ;;
-"/proc/meminfo /proc/net/dev") /bin/cat '`+data+`/meminfo.txt' '`+data+`/net-dev.txt' ;;
-/proc/mounts) /bin/cat '`+data+`/mounts.txt' ;;
-/proc/*) if [ -f "$HOME/stat-1" ]; then /bin/cat "$HOME/stat-1"; rm "$HOME/stat-1"; else /bin/cat "$HOME/stat-2"; fi ;;
+"/proc/meminfo /proc/stat") /bin/cat "$d/meminfo"; echo 'btime 1794928938' ;;
+"/proc/meminfo /proc/net/dev") /bin/cat "$d/meminfo" "$d/net-dev" ;;
+/proc/mounts) /bin/cat "$d/mounts" ;;
+/proc/*) if [ -f "$d/stat-1" ]; then /bin/cat "$d/stat-1"; rm "$d/stat-1"; else /bin/cat "$d/stat-2"; fi ;;
 *) exec /bin/cat "$@" ;;
 esac
 `)
-	f.tool("grep", "#!/bin/sh\ncase \"$*\" in *hwmon*) /bin/cat '"+data+"/hwmon.txt' ;; esac\n")
+	f.tool("grep", "#!/bin/sh\ncase \"$*\" in *hwmon*) /bin/cat '"+data+"/hwmon' ;; esac\n")
 	f.tool("uname", "#!/bin/sh\necho Linux\n")
 	f.tool("getconf", "#!/bin/sh\ncase $1 in CLK_TCK) echo 100 ;; PAGESIZE) echo 4096 ;; *) echo 8 ;; esac\n")
 	f.tool("cut", "#!/bin/sh\necho '0.52 0.58 0.59'\n")
 	f.tool("sleep", "#!/bin/sh\n")
 	f.tool("tmux", "#!/bin/sh\n")
 	f.tool("ps", "#!/bin/sh\n")
-	f.df("linux/df.txt")
-	w := newWatcher("linux", "", nil, log.New(io.Discard, "", 0), "")
-	stats := heardStats(t, f.machine(), w, 2, 30*time.Second)
-	if !strings.Contains(stats[1], " nic=98234556123:4523456789:enp3s0 nic=1234567:2345678:docker0 nic=5678901:6789012:tailscale0 ") || strings.Contains(stats[1], ":lo ") || strings.Contains(stats[1], "veth") || strings.Contains(stats[1], "wlp2s0") {
-		t.Errorf("stats line %q, want the byte counters of every interface with traffic but loopback and veth", stats[1])
+	f.df(filepath.Join(data, "df"))
+	s.stats = heardStats(t, f.machine(), newWatcher("linux", "", nil, log.New(io.Discard, "", 0), ""), 2, 30*time.Second)
+	s.live = readLive(t, "linux")
+	return s
+}
+
+func TestALinuxMachineListsItsBusiestProcessesMemoryPartsVolumesInterfacesAndSensors(t *testing.T) {
+	s := sampleLinux(t, nil)
+	if !strings.Contains(s.stats[1], " nic=98234556123:4523456789:enp3s0 nic=1234567:2345678:docker0 nic=5678901:6789012:tailscale0 ") || strings.Contains(s.stats[1], ":lo ") || strings.Contains(s.stats[1], "veth") || strings.Contains(s.stats[1], "wlp2s0") {
+		t.Errorf("stats line %q, want the byte counters of every interface with traffic but loopback and veth", s.stats[1])
 	}
 	want := []string{
-		fmt.Sprintf("cpu 4100 node 53%% 195MB %s", id), fmt.Sprintf("cpu 9999 cc1 40%% 78MB %s", id), "cpu 2301 Isolated Web Co 33% 469MB ", "cpu 6000 rsync 30% 2MB ",
-		"cpu 2280 firefox-esr 25% 703MB ", fmt.Sprintf("cpu %d claude 23%% 391MB %s", pid, id), "cpu 2210 tmux: server 4% 6MB ", "cpu 5100 containerd 1% 59MB ",
-		"memory 2280 firefox-esr 25% 703MB ", "memory 2301 Isolated Web Co 33% 469MB ", fmt.Sprintf("memory %d claude 23%% 391MB %s", pid, id), fmt.Sprintf("memory 4100 node 53%% 195MB %s", id),
-		"memory 3005 postgres 0% 117MB ", "memory 5000 dockerd 0% 98MB ", fmt.Sprintf("memory 9999 cc1 40%% 78MB %s", id), "memory 5100 containerd 1% 59MB ",
+		"cpu 4100 node 53% " + s.id, "cpu 9999 cc1 40% " + s.id, "cpu 2301 Isolated Web Co 33% ", "cpu 6000 rsync 30% ",
+		"cpu 2280 firefox-esr 25% ", fmt.Sprintf("cpu %d claude 23%% %s", s.pid, s.id), "cpu 2210 tmux: server 4% ", "cpu 5100 containerd 1% ",
+		"memory 2280 firefox-esr 703MB ", "memory 2301 Isolated Web Co 469MB ", fmt.Sprintf("memory %d claude 391MB %s", s.pid, s.id), "memory 4100 node 195MB " + s.id,
+		"memory 3005 postgres 117MB ", "memory 5000 dockerd 98MB ", "memory 9999 cc1 78MB " + s.id, "memory 5100 containerd 59MB ",
 		"part app 4326", "part cached 10704", "part free 891",
-		"volume /mnt/media library /mnt/media library 693390/1876685", "volume / / 45224/96189", "volume /boot /boot 394/1946", "volume /boot/efi /boot/efi 6/1073",
+		"volume /media /media 693390/1876685", "volume /mnt/backup disk /mnt/backup disk 246373/937797", "volume /home /home 402953/784876", "volume / / 20805/402728", "volume /boot/efi /boot/efi 6/1073",
 		"sensor acpitz 53 119", "sensor Package id 0 51 100", "sensor Core 4 50 100", "sensor Core 12 49 100",
-		"sensor Core 0 48 100", "sensor Core 8 47 100", "sensor Sensor 2 42.8 -", "sensor Composite 38.8 84",
+		"sensor Core 0 48 100", "sensor Core 8 47 100", "sensor Sensor 2 42.9 -", "sensor Composite 38.9 84.8",
 	}
-	if got := listed(readLive(t, "linux")); !reflect.DeepEqual(got, want) {
+	if got := listed(s.live); !reflect.DeepEqual(got, want) {
 		t.Errorf("the Linux machine lists\n%q\nwant\n%q", got, want)
+	}
+	if s.live.Disk != (space{UsedMB: 20805, TotalMB: 402728}) || parts(s.live) != s.live.Memory.TotalMB {
+		t.Errorf("disk %+v and memory parts adding up to %d MB of %d, want the disk's size less what is available and parts that add up to all memory", s.live.Disk, parts(s.live), s.live.Memory.TotalMB)
+	}
+}
+
+func TestAnIdleProcessWithDaysOfCPUTimeUsesNone(t *testing.T) {
+	s := sampleLinux(t, map[string]string{
+		"stat-1": stat(7000, "Xorg", 1, 1345176, 100) + stat(7001, "make", 1, 0, 50),
+		"stat-2": stat(7000, "Xorg", 1, 1345177, 100) + stat(7001, "make", 1, 300, 50),
+	})
+	if got := listed(s.live)[:2]; !reflect.DeepEqual(got, []string{"cpu 7001 make 10% ", "cpu 7000 Xorg 0% "}) {
+		t.Errorf("the busiest processes are %q, want make at 10%% and Xorg idle after 13,451 s of CPU", got)
+	}
+}
+
+func TestATemperatureBelowZeroIsRead(t *testing.T) {
+	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon0/name:outdoor\n/sys/class/hwmon/hwmon0/temp1_input:-5500\n/sys/class/hwmon/hwmon0/temp1_label:Ambient\n/sys/class/hwmon/hwmon0/temp1_crit:-1500\n"})
+	if got := s.live.Sensors; len(got) != 1 || got[0].Name != "Ambient" || got[0].Temp != -5.5 || got[0].Critical == nil || *got[0].Critical != -1.5 {
+		t.Errorf("sensors %+v from stats line %q, want Ambient at -5.5 °C, critical at -1.5 °C", got, s.stats[1])
+	}
+}
+
+func TestANameWithATabOrAWideSpaceStaysWhole(t *testing.T) {
+	procs := stat(7000, "tab\there", 1, 0, 600) + stat(7001, "web\u00a0worker", 1, 0, 300) + stat(7002, "wide\u3000space", 1, 0, 100)
+	s := sampleLinux(t, map[string]string{"stat-1": procs, "stat-2": procs})
+	if got := listed(s.live)[3:6]; !reflect.DeepEqual(got, []string{"memory 7000 tab\there 2MB ", "memory 7001 web\u00a0worker 1MB ", "memory 7002 wide\u3000space 0MB "}) {
+		t.Errorf("the largest processes are %q from stats line %q, want each name whole", got, s.stats[1])
+	}
+}
+
+func TestANewlineInAProcessNameDropsOnlyThatProcess(t *testing.T) {
+	procs := stat(7000, "bad\nname", 1, 0, 300) + stat(7001, "make", 1, 0, 200)
+	s := sampleLinux(t, map[string]string{"stat-1": procs, "stat-2": procs})
+	if got := listed(s.live)[:2]; !reflect.DeepEqual(got, []string{"cpu 7001 make 0% ", "memory 7001 make 1MB "}) {
+		t.Errorf("the live file lists %q from stats line %q, want make alone", got, s.stats[1])
+	}
+}
+
+func TestEachSensorHasANameOfItsOwn(t *testing.T) {
+	s := sampleLinux(t, map[string]string{"hwmon": `/sys/class/hwmon/hwmon0/name:acpitz
+/sys/class/hwmon/hwmon1/name:nvme
+/sys/class/hwmon/hwmon2/name:coretemp
+/sys/class/hwmon/hwmon3/name:nvme
+/sys/class/hwmon/hwmon0/temp1_input:46000
+/sys/class/hwmon/hwmon0/temp2_input:45000
+/sys/class/hwmon/hwmon1/temp1_input:38000
+/sys/class/hwmon/hwmon1/temp2_input:37000
+/sys/class/hwmon/hwmon2/temp1_input:51000
+/sys/class/hwmon/hwmon3/temp1_input:41000
+/sys/class/hwmon/hwmon1/temp1_label:Composite
+/sys/class/hwmon/hwmon1/temp2_label:Sensor 1
+/sys/class/hwmon/hwmon2/temp1_label:Package id 0
+/sys/class/hwmon/hwmon3/temp1_label:Composite
+`})
+	if got := listed(s.live); !reflect.DeepEqual(got[len(got)-6:], []string{"sensor Package id 0 51 -", "sensor acpitz (temp1) 46 -", "sensor acpitz (temp2) 45 -", "sensor Composite (nvme1) 41 -", "sensor Composite (nvme0) 38 -", "sensor Sensor 1 37 -"}) {
+		t.Errorf("the live file lists %q, want a label alone where it is unique and the chip or channel beside a repeated one", got)
 	}
 }

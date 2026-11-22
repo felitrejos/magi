@@ -313,18 +313,28 @@ type liveMachine struct {
 }
 
 type top struct {
-	CPU    []process `json:"cpu"`
-	Memory []process `json:"memory"`
+	CPU    []busy  `json:"cpu"`
+	Memory []large `json:"memory"`
+}
+
+type busy struct {
+	PID     int    `json:"pid"`
+	Name    string `json:"name"`
+	CPU     int    `json:"cpu"`
+	Session string `json:"session,omitempty"`
+}
+
+type large struct {
+	PID      int    `json:"pid"`
+	Name     string `json:"name"`
+	MemoryMB int    `json:"memoryMB"`
+	Session  string `json:"session,omitempty"`
 }
 
 type process struct {
-	PID      int    `json:"pid"`
-	Name     string `json:"name"`
-	CPU      int    `json:"cpu"`
-	MemoryMB int    `json:"memoryMB"`
-	Session  string `json:"session,omitempty"`
-	seconds  float64
-	root     int
+	pid, memoryMB, root int
+	name                string
+	seconds             float64
 }
 
 type memoryPart struct {
@@ -566,7 +576,7 @@ func (w *watcher) stats(line string, now time.Time) error {
 		cpu[s.ID] = w.cpu[s.ID]
 	}
 	usage := map[int]use{}
-	for _, field := range strings.Fields(line)[9:] {
+	for _, field := range strings.FieldsFunc(line, func(r rune) bool { return r == ' ' })[9:] {
 		if key, value, ok := strings.Cut(field, "="); ok {
 			if err := measure(key, value, now, &l, &r, &t, &n, &d); err != nil {
 				return err
@@ -591,11 +601,13 @@ func (w *watcher) stats(line string, now time.Time) error {
 	}
 	l.History = recent(append(l.History, r), func(r reading) int64 { return r.At }, now)
 	if len(d.procs) > 0 {
-		for i := range d.procs {
-			p := &d.procs[i]
-			p.CPU, p.Session = int(math.Round(p.seconds/now.Sub(w.sampled).Seconds()*100)), ids[p.root]
+		l.Top = &top{}
+		for _, p := range largest(d.procs, func(p process) float64 { return p.seconds }) {
+			l.Top.CPU = append(l.Top.CPU, busy{PID: p.pid, Name: p.name, CPU: int(math.Round(p.seconds / now.Sub(w.sampled).Seconds() * 100)), Session: ids[p.root]})
 		}
-		l.Top = &top{CPU: largest(d.procs, func(p process) float64 { return p.seconds }), Memory: largest(d.procs, func(p process) float64 { return float64(p.MemoryMB) })}
+		for _, p := range largest(d.procs, func(p process) float64 { return float64(p.memoryMB) }) {
+			l.Top.Memory = append(l.Top.Memory, large{PID: p.pid, Name: p.name, MemoryMB: p.memoryMB, Session: ids[p.root]})
+		}
 	}
 	for name, t := range d.nics {
 		if received, sent, ok := t.since(w.nics[name]); ok && received+sent > 0 {
@@ -674,11 +686,15 @@ func measure(key, value string, now time.Time, l *liveMachine, r *reading, cpu *
 		}
 		d.nics[t.iface] = t
 	case "proc":
-		var p process
-		if _, err := fmt.Sscanf(value, "%d:%g:%d:%d:%s", &p.PID, &p.seconds, &p.MemoryMB, &p.root, &p.Name); err != nil {
+		f := strings.SplitN(value, ":", 5)
+		if len(f) != 5 {
+			return fmt.Errorf("process %q lacks a field", value)
+		}
+		p := process{name: f[4]}
+		if _, err := fmt.Sscanf(value, "%d:%g:%d:%d:", &p.pid, &p.seconds, &p.memoryMB, &p.root); err != nil {
 			return err
 		}
-		if err := unescape(&p.Name); err != nil {
+		if err := unescape(&p.name); err != nil {
 			return err
 		}
 		d.procs = append(d.procs, p)
@@ -688,12 +704,14 @@ func measure(key, value string, now time.Time, l *liveMachine, r *reading, cpu *
 		l.MemoryParts = append(l.MemoryParts, memoryPart{Kind: kind, MB: n})
 		return err
 	case "vol":
-		var v volume
-		var where string
-		if _, err := fmt.Sscanf(value, "%d:%d:%s", &v.UsedMB, &v.TotalMB, &where); err != nil {
+		f := strings.SplitN(value, ":", 4)
+		if len(f) != 4 {
+			return fmt.Errorf("volume %q lacks a field", value)
+		}
+		v := volume{Mount: f[2], Name: f[3]}
+		if _, err := fmt.Sscanf(value, "%d:%d:", &v.UsedMB, &v.TotalMB); err != nil {
 			return err
 		}
-		v.Mount, v.Name, _ = strings.Cut(where, ":")
 		if err := unescape(&v.Mount, &v.Name); err != nil {
 			return err
 		}
