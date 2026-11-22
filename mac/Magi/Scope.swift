@@ -72,6 +72,10 @@ enum Health: Int, Comparable {
         self = value >= critical ? .critical : value >= warning ? .warning : .fine
     }
 
+    init(celsius: Double, critical: Double?) {
+        self.init(celsius, warning: 80, critical: critical.map { $0 - 10 } ?? 90)
+    }
+
     static func < (lhs: Health, rhs: Health) -> Bool {
         lhs.rawValue < rhs.rawValue
     }
@@ -82,6 +86,12 @@ enum Health: Int, Comparable {
         case .warning: .orange
         case .critical: .red
         }
+    }
+}
+
+extension Space {
+    var health: Health {
+        Health(fraction, warning: 0.9, critical: 0.95)
     }
 }
 
@@ -152,15 +162,14 @@ extension Machine {
             let points = series(\.temp)
             if let last = points.last?.value {
                 let peak = points.map(\.value).max() ?? last
-                let health: Health = last >= (critical.map { $0 - 10 } ?? 90) ? .critical : last >= 80 ? .warning : .fine
-                return Measure(module: module, name: "CPU temp", value: "\(Int(last.rounded()))", unit: "\u{00B0}C", detail: "1h peak \(Int(peak.rounded())) \u{00B0}C", headline: "\(Int(last.rounded())) \u{00B0}C", health: health, alerts: ["Warm", "Hot"], visual: .spark(points, 20...100, unit: "degrees Celsius"))
+                return Measure(module: module, name: "CPU temp", value: "\(Int(last.rounded()))", unit: "\u{00B0}C", detail: "1h peak \(degrees(peak))", headline: degrees(last), health: Health(celsius: last, critical: critical), alerts: ["Warm", "Hot"], visual: .spark(points, 20...100, unit: "degrees Celsius"))
             }
             guard let thermal = series({ $0.thermal.map(Double.init) }).last.map({ min(Int($0.value), 3) }) else { return nil }
             let word = ["Normal", "Moderate", "Heavy", "Critical"][thermal]
             return Measure(module: module, name: "Thermal", value: word, detail: ["No throttling", "Throttling may start", "Throttling", "Throttling hard"][thermal], headline: "Thermal \(word.lowercased())", health: Health(Double(thermal), warning: 1, critical: 2), alerts: ["Warm", "Hot"], visual: .steps(thermal))
         case .disk:
             let (value, unit) = amount(disk)
-            return Measure(module: module, value: value, unit: unit, detail: "\(amount(megabytes: disk.totalMB - disk.usedMB, rounded: true)) free", headline: "\(Int((disk.fraction * 100).rounded()))% disk", health: Health(disk.fraction, warning: 0.9, critical: 0.95), alerts: ["Disk nearly full", "Disk full"], visual: .bar(disk.fraction))
+            return Measure(module: module, value: value, unit: unit, detail: "\(amount(megabytes: disk.totalMB - disk.usedMB, rounded: true)) free", headline: "\(Int((disk.fraction * 100).rounded()))% disk", health: disk.health, alerts: ["Disk nearly full", "Disk full"], visual: .bar(disk.fraction))
         case .network:
             let down = series { $0.rx.map(Double.init) }
             let up = series { $0.tx.map(Double.init) }
@@ -218,6 +227,7 @@ struct Monitor: View {
     let name: String
     let machine: Machine
     let now: Date
+    let open: ((Module) -> Void)?
     @AppStorage(Defaults.modules) private var modules = Modules.defaults
 
     private var rows: [[Measure]] {
@@ -244,26 +254,30 @@ struct Monitor: View {
             ForEach(rows, id: \.first?.module) { row in
                 GridRow {
                     ForEach(row, id: \.module) { measure in
-                        switch measure.visual {
-                        case let .spark(points, domain, _):
-                            Card(name: name, measure: measure, now: now) {
-                                ZStack {
-                                    Spark(points: points, domain: domain, color: measure.health.color, now: now)
-                                        .id(name)
+                        Plate(name: name, measure: measure, now: now, heading: open.flatMap { _ in machine.detail(measure.module, on: name)?.heading }) {
+                            open?(measure.module)
+                        } content: {
+                            switch measure.visual {
+                            case let .spark(points, domain, _):
+                                Card(measure: measure) {
+                                    ZStack {
+                                        Spark(points: points, domain: domain, color: measure.health.color, now: now)
+                                            .id(name)
+                                    }
                                 }
+                            case let .bar(fraction):
+                                Card(measure: measure) {
+                                    Level(fraction: fraction, tint: measure.health.color)
+                                }
+                            case let .steps(level):
+                                Card(measure: measure) {
+                                    Steps(level: level, tint: measure.health.color)
+                                }
+                            case let .traffic(down, up):
+                                WideCard(name: name, measure: measure, down: down, up: up, now: now)
                             }
-                        case let .bar(fraction):
-                            Card(name: name, measure: measure, now: now) {
-                                Level(fraction: fraction, tint: measure.health.color)
-                            }
-                        case let .steps(level):
-                            Card(name: name, measure: measure, now: now) {
-                                Steps(level: level, tint: measure.health.color)
-                            }
-                        case let .traffic(down, up):
-                            WideCard(name: name, measure: measure, down: down, up: up, now: now)
-                                .gridCellColumns(2)
                         }
+                        .gridCellColumns(measure.module == .network ? 2 : 1)
                     }
                 }
             }
@@ -285,10 +299,51 @@ struct CardLabel: View {
     }
 }
 
-struct Card<Graphic: View>: View {
+struct Plate<Content: View>: View {
     let name: String
     let measure: Measure
     let now: Date
+    let heading: String?
+    let open: () -> Void
+    @ViewBuilder let content: Content
+    @State private var hovered = false
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityShowBorders) private var showBorders
+
+    var body: some View {
+        if let heading {
+            Button(action: open) {
+                plated
+            }
+            .buttonStyle(Press())
+            .onHover { hovered = $0 }
+            .help("Show \(heading.lowercased())")
+            .spoken(name: name, measure: measure, now: now)
+            .accessibilityHint("Shows \(heading.lowercased())")
+        } else {
+            plated
+                .spoken(name: name, measure: measure, now: now)
+        }
+    }
+
+    private var plated: some View {
+        let shape = ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true)
+        return content
+            .background {
+                shape
+                    .fill(hovered ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.quaternary))
+                    .overlay {
+                        if heading != nil, contrast == .increased || showBorders {
+                            shape.stroke(.separator)
+                        }
+                    }
+            }
+            .animation(.easeOut(duration: 0.15), value: hovered)
+    }
+}
+
+struct Card<Graphic: View>: View {
+    let measure: Measure
     @ViewBuilder let graphic: Graphic
 
     var body: some View {
@@ -322,8 +377,6 @@ struct Card<Graphic: View>: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 96)
-        .background(ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true).fill(.quaternary))
-        .spoken(name: name, measure: measure, now: now)
     }
 }
 
@@ -360,8 +413,6 @@ struct WideCard: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 72)
-        .background(ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true).fill(.quaternary))
-        .spoken(name: name, measure: measure, now: now)
     }
 }
 
@@ -460,6 +511,7 @@ struct Traffic: View {
 struct Level: View {
     let fraction: Double
     let tint: Color
+    var minimum: CGFloat = 6
 
     var body: some View {
         Capsule()
@@ -469,7 +521,7 @@ struct Level: View {
                 GeometryReader { proxy in
                     Capsule()
                         .fill(tint)
-                        .frame(width: max(6, proxy.size.width * min(1, fraction)))
+                        .frame(width: max(minimum, proxy.size.width * min(1, fraction)))
                 }
             }
     }
@@ -541,7 +593,7 @@ struct Usage: View {
 
 extension Session {
     var memory: String {
-        Int64(memoryMB << 20).formatted(.byteCount(style: .memory))
+        amount(megabytes: memoryMB)
     }
 }
 
@@ -559,10 +611,16 @@ func figure(_ value: Double) -> String {
 }
 
 func amount(megabytes: Int, rounded: Bool = false) -> String {
+    if megabytes < 1000 { return "\(megabytes) MB" }
     guard megabytes >= 1 << 20 else { return "\((Double(megabytes) / 1024).formatted(.number.precision(.fractionLength(rounded ? 0 : 1)))) GB" }
     return "\(tenths(Double(megabytes) / Double(1 << 20))) TB"
 }
 
 func rate(_ bytes: Double) -> String {
-    Int64(bytes).formatted(.byteCount(style: .decimal)) + "/s"
+    let (value, unit) = bytes < 999_500 ? (bytes / 1e3, "kB") : bytes < 999_500_000 ? (bytes / 1e6, "MB") : (bytes / 1e9, "GB")
+    return "\(figure(value)) \(unit)/s"
+}
+
+func degrees(_ celsius: Double) -> String {
+    "\(Int(celsius.rounded())) \u{00B0}C"
 }

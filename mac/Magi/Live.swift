@@ -18,6 +18,15 @@ struct Machine: Decodable {
     let critical: Double?
     let relayed: Bool?
     let history: [Reading]?
+    let top: Top?
+    let memoryParts: [MemoryPart]?
+    let volumes: [Volume]?
+    let interfaces: [Interface]?
+    let sensors: [Sensor]?
+
+    var remote: String? {
+        ssh?.isEmpty == false ? ssh : nil
+    }
 
     func answers(at now: Date) -> Bool {
         guard answering, let heard else { return false }
@@ -84,6 +93,43 @@ struct CPUReading: Decodable {
     let cpu: Int
 }
 
+struct Top: Decodable {
+    let cpu: [Program]?
+    let memory: [Program]?
+}
+
+struct Program: Decodable {
+    let pid: Int
+    let name: String
+    let cpu: Int
+    let memoryMB: Int
+    let session: String?
+}
+
+struct MemoryPart: Decodable {
+    let kind: String
+    let mb: Int
+}
+
+struct Volume: Decodable {
+    let name: String
+    let mount: String
+    let usedMB: Int
+    let totalMB: Int
+}
+
+struct Interface: Decodable {
+    let name: String
+    let rx: Int
+    let tx: Int
+}
+
+struct Sensor: Decodable {
+    let name: String
+    let temp: Double
+    let critical: Double?
+}
+
 struct Row: Identifiable {
     let machine: String
     let remote: String?
@@ -104,12 +150,14 @@ struct Row: Identifiable {
             return ($0.session.since ?? .distantFuture, $0.id) < ($1.session.since ?? .distantFuture, $1.id)
         }
     }
+}
 
-    static func ordered(_ rows: [Row], keeping order: [String]?) -> [Row] {
-        guard let order else { return rows }
-        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+extension Array where Element: Identifiable {
+    func ordered(keeping order: [Element.ID]?) -> [Element] {
+        guard let order else { return self }
+        let byID = Dictionary(uniqueKeysWithValues: map { ($0.id, $0) })
         let kept = Set(order)
-        return order.compactMap { byID[$0] } + rows.filter { !kept.contains($0.id) }
+        return order.compactMap { byID[$0] } + filter { !kept.contains($0.id) }
     }
 }
 

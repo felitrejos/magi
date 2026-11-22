@@ -39,6 +39,32 @@ struct Snapshots {
         try await shot("show-borders-scope", full, .light, environment: { AnyView($0.environment(\._accessibilityShowButtonShapes, true)) }, act: { right($0, times: 2) })
     }
 
+    @Test func details() async throws {
+        defer { try? FileManager.default.removeItem(at: home) }
+        UserDefaults.standard.set("cpu,memory,temperature,disk,network", forKey: Defaults.modules)
+        defer { UserDefaults.standard.removeObject(forKey: Defaults.modules) }
+        let full = { try await store(machines(sessions: true)) }
+        let strained = { try await store(machines(sessions: true, critical: true)) }
+        for scheme in [ColorScheme.light, .dark] {
+            let suffix = scheme == .light ? "light" : "dark"
+            for (module, machine) in [(Module.cpu, 2), (.memory, 3), (.disk, 3), (.network, 2), (.temperature, 2)] {
+                try await shot("detail-\(module.rawValue)-\(suffix)", full(), scheme, height: 900, act: { try await open(module, on: machine, in: $0) })
+            }
+            try await shot("detail-cpu-highlight-\(suffix)", full(), scheme, height: 900, act: { window in
+                try await open(.cpu, on: 2, in: window)
+                try await Task.sleep(for: .milliseconds(700))
+                down(window, times: 1)
+            })
+            try await shot("detail-single-memory-\(suffix)", store(machines(sessions: true).filter { $0.key == "laptop" }), scheme, height: 900, act: { try await open(.memory, on: 1, in: $0) })
+            try await shot("detail-alert-disk-\(suffix)", strained(), scheme, height: 900, act: { try await open(.disk, on: 3, in: $0) })
+            try await shot("older-watcher-\(suffix)", strained(), scheme, height: 900, environment: { AnyView($0.environment(\._accessibilityShowButtonShapes, true)) }, act: { try await open(.cpu, on: 1, in: $0) })
+        }
+        try await shot("detail-memory-increase-contrast", full(), .light, height: 900, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { try await open(.memory, on: 3, in: $0) })
+        try await shot("detail-memory-increase-contrast-dark", full(), .dark, height: 900, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { try await open(.memory, on: 3, in: $0) })
+        try await shot("detail-cpu-reduce-transparency", full(), .light, height: 900, opaque: true, environment: { AnyView($0.environment(\._accessibilityReduceTransparency, true)) }, act: { try await open(.cpu, on: 2, in: $0) })
+        try await shot("detail-cpu-reduce-motion", full(), .dark, height: 900, environment: { AnyView($0.environment(\._accessibilityReduceMotion, true)) }, act: { try await open(.cpu, on: 2, in: $0) })
+    }
+
     @Test func tiles() async throws {
         defer { try? FileManager.default.removeItem(at: home) }
         let names = ["homelab", "laptop", "box"]
@@ -125,7 +151,7 @@ struct Snapshots {
         }
     }
 
-    private func shot(_ name: String, _ store: Store, _ scheme: ColorScheme, height: CGFloat = 560, opaque: Bool = false, environment: (AnyView) -> AnyView = { $0 }, act: (NSWindow) -> Void = { _ in }) async throws {
+    private func shot(_ name: String, _ store: Store, _ scheme: ColorScheme, height: CGFloat = 560, opaque: Bool = false, environment: (AnyView) -> AnyView = { $0 }, act: (NSWindow) async throws -> Void = { _ in }) async throws {
         let fill = opaque ? Color(nsColor: .windowBackgroundColor) : (scheme == .light ? Color(white: 0.97, opacity: 0.94) : Color(white: 0.14, opacity: 0.94))
         let root = environment(AnyView(PanelView(store: store, height: height) {}))
             .background(fill, in: .rect(cornerRadius: PanelView.radius))
@@ -139,7 +165,7 @@ struct Snapshots {
         window.orderFrontRegardless()
         window.makeKey()
         try await Task.sleep(for: .milliseconds(300))
-        act(window)
+        try await act(window)
         try await Task.sleep(for: .milliseconds(900))
         window.setContentSize(CGSize(width: host.fittingSize.width, height: min(host.fittingSize.height, height)))
         try await Task.sleep(for: .milliseconds(300))
@@ -173,6 +199,16 @@ struct Snapshots {
         press(window, "\u{F701}", keyCode: 125, times: times)
     }
 
+    private func open(_ module: Module, on machine: Int, in window: NSWindow) async throws {
+        right(window, times: machine)
+        try await Task.sleep(for: .milliseconds(700))
+        let card = [Module.cpu: CGPoint(x: 96, y: 108), .memory: CGPoint(x: 264, y: 108), .temperature: CGPoint(x: 96, y: 212), .disk: CGPoint(x: 264, y: 212), .network: CGPoint(x: 180, y: 304)][module]!
+        let location = CGPoint(x: card.x, y: window.contentView!.bounds.height - card.y)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
+        }
+    }
+
     private func press(_ window: NSWindow, _ key: String, keyCode: UInt16, times: Int) {
         for _ in 0..<times {
             window.sendEvent(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: keyCode)!)
@@ -184,7 +220,7 @@ struct Snapshots {
         let store = Store(home: home)
         for (index, (name, machine)) in machines.sorted(by: { $0.key < $1.key }).enumerated() {
             var machine = machine
-            machine["heard"] = stamp(now.addingTimeInterval(-3))
+            machine["heard"] = stamp(Date.now.addingTimeInterval(-3))
             let sample = machine.removeValue(forKey: "sample") as! [String: Int]
             machine["history"] = (0..<120).map { step -> [String: Any] in
                 let wave = sin(Double(step + index * 17) / 9) + 0.4 * sin(Double(step) / 2.3)
@@ -217,15 +253,27 @@ struct Snapshots {
             session["waitingOn"] = waitingOn
             return session.merging(place) { $1 }
         }
+        func program(_ pid: Int, _ name: String, _ cpu: Int, _ memory: Int, _ session: String? = nil) -> [String: Any] {
+            var program: [String: Any] = ["pid": pid, "name": name, "cpu": cpu, "memoryMB": memory]
+            program["session"] = session
+            return program
+        }
         return [
             "laptop": [
                 "answering": true, "ssh": "", "cores": 10, "load": 2.4, "pressure": critical ? "warning" : "normal",
                 "memory": ["usedMB": 13100, "totalMB": 16384], "disk": ["usedMB": 282192, "totalMB": 471482], "swap": ["usedMB": 1536, "totalMB": 4096],
                 "bootedAt": stamp(now.addingTimeInterval(-3 * 86_400)), "battery": ["percent": critical ? 14 : 64, "onBattery": true],
                 "sample": ["cpu": critical ? 61 : 18, "thermal": critical ? 1 : 0],
+                "top": [
+                    "cpu": [program(4121, "claude", 34, 547, "magi-demo"), program(402, "WindowServer", 18, 1126), program(9311, "Google Chrome Helper (Renderer)", 12, 880), program(7702, "node", 9, 1331, "shop-fix"), program(5120, "Xcode", 6, 2150), program(388, "mds_stores", 3, 96), program(611, "Finder", 1, 160), program(1840, "Rex", 1, 380)],
+                    "memory": [program(811, "Google Chrome", 9, 4915), program(4121, "claude", 34, 2458, "magi-demo"), program(5120, "Xcode", 6, 2150), program(7702, "node", 9, 1331, "shop-fix"), program(402, "WindowServer", 18, 1126), program(2210, "Ghostty", 1, 420), program(1840, "Rex", 1, 380), program(611, "Finder", 1, 160)],
+                ],
+                "memoryParts": [["kind": "app", "mb": 7800], ["kind": "wired", "mb": 2600], ["kind": "compressed", "mb": 1200], ["kind": "cached", "mb": 1500], ["kind": "free", "mb": 3284]],
+                "volumes": [["name": "Macintosh HD", "mount": "/", "usedMB": 282192, "totalMB": 471482], ["name": "Time Machine", "mount": "/Volumes/Time Machine", "usedMB": critical ? 1_960_000 : 1_400_000, "totalMB": 2_000_000], ["name": "Photos", "mount": "/Volumes/Photos", "usedMB": 317_440, "totalMB": 512_000]],
+                "interfaces": [["name": "en0", "rx": 2_400_000, "tx": 310_000], ["name": "utun4", "rx": 52_000, "tx": 18_000]],
                 "sessions": sessions ? [
-                    session("Shop checkout fix", "/Users/sam/code/shop", "waiting", 4, cpu: 0, memory: 229, waitingOn: "Allow Bash to run npm test in the shop folder?", runs: ["hostSession": "local_7cbf", "app": "com.anthropic.claudefordesktop"]),
-                    session("magi README demo videos", "/Users/sam/code/magi", "busy", 12, cpu: 34, memory: 547, runs: ["app": "com.mitchellh.ghostty", "tty": "/dev/ttys004"]),
+                    session("Shop checkout fix", "/Users/sam/code/shop", "waiting", 4, cpu: 0, memory: 229, waitingOn: "Allow Bash to run npm test in the shop folder?", runs: ["id": "shop-fix", "hostSession": "local_7cbf", "app": "com.anthropic.claudefordesktop"]),
+                    session("magi README demo videos", "/Users/sam/code/magi", "busy", 12, cpu: 34, memory: 547, runs: ["id": "magi-demo", "app": "com.mitchellh.ghostty", "tty": "/dev/ttys004"]),
                     session("Blog drafts", "/Users/sam/code/blog", "idle", 190, cpu: 0, memory: 212, runs: ["tmux": "%3"]),
                 ] : [],
             ],
@@ -234,9 +282,17 @@ struct Snapshots {
                 "memory": ["usedMB": 6450, "totalMB": 15384], "disk": ["usedMB": 1212000, "totalMB": 1875626], "swap": ["usedMB": 0, "totalMB": 2048],
                 "bootedAt": stamp(now.addingTimeInterval(-6 * 60)),
                 "sample": ["cpu": 26, "temp": critical ? 83 : 54],
+                "top": [
+                    "cpu": [program(4121, "claude", 82, 1100, "shop-db"), program(733, "postgres", 61, 1434), program(5022, "node", 12, 640, "backup-audit"), program(1201, "dockerd", 6, 210), program(2290, "python3", 5, 380), program(901, "tailscaled", 2, 60), program(880, "sshd", 1, 18), program(311, "systemd-journald", 1, 90)],
+                    "memory": [program(733, "postgres", 61, 1434), program(4121, "claude", 82, 1100, "shop-db"), program(5022, "node", 12, 640, "backup-audit"), program(2290, "python3", 5, 380), program(1201, "dockerd", 6, 210), program(311, "systemd-journald", 1, 90), program(901, "tailscaled", 2, 60), program(880, "sshd", 1, 18)],
+                ],
+                "memoryParts": [["kind": "app", "mb": 6450], ["kind": "cached", "mb": 5200], ["kind": "free", "mb": 3734]],
+                "volumes": [["name": "System", "mount": "/", "usedMB": 1_212_000, "totalMB": 1_875_626], ["name": "Backups", "mount": "/mnt/backups", "usedMB": 3_520_000, "totalMB": 3_815_447]],
+                "interfaces": [["name": "eth0", "rx": 1_600_000, "tx": 310_000], ["name": "tailscale0", "rx": 420_000, "tx": 96_000], ["name": "docker0", "rx": 12_000, "tx": 3_400]],
+                "sensors": [["name": "Package id 0", "temp": critical ? 83.0 : 54.0, "critical": 100.0], ["name": "Core 0", "temp": 52.0, "critical": 100.0], ["name": "Core 1", "temp": 55.0, "critical": 100.0], ["name": "nvme Composite", "temp": 41.9, "critical": 84.85], ["name": "acpitz", "temp": 27.8]],
                 "sessions": sessions ? [
-                    session("Nightly backup audit with a long title that runs out of room", "/home/sam/ops/backups/nightly", "waiting", 11, cpu: 0, memory: 310, waitingOn: "Which retention policy should I keep for the nightly snapshots, 30 days or 90 days?", runs: ["rex": ["session": "session:01a1", "block": "block:01a2"]]),
-                    session("shop-db migration", "/home/sam/code/shop", "busy", 20, cpu: 82, memory: 1100, runs: ["tmux": "%7"]),
+                    session("Nightly backup audit with a long title that runs out of room", "/home/sam/ops/backups/nightly", "waiting", 11, cpu: 0, memory: 310, waitingOn: "Which retention policy should I keep for the nightly snapshots, 30 days or 90 days?", runs: ["id": "backup-audit", "rex": ["session": "session:01a1", "block": "block:01a2"]]),
+                    session("shop-db migration", "/home/sam/code/shop", "busy", 20, cpu: 82, memory: 1100, runs: ["id": "shop-db", "tmux": "%7"]),
                     session("infra notes", "/home/sam/notes", "idle", 1_500, cpu: 0, memory: 180, runs: ["remoteControl": "https://claude.ai/code/session_01"]),
                 ] : [],
             ],

@@ -344,7 +344,7 @@ struct MonitorPane: View {
                     .menuIndicator(.hidden)
                     .fixedSize()
                 }
-                Monitor(name: name, machine: machine, now: .now)
+                Monitor(name: name, machine: machine, now: .now, open: nil)
                     .frame(width: 328)
                     .containerShape(.rect)
                     .frame(maxWidth: .infinity)

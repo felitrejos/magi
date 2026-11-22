@@ -49,7 +49,7 @@ struct LiveTests {
     @Test func measuresEachModuleWithDataAndColorsItByItsThresholds() {
         func machine(_ readings: [(cpu: Int?, temp: Double?, thermal: Int?)] = [], critical: Double? = nil, disk: Int = 100, pressure: Pressure? = nil) -> Machine {
             let history = readings.enumerated().map { Reading(at: Double($0.offset * 30), cpu: $0.element.cpu, temp: $0.element.temp, thermal: $0.element.thermal, rx: nil, tx: nil) }
-            return Machine(answering: true, heard: nil, ssh: nil, cores: 10, load: 1, memory: Space(usedMB: 1, totalMB: 2), disk: Space(usedMB: disk, totalMB: 1000), sessions: [], pressure: pressure, swap: nil, bootedAt: nil, battery: nil, critical: critical, relayed: nil, history: history)
+            return Machine(answering: true, heard: nil, ssh: nil, cores: 10, load: 1, memory: Space(usedMB: 1, totalMB: 2), disk: Space(usedMB: disk, totalMB: 1000), sessions: [], pressure: pressure, swap: nil, bootedAt: nil, battery: nil, critical: critical, relayed: nil, history: history, top: nil, memoryParts: nil, volumes: nil, interfaces: nil, sensors: nil)
         }
         func health(_ machine: Machine, _ module: Module) -> Health? {
             machine.measures([module]).first?.health
@@ -88,7 +88,7 @@ struct LiveTests {
         let urgent = Row.urgent(rows)
         #expect(urgent.map(\.id) == ["b/early", "a/late", "a/busy", "b/busy", "a/idle"])
         let frozen = ["a/idle", "b/early", "gone/x"]
-        #expect(Row.ordered(urgent, keeping: frozen).map(\.id) == ["a/idle", "b/early", "a/late", "a/busy", "b/busy"])
+        #expect(urgent.ordered(keeping: frozen).map(\.id) == ["a/idle", "b/early", "a/late", "a/busy", "b/busy"])
     }
 }
 

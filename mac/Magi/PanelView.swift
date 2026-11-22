@@ -9,7 +9,7 @@ struct PanelView: View {
     let store: Store
     let height: CGFloat
     let close: () -> Void
-    @State private var scope: String?
+    @State private var place = Place()
     @State private var highlight: String?
     @State private var order: [String]?
     @State private var shown = false
@@ -20,8 +20,26 @@ struct PanelView: View {
         store.machines.keys.sorted()
     }
 
+    private var scope: String? {
+        place.machine
+    }
+
     private var rows: [Row] {
-        Row.ordered(store.rows.filter { scope == nil || $0.machine == scope }, keeping: order)
+        store.rows.filter { scope == nil || $0.machine == scope }.ordered(keeping: order)
+    }
+
+    private var detail: Detail? {
+        guard let scope, let module = place.module else { return nil }
+        return store.machines[scope]?.detail(module, on: scope)
+    }
+
+    private var entries: [Entry] {
+        (detail?.entries ?? []).ordered(keeping: order)
+    }
+
+    private var choices: [(id: String, route: Route?)] {
+        guard detail != nil else { return rows.map { ($0.id, $0.route) } }
+        return entries.compactMap { entry in entry.row?.route.map { (entry.id, $0) } }
     }
 
     private var status: String {
@@ -47,7 +65,7 @@ struct PanelView: View {
                                 .padding([.horizontal, .bottom], 16)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else if !rows.isEmpty || scope != nil {
-                            SessionList(rows: rows, scope: scope, machine: scope.flatMap { store.machines[$0] }, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order, open: open)
+                            SessionList(rows: rows, place: place, machine: scope.flatMap { store.machines[$0] }, detail: detail, entries: entries, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order, open: open) { place.module = $0 }
                         }
                         if names.count > 1 {
                             strip(now: context.date)
@@ -63,7 +81,8 @@ struct PanelView: View {
                 .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
             }
             .frame(maxHeight: .infinity, alignment: .top)
-            .animation(reduceMotion ? nil : .smooth(duration: 0.4), value: scope)
+            .animation(reduceMotion ? nil : .smooth(duration: 0.4), value: place)
+            .onChange(of: place) { highlight = nil }
             .focusable()
             .focusEffectDisabled()
             .focused($focused)
@@ -75,29 +94,48 @@ struct PanelView: View {
             }
             .onMoveCommand { move($0, proxy) }
             .onKeyPress(.return) {
-                guard let route = rows.first(where: { $0.id == highlight })?.route else { return .ignored }
+                guard let route = choices.first(where: { $0.id == highlight })?.route else { return .ignored }
                 open(route)
                 return .handled
             }
-            .onExitCommand { scope == nil ? close() : (scope = nil) }
+            .onExitCommand {
+                guard let back = place.back else { return close() }
+                place = back
+            }
         }
     }
 
     private func header(now: Date) -> some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(status)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(status)
+                            .contentTransition(.opacity)
+                            .transaction(value: status) { $0.animation = $0.animation ?? .snappy(duration: 0.35) }
+                        if let detail {
+                            Text(detail.measure.module.title)
+                                .foregroundStyle(.secondary)
+                                .transition(.opacity)
+                        }
+                    }
                     .font(.title3.weight(.semibold))
-                    .contentTransition(.opacity)
-                    .transaction(value: status) { $0.animation = $0.animation ?? .snappy(duration: 0.35) }
-                if let scope, let machine = store.machines[scope] {
-                    ScopeCaption(machine: machine, answers: store.answering.contains(scope), now: now)
+                    if let detail {
+                        DetailCaption(measure: detail.measure)
+                    } else if let scope, let machine = store.machines[scope] {
+                        ScopeCaption(machine: machine, answers: store.answering.contains(scope), now: now)
+                    }
+                }
+                Spacer(minLength: 0)
+                if names.count == 1, let name = names.first, let machine = store.machines[name] {
+                    tile(name, machine, now: now)
+                        .frame(width: 150)
                 }
             }
-            Spacer(minLength: 0)
-            if names.count == 1, let name = names.first, let machine = store.machines[name] {
-                tile(name, machine, now: now)
-                    .frame(width: 150)
+            if let parts = detail?.parts, !parts.isEmpty {
+                MemoryBar(parts: parts)
+                    .padding(.vertical, 8)
+                    .transition(.opacity)
             }
         }
         .padding(.horizontal, 16)
@@ -119,8 +157,7 @@ struct PanelView: View {
     private func tile(_ name: String, _ machine: Machine, now: Date) -> some View {
         Button {
             withAnimation(reduceMotion ? nil : .smooth(duration: 0.4)) {
-                scope = scope == name ? nil : name
-                highlight = nil
+                place.show(scope == name ? nil : name, in: store.machines)
             }
         } label: {
             Tile(name: name, machine: machine, answers: store.answering.contains(name), selected: scope == name, now: now)
@@ -137,17 +174,31 @@ struct PanelView: View {
         if direction == .left || direction == .right {
             let index = scope.flatMap(names.firstIndex(of:))
             let next = direction == .right ? (index ?? -1) + 1 : (index ?? names.count) - 1
-            scope = names.indices.contains(next) ? names[next] : nil
-            highlight = nil
+            place.show(names.indices.contains(next) ? names[next] : nil, in: store.machines)
             return
         }
-        let ids = rows.map(\.id)
+        let ids = choices.map(\.id)
         let current = highlight.flatMap(ids.firstIndex(of:))
         let next = if direction == .down { (current ?? -1) + 1 } else { (current ?? ids.count) - 1 }
         if ids.indices.contains(next) {
             highlight = ids[next]
             proxy.scrollTo(ids[next])
         }
+    }
+}
+
+struct Place: Hashable {
+    var machine: String?
+    var module: Module?
+
+    mutating func show(_ name: String?, in machines: [String: Machine]) {
+        machine = name
+        guard let module, let name, machines[name]?.detail(module, on: name) != nil else { return self.module = nil }
+    }
+
+    var back: Place? {
+        if module != nil { return Place(machine: machine) }
+        return machine == nil ? nil : Place()
     }
 }
 
@@ -166,59 +217,75 @@ struct Cap: Layout {
 
 struct SessionList: View {
     let rows: [Row]
-    let scope: String?
+    let place: Place
     let machine: Machine?
+    let detail: Detail?
+    let entries: [Entry]
     let showsMachine: Bool
     let now: Date
     @Binding var highlight: String?
     @Binding var order: [String]?
     let open: (Route) -> Void
+    let show: (Module) -> Void
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var scope: String? {
+        place.machine
+    }
+
+    private var ids: [String] {
+        detail == nil ? rows.map(\.id) : entries.map(\.id)
+    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                if let scope, let machine {
-                    Monitor(name: scope, machine: machine, now: now)
-                        .padding(8)
-                        .padding(.bottom, 6)
+                if let detail {
+                    DetailList(detail: detail, entries: entries, highlight: $highlight, open: open)
                         .transition(.move(edge: .top).combined(with: .opacity))
-                    if !rows.isEmpty {
-                        Text("Sessions")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                            .padding(.bottom, 2)
-                            .accessibilityAddTraits(.isHeader)
-                            .transition(.opacity)
-                    }
-                }
-                ForEach(rows) { row in
-                    SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now, open: open)
-                        .id(row.id)
-                        .transition(.blurReplace)
-                        .onHover { inside in
-                            if inside {
-                                highlight = row.id
-                            } else if highlight == row.id {
-                                highlight = nil
-                            }
+                } else {
+                    if let scope, let machine {
+                        Monitor(name: scope, machine: machine, now: now, open: show)
+                            .padding(8)
+                            .padding(.bottom, 6)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                        if !rows.isEmpty {
+                            Text("Sessions")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.bottom, 2)
+                                .accessibilityAddTraits(.isHeader)
+                                .transition(.opacity)
                         }
+                    }
+                    ForEach(rows) { row in
+                        SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now, open: open)
+                            .id(row.id)
+                            .transition(.blurReplace)
+                            .onHover { inside in
+                                if inside {
+                                    highlight = row.id
+                                } else if highlight == row.id {
+                                    highlight = nil
+                                }
+                            }
+                    }
                 }
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
-            .transaction(value: rows.map(\.id)) { [reduceMotion] in $0.animation = $0.animation ?? (reduceMotion ? nil : .snappy(duration: 0.35)) }
+            .transaction(value: ids) { [reduceMotion] in $0.animation = $0.animation ?? (reduceMotion ? nil : .snappy(duration: 0.35)) }
             .transaction(value: highlight) { $0.animation = $0.animation ?? .easeOut(duration: 0.15) }
         }
         .scrollIndicators(.never)
         .scrollBounceBehavior(.basedOnSize)
         .scrollEdgeEffectStyle(.hard, for: .bottom)
         .onHover { hovering = $0 }
-        .task(id: hovering || highlight != nil) {
-            guard !hovering, highlight == nil else { return order = order ?? rows.map(\.id) }
+        .task(id: hovering || highlight != nil ? place : nil) {
+            guard !hovering, highlight == nil else { return order = ids }
             guard (try? await Task.sleep(for: .seconds(1))) != nil else { return }
             order = nil
         }

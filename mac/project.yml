@@ -29,6 +29,7 @@ targets:
       - path: MagiTests
         excludes: [Fixtures]
       - Magi/Glance.swift
+      - Magi/Detail.swift
       - Magi/Live.swift
       - Magi/Open.swift
       - Magi/Store.swift
