@@ -14,6 +14,7 @@ jobs:
   app:
     needs: checks
     runs-on: xcode-27
+    environment: release
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
