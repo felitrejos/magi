@@ -343,7 +343,7 @@ struct Plate<Content: View>: View {
         return content
             .background {
                 shape
-                    .fill(hovered ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.quaternary))
+                    .fill(hovered && open != nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.quaternary))
                     .overlay {
                         if open != nil, contrast == .increased || showBorders {
                             shape.stroke(.separator)

@@ -20,6 +20,18 @@ struct StoreTests {
         #expect(latency < .seconds(1))
     }
 
+    @Test func keepsTheFirstOfEachSessionAMachineRepeats() async throws {
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = Store(home: home)
+        var live = try #require(JSONSerialization.jsonObject(with: fixture("live/laptop.json")) as? [String: Any])
+        let sessions = try #require(live["sessions"] as? [[String: Any]])
+        live["sessions"] = [sessions[0], sessions[0].merging(["title": "again"]) { $1 }]
+        try publish(JSONSerialization.data(withJSONObject: live), as: "laptop", in: home)
+        await until { store.machines["laptop"] != nil }
+        #expect(store.rows.map(\.session.title) == ["Shop checkout fix"])
+        #expect(Glance(store: store).waiting.count == 1)
+    }
+
     @Test func stopsAnsweringAtTheDeadline() async throws {
         defer { try? FileManager.default.removeItem(at: home) }
         let store = Store(home: home)

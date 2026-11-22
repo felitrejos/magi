@@ -33,9 +33,9 @@ struct PanelView: View {
         return store.machines[scope]?.detail(module, on: scope)
     }
 
-    private var choices: [(id: String, route: Route?)] {
-        guard let detail else { return rows.map { ($0.id, $0.route) } }
-        return detail.entries.ordered(keeping: order).compactMap { entry in entry.row?.route.map { (entry.id, $0) } }
+    private func choices(_ entries: [Entry]) -> [(id: String, route: Route?)] {
+        guard !entries.isEmpty else { return rows.map { ($0.id, $0.route) } }
+        return entries.compactMap { entry in entry.row?.route.map { (entry.id, $0) } }
     }
 
     private var status: String {
@@ -50,6 +50,7 @@ struct PanelView: View {
 
     var body: some View {
         let detail = detail
+        let entries = detail?.entries.ordered(keeping: order) ?? []
         ScrollViewReader { proxy in
             Cap(height: height) {
                 TimelineView(.everyMinute) { context in
@@ -62,7 +63,7 @@ struct PanelView: View {
                                 .padding([.horizontal, .bottom], 16)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else if !rows.isEmpty || scope != nil {
-                            SessionList(rows: rows, place: place, machine: scope.flatMap { store.machines[$0] }, detail: detail, entries: (detail?.entries ?? []).ordered(keeping: order), showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order, open: open) { place.module = $0 }
+                            SessionList(rows: rows, place: place, machine: scope.flatMap { store.machines[$0] }, detail: detail, entries: entries, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order, open: open) { place.module = $0 }
                         }
                         if names.count > 1 {
                             strip(now: context.date)
@@ -90,9 +91,9 @@ struct PanelView: View {
                     shown = true
                 }
             }
-            .onMoveCommand { move($0, proxy) }
+            .onMoveCommand { move($0, choices(entries), proxy) }
             .onKeyPress(.return) {
-                guard let route = choices.first(where: { $0.id == highlight })?.route else { return .ignored }
+                guard let route = choices(entries).first(where: { $0.id == highlight })?.route else { return .ignored }
                 open(route)
                 return .handled
             }
@@ -168,7 +169,7 @@ struct PanelView: View {
         close()
     }
 
-    private func move(_ direction: MoveCommandDirection, _ proxy: ScrollViewProxy) {
+    private func move(_ direction: MoveCommandDirection, _ choices: [(id: String, route: Route?)], _ proxy: ScrollViewProxy) {
         if direction == .left || direction == .right {
             let index = scope.flatMap(names.firstIndex(of:))
             let next = direction == .right ? (index ?? -1) + 1 : (index ?? names.count) - 1
@@ -195,7 +196,7 @@ struct Place: Hashable {
     }
 
     func settled(in machines: [String: Machine]) -> Place {
-        guard let module, let machine, machines[machine]?.detail(module, on: machine) != nil else { return Place(machine: machine) }
+        guard let module, let machine, machines[machine]?.hasDetail(module) == true else { return Place(machine: machine) }
         return self
     }
 

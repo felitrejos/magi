@@ -66,35 +66,33 @@ extension Machine {
 
     func detail(_ module: Module, on name: String) -> Detail? {
         guard hasDetail(module), let measure = measures([module]).first else { return nil }
-        let detail: Detail
         switch module {
         case .cpu:
-            detail = Detail(measure: measure, scale: "% of one core", columns: [["999%"]], entries: (top?.cpu ?? []).map { program in
+            return Detail(measure: measure, scale: "% of one core", columns: [["999%"]], entries: (top?.cpu ?? []).map { program in
                 Entry(id: "\(program.pid)", name: program.name, row: row(program.session, on: name), fraction: Double(program.cpu) / 100, figures: ["\(program.cpu)%"], spoken: "\(program.cpu) percent of one core")
-            })
+            }.unique)
         case .memory:
-            detail = Detail(measure: measure, scale: amount(memory).unit, columns: [["999 MB", amount(megabytes: memory.totalMB)]], entries: (top?.memory ?? []).map { program in
+            return Detail(measure: measure, scale: amount(memory).unit, columns: [["999 MB", amount(megabytes: memory.totalMB)]], entries: (top?.memory ?? []).map { program in
                 Entry(id: "\(program.pid)", name: program.name, row: row(program.session, on: name), fraction: Double(program.memoryMB) / Double(memory.totalMB), figures: [amount(megabytes: program.memoryMB)], spoken: "\(amount(megabytes: program.memoryMB)) \(amount(memory).unit)")
-            }, parts: parts)
+            }.unique, parts: parts)
         case .disk:
-            detail = Detail(measure: measure, columns: [["\(figure(99.9)) of \(figure(99.9)) GB"]], entries: (volumes ?? []).map { volume in
+            return Detail(measure: measure, columns: [["\(figure(99.9)) of \(figure(99.9)) GB"]], entries: (volumes ?? []).map { volume in
                 let space = Space(usedMB: volume.usedMB, totalMB: volume.totalMB)
                 let (used, total) = amount(space)
                 return Entry(id: volume.mount, name: volume.name, fraction: space.fraction, figures: ["\(used) \(total)"], spoken: ["\(used) \(total) used, \(amount(megabytes: volume.totalMB - volume.usedMB, rounded: true)) free", space.health.alert(["nearly full", "full"])].compactMap(\.self).joined(separator: ", "), health: space.health)
-            })
+            }.unique)
         case .network:
             let busiest = (interfaces ?? []).reduce(1) { max($0, $1.rx + $1.tx) }
-            detail = Detail(measure: measure, columns: [["\u{2193} \(rate(99_900_000))"], ["\u{2191} \(rate(99_900_000))"]], entries: (interfaces ?? []).map { interface in
+            return Detail(measure: measure, columns: [["\u{2193} \(rate(99_900_000))"], ["\u{2191} \(rate(99_900_000))"]], entries: (interfaces ?? []).map { interface in
                 let (down, up) = (rate(Double(interface.rx)), rate(Double(interface.tx)))
                 return Entry(id: interface.name, name: interface.name, fraction: Double(interface.rx + interface.tx) / Double(busiest), figures: ["\u{2193} \(down)", "\u{2191} \(up)"], spoken: "\(down) down, \(up) up")
-            })
+            }.unique)
         case .temperature:
-            detail = Detail(measure: measure, columns: [[degrees(100)]], entries: (sensors ?? []).map { sensor in
+            return Detail(measure: measure, columns: [[degrees(100)]], entries: (sensors ?? []).map { sensor in
                 let health = Health(celsius: sensor.temp, critical: sensor.critical)
-                return Entry(id: sensor.name, name: sensor.name, fraction: sensor.temp / (sensor.critical ?? 100), figures: [degrees(sensor.temp)], spoken: ["\(Int(sensor.temp.rounded())) degrees Celsius", sensor.critical.map { "critical at \(Int($0)) degrees" }, health.alert(["hot", "critical"])].compactMap(\.self).joined(separator: ", "), health: health)
-            })
+                return Entry(id: sensor.name, name: sensor.name, fraction: sensor.temp / (sensor.critical ?? 100), figures: [degrees(sensor.temp)], spoken: ["\(Int(sensor.temp.rounded())) degrees Celsius", sensor.critical.map { "critical at \(Int($0.rounded())) degrees" }, health.alert(["warm", "hot"])].compactMap(\.self).joined(separator: ", "), health: health)
+            }.unique)
         }
-        return detail
     }
 
     private func row(_ session: String?, on name: String) -> Row? {
@@ -119,6 +117,7 @@ struct DetailCaption: View {
         .font(.subheadline)
         .monospacedDigit()
         .accessibilityElement(children: .combine)
+        .accessibilityValue(measure.alert ?? "")
     }
 }
 

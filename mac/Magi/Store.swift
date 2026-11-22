@@ -35,7 +35,7 @@ final class Store {
             machines[name] = modified[name] == date ? self.machines[name] : try? JSONDecoder.magi.decode(Machine.self, from: Data(contentsOf: file))
         }
         modified = dated.mapValues(\.1)
-        rows = Row.urgent(machines.flatMap { name, machine in machine.sessions.map { Row(machine: name, remote: machine.remote, session: $0) } })
+        rows = Row.urgent(machines.flatMap { name, machine in machine.sessions.map { Row(machine: name, remote: machine.remote, session: $0) } }.unique)
         evaluate()
     }
 

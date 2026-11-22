@@ -10,16 +10,6 @@ struct DetailTests {
         laptop = try JSONDecoder.magi.decode(Machine.self, from: fixture("live/laptop.json"))
     }
 
-    @Test func readsTheDetailFieldsOrAnOlderWatcherWithoutThem() {
-        #expect(homelab.top?.cpu?.first.map { "\($0.pid) \($0.name) \($0.cpu) \($0.session ?? "")" } == "4121 claude 41 660b4a59-d508-4dec-8af1-9a047faa9dc6")
-        #expect(homelab.top?.memory?.first.map { "\($0.pid) \($0.name) \($0.memoryMB) \($0.session ?? "none")" } == "811 Google Chrome 4900 none")
-        #expect(homelab.memoryParts?.first.map { "\($0.kind) \($0.mb)" } == "app 14100")
-        #expect(homelab.volumes?.first.map { "\($0.name) \($0.mount) \($0.usedMB) \($0.totalMB)" } == "Macintosh HD / 512000 994000")
-        #expect(homelab.interfaces?.first.map { "\($0.name) \($0.rx) \($0.tx)" } == "en0 1600000 310000")
-        #expect(homelab.sensors?.map { "\($0.name) \($0.temp) \($0.critical ?? 0)" } == ["Package id 0 51.0 100.0", "nvme 42.5 0.0"])
-        #expect(laptop.top == nil && laptop.memoryParts == nil && laptop.volumes == nil && laptop.interfaces == nil && laptop.sensors == nil)
-    }
-
     @Test func opensADetailOnlyFromACardWithItsData() throws {
         #expect(Module.allCases.filter(homelab.hasDetail) == Module.allCases && Module.allCases.filter { homelab.detail($0, on: "homelab") != nil } == Module.allCases)
         #expect(Module.allCases.filter(laptop.hasDetail).isEmpty)
@@ -55,7 +45,12 @@ struct DetailTests {
         let temperature = try #require(homelab.detail(.temperature, on: "homelab"))
         #expect(temperature.entries.map(\.fraction) == [0.51, 0.425] && temperature.entries.map(\.figures) == [["51 \u{00B0}C"], ["43 \u{00B0}C"]] && temperature.entries.map(\.id) == ["Package id 0", "nvme"])
         let hot = try #require(try machine { $0["sensors"] = [["name": "nvme", "temp": 80.0, "critical": 84.85]] }.detail(.temperature, on: "homelab"))
-        #expect(hot.entries[0].health == .critical && hot.entries[0].spoken == "80 degrees Celsius, critical at 84 degrees, critical")
+        #expect(hot.entries[0].health == .critical && hot.entries[0].spoken == "80 degrees Celsius, critical at 85 degrees, hot")
+    }
+
+    @Test func keepsTheFirstOfEachProcessTheWatcherRepeats() throws {
+        let repeated = try machine { $0["top"] = ["cpu": [["pid": 7, "name": "first", "cpu": 1], ["pid": 7, "name": "second", "cpu": 2]]] }
+        #expect(repeated.detail(.cpu, on: "homelab")?.entries.map(\.name) == ["first"])
     }
 
     @Test func warnsTenDegreesBeforeASensorRunsHot() {

@@ -89,8 +89,6 @@ struct LiveTests {
         #expect(urgent.map(\.id) == ["b/early", "a/late", "a/busy", "b/busy", "a/idle"])
         let frozen = ["a/idle", "b/early", "gone/x"]
         #expect(urgent.ordered(keeping: frozen).map(\.id) == ["a/idle", "b/early", "a/late", "a/busy", "b/busy"])
-        let twice = [row("a", "x", "idle", 1), row("a", "x", "busy", 2)]
-        #expect(twice.ordered(keeping: nil).map(\.session.state) == ["idle"] && twice.ordered(keeping: ["a/x"]).map(\.session.state) == ["idle"])
     }
 }
 

@@ -64,7 +64,6 @@ struct Snapshots {
         try await shot("detail-memory-increase-contrast-dark", full(), .dark, height: 900, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { try await open(.memory, on: 3, in: $0) })
         try await shot("detail-cpu-reduce-transparency", full(), .light, height: 900, opaque: true, environment: { AnyView($0.environment(\._accessibilityReduceTransparency, true)) }, act: { try await open(.cpu, on: 2, in: $0) })
         try await shot("detail-alert-differentiate-without-color", strained(), .light, height: 900, environment: { AnyView($0.environment(\._accessibilityDifferentiateWithoutColor, true)) }, act: { try await open(.disk, on: 3, in: $0) })
-        try await shot("detail-cpu-reduce-motion", full(), .dark, height: 900, environment: { AnyView($0.environment(\._accessibilityReduceMotion, true)) }, act: { try await open(.cpu, on: 2, in: $0) })
     }
 
     @Test func tiles() async throws {

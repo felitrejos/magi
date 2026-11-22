@@ -159,13 +159,16 @@ struct Row: Identifiable {
 }
 
 extension Array where Element: Identifiable {
-    func ordered(keeping order: [Element.ID]?) -> [Element] {
+    var unique: [Element] {
         var seen = Set<Element.ID>()
-        let unique = filter { seen.insert($0.id).inserted }
-        guard let order else { return unique }
-        let byID = Dictionary(uniqueKeysWithValues: unique.map { ($0.id, $0) })
+        return filter { seen.insert($0.id).inserted }
+    }
+
+    func ordered(keeping order: [Element.ID]?) -> [Element] {
+        guard let order else { return self }
+        let byID = Dictionary(uniqueKeysWithValues: map { ($0.id, $0) })
         let kept = Set(order)
-        return order.compactMap { byID[$0] } + unique.filter { !kept.contains($0.id) }
+        return order.compactMap { byID[$0] } + filter { !kept.contains($0.id) }
     }
 }
 
