@@ -96,5 +96,43 @@ the menu bar gets a badge when a session is waiting on you.
 
 The app updates by itself when the plugin does.
 
+## 7. Set limits and leave files behind
+
+Setup wrote `~/.config/magi/config.toml` on the machine that sends the
+work. Each machine is a table there, such as `[hosts.homelab]`, and
+already has the lines setup wrote. Add the limits below them. `exclude`
+goes at the top, before the first table.
+
+```toml
+exclude = ["node_modules", ".venv"]
+
+[hosts.homelab]
+max_agents = 2
+min_free_memory = "4G"
+quiet_hours = "22:00-07:00"
+```
+
+- **`max_agents`.** magi won't start a delegate or a new session there
+  while that many agents already work there. Claude sessions in a turn
+  count, and so do magi's delegates and sessions. Shell commands sent
+  with "run the tests on my homelab" don't.
+- **`min_free_memory`.** magi starts no new work there when less memory
+  than that is free. Units are K, M, G and T, like `"512M"`.
+- **`quiet_hours`.** magi starts no new work there in that window, by
+  the clock of the machine sending the work. It may cross midnight.
+- **`exclude`.** File and folder names, without slashes, that stay
+  behind when magi copies a project to another machine. A name matches
+  at any depth. In a git repo this applies to untracked files. In a
+  plain folder it applies to everything by that name. Without
+  `exclude`, magi leaves behind `node_modules`, `.venv`, `dist`, `build`
+  and `target`. Setting it replaces that list.
+
+A limit you leave out doesn't apply. magi also holds off a machine that
+is 90% busy, with no setting. When a limit stops new work, Claude says
+the machine has no room and why, so you can pick another machine or run
+it here. Moving a session isn't limited.
+
+If the file has a mistake, magi names the key and what it expected.
+
 "Run the tests on my homelab" sends work there and brings the result
 back.
