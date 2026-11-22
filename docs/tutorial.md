@@ -97,5 +97,4 @@ the menu bar gets a badge when a session is waiting on you.
 The app updates by itself when the plugin does.
 
 "Run the tests on my homelab" sends work there and brings the result
-back. The [README](../README.md#what-you-can-ask) lists what else you can
-ask.
+back.
