@@ -4,7 +4,7 @@ What changed in each version of magi.
 [docs/support.md](docs/support.md#versions) says what a version number
 promises.
 
-## 1.1.1
+## 1.1.1, 2026-11-23
 
 - A card's list now has a breadcrumb for a header, such as
   "Felipes-MacBook-Pro › Memory". A click on the machine's name goes
