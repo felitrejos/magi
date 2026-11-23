@@ -328,7 +328,6 @@ struct Plate<Content: View>: View {
                 plated
             }
             .buttonStyle(Press())
-            .onHover { hovered = $0 }
             .help("Show \(measure.module.heading.lowercased())")
             .spoken(name: name, measure: measure, now: now)
             .accessibilityHint("Shows \(measure.module.heading.lowercased())")
@@ -351,6 +350,7 @@ struct Plate<Content: View>: View {
                     }
             }
             .animation(.easeOut(duration: 0.15), value: hovered)
+            .onHover { hovered = $0 }
     }
 }
 

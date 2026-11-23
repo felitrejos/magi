@@ -18,6 +18,8 @@ struct DetailTests {
             $0["sensors"] = nil
         }
         #expect(Module.allCases.filter(firstSample.hasDetail) == [.disk, .network])
+        let noTemp = try machine { $0["history"] = [["at": 1795189623, "cpu": 38, "rx": 1_640_000, "tx": 310_000]] }
+        #expect(!noTemp.hasDetail(.temperature) && Place(machine: "lab", module: .temperature).settled(in: ["lab": noTemp]) == Place(machine: "lab"))
     }
 
     @Test func drawsTheKnownMemoryPartsInTheirOrder() throws {

@@ -55,7 +55,8 @@ extension Machine {
     }
 
     func hasDetail(_ module: Module) -> Bool {
-        switch module {
+        guard !measures([module]).isEmpty else { return false }
+        return switch module {
         case .cpu: top?.cpu?.isEmpty == false
         case .memory: top?.memory?.isEmpty == false
         case .disk: volumes?.isEmpty == false
@@ -65,7 +66,8 @@ extension Machine {
     }
 
     func detail(_ module: Module, on name: String) -> Detail? {
-        guard hasDetail(module), let measure = measures([module]).first else { return nil }
+        guard hasDetail(module) else { return nil }
+        let measure = measures([module])[0]
         switch module {
         case .cpu:
             return Detail(measure: measure, scale: "% of one core", columns: [["999%"]], entries: (top?.cpu ?? []).map { program in
