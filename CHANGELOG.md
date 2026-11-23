@@ -6,12 +6,12 @@ promises.
 
 ## 1.1.0
 
-- In a machine's monitor, a click on a card opens its list: the 8
-  busiest processes for CPU and for memory, the volumes for disk, each
-  interface's rates for network, and each sensor for temperature on
-  Linux. A process that belongs to a session shows the session's title,
-  and a click opens it. Memory also shows a bar split into its parts.
-  Escape steps back one level.
+- In a machine's monitor, a click on a card opens its list: processes
+  for CPU and for memory, volumes for disk, interfaces with their rates
+  for network, and sensors for temperature on Linux. Each list shows up
+  to 8, the busiest, largest or hottest first. A process that belongs
+  to a session shows the session's title, and a click opens it. Memory
+  also shows a bar split into its parts. Escape steps back one level.
 - The menu bar icon is smaller. The Show Waiting Count setting is gone:
   a waiting session shows as the icon's badge, an orange dot with Color
   the Badge on.

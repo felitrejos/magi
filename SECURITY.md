@@ -152,8 +152,7 @@ unit on Linux. It runs as you, never as root, and starts at login.
   `notifyutil -g com.apple.system.thermalpressurelevel`,
   `route -n get default` and `netstat -ibn`; on Linux, files in `/proc`
   (`/proc/stat`, `/proc/net/route` and `/proc/net/dev` among them),
-  `/sys/class/power_supply`, and the CPU temperature sensor in
-  `/sys/class/hwmon` or `/sys/class/thermal`.
+  `/sys/class/power_supply`, and the temperature sensors below.
 - On the same tick it reads what the monitor's lists show.
   - Every process's name. On macOS that's `ps`'s `ucomm`. For the
     processes it lists, 16 at most, it also runs `ps -o comm` for the
@@ -167,8 +166,12 @@ unit on Linux. It runs as you, never as root, and starts at login.
     when the loop starts, for the startup volume's name.
   - Every network interface's byte counters, from the same `netstat -ibn`
     or `/proc/net/dev`.
-  - On Linux, every temperature sensor in `/sys/class/hwmon`: its chip's
-    name, its label, its reading and its critical value.
+  - On Linux, every temperature sensor in `/sys/class/hwmon`, except
+    the `drivetemp` disks, so a disk can spin down: its chip's name, its
+    label, its reading and its critical value. The CPU's temperature
+    comes from these. When none of them is the CPU's, it reads each
+    zone's type in `/sys/class/thermal` and the temperature of the one
+    it picks.
 - On the laptop, the watcher runs `tailscale status --json` for each
   other machine about every 30 seconds, when Tailscale is installed, to
   learn whether the connection goes through a Tailscale relay.
@@ -185,14 +188,16 @@ unit on Linux. It runs as you, never as root, and starts at login.
   it runs in (`app`) and its terminal device (`tty`). For the monitor's
   lists it also holds the 8 processes that use the most CPU and the 8
   that use the most memory, each with its process number, name, CPU or
-  memory, and the session it belongs to, if any; memory's parts; each
-  volume's name, mount point, used and total size; each network
-  interface's name and rates; and each sensor's name, temperature and
-  critical value. The file holds no conversation text beyond what a
+  memory, and the session it belongs to, if any; memory's parts; and up to
+  8 each of volumes, with name, mount point, used and total size,
+  network interfaces, with name and rates, and sensors, with name,
+  temperature and critical value. The file holds no conversation text beyond what a
   session waits on, no file contents, and no process arguments or
   command lines.
 - Its log holds machine names, short session ids, folder paths, branch
-  and file names, and errors.
+  and file names, and errors. When it can't read a stats line it logs
+  the whole line, which can hold process names, volume names and mount
+  points, interface names and sensor names.
 
 ## The menu bar app
 

@@ -106,7 +106,11 @@ network, and before the lists. It hasn't been measured since.
   1-second sample, so the two can differ during a burst.
 - On Linux a process's name is the kernel's, cut at 15 characters.
 - On Linux the volume list leaves out network and FUSE filesystems. It
-  keeps `fuseblk`, such as an NTFS disk.
+  keeps `fuseblk`, such as an NTFS disk. It leaves out squashfs, which
+  snaps use, and overlay. It keeps one mount per device, so a btrfs
+  subvolume such as `/home` shows as `/`.
+- Disk temperatures from `drivetemp` aren't read, so disks can spin
+  down.
 - The temperature list is Linux only. macOS gives no sensor readings
   without root, so on a Mac that card opens no list.
 - If the watcher is killed outright, the files in `~/.magi/live` keep
@@ -130,7 +134,6 @@ breaking one of these needs 2.0.
   `setup`, `services` and `ports` in `.magi.toml`. A key magi no longer
   uses is ignored.
 - The fields of `~/.magi/live/<machine>.json`, which can gain new ones.
-  1.1 only added fields.
   A session's `tmux` field is a tmux pane id such as `%3`, not a window
   id.
 - The lines of `~/.magi/handoffs.jsonl`, which can gain new fields.
