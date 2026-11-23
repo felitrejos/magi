@@ -248,6 +248,14 @@ struct Breadcrumb: View {
             Button(action: back) {
                 Text(name)
                     .truncationMode(.middle)
+                    .overlay(alignment: .bottom) {
+                        if !hovered {
+                            Rectangle()
+                                .fill(.tertiary)
+                                .frame(height: 1)
+                                .offset(y: -1)
+                        }
+                    }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background {
@@ -272,7 +280,6 @@ struct Breadcrumb: View {
                     .imageScale(.small)
                     .foregroundStyle(.tertiary)
                 Text(module)
-                    .foregroundStyle(.secondary)
             }
             .layoutPriority(1)
             .accessibilityElement(children: .ignore)
