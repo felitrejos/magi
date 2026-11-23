@@ -6,3 +6,6 @@ rpool/home          803712640 412623488  391089152      52% /home
 /dev/sda1          1921725720 612340876 1211694844      34% /srv/media library
 /dev/sda1          1921725720 612340876 1211694844      34% /media
 /dev/sdc1           960303848 203457228  708018188      23% /mnt/backup disk
+/dev/sdd1           480573400 144573400  336000000      31% /srv/back\slash
+rpool/home@daily       400000      1000     399000       1% /home/.zfs/snapshot/daily
+/dev/loop3             102400    102400          0     100% /opt/app

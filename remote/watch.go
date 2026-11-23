@@ -483,7 +483,9 @@ func (w *watcher) hear(line string, now time.Time) {
 	case "sessions":
 		w.sessions()
 	case "stats":
-		if err := w.stats(rest, now); err != nil {
+		err := w.stats(rest, now)
+		w.sampled = now
+		if err != nil {
 			w.logger.Printf("%s: unreadable stats %q: %v", w.name, rest, err)
 			return
 		}
@@ -617,7 +619,7 @@ func (w *watcher) stats(line string, now time.Time) error {
 	l.Interfaces = largest(l.Interfaces, func(n nic) float64 { return float64(n.Received + n.Sent) })
 	l.Volumes = largest(l.Volumes, func(v volume) float64 { return float64(v.TotalMB) })
 	l.Sensors = largest(l.Sensors, func(s sensor) float64 { return s.Temp })
-	w.live, w.ticks, w.traffic, w.usage, w.cpu, w.nics, w.sampled = l, t, n, usage, cpu, d.nics, now
+	w.live, w.ticks, w.traffic, w.usage, w.cpu, w.nics = l, t, n, usage, cpu, d.nics
 	return nil
 }
 

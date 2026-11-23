@@ -196,7 +196,7 @@ func (f *fixture) served(name, path string) {
 
 func testdata(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", name))
+	data, err := os.ReadFile(fixturePath(t, name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func (f *fixture) df(path string) {
 shift
 if [ "$1" = "$HOME" ]; then exec head -2 '`+path+`'; fi
 head -1 '`+path+`'
-for m; do awk -v m="$m" '{ r = $0; sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "", r) } NR > 1 && r == m' '`+path+`'; done
+for m; do m="$m" awk '{ r = $0; sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "", r) } NR > 1 && r == ENVIRON["m"]' '`+path+`'; done
 `)
 }
 
@@ -344,6 +344,18 @@ func TestAStatsLineThatBreaksPartWayChangesNothing(t *testing.T) {
 	}
 }
 
+func TestAProcessesCPUCountsFromTheLineBeforeEvenAnUnreadableOne(t *testing.T) {
+	newFixture(t)
+	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
+	start := time.Unix(1_800_000_000, 0)
+	w.hear("stats 10 1 100 200 300 400 0 0 1794928938", start)
+	w.hear("stats 10 1 100 200 300 400 0 0 1794928938 thermal=x", start.Add(30*time.Second))
+	w.hear("stats 10 1 100 200 300 400 0 0 1794928938 proc=7:3:2:0:make", start.Add(60*time.Second))
+	if got := listed(readLive(t, "server"))[0]; got != "cpu 7 make 10% " {
+		t.Errorf("the busiest process is %q, want make at 3 s of CPU in 30 s", got)
+	}
+}
+
 func TestAnEmptyNameIsRead(t *testing.T) {
 	newFixture(t)
 	w := newWatcher("server", "", nil, log.New(io.Discard, "", 0), "")
@@ -381,7 +393,7 @@ esac
 	w := newWatcher("linux", "", nil, log.New(io.Discard, "", 0), "")
 	stats := firstStats(t, f.machine())
 	w.hear(stats, time.Now())
-	if !regexp.MustCompile(` ticks=\d+:\d+( temp=\d+\.\d(:\d+)?)? net=\d+:\d+:\S+$`).MatchString(stats) {
+	if !regexp.MustCompile(`( temp=-?\d+\.\d(:-?\d+\.\d)?)? ticks=\d+:\d+ net=\d+:\d+:\S+( |$)`).MatchString(stats) {
 		t.Errorf("stats line %q, want CPU ticks, the temperature where a sensor is known and the default route's byte counters", stats)
 	}
 	live := readLive(t, "linux")
@@ -916,7 +928,8 @@ func TestALinuxMachineListsItsBusiestProcessesMemoryPartsVolumesInterfacesAndSen
 		"memory 2280 firefox-esr 703MB ", "memory 2301 Isolated Web Co 469MB ", fmt.Sprintf("memory %d claude 391MB %s", s.pid, s.id), "memory 4100 node 195MB " + s.id,
 		"memory 3005 postgres 117MB ", "memory 5000 dockerd 98MB ", "memory 9999 cc1 78MB " + s.id, "memory 5100 containerd 59MB ",
 		"part app 4326", "part cached 10704", "part free 891",
-		"volume /media /media 693390/1876685", "volume /mnt/backup disk /mnt/backup disk 246373/937797", "volume /home /home 402953/784876", "volume / / 20805/402728", "volume /boot/efi /boot/efi 6/1073",
+		"volume /media /media 693390/1876685", "volume /mnt/backup disk /mnt/backup disk 246373/937797", "volume /home /home 402953/784876",
+		"volume /srv/back\\slash /srv/back\\slash 141185/469310", "volume / / 20805/402728", "volume /boot/efi /boot/efi 6/1073",
 		"sensor acpitz 53 119", "sensor Package id 0 51 100", "sensor Core 4 50 100", "sensor Core 12 49 100",
 		"sensor Core 0 48 100", "sensor Core 8 47 100", "sensor Sensor 2 42.9 -", "sensor Composite 38.9 84.8",
 	}
@@ -964,20 +977,43 @@ func TestANewlineInAProcessNameDropsOnlyThatProcess(t *testing.T) {
 func TestEachSensorHasANameOfItsOwn(t *testing.T) {
 	s := sampleLinux(t, map[string]string{"hwmon": `/sys/class/hwmon/hwmon0/name:acpitz
 /sys/class/hwmon/hwmon1/name:nvme
-/sys/class/hwmon/hwmon2/name:coretemp
+/sys/class/hwmon/hwmon2/name:it8686
 /sys/class/hwmon/hwmon3/name:nvme
+/sys/class/hwmon/hwmon4/name:it8792
 /sys/class/hwmon/hwmon0/temp1_input:46000
 /sys/class/hwmon/hwmon0/temp2_input:45000
 /sys/class/hwmon/hwmon1/temp1_input:38000
-/sys/class/hwmon/hwmon1/temp2_input:37000
-/sys/class/hwmon/hwmon2/temp1_input:51000
+/sys/class/hwmon/hwmon2/temp1_input:35000
+/sys/class/hwmon/hwmon2/temp2_input:34000
 /sys/class/hwmon/hwmon3/temp1_input:41000
+/sys/class/hwmon/hwmon4/temp1_input:33000
+/sys/class/hwmon/hwmon4/temp2_input:32000
 /sys/class/hwmon/hwmon1/temp1_label:Composite
-/sys/class/hwmon/hwmon1/temp2_label:Sensor 1
-/sys/class/hwmon/hwmon2/temp1_label:Package id 0
+/sys/class/hwmon/hwmon2/temp1_label:AUXTIN
+/sys/class/hwmon/hwmon2/temp2_label:AUXTIN
 /sys/class/hwmon/hwmon3/temp1_label:Composite
+/sys/class/hwmon/hwmon4/temp1_label:AUXTIN
+/sys/class/hwmon/hwmon4/temp2_label:AUXTIN
 `})
-	if got := listed(s.live); !reflect.DeepEqual(got[len(got)-6:], []string{"sensor Package id 0 51 -", "sensor acpitz (temp1) 46 -", "sensor acpitz (temp2) 45 -", "sensor Composite (nvme1) 41 -", "sensor Composite (nvme0) 38 -", "sensor Sensor 1 37 -"}) {
-		t.Errorf("the live file lists %q, want a label alone where it is unique and the chip or channel beside a repeated one", got)
+	want := []string{
+		"sensor acpitz (temp1) 46 -", "sensor acpitz (temp2) 45 -", "sensor Composite (nvme1) 41 -", "sensor Composite (nvme0) 38 -",
+		"sensor AUXTIN (it8686 temp1) 35 -", "sensor AUXTIN (it8686 temp2) 34 -", "sensor AUXTIN (it8792 temp1) 33 -", "sensor AUXTIN (it8792 temp2) 32 -",
+	}
+	if got := listed(s.live); !reflect.DeepEqual(got[len(got)-8:], want) {
+		t.Errorf("the live file lists %q, want %q", got, want)
+	}
+}
+
+func TestTheHeadlineTemperatureCanBeBelowZero(t *testing.T) {
+	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon0/name:coretemp\n/sys/class/hwmon/hwmon0/temp1_input:-5500\n/sys/class/hwmon/hwmon0/temp1_label:Package id 0\n/sys/class/hwmon/hwmon0/temp1_crit:100000\n"})
+	if last := s.live.History[len(s.live.History)-1]; last.Temp == nil || *last.Temp != -5.5 || s.live.Critical == nil || *s.live.Critical != 100 {
+		t.Errorf("temperature %s, critical %s from stats line %q, want -5.5 °C and 100 °C", value(last.Temp), value(s.live.Critical), s.stats[1])
+	}
+}
+
+func TestWithoutAKnownChipTheTemperatureComesFromTheCPUThermalZone(t *testing.T) {
+	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon0/name:nvme\n/sys/class/hwmon/hwmon0/temp1_input:38000\n/sys/class/thermal/thermal_zone0/type:acpitz\n/sys/class/thermal/thermal_zone1/type:x86_pkg_temp\n/sys/class/thermal/thermal_zone0/temp:27800\n/sys/class/thermal/thermal_zone1/temp:47000\n"})
+	if last := s.live.History[len(s.live.History)-1]; last.Temp == nil || *last.Temp != 47 || s.live.Critical != nil {
+		t.Errorf("temperature %s, critical %s from stats line %q, want x86_pkg_temp's 47 °C and no critical", value(last.Temp), value(s.live.Critical), s.stats[1])
 	}
 }

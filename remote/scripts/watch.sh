@@ -27,24 +27,6 @@ usage() {
     }'
   fi
 }
-sensor() {
-  for want in 'coretemp Package id 0' 'k10temp Tdie' 'k10temp Tctl'; do
-    for label in /sys/class/hwmon/hwmon*/temp*_label; do
-      if [ -r "$label" ] && read -r chip < "${label%/*}/name" && read -r text < "$label" && [ "$chip $text" = "$want" ]; then
-        echo "${label%_label}_input"
-        return
-      fi
-    done
-  done
-  for want in x86_pkg_temp cpu-thermal; do
-    for zone in /sys/class/thermal/thermal_zone*; do
-      if [ -r "$zone/type" ] && read -r kind < "$zone/type" && [ "$kind" = "$want" ]; then
-        echo "$zone/temp"
-        return
-      fi
-    done
-  done
-}
 places() {
   {
     if [ "$os" = Darwin ]; then
@@ -57,7 +39,7 @@ places() {
         tr '\0' '\n' 2>/dev/null < "/proc/$pid/environ" | sed -n "s/^REX_SESSION=/rex $pid session /p; s/^REX_BLOCK=/rex $pid block /p"
       done
     fi
-  } | awk -v pids="$1" -v os="$os" '
+  } | awk -v pids="$1" -v os="$os" "$quote"'
     function place(pid, key, value) {
       if (value != "") print "place", pid, key, value
     }
@@ -103,9 +85,7 @@ places() {
         for (q = top[p[i]]; q > 1; q = parent[q] + 0) if (q in bundle) b = bundle[q]
         if (b == "") continue
         if (!(b in id)) {
-          path = b "/Contents/Info.plist"
-          gsub(/\047/, "\047\\\047\047", path)
-          read = "plutil -extract CFBundleIdentifier raw -o - \047" path "\047"
+          read = "plutil -extract CFBundleIdentifier raw -o - " quote(b "/Contents/Info.plist")
           read | getline id[b]
           close(read)
         }
@@ -113,30 +93,32 @@ places() {
       }
     }'
 }
-sensor=$(sensor) critical=
-if [ -r "${sensor%_input}_crit" ]; then read -r critical < "${sensor%_input}_crit"; fi
 if [ "$os" = Darwin ]; then root=$(diskutil info / | sed -n 's/^ *Volume Name: *//p'); fi
 escape='function escape(s, out, c) {
   if (!("%" in code)) for (c = 1; c < 128; c++) if (c <= 32 || c == 37 || c == 58 || c == 127) code[sprintf("%c", c)] = sprintf("%%%02X", c)
   while (match(s, /[\001-\040%:\177]/)) { out = out substr(s, 1, RSTART - 1) code[substr(s, RSTART, 1)]; s = substr(s, RSTART + 1) }
   return out s
 }'
+quote='function quote(s) { gsub(/\047/, "\047\\\047\047", s); return "\047" s "\047" }'
 volumes() {
   if [ "$os" = Darwin ]; then
     mount
   else
     cat /proc/mounts
-  fi | awk -v os="$os" -v root="$root" "$escape"'
+  fi | awk -v os="$os" -v root="$root" "$escape$quote"'
     os == "Darwin" { mount = $0; sub(/^[^ ]+ on /, "", mount); sub(/ \([^(]*\)$/, "", mount); kept = $1 ~ /^\/dev\// && (mount == "/" || (mount ~ /^\/Volumes\// && !/nobrowse/)) }
-    os != "Darwin" { mount = $2; gsub(/\\040/, " ", mount); kept = $3 !~ /^(tmpfs|devtmpfs|ramfs|overlay|squashfs|proc|sysfs|cgroup2?|autofs|efivarfs|nsfs|devpts|mqueue|securityfs|debugfs|tracefs|configfs|fusectl|pstore|bpf|hugetlbfs|binfmt_misc|rpc_pipefs|selinuxfs|nfs4?|nfsd|cifs|smb3|smbfs|ceph|9p|fuse(\..*)?)$/ }
+    os != "Darwin" {
+      mount = ""
+      for (rest = $2; match(rest, /\\[0-7][0-7][0-7]/); rest = substr(rest, RSTART + 4)) mount = mount substr(rest, 1, RSTART - 1) sprintf("%c", substr(rest, RSTART + 1, 1) * 64 + substr(rest, RSTART + 2, 1) * 8 + substr(rest, RSTART + 3, 1))
+      mount = mount rest
+      kept = $1 !~ /@/ && $3 !~ /^(tmpfs|devtmpfs|ramfs|overlay|squashfs|erofs|proc|sysfs|cgroup2?|autofs|efivarfs|nsfs|devpts|mqueue|securityfs|debugfs|tracefs|configfs|fusectl|pstore|bpf|hugetlbfs|binfmt_misc|rpc_pipefs|selinuxfs|nfs4?|nfsd|cifs|smb3|smbfs|ceph|9p|fuse(\..*)?)$/
+    }
     kept && (!($1 in at) || length(mount) < length(at[$1])) { at[$1] = mount; order[$1] = NR }
     END {
       for (d in at) if (!(at[d] in top) || order[d] > order[top[at[d]]]) top[at[d]] = d
       for (mount in top) {
         name[mount] = os != "Darwin" ? mount : mount == "/" ? root : substr(mount, 10)
-        quoted = mount
-        gsub(/\047/, "\047\\\047\047", quoted)
-        list = list " \047" quoted "\047"
+        list = list " " quote(mount)
       }
       if (list == "") exit
       read = "df -Pk" list
@@ -172,7 +154,13 @@ sample() {
       }'
     return
   fi
-  { cat /proc/meminfo /proc/net/dev; grep -s . /dev/null /sys/class/hwmon/hwmon*/name /sys/class/hwmon/hwmon*/temp*_input /sys/class/hwmon/hwmon*/temp*_label /sys/class/hwmon/hwmon*/temp*_crit; } | awk "$escape"'
+  { cat /proc/meminfo /proc/net/dev; grep -s . /dev/null /sys/class/hwmon/hwmon*/name /sys/class/hwmon/hwmon*/temp*_input /sys/class/hwmon/hwmon*/temp*_label /sys/class/hwmon/hwmon*/temp*_crit /sys/class/thermal/thermal_zone*/type /sys/class/thermal/thermal_zone*/temp; } | awk "$escape"'
+    /^\/sys\/class\/thermal\// {
+      at = index($0, ":")
+      split(substr($0, 1, at - 1), path, "/")
+      zone[path[5], path[6]] = substr($0, at + 1)
+      next
+    }
     /^\/sys\// {
       at = index($0, ":")
       split(substr($0, 1, at - 1), path, "/")
@@ -207,16 +195,28 @@ sample() {
       for (s in label) {
         printf " sensor=%.1f:", reading[s, "input"] / 1000
         if ((s, "crit") in reading) printf "%.1f", reading[s, "crit"] / 1000
-        if (labels[label[s]] > 1) label[s] = label[s] " (" (same[label[s], hwmon[s]] > 1 ? substr(s, index(s, " ") + 1) : id[hwmon[s]]) ")"
+        channel = substr(s, index(s, " ") + 1)
+        if (labels[label[s]] > 1) label[s] = label[s] " (" (same[label[s], hwmon[s]] == labels[label[s]] ? channel : same[label[s], hwmon[s]] > 1 ? id[hwmon[s]] " " channel : id[hwmon[s]]) ")"
         printf ":%s", escape(label[s])
+      }
+      split("coretemp Package id 0|k10temp Tdie|k10temp Tctl", wanted, "|")
+      for (k = 1; k <= 3 && picked == ""; k++) for (s in label) if (((s, "label") in reading) && chip[hwmon[s]] " " reading[s, "label"] == wanted[k]) picked = s
+      if (picked != "") {
+        printf " temp=%.1f", reading[picked, "input"] / 1000
+        if ((picked, "crit") in reading) printf ":%.1f", reading[picked, "crit"] / 1000
+        exit
+      }
+      split("x86_pkg_temp cpu-thermal", wanted, " ")
+      for (k = 1; k <= 2; k++) for (z in zone) {
+        split(z, key, SUBSEP)
+        if (key[2] == "type" && zone[z] == wanted[k] && ((key[1], "temp") in zone)) {
+          printf " temp=%.1f", zone[key[1], "temp"] / 1000
+          exit
+        }
       }
     }'
   read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
   printf ' ticks=%s:%s' $((user + nice + system + irq + softirq + steal)) $((user + nice + system + idle + iowait + irq + softirq + steal))
-  if [ -n "$sensor" ] && read -r milli 2>/dev/null < "$sensor"; then
-    printf ' temp=%d.%d' $((milli / 1000)) $((milli % 1000 / 100))
-    if [ -n "$critical" ]; then printf ':%d' $((critical / 1000)); fi
-  fi
   iface=
   while read -r device destination _; do
     case $device in lo | veth* | docker* | br-* | tailscale*) continue ;; esac
@@ -265,7 +265,7 @@ while :; do
     fi
   fi
   if [ $((tick % 15)) -eq 0 ]; then
-    measured=$({ load; df -Pk "$HOME"; if [ -n "$was" ]; then printf '%s\n' "$was"; fi; usage; battery; } | awk -v roots="$pids" -v os="$os" "$escape"'
+    measured=$({ load; df -Pk "$HOME"; if [ -n "$was" ]; then printf '%s\n' "$was"; fi; usage; battery; } | awk -v roots="$pids" -v os="$os" "$escape$quote"'
       function pick(v, list, k, p, best) {
         for (k = 0; k < 8; k++) {
           best = ""
@@ -325,11 +325,7 @@ while :; do
               sub(/^ *[0-9]+ /, "", line)
               k = split(line, path, "/")
               if (line !~ /^\// || length(name[q]) != 16 || index(path[k], name[q]) != 1) continue
-              if (!(line in candidate)) {
-                quoted = line
-                gsub(/\047/, "\047\\\047\047", quoted)
-                files = files " \047" quoted "\047"
-              }
+              if (!(line in candidate)) files = files " " quote(line)
               candidate[line] = candidate[line] " " q
             }
             read = "for f in" files "; do [ -f \"$f\" ] && printf \"%s\\n\" \"$f\"; done"
