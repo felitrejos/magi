@@ -904,7 +904,12 @@ case "$*" in
 *) exec /bin/cat "$@" ;;
 esac
 `)
-	f.tool("grep", "#!/bin/sh\ncase \"$*\" in *hwmon*) /bin/cat '"+data+"/hwmon' ;; esac\n")
+	f.tool("grep", `#!/bin/sh
+case "$*" in
+*/name) awk '/\/name:/' '`+data+`/hwmon' ;;
+*hwmon* | *thermal*) printf '%s\n' "$@" | awk -F: 'NR == FNR { sub(/\/[^\/]*$/, ""); asked[$0]; next } { d = $1; sub(/\/[^\/]*$/, "", d) } d in asked || /thermal_zone/' - '`+data+`/hwmon' ;;
+esac
+`)
 	f.tool("uname", "#!/bin/sh\necho Linux\n")
 	f.tool("getconf", "#!/bin/sh\ncase $1 in CLK_TCK) echo 100 ;; PAGESIZE) echo 4096 ;; *) echo 8 ;; esac\n")
 	f.tool("cut", "#!/bin/sh\necho '0.52 0.58 0.59'\n")
@@ -1011,9 +1016,39 @@ func TestTheHeadlineTemperatureCanBeBelowZero(t *testing.T) {
 	}
 }
 
-func TestWithoutAKnownChipTheTemperatureComesFromTheCPUThermalZone(t *testing.T) {
-	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon0/name:nvme\n/sys/class/hwmon/hwmon0/temp1_input:38000\n/sys/class/thermal/thermal_zone0/type:acpitz\n/sys/class/thermal/thermal_zone1/type:x86_pkg_temp\n/sys/class/thermal/thermal_zone0/temp:27800\n/sys/class/thermal/thermal_zone1/temp:47000\n"})
+func TestWithoutAKnownChipTheTemperatureComesFromTheFirstCPUThermalZone(t *testing.T) {
+	zones := t.TempDir()
+	for zone, temp := range map[string]string{"thermal_zone0": "27800", "thermal_zone2": "47000", "thermal_zone10": "52000"} {
+		if err := os.MkdirAll(filepath.Join(zones, zone), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(zones, zone, "temp"), []byte(temp+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon0/name:nvme\n/sys/class/hwmon/hwmon0/temp1_input:38000\n" + zones + "/thermal_zone0/type:acpitz\n" + zones + "/thermal_zone10/type:x86_pkg_temp\n" + zones + "/thermal_zone2/type:x86_pkg_temp\n"})
 	if last := s.live.History[len(s.live.History)-1]; last.Temp == nil || *last.Temp != 47 || s.live.Critical != nil {
-		t.Errorf("temperature %s, critical %s from stats line %q, want x86_pkg_temp's 47 °C and no critical", value(last.Temp), value(s.live.Critical), s.stats[1])
+		t.Errorf("temperature %s, critical %s from stats line %q, want thermal_zone2's 47 °C and no critical", value(last.Temp), value(s.live.Critical), s.stats[1])
+	}
+}
+
+func TestTheHeadlineTemperatureComesFromTheFirstOfTwoMatchingSensors(t *testing.T) {
+	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon0/name:k10temp\n/sys/class/hwmon/hwmon1/name:k10temp\n/sys/class/hwmon/hwmon0/temp1_input:50000\n/sys/class/hwmon/hwmon1/temp1_input:60000\n/sys/class/hwmon/hwmon0/temp1_label:Tctl\n/sys/class/hwmon/hwmon1/temp1_label:Tctl\n"})
+	if last := s.live.History[len(s.live.History)-1]; last.Temp == nil || *last.Temp != 50 {
+		t.Errorf("temperature %s from stats line %q, want hwmon0's 50 °C", value(last.Temp), s.stats[1])
+	}
+}
+
+func TestAChipNameEndingInADigitKeepsItsRankApart(t *testing.T) {
+	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon0/name:spd5118\n/sys/class/hwmon/hwmon1/name:spd5118\n/sys/class/hwmon/hwmon0/temp1_input:40000\n/sys/class/hwmon/hwmon1/temp1_input:39000\n"})
+	if got := listed(s.live); !reflect.DeepEqual(got[len(got)-2:], []string{"sensor spd5118 0 40 -", "sensor spd5118 1 39 -"}) {
+		t.Errorf("the live file lists %q, want spd5118 0 and spd5118 1", got)
+	}
+}
+
+func TestADisksDrivetempSensorIsNeverRead(t *testing.T) {
+	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon0/name:drivetemp\n/sys/class/hwmon/hwmon1/name:nvme\n/sys/class/hwmon/hwmon0/temp1_input:36000\n/sys/class/hwmon/hwmon1/temp1_input:38000\n/sys/class/hwmon/hwmon1/temp1_label:Composite\n"})
+	if s.live.Sensors == nil || len(s.live.Sensors) != 1 || s.live.Sensors[0].Name != "Composite" {
+		t.Errorf("sensors %+v from stats line %q, want only the NVMe drive's", s.live.Sensors, s.stats[1])
 	}
 }

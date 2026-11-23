@@ -154,11 +154,16 @@ sample() {
       }'
     return
   fi
-  { cat /proc/meminfo /proc/net/dev; grep -s . /dev/null /sys/class/hwmon/hwmon*/name /sys/class/hwmon/hwmon*/temp*_input /sys/class/hwmon/hwmon*/temp*_label /sys/class/hwmon/hwmon*/temp*_crit /sys/class/thermal/thermal_zone*/type /sys/class/thermal/thermal_zone*/temp; } | awk "$escape"'
-    /^\/sys\/class\/thermal\// {
-      at = index($0, ":")
-      split(substr($0, 1, at - 1), path, "/")
-      zone[path[5], path[6]] = substr($0, at + 1)
+  set -- /dev/null
+  while IFS=: read -r path kind; do
+    if [ -n "$path" ] && [ "$kind" != drivetemp ]; then set -- "$@" "$path" "${path%/name}"/temp*_input "${path%/name}"/temp*_label "${path%/name}"/temp*_crit; fi
+  done <<EOF
+$(grep -s . /dev/null /sys/class/hwmon/hwmon*/name)
+EOF
+  { cat /proc/meminfo /proc/net/dev; grep -s . "$@" /sys/class/thermal/thermal_zone*/type; } | awk "$escape"'
+    /thermal_zone[0-9]+\/type:/ {
+      at = index($0, "/type:")
+      zone[substr($0, 1, at - 1)] = substr($0, at + 6)
       next
     }
     /^\/sys\// {
@@ -169,6 +174,7 @@ sample() {
       else { reading[path[5] " " file[1], file[2]] = substr($0, at + 1); hwmon[path[5] " " file[1]] = path[5] }
       next
     }
+    function number(z) { match(z, /[0-9]+$/); return substr(z, RSTART) + 0 }
     /^MemTotal:/ { total = $2 }
     /^MemFree:/ { free = $2 }
     /^MemAvailable:/ { available = $2 }
@@ -187,7 +193,7 @@ sample() {
       for (s in hwmon) {
         if (!((s, "input") in reading)) continue
         d = hwmon[s]
-        id[d] = shared[d] > 1 ? chip[d] (rank[d] + 0) : chip[d]
+        id[d] = shared[d] > 1 ? chip[d] (chip[d] ~ /[0-9]$/ ? " " : "") (rank[d] + 0) : chip[d]
         label[s] = (s, "label") in reading ? reading[s, "label"] : id[d]
         labels[label[s]]++
         same[label[s], d]++
@@ -200,20 +206,15 @@ sample() {
         printf ":%s", escape(label[s])
       }
       split("coretemp Package id 0|k10temp Tdie|k10temp Tctl", wanted, "|")
-      for (k = 1; k <= 3 && picked == ""; k++) for (s in label) if (((s, "label") in reading) && chip[hwmon[s]] " " reading[s, "label"] == wanted[k]) picked = s
+      for (k = 1; k <= 3 && picked == ""; k++) for (s in label) if (((s, "label") in reading) && chip[hwmon[s]] " " reading[s, "label"] == wanted[k] && (picked == "" || s < picked)) picked = s
       if (picked != "") {
         printf " temp=%.1f", reading[picked, "input"] / 1000
         if ((picked, "crit") in reading) printf ":%.1f", reading[picked, "crit"] / 1000
         exit
       }
       split("x86_pkg_temp cpu-thermal", wanted, " ")
-      for (k = 1; k <= 2; k++) for (z in zone) {
-        split(z, key, SUBSEP)
-        if (key[2] == "type" && zone[z] == wanted[k] && ((key[1], "temp") in zone)) {
-          printf " temp=%.1f", zone[key[1], "temp"] / 1000
-          exit
-        }
-      }
+      for (k = 1; k <= 2 && picked == ""; k++) for (z in zone) if (zone[z] == wanted[k] && (picked == "" || number(z) < number(picked))) picked = z
+      if (picked != "" && (getline milli < (picked "/temp")) > 0) printf " temp=%.1f", milli / 1000
     }'
   read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
   printf ' ticks=%s:%s' $((user + nice + system + irq + softirq + steal)) $((user + nice + system + idle + iowait + irq + softirq + steal))
