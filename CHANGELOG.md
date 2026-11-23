@@ -4,7 +4,7 @@ What changed in each version of magi.
 [docs/support.md](docs/support.md#versions) says what a version number
 promises.
 
-## 1.1.0
+## 1.1.0, 2026-11-23
 
 - In a machine's monitor, a click on a card opens its list: processes
   for CPU and for memory, volumes for disk, interfaces with their rates
