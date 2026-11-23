@@ -28,6 +28,10 @@ struct PanelView: View {
         store.rows.filter { scope == nil || $0.machine == scope }.ordered(keeping: order)
     }
 
+    private var inset: CGFloat {
+        names.count == 1 ? 158 : 0
+    }
+
     private var detail: Detail? {
         guard let scope, let module = place.module else { return nil }
         return store.machines[scope]?.detail(module, on: scope)
@@ -55,15 +59,34 @@ struct PanelView: View {
             Cap(height: height) {
                 TimelineView(.everyMinute) { context in
                     VStack(spacing: 0) {
-                        header(detail, now: context.date)
-                        if store.machines.isEmpty {
-                            Text("Ask Claude to \u{201C}set up magi with my homelab\u{201D}, and your machines and sessions show here.")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .padding([.horizontal, .bottom], 16)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else if !rows.isEmpty || scope != nil {
-                            SessionList(rows: rows, place: place, machine: scope.flatMap { store.machines[$0] }, detail: detail, entries: entries, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order, open: open) { place.module = $0 }
+                        Pages {
+                            if let scope, let detail {
+                                DetailPage(name: scope, detail: detail, entries: entries, place: place, inset: inset, highlight: $highlight, order: $order, open: open, back: back)
+                                    .transition(Push(edge: .trailing, reduced: reduceMotion))
+                            } else {
+                                VStack(spacing: 0) {
+                                    header(now: context.date)
+                                    if store.machines.isEmpty {
+                                        Text("Ask Claude to \u{201C}set up magi with my homelab\u{201D}, and your machines and sessions show here.")
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                            .padding([.horizontal, .bottom], 16)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    } else if !rows.isEmpty || scope != nil {
+                                        SessionList(rows: rows, place: place, machine: scope.flatMap { store.machines[$0] }, showsMachine: scope == nil && names.count > 1, now: context.date, highlight: $highlight, order: $order, open: open) { place.module = $0 }
+                                    }
+                                }
+                                .transition(Push(edge: .leading, reduced: reduceMotion))
+                            }
+                        }
+                        .clipShape(ConcentricRectangle())
+                        .overlay(alignment: .topTrailing) {
+                            if names.count == 1, let name = names.first, let machine = store.machines[name] {
+                                tile(name, machine, now: context.date)
+                                    .frame(width: 150)
+                                    .padding(.trailing, 16)
+                                    .padding(.top, scope == nil ? 0 : 4)
+                            }
                         }
                         if names.count > 1 {
                             strip(now: context.date)
@@ -79,6 +102,7 @@ struct PanelView: View {
                 .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
             }
             .frame(maxHeight: .infinity, alignment: .top)
+            .animation(reduceMotion ? .easeOut(duration: 0.2) : .smooth(duration: 0.4), value: place.module == nil)
             .animation(reduceMotion ? nil : .smooth(duration: 0.4), value: place)
             .onChange(of: place) { highlight = nil }
             .onChange(of: detail == nil) { place = place.settled(in: store.machines) }
@@ -97,49 +121,29 @@ struct PanelView: View {
                 open(route)
                 return .handled
             }
-            .onExitCommand {
-                guard let back = place.back else { return close() }
-                place = back
-            }
+            .onExitCommand(perform: back)
         }
     }
 
-    private func header(_ detail: Detail?, now: Date) -> some View {
+    private func header(now: Date) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        Text(status)
-                            .contentTransition(.opacity)
-                            .transaction(value: status) { $0.animation = $0.animation ?? .snappy(duration: 0.35) }
-                        if let detail {
-                            Text(detail.measure.module.title)
-                                .foregroundStyle(.secondary)
-                                .transition(.opacity)
-                        }
-                    }
-                    .font(.title3.weight(.semibold))
-                    if let detail {
-                        DetailCaption(measure: detail.measure)
-                    } else if let scope, let machine = store.machines[scope] {
-                        ScopeCaption(machine: machine, answers: store.answering.contains(scope), now: now)
-                    }
-                }
-                Spacer(minLength: 0)
-                if names.count == 1, let name = names.first, let machine = store.machines[name] {
-                    tile(name, machine, now: now)
-                        .frame(width: 150)
-                }
-            }
-            if let parts = detail?.parts, !parts.isEmpty {
-                MemoryBar(parts: parts)
-                    .padding(.vertical, 8)
-                    .transition(.opacity)
+            Text(status)
+                .font(.title3.weight(.semibold))
+                .contentTransition(.opacity)
+                .transaction(value: status) { $0.animation = $0.animation ?? .snappy(duration: 0.35) }
+            if let scope, let machine = store.machines[scope] {
+                ScopeCaption(machine: machine, answers: store.answering.contains(scope), now: now)
             }
         }
+        .padding(.trailing, inset)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .padding(.horizontal, 16)
-        .frame(minHeight: 44)
         .padding(.vertical, scope == nil ? 0 : 4)
+    }
+
+    private func back() {
+        guard let back = place.back else { return close() }
+        place = back
     }
 
     private func strip(now: Date) -> some View {
@@ -223,49 +227,52 @@ struct SessionList: View {
     let rows: [Row]
     let place: Place
     let machine: Machine?
-    let detail: Detail?
-    let entries: [Entry]
     let showsMachine: Bool
     let now: Date
     @Binding var highlight: String?
     @Binding var order: [String]?
     let open: (Route) -> Void
     let show: (Module) -> Void
-    @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var scope: String? {
         place.machine
     }
 
-    private var ids: [String] {
-        detail == nil ? rows.map(\.id) : entries.map(\.id)
+    var body: some View {
+        Rows(ids: rows.map(\.id), place: place, highlight: $highlight, order: $order) {
+            if let scope, let machine {
+                Monitor(name: scope, machine: machine, now: now, open: show)
+                    .padding(8)
+                    .padding(.bottom, 6)
+                    .transition(.opacity)
+                if !rows.isEmpty {
+                    section("Sessions")
+                        .transition(.opacity)
+                }
+            }
+            ForEach(rows) { row in
+                SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now, open: open)
+                    .id(row.id)
+                    .transition(.blurReplace)
+                    .highlights(row.id, in: $highlight)
+            }
+        }
     }
+}
+
+struct Rows<Content: View>: View {
+    let ids: [String]
+    let place: Place
+    @Binding var highlight: String?
+    @Binding var order: [String]?
+    @ViewBuilder let content: Content
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                if let detail {
-                    DetailList(detail: detail, entries: entries, highlight: $highlight, open: open)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                } else {
-                    if let scope, let machine {
-                        Monitor(name: scope, machine: machine, now: now, open: show)
-                            .padding(8)
-                            .padding(.bottom, 6)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                        if !rows.isEmpty {
-                            section("Sessions")
-                                .transition(.opacity)
-                        }
-                    }
-                    ForEach(rows) { row in
-                        SessionRow(row: row, showsMachine: showsMachine, highlighted: highlight == row.id, usage: scope != nil, now: now, open: open)
-                            .id(row.id)
-                            .transition(.blurReplace)
-                            .highlights(row.id, in: $highlight)
-                    }
-                }
+                content
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
@@ -281,6 +288,34 @@ struct SessionList: View {
             guard (try? await Task.sleep(for: .seconds(1))) != nil else { return }
             order = nil
         }
+    }
+}
+
+struct Pages: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        subviews.filter { !$0[Leaving.self] }.map { $0.sizeThatFits(proposal) }.reduce(.zero) { CGSize(width: max($0.width, $1.width), height: max($0.height, $1.height)) }
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+        for subview in subviews {
+            subview.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+        }
+    }
+}
+
+struct Leaving: LayoutValueKey {
+    static let defaultValue = false
+}
+
+struct Push: Transition {
+    let edge: Edge
+    let reduced: Bool
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        content
+            .offset(x: reduced || phase.isIdentity ? 0 : edge == .leading ? -PanelView.width : PanelView.width)
+            .opacity(reduced && !phase.isIdentity ? 0 : 1)
+            .layoutValue(key: Leaving.self, value: phase == .didDisappear)
     }
 }
 

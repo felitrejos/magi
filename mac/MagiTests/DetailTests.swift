@@ -40,6 +40,9 @@ struct DetailTests {
 
         let disk = try #require(homelab.detail(.disk, on: "homelab"))
         #expect(disk.entries.map(\.fraction) == [512_000 / 994_000.0, 0.95] && disk.entries.map(\.health) == [.fine, .critical] && disk.entries[1].spoken.hasSuffix(" free, full"))
+        #expect(disk.entries.map(\.figures) == [["500 GB of 971 GB"], ["\(tenths(1.8)) TB of \(tenths(1.9)) TB"]] && disk.entries[0].spoken == "500 GB of 971 GB used, 471 GB free")
+        let small = try #require(try machine { $0["volumes"] = [["name": "EFI", "mount": "/boot/efi", "usedMB": 6, "totalMB": 1075], ["name": "System", "mount": "/", "usedMB": 130_000, "totalMB": 1_875_626]] }.detail(.disk, on: "homelab"))
+        #expect(small.entries.map(\.figures) == [["6 MB of 1 GB"], ["127 GB of \(tenths(1.8)) TB"]])
 
         let network = try #require(homelab.detail(.network, on: "homelab"))
         #expect(network.entries.map(\.fraction) == [1, 382_000 / 1_910_000.0] && network.entries[1].figures == ["\u{2193} \(rate(382_000))", "\u{2191} \(rate(0))"])

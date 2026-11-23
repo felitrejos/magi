@@ -48,22 +48,50 @@ struct Snapshots {
         for scheme in [ColorScheme.light, .dark] {
             let suffix = scheme == .light ? "light" : "dark"
             for (module, machine) in [(Module.cpu, 2), (.memory, 3), (.disk, 3), (.network, 2), (.temperature, 2)] {
-                try await shot("detail-\(module.rawValue)-\(suffix)", full(), scheme, height: 900, act: { try await open(module, on: machine, in: $0) })
+                try await shot("detail-\(module.rawValue)-\(suffix)", full(), scheme, act: { try await open(module, on: machine, in: $0) })
             }
-            try await shot("detail-cpu-highlight-\(suffix)", full(), scheme, height: 900, act: { window in
+            try await shot("detail-cpu-highlight-\(suffix)", full(), scheme, act: { window in
                 try await open(.cpu, on: 2, in: window)
                 try await Task.sleep(for: .milliseconds(700))
                 down(window, times: 1)
             })
-            try await shot("detail-single-memory-\(suffix)", store(machines(sessions: true).filter { $0.key == "laptop" }), scheme, height: 900, act: { try await open(.memory, on: 1, in: $0) })
-            try await shot("detail-alert-disk-\(suffix)", strained(), scheme, height: 900, act: { try await open(.disk, on: 3, in: $0) })
-            try await shot("detail-alert-temperature-\(suffix)", strained(), scheme, height: 900, act: { try await open(.temperature, on: 2, in: $0) })
-            try await shot("older-watcher-\(suffix)", strained(), scheme, height: 900, environment: { AnyView($0.environment(\._accessibilityShowButtonShapes, true)) }, act: { try await open(.cpu, on: 1, in: $0, opens: false) })
+            try await shot("detail-back-\(suffix)", full(), scheme, act: { window in
+                let monitor = try await open(.memory, on: 3, in: window)
+                try await tap(window, at: CGPoint(x: 60, y: 16))
+                try await Task.sleep(for: .milliseconds(700))
+                #expect(window.contentView!.fittingSize == monitor, "back button")
+                try await open(.memory, on: 0, in: window)
+                press(window, "\u{1B}", keyCode: 53, times: 1)
+                try await Task.sleep(for: .milliseconds(700))
+                #expect(window.contentView!.fittingSize == monitor, "escape")
+            })
+            try await shot("detail-single-memory-\(suffix)", store(machines(sessions: true).filter { $0.key == "laptop" }), scheme, act: { try await open(.memory, on: 1, in: $0) })
+            try await shot("detail-alert-disk-\(suffix)", strained(), scheme, act: { try await open(.disk, on: 3, in: $0) })
+            try await shot("detail-alert-temperature-\(suffix)", strained(), scheme, act: { try await open(.temperature, on: 2, in: $0) })
+            try await shot("older-watcher-\(suffix)", strained(), scheme, environment: { AnyView($0.environment(\._accessibilityShowButtonShapes, true)) }, act: { try await open(.cpu, on: 1, in: $0, opens: false) })
         }
-        try await shot("detail-memory-increase-contrast", full(), .light, height: 900, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { try await open(.memory, on: 3, in: $0) })
-        try await shot("detail-memory-increase-contrast-dark", full(), .dark, height: 900, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { try await open(.memory, on: 3, in: $0) })
-        try await shot("detail-cpu-reduce-transparency", full(), .light, height: 900, opaque: true, environment: { AnyView($0.environment(\._accessibilityReduceTransparency, true)) }, act: { try await open(.cpu, on: 2, in: $0) })
-        try await shot("detail-alert-differentiate-without-color", strained(), .light, height: 900, environment: { AnyView($0.environment(\._accessibilityDifferentiateWithoutColor, true)) }, act: { try await open(.disk, on: 3, in: $0) })
+        try await shot("detail-memory-increase-contrast", full(), .light, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { try await open(.memory, on: 3, in: $0) })
+        try await shot("detail-memory-increase-contrast-dark", full(), .dark, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { try await open(.memory, on: 3, in: $0) })
+        try await shot("detail-cpu-reduce-transparency", full(), .light, opaque: true, environment: { AnyView($0.environment(\._accessibilityReduceTransparency, true)) }, act: { try await open(.cpu, on: 2, in: $0) })
+        try await shot("detail-alert-differentiate-without-color", strained(), .light, environment: { AnyView($0.environment(\._accessibilityDifferentiateWithoutColor, true)) }, act: { try await open(.disk, on: 3, in: $0) })
+    }
+
+    @Test func motion() async throws {
+        defer { try? FileManager.default.removeItem(at: home) }
+        let full = try await store(machines(sessions: true))
+        let lone = try await store(machines(sessions: true).filter { $0.key != "box" }.mapValues { $0.merging(["sessions": ($0["sessions"] as! [Any]).prefix($0["ssh"] as? String == "" ? 0 : 1).map(\.self)]) { $1 } })
+        for (name, store) in [("sessions", full), ("no-sessions", lone)] {
+            let window = try await panel(store, .light, height: 560, fill: .clear)
+            try await film("monitor-enter-\(name)", window) { try await tap(window, at: CGPoint(x: 297, y: window.contentView!.fittingSize.height - 30)) }
+            try await film("monitor-leave-\(name)", window) { try await tap(window, at: CGPoint(x: 297, y: window.contentView!.fittingSize.height - 30)) }
+            window.orderOut(nil)
+        }
+        let window = try await panel(full, .light, height: 560, fill: .clear)
+        left(window, times: 1)
+        try await Task.sleep(for: .milliseconds(700))
+        try await film("push", window) { try await tap(window, at: CGPoint(x: 264, y: 108)) }
+        try await film("pop", window) { try await tap(window, at: CGPoint(x: 60, y: 16)) }
+        window.orderOut(nil)
     }
 
     @Test func tiles() async throws {
@@ -154,24 +182,46 @@ struct Snapshots {
 
     private func shot(_ name: String, _ store: Store, _ scheme: ColorScheme, height: CGFloat = 560, opaque: Bool = false, environment: (AnyView) -> AnyView = { $0 }, act: (NSWindow) async throws -> Void = { _ in }) async throws {
         let fill = opaque ? Color(nsColor: .windowBackgroundColor) : (scheme == .light ? Color(white: 0.97, opacity: 0.94) : Color(white: 0.14, opacity: 0.94))
-        let root = environment(AnyView(PanelView(store: store, height: height) {}))
-            .background(fill, in: .rect(cornerRadius: PanelView.radius))
-            .environment(\.colorScheme, scheme)
-        let host = NSHostingView(rootView: root)
-        let window = KeyWindow(contentRect: CGRect(origin: .zero, size: host.fittingSize), styleMask: .borderless, backing: .buffered, defer: false)
-        window.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopWindow)) - 1)
-        window.appearance = NSAppearance(named: scheme == .light ? .aqua : .darkAqua)
-        window.backgroundColor = scheme == .light ? NSColor(white: 0.55, alpha: 1) : NSColor(white: 0.08, alpha: 1)
-        window.contentView = host
-        window.orderFrontRegardless()
-        window.makeKey()
-        try await Task.sleep(for: .milliseconds(300))
+        let window = try await panel(store, scheme, height: height, fill: fill, environment: environment)
         try await act(window)
         try await Task.sleep(for: .milliseconds(900))
+        let host = window.contentView!
         window.setContentSize(CGSize(width: host.fittingSize.width, height: min(host.fittingSize.height, height)))
         try await Task.sleep(for: .milliseconds(300))
         try capture(window, name)
         window.orderOut(nil)
+    }
+
+    private func panel(_ store: Store, _ scheme: ColorScheme, height: CGFloat, fill: Color, environment: (AnyView) -> AnyView = { $0 }) async throws -> NSWindow {
+        let root = environment(AnyView(PanelView(store: store, height: height) {}))
+            .background(fill, in: .rect(cornerRadius: PanelView.radius))
+            .environment(\.colorScheme, scheme)
+        let host = NSHostingView(rootView: root)
+        let window = KeyWindow(contentRect: CGRect(origin: .zero, size: CGSize(width: host.fittingSize.width, height: fill == .clear ? height : host.fittingSize.height)), styleMask: .borderless, backing: .buffered, defer: false)
+        window.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopWindow)) - 1)
+        window.appearance = NSAppearance(named: scheme == .light ? .aqua : .darkAqua)
+        window.backgroundColor = scheme == .light ? NSColor(white: 0.55, alpha: 1) : NSColor(white: 0.08, alpha: 1)
+        if fill == .clear {
+            host.sizingOptions = .intrinsicContentSize
+        }
+        window.contentView = host
+        window.orderFrontRegardless()
+        window.makeKey()
+        try await Task.sleep(for: .milliseconds(300))
+        return window
+    }
+
+    private func film(_ name: String, _ window: NSWindow, cue: () async throws -> Void) async throws {
+        let host = window.contentView!
+        try Process.run(URL(filePath: "/usr/sbin/screencapture"), arguments: ["-o", "-x", "-l", "\(window.windowNumber)", out.appending(path: "\(name).png").path])
+        try await cue()
+        for frame in 0..<12 {
+            let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])!.write(to: out.appending(path: "\(name)-\(frame).png"))
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        try await Task.sleep(for: .milliseconds(700))
     }
 
     private func capture(_ window: NSWindow, _ name: String) throws {
@@ -196,21 +246,30 @@ struct Snapshots {
         press(window, "\u{F703}", keyCode: 124, times: times)
     }
 
+    private func left(_ window: NSWindow, times: Int) {
+        press(window, "\u{F702}", keyCode: 123, times: times)
+    }
+
     private func down(_ window: NSWindow, times: Int) {
         press(window, "\u{F701}", keyCode: 125, times: times)
     }
 
-    private func open(_ module: Module, on machine: Int, in window: NSWindow, opens: Bool = true) async throws {
+    @discardableResult private func open(_ module: Module, on machine: Int, in window: NSWindow, opens: Bool = true) async throws -> CGSize {
         right(window, times: machine)
         try await Task.sleep(for: .milliseconds(700))
         let before = window.contentView!.fittingSize
-        let card = [Module.cpu: CGPoint(x: 96, y: 108), .memory: CGPoint(x: 264, y: 108), .temperature: CGPoint(x: 96, y: 212), .disk: CGPoint(x: 264, y: 212), .network: CGPoint(x: 180, y: 304)][module]!
-        let location = CGPoint(x: card.x, y: window.contentView!.bounds.height - card.y)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
-        }
+        try await tap(window, at: [Module.cpu: CGPoint(x: 96, y: 108), .memory: CGPoint(x: 264, y: 108), .temperature: CGPoint(x: 96, y: 212), .disk: CGPoint(x: 264, y: 212), .network: CGPoint(x: 180, y: 304)][module]!)
         try await Task.sleep(for: .milliseconds(700))
         #expect((window.contentView!.fittingSize != before) == opens, "\(module) on machine \(machine)")
+        return before
+    }
+
+    private func tap(_ window: NSWindow, at point: CGPoint) async throws {
+        let location = CGPoint(x: point.x, y: window.contentView!.bounds.height - point.y)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            window.sendEvent(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
+            try await Task.sleep(for: .milliseconds(90))
+        }
     }
 
     private func press(_ window: NSWindow, _ key: String, keyCode: UInt16, times: Int) {

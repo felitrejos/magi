@@ -142,6 +142,10 @@ struct Measure {
     var alert: String? {
         health.alert(alerts)
     }
+
+    var spoken: String {
+        [[value, unit].compactMap(\.self).joined(separator: " "), detail, alert].compactMap(\.self).joined(separator: ", ")
+    }
 }
 
 extension Machine {
@@ -432,7 +436,7 @@ extension View {
     @ViewBuilder func spoken(name: String, measure: Measure, now: Date) -> some View {
         let element = accessibilityElement(children: .ignore)
             .accessibilityLabel(measure.title)
-            .accessibilityValue([[measure.value, measure.unit].compactMap(\.self).joined(separator: " "), measure.detail, measure.alert].compactMap(\.self).joined(separator: ", "))
+            .accessibilityValue(measure.spoken)
         if case let .spark(points, domain, unit) = measure.visual {
             element.accessibilityChartDescriptor(SparkDescriptor(title: "\(measure.title) on \(name), last hour", unit: unit, points: points, domain: domain, now: now))
         } else {

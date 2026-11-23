@@ -23,12 +23,16 @@ enum MemoryKind: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .app: "App memory"
+        case .app: "App"
         case .wired: "Wired"
         case .compressed: "Compressed"
         case .cached: "Cached"
         case .free: "Free"
         }
+    }
+
+    var name: String {
+        self == .app ? "App memory" : title
     }
 
     var style: AnyShapeStyle {
@@ -78,10 +82,10 @@ extension Machine {
                 Entry(id: "\(program.pid)", name: program.name, row: row(program.session, on: name), fraction: Double(program.memoryMB) / Double(memory.totalMB), figures: [amount(megabytes: program.memoryMB)], spoken: "\(amount(megabytes: program.memoryMB)) \(amount(memory).unit)")
             }.unique, parts: parts)
         case .disk:
-            return Detail(measure: measure, columns: [["\(figure(99.9)) of \(figure(99.9)) GB"]], entries: (volumes ?? []).map { volume in
+            return Detail(measure: measure, columns: [["999 MB of 999 GB"]], entries: (volumes ?? []).map { volume in
                 let space = Space(usedMB: volume.usedMB, totalMB: volume.totalMB)
-                let (used, total) = amount(space)
-                return Entry(id: volume.mount, name: volume.name, fraction: space.fraction, figures: ["\(used) \(total)"], spoken: ["\(used) \(total) used, \(amount(megabytes: volume.totalMB - volume.usedMB, rounded: true)) free", space.health.alert(["nearly full", "full"])].compactMap(\.self).joined(separator: ", "), health: space.health)
+                let figure = "\(amount(megabytes: volume.usedMB, rounded: true)) of \(amount(megabytes: volume.totalMB, rounded: true))"
+                return Entry(id: volume.mount, name: volume.name, fraction: space.fraction, figures: [figure], spoken: ["\(figure) used, \(amount(megabytes: volume.totalMB - volume.usedMB, rounded: true)) free", space.health.alert(["nearly full", "full"])].compactMap(\.self).joined(separator: ", "), health: space.health)
             }.unique)
         case .network:
             let busiest = (interfaces ?? []).reduce(1) { max($0, $1.rx + $1.tx) }
@@ -118,8 +122,10 @@ struct DetailCaption: View {
         .foregroundStyle(.secondary)
         .font(.subheadline)
         .monospacedDigit()
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(measure.alert ?? "")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(measure.title)
+        .accessibilityValue(measure.spoken)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -143,19 +149,22 @@ struct MemoryBar: View {
             .frame(height: 6)
             .clipShape(.capsule)
             .accessibilityHidden(true)
-            Flow(spacing: 10) {
+            HStack(spacing: 10) {
                 ForEach(parts) { part in
+                    let size = "\(tenths(Double(part.mb) / 1024)) GB"
                     HStack(spacing: 5) {
                         Circle()
                             .fill(part.kind.style)
                             .frame(width: 6, height: 6)
-                        Text("\(part.kind.title) \(tenths(Double(part.mb) / 1024)) GB")
+                        Text(part.kind.title)
                     }
-                    .accessibilityElement(children: .combine)
+                    .help("\(part.kind.name) \(size)")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(part.kind.name)
+                    .accessibilityValue(size)
                 }
             }
             .font(.footnote)
-            .monospacedDigit()
             .foregroundStyle(.secondary)
         }
     }
@@ -193,21 +202,86 @@ struct Flow: Layout {
     }
 }
 
-struct DetailList: View {
+struct DetailPage: View {
+    let name: String
     let detail: Detail
     let entries: [Entry]
+    let place: Place
+    let inset: CGFloat
     @Binding var highlight: String?
+    @Binding var order: [String]?
     let open: (Route) -> Void
+    let back: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Back(name: name, title: detail.measure.module.title, action: back)
+                    DetailCaption(measure: detail.measure)
+                }
+                .padding(.trailing, inset)
+                .frame(minHeight: 44)
+                if !detail.parts.isEmpty {
+                    MemoryBar(parts: detail.parts)
+                        .padding(.vertical, 8)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
             section(detail.measure.module.heading, scale: detail.scale)
-            ForEach(entries) { entry in
-                DetailRow(entry: entry, columns: detail.columns, highlighted: highlight == entry.id, open: open)
-                    .id(entry.id)
-                    .highlights(entry.id, in: $highlight, when: entry.row?.route != nil)
+                .padding(.horizontal, 8)
+            Rows(ids: entries.map(\.id), place: place, highlight: $highlight, order: $order) {
+                ForEach(entries) { entry in
+                    DetailRow(entry: entry, columns: detail.columns, highlighted: highlight == entry.id, open: open)
+                        .id(entry.id)
+                        .highlights(entry.id, in: $highlight, when: entry.row?.route != nil)
+                }
             }
         }
+    }
+}
+
+struct Back: View {
+    let name: String
+    let title: String
+    let action: () -> Void
+    @State private var hovered = false
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityShowBorders) private var showBorders
+
+    var body: some View {
+        let shape = ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true)
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.backward")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(name)
+                Text(title)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.title3.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background {
+                if hovered {
+                    shape.fill(.quaternary)
+                }
+                if contrast == .increased || showBorders {
+                    shape.stroke(.separator)
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(Press())
+        .padding(.horizontal, -8)
+        .padding(.vertical, -2)
+        .animation(.easeOut(duration: 0.15), value: hovered)
+        .onHover { hovered = $0 }
+        .help("Back to \(name)")
+        .accessibilityLabel("Back to \(name)")
     }
 }
 
