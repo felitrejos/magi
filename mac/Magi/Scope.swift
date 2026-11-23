@@ -450,7 +450,7 @@ struct Plot {
     init(_ points: [Point], now: Date) {
         end = max(now, points.last?.at ?? now)
         start = end.addingTimeInterval(-min(Plot.window, max(60, end.timeIntervalSince(points.first?.at ?? end))))
-        self.points = points.count == 1 ? [start, end].map { Point(at: $0, value: points[0].value) } : points
+        self.points = points.count == 1 ? [start, end].map { Point(at: $0, value: points[0].value) } : points.unique
     }
 }
 

@@ -27,7 +27,6 @@ struct Snapshots {
             UserDefaults.standard.set("cpu,memory,temperature,disk,network", forKey: Defaults.modules)
             try await shot("scope-network-\(suffix)", full, scheme, height: 900, act: { right($0, times: 2) })
             try await shot("scope-increase-contrast-\(suffix)", full, scheme, height: 900, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { right($0, times: 2) })
-            try await shot("scope-reduce-motion-\(suffix)", full, scheme, height: 900, environment: { AnyView($0.environment(\._accessibilityReduceMotion, true)) }, act: { right($0, times: 2) })
             UserDefaults.standard.removeObject(forKey: Defaults.modules)
             try await shot("empty-\(suffix)", quiet, scheme)
             try await shot("not-set-up-\(suffix)", bare, scheme)

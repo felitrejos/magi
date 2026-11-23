@@ -89,6 +89,22 @@ struct LiveTests {
         #expect(Trace(points: [], start: now - 120, end: now, domain: 0...10, part: .line).path(in: rect).isEmpty)
     }
 
+    @Test func drawsReadingsThatArriveInTheSameSecond() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let plot = Plot([Point(at: now - 60, value: 3), Point(at: now - 30, value: 5), Point(at: now, value: 8), Point(at: now, value: 2)], now: now)
+        var finite = true
+        Trace(points: plot.points, start: plot.start, end: plot.end, domain: 0...10, part: .line).path(in: CGRect(x: 0, y: 0, width: 120, height: 10)).forEach { element in
+            let points: [CGPoint] = switch element {
+            case let .move(to: p), let .line(to: p): [p]
+            case let .quadCurve(to: p, control: c): [p, c]
+            case let .curve(to: p, control1: c1, control2: c2): [p, c1, c2]
+            case .closeSubpath: []
+            }
+            finite = finite && points.allSatisfy { $0.x.isFinite && $0.y.isFinite }
+        }
+        #expect(finite)
+    }
+
     @Test func storesTheEnabledModulesInOrderAndSkipsUnknownOnes() {
         #expect(Modules(rawValue: "disk,gpu,battery,cpu").enabled == [.disk, .cpu])
     }
