@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"io"
 	"os"
 	"os/exec"
@@ -89,6 +90,34 @@ func TestAReusedPidIsNotStopped(t *testing.T) {
 	}
 	if err := proc.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Error("stop killed a process that only had the session's pid")
+	}
+}
+
+func TestASessionLeftUnreapedCountsAsStopped(t *testing.T) {
+	f := newFixture(t)
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claude := filepath.Join(t.TempDir(), "claude")
+	if err := os.Symlink(sleep, claude); err != nil {
+		t.Fatal(err)
+	}
+	parent := exec.Command("sh", "-c", `"$1" 60 & echo $!; exec sleep 60`, "sh", claude)
+	out, err := parent.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { parent.Process.Kill(); parent.Wait() })
+	pid, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sh.Run(f.machine(), sessionScript, "end", strings.TrimSpace(pid), ""); err != nil {
+		t.Fatal(err)
 	}
 }
 

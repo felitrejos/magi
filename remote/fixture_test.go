@@ -219,7 +219,8 @@ if [ "$1 $2" = "agents --json" ]; then
   for f in "$HOME"/.claude/sessions/*.json; do
     pid=${f##*/}
     pid=${pid%.json}
-    [ -f "$f" ] && kill -0 "$pid" 2>/dev/null || continue
+    state=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null || ps -o stat= -p "$pid" 2>/dev/null)
+    case $state in '' | Z*) continue ;; esac
     printf '%s\n  {\n    "pid": %s' "$sep" "$pid"
     for key in cwd startedAt sessionId name status waitingFor; do
       value=$(sed -nE 's/.*"'"$key"'":("[^"]*"|[0-9]+).*/\1/p' "$f")

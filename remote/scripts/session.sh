@@ -39,11 +39,20 @@ ours() {
   case $(args_of "$1") in *claude*) same "$1" "$2" ;; *) return 1 ;; esac
 }
 
+alive() {
+  if [ -r "/proc/$1/stat" ]; then
+    state=$(sed 's/.*) //' "/proc/$1/stat" 2>/dev/null)
+  else
+    state=$(ps -o stat= -p "$1" 2>/dev/null)
+  fi
+  case $state in '' | Z*) return 1 ;; esac
+}
+
 end() {
   kill -TERM "$1" 2>/dev/null
   i=0
-  while kill -0 "$1" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
-  if kill -0 "$1" 2>/dev/null; then
+  while alive "$1" && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+  if alive "$1"; then
     echo "the session on this machine didn't stop" >&2
     return 1
   fi
