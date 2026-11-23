@@ -4,6 +4,19 @@ What changed in each version of magi.
 [docs/support.md](docs/support.md#versions) says what a version number
 promises.
 
+## 1.1.1
+
+- A card's list now has a breadcrumb for a header, such as
+  "Felipes-MacBook-Pro › Memory". A click on the machine's name goes
+  back to its monitor, and Escape still steps back one level. The back
+  button is gone.
+- The app uses less memory while you switch between monitors: the
+  cards' small charts are drawn without Swift Charts and look the same.
+- Stopping a session no longer fails with `the session on this machine
+  didn't stop` on a host that never reaps exited processes, such as a
+  container started without `--init`. That error made a move or its
+  cleanup fail.
+
 ## 1.1.0, 2026-11-23
 
 - In a machine's monitor, a click on a card opens its list: processes
