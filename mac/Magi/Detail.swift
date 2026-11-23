@@ -111,21 +111,14 @@ struct DetailCaption: View {
 
     var body: some View {
         let value = Text([measure.value, measure.unit].compactMap(\.self).joined(separator: measure.unit == "%" ? "" : " "))
-            .fontWeight(.medium)
-            .foregroundStyle(measure.health == .fine ? AnyShapeStyle(.primary) : AnyShapeStyle(measure.health.color))
-        let phrases = [value] + measure.detail.components(separatedBy: " \u{00B7} ").map { Text($0) }
+        let phrases = [measure.health == .fine ? value : value.fontWeight(.medium).foregroundStyle(measure.health.color)] + measure.detail.components(separatedBy: " \u{00B7} ").map { Text($0) }
         Flow(spacing: 4) {
             ForEach(phrases.indices, id: \.self) { index in
                 index == phrases.count - 1 ? phrases[index] : Text("\(phrases[index]) \u{00B7}")
             }
         }
-        .foregroundStyle(.secondary)
-        .font(.subheadline)
-        .monospacedDigit()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(measure.title)
-        .accessibilityValue(measure.spoken)
-        .accessibilityAddTraits(.isHeader)
+        .accessibilityLabel(measure.spoken)
     }
 }
 
@@ -216,12 +209,11 @@ struct DetailPage: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Back(name: name, title: detail.measure.module.title, action: back)
+                Heading(inset: inset) {
+                    Breadcrumb(name: name, module: detail.measure.module.title, back: back)
+                } caption: {
                     DetailCaption(measure: detail.measure)
                 }
-                .padding(.trailing, inset)
-                .frame(minHeight: 44)
                 if !detail.parts.isEmpty {
                     MemoryBar(parts: detail.parts)
                         .padding(.vertical, 8)
@@ -242,46 +234,52 @@ struct DetailPage: View {
     }
 }
 
-struct Back: View {
+struct Breadcrumb: View {
     let name: String
-    let title: String
-    let action: () -> Void
+    let module: String
+    let back: () -> Void
     @State private var hovered = false
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityShowBorders) private var showBorders
 
     var body: some View {
         let shape = ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true)
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: "chevron.backward")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            Button(action: back) {
                 Text(name)
-                Text(title)
+                    .truncationMode(.middle)
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background {
+                        if hovered {
+                            shape.fill(.quaternary)
+                        }
+                        if contrast == .increased || showBorders {
+                            shape.stroke(.separator)
+                        }
+                    }
+                    .contentShape(.rect)
             }
-            .font(.title3.weight(.semibold))
-            .lineLimit(1)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background {
-                if hovered {
-                    shape.fill(.quaternary)
-                }
-                if contrast == .increased || showBorders {
-                    shape.stroke(.separator)
-                }
+            .buttonStyle(Press())
+            .padding(.horizontal, -6)
+            .padding(.vertical, -2)
+            .animation(.easeOut(duration: 0.15), value: hovered)
+            .onHover { hovered = $0 }
+            .help("Back to \(name)")
+            .accessibilityLabel("Back to \(name)")
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.forward")
+                    .imageScale(.small)
+                    .foregroundStyle(.tertiary)
+                Text(module)
             }
-            .contentShape(.rect)
+            .layoutPriority(1)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(name), \(module)")
+            .accessibilityAddTraits(.isHeader)
         }
-        .buttonStyle(Press())
-        .padding(.horizontal, -8)
-        .padding(.vertical, -2)
-        .animation(.easeOut(duration: 0.15), value: hovered)
-        .onHover { hovered = $0 }
-        .help("Back to \(name)")
-        .accessibilityLabel("Back to \(name)")
+        .lineLimit(1)
     }
 }
 

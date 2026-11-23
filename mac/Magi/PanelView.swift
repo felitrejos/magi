@@ -126,17 +126,15 @@ struct PanelView: View {
     }
 
     private func header(now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Heading(inset: inset) {
             Text(status)
-                .font(.title3.weight(.semibold))
                 .contentTransition(.opacity)
                 .transaction(value: status) { $0.animation = $0.animation ?? .snappy(duration: 0.35) }
+        } caption: {
             if let scope, let machine = store.machines[scope] {
                 ScopeCaption(machine: machine, answers: store.answering.contains(scope), now: now)
             }
         }
-        .padding(.trailing, inset)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, scope == nil ? 0 : 4)
     }
@@ -207,6 +205,25 @@ struct Place: Hashable {
     var back: Place? {
         if module != nil { return Place(machine: machine) }
         return machine == nil ? nil : Place()
+    }
+}
+
+struct Heading<Title: View, Caption: View>: View {
+    let inset: CGFloat
+    @ViewBuilder let title: Title
+    @ViewBuilder let caption: Caption
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            title
+                .font(.title3.weight(.semibold))
+            caption
+                .font(.subheadline)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .padding(.trailing, inset)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
     }
 }
 

@@ -222,14 +222,10 @@ struct ScopeCaption: View {
                     .foregroundStyle(alert.health.color)
                 if !facts.isEmpty {
                     Text(" \u{00B7} ")
-                        .foregroundStyle(.secondary)
                 }
             }
             Text(facts.joined(separator: " \u{00B7} "))
-                .foregroundStyle(.secondary)
         }
-        .font(.subheadline)
-        .monospacedDigit()
     }
 
     private var facts: [String] {

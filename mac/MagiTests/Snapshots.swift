@@ -45,6 +45,8 @@ struct Snapshots {
         defer { UserDefaults.standard.removeObject(forKey: Defaults.modules) }
         let full = { try await store(machines(sessions: true)) }
         let strained = { try await store(machines(sessions: true, critical: true)) }
+        var long = machines(sessions: true)
+        long["Sams-MacBook-Pro-in-the-upstairs-office"] = long.removeValue(forKey: "laptop")
         for scheme in [ColorScheme.light, .dark] {
             let suffix = scheme == .light ? "light" : "dark"
             for (module, machine) in [(Module.cpu, 2), (.memory, 3), (.disk, 3), (.network, 2), (.temperature, 2)] {
@@ -57,21 +59,28 @@ struct Snapshots {
             })
             try await shot("detail-back-\(suffix)", full(), scheme, act: { window in
                 let monitor = try await open(.memory, on: 3, in: window)
-                try await tap(window, at: CGPoint(x: 60, y: 16))
+                let detail = window.contentView!.fittingSize
+                try await tap(window, at: CGPoint(x: 120, y: 16))
                 try await Task.sleep(for: .milliseconds(700))
-                #expect(window.contentView!.fittingSize == monitor, "back button")
+                #expect(window.contentView!.fittingSize == detail, "module name")
+                try await tap(window, at: CGPoint(x: 30, y: 16))
+                try await Task.sleep(for: .milliseconds(700))
+                #expect(window.contentView!.fittingSize == monitor, "machine name")
                 try await open(.memory, on: 0, in: window)
                 press(window, "\u{1B}", keyCode: 53, times: 1)
                 try await Task.sleep(for: .milliseconds(700))
                 #expect(window.contentView!.fittingSize == monitor, "escape")
             })
             try await shot("detail-single-memory-\(suffix)", store(machines(sessions: true).filter { $0.key == "laptop" }), scheme, act: { try await open(.memory, on: 1, in: $0) })
+            try await shot("detail-long-name-\(suffix)", store(long), scheme, act: { try await open(.memory, on: 1, in: $0) })
+            try await shot("detail-single-long-name-\(suffix)", store(long.filter { $0.key.hasPrefix("Sams") }), scheme, act: { try await open(.memory, on: 1, in: $0) })
             try await shot("detail-alert-disk-\(suffix)", strained(), scheme, act: { try await open(.disk, on: 3, in: $0) })
             try await shot("detail-alert-temperature-\(suffix)", strained(), scheme, act: { try await open(.temperature, on: 2, in: $0) })
             try await shot("older-watcher-\(suffix)", strained(), scheme, environment: { AnyView($0.environment(\._accessibilityShowButtonShapes, true)) }, act: { try await open(.cpu, on: 1, in: $0, opens: false) })
         }
         try await shot("detail-memory-increase-contrast", full(), .light, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { try await open(.memory, on: 3, in: $0) })
         try await shot("detail-memory-increase-contrast-dark", full(), .dark, environment: { AnyView($0.environment(\._colorSchemeContrast, .increased)) }, act: { try await open(.memory, on: 3, in: $0) })
+        try await shot("detail-memory-show-borders", full(), .light, environment: { AnyView($0.environment(\._accessibilityShowButtonShapes, true)) }, act: { try await open(.memory, on: 3, in: $0) })
         try await shot("detail-cpu-reduce-transparency", full(), .light, opaque: true, environment: { AnyView($0.environment(\._accessibilityReduceTransparency, true)) }, act: { try await open(.cpu, on: 2, in: $0) })
         try await shot("detail-alert-differentiate-without-color", strained(), .light, environment: { AnyView($0.environment(\._accessibilityDifferentiateWithoutColor, true)) }, act: { try await open(.disk, on: 3, in: $0) })
     }
