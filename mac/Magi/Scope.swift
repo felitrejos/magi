@@ -1,4 +1,3 @@
-import Charts
 import SwiftUI
 
 enum Module: String, CaseIterable, Identifiable {
@@ -464,27 +463,16 @@ struct Spark: View {
 
     var body: some View {
         let plot = Plot(points, now: now)
-        Chart {
-            ForEach(plot.points) { point in
-                AreaMark(x: .value("Time", point.at), yStart: .value("Floor", domain.lowerBound), yEnd: .value("Value", point.value))
-                    .foregroundStyle(LinearGradient(colors: [color.opacity(0.28), color.opacity(0.04)], startPoint: .top, endPoint: .bottom))
-                    .interpolationMethod(.monotone)
-                LineMark(x: .value("Time", point.at), y: .value("Value", point.value))
-                    .foregroundStyle(color)
-                    .lineStyle(StrokeStyle(lineWidth: contrast == .increased ? 2 : 1.25, lineCap: .round, lineJoin: .round))
-                    .interpolationMethod(.monotone)
-            }
-            if let last = plot.points.last {
-                PointMark(x: .value("Time", last.at), y: .value("Value", last.value))
-                    .foregroundStyle(color)
-                    .symbolSize(14)
-            }
+        let values = plot.points.map(\.value) + [domain.lowerBound]
+        let height = { (value: Double) in UnitPoint(x: 0.5, y: (domain.upperBound - value) / (domain.upperBound - domain.lowerBound)) }
+        ZStack {
+            Trace(points: plot.points, start: plot.start, end: plot.end, domain: domain, part: .area(floor: domain.lowerBound))
+                .fill(LinearGradient(colors: [color.opacity(0.28), color.opacity(0.04)], startPoint: height(values.max()!), endPoint: height(values.min()!)))
+            Trace(points: plot.points, start: plot.start, end: plot.end, domain: domain, part: .line)
+                .stroke(color, style: StrokeStyle(lineWidth: contrast == .increased ? 2 : 1.25, lineCap: .round, lineJoin: .round))
+            Trace(points: plot.points, start: plot.start, end: plot.end, domain: domain, part: .end(area: 14))
+                .fill(color)
         }
-        .chartXScale(domain: plot.start...plot.end)
-        .chartYScale(domain: domain)
-        .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
-        .chartLegend(.hidden)
     }
 }
 
@@ -497,26 +485,73 @@ struct Traffic: View {
         let received = Plot(down, now: now)
         let sent = Plot(up, now: now)
         let top = max(1, (down + up).map(\.value).max() ?? 1)
-        Chart {
-            ForEach(received.points) { point in
-                AreaMark(x: .value("Time", point.at), yStart: .value("Zero", 0), yEnd: .value("Download", point.value), series: .value("Direction", "Download"))
-                    .foregroundStyle(Color.blue.opacity(0.55))
-                    .interpolationMethod(.monotone)
-            }
-            ForEach(sent.points) { point in
-                AreaMark(x: .value("Time", point.at), yStart: .value("Zero", 0), yEnd: .value("Upload", -point.value), series: .value("Direction", "Upload"))
-                    .foregroundStyle(Color.purple.opacity(0.55))
-                    .interpolationMethod(.monotone)
-            }
-            RuleMark(y: .value("Zero", 0))
-                .foregroundStyle(.separator)
-                .lineStyle(StrokeStyle(lineWidth: 0.5))
+        ZStack {
+            Trace(points: received.points, start: received.start, end: received.end, domain: -top...top, part: .area(floor: 0))
+                .fill(Color.blue.opacity(0.55))
+            Trace(points: sent.points.map { Point(at: $0.at, value: -$0.value) }, start: received.start, end: received.end, domain: -top...top, part: .area(floor: 0))
+                .fill(Color.purple.opacity(0.55))
+            Trace(points: [received.start, received.end].map { Point(at: $0, value: 0) }, start: received.start, end: received.end, domain: -top...top, part: .line)
+                .stroke(.separator, lineWidth: 0.5)
+                .foregroundStyle(.blue)
         }
-        .chartXScale(domain: received.start...received.end)
-        .chartYScale(domain: -top...top)
-        .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
-        .chartLegend(.hidden)
+    }
+}
+
+struct Trace: Shape {
+    enum Part {
+        case line
+        case area(floor: Double)
+        case end(area: CGFloat)
+    }
+
+    let points: [Point]
+    let start: Date
+    let end: Date
+    let domain: ClosedRange<Double>
+    let part: Part
+
+    func path(in rect: CGRect) -> Path {
+        let height = { (value: Double) in rect.maxY - rect.height * (value - domain.lowerBound) / (domain.upperBound - domain.lowerBound) }
+        let spots = points.map { CGPoint(x: rect.minX + rect.width * $0.at.timeIntervalSince(start) / end.timeIntervalSince(start), y: height($0.value)) }
+        var path = Path()
+        guard let first = spots.first, let last = spots.last else { return path }
+        switch part {
+        case let .end(area):
+            let radius = (area / .pi).squareRoot()
+            path.addEllipse(in: CGRect(x: last.x - radius, y: last.y - radius, width: radius * 2, height: radius * 2))
+        case .line:
+            path.addMonotoneCurve(through: spots)
+        case let .area(floor):
+            path.addMonotoneCurve(through: spots)
+            path.addLine(to: CGPoint(x: last.x, y: height(floor)))
+            path.addLine(to: CGPoint(x: first.x, y: height(floor)))
+            path.closeSubpath()
+        }
+        return path
+    }
+}
+
+extension Path {
+    mutating func addMonotoneCurve(through spots: [CGPoint]) {
+        move(to: spots[0])
+        guard spots.count > 2 else {
+            spots.dropFirst().forEach { addLine(to: $0) }
+            return
+        }
+        let slopes = zip(spots, spots.dropFirst()).map { ($1.y - $0.y) / ($1.x - $0.x) }
+        let widths = zip(spots, spots.dropFirst()).map { $1.x - $0.x }
+        var tangents = spots.indices.dropFirst().dropLast().map { index in
+            let (before, after) = (slopes[index - 1], slopes[index])
+            let blend = (before * widths[index] + after * widths[index - 1]) / (widths[index - 1] + widths[index])
+            return before * after > 0 ? CGFloat(signOf: before, magnitudeOf: min(2 * abs(before), 2 * abs(after), abs(blend))) : 0
+        }
+        tangents.insert((3 * slopes[0] - tangents[0]) / 2, at: 0)
+        tangents.append((3 * slopes[slopes.count - 1] - tangents[tangents.count - 1]) / 2)
+        for index in spots.indices.dropLast() {
+            let (from, to) = (spots[index], spots[index + 1])
+            let third = (to.x - from.x) / 3
+            addCurve(to: to, control1: CGPoint(x: from.x + third, y: from.y + third * tangents[index]), control2: CGPoint(x: to.x - third, y: to.y - third * tangents[index + 1]))
+        }
     }
 }
 

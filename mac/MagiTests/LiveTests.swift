@@ -76,6 +76,19 @@ struct LiveTests {
         #expect(short.start == now - 60 && short.end == now && short.points.map(\.value) == [1, 2])
     }
 
+    @Test func tracesStayWithinTheReadingsAndCloseAtTheFloor() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let points = [3.0, 9, 9, 2, 7].enumerated().map { Point(at: now - Double(4 - $0.offset) * 30, value: $0.element) }
+        let rect = CGRect(x: 0, y: 0, width: 120, height: 10)
+        func bounds(_ part: Trace.Part) -> CGRect {
+            Trace(points: points, start: now - 120, end: now, domain: 0...10, part: part).path(in: rect).boundingRect
+        }
+        let line = bounds(.line)
+        #expect(abs(line.minY - 1) < 0.001 && abs(line.maxY - 8) < 0.001 && line.minX == 0 && line.maxX == 120)
+        #expect(abs(bounds(.area(floor: 0)).maxY - 10) < 0.001)
+        #expect(Trace(points: [], start: now - 120, end: now, domain: 0...10, part: .line).path(in: rect).isEmpty)
+    }
+
     @Test func storesTheEnabledModulesInOrderAndSkipsUnknownOnes() {
         #expect(Modules(rawValue: "disk,gpu,battery,cpu").enabled == [.disk, .cpu])
     }
