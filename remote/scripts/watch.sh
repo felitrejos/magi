@@ -206,7 +206,7 @@ EOF
         printf ":%s", escape(label[s])
       }
       split("coretemp Package id 0|k10temp Tdie|k10temp Tctl", wanted, "|")
-      for (k = 1; k <= 3 && picked == ""; k++) for (s in label) if (((s, "label") in reading) && chip[hwmon[s]] " " reading[s, "label"] == wanted[k] && (picked == "" || s < picked)) picked = s
+      for (k = 1; k <= 3 && picked == ""; k++) for (s in label) if (((s, "label") in reading) && chip[hwmon[s]] " " reading[s, "label"] == wanted[k] && (picked == "" || substr(s, 6) + 0 < substr(picked, 6) + 0)) picked = s
       if (picked != "") {
         printf " temp=%.1f", reading[picked, "input"] / 1000
         if ((picked, "crit") in reading) printf ":%.1f", reading[picked, "crit"] / 1000

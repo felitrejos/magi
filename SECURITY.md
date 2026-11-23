@@ -169,9 +169,9 @@ unit on Linux. It runs as you, never as root, and starts at login.
   - On Linux, every temperature sensor in `/sys/class/hwmon`, except
     the `drivetemp` disks, so a disk can spin down: its chip's name, its
     label, its reading and its critical value. The CPU's temperature
-    comes from these. When none of them is the CPU's, it reads each
-    zone's type in `/sys/class/thermal` and the temperature of the one
-    it picks.
+    comes from these. It also reads each zone's type in
+    `/sys/class/thermal`, and when none of the sensors is the CPU's, the
+    temperature of the zone it picks.
 - On the laptop, the watcher runs `tailscale status --json` for each
   other machine about every 30 seconds, when Tailscale is installed, to
   learn whether the connection goes through a Tailscale relay.

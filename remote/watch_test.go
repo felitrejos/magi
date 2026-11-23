@@ -1033,9 +1033,9 @@ func TestWithoutAKnownChipTheTemperatureComesFromTheFirstCPUThermalZone(t *testi
 }
 
 func TestTheHeadlineTemperatureComesFromTheFirstOfTwoMatchingSensors(t *testing.T) {
-	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon0/name:k10temp\n/sys/class/hwmon/hwmon1/name:k10temp\n/sys/class/hwmon/hwmon0/temp1_input:50000\n/sys/class/hwmon/hwmon1/temp1_input:60000\n/sys/class/hwmon/hwmon0/temp1_label:Tctl\n/sys/class/hwmon/hwmon1/temp1_label:Tctl\n"})
+	s := sampleLinux(t, map[string]string{"hwmon": "/sys/class/hwmon/hwmon2/name:k10temp\n/sys/class/hwmon/hwmon10/name:k10temp\n/sys/class/hwmon/hwmon2/temp1_input:50000\n/sys/class/hwmon/hwmon10/temp1_input:60000\n/sys/class/hwmon/hwmon2/temp1_label:Tctl\n/sys/class/hwmon/hwmon10/temp1_label:Tctl\n"})
 	if last := s.live.History[len(s.live.History)-1]; last.Temp == nil || *last.Temp != 50 {
-		t.Errorf("temperature %s from stats line %q, want hwmon0's 50 °C", value(last.Temp), s.stats[1])
+		t.Errorf("temperature %s from stats line %q, want hwmon2's 50 °C", value(last.Temp), s.stats[1])
 	}
 }
 
