@@ -248,7 +248,6 @@ struct Breadcrumb: View {
             Button(action: back) {
                 Text(name)
                     .truncationMode(.middle)
-                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background {
@@ -273,6 +272,7 @@ struct Breadcrumb: View {
                     .imageScale(.small)
                     .foregroundStyle(.tertiary)
                 Text(module)
+                    .foregroundStyle(.secondary)
             }
             .layoutPriority(1)
             .accessibilityElement(children: .ignore)
