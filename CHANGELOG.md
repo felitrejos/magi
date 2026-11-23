@@ -11,7 +11,8 @@ promises.
   for network, and sensors for temperature on Linux. Each list shows up
   to 8, the busiest, largest or hottest first. A process that belongs
   to a session shows the session's title, and a click opens it. Memory
-  also shows a bar split into its parts. Escape steps back one level.
+  also shows a bar split into its parts. The back button or Escape
+  steps back one level.
 - The menu bar icon is smaller. The Show Waiting Count setting is gone:
   a waiting session shows as the icon's badge, an orange dot with Color
   the Badge on.
